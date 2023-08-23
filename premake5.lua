@@ -11,7 +11,7 @@ workspace "EGSS"
 outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
 
 project "EGSS"
-    location "EGSS"
+    location "Egss"
     kind "SharedLib"
     language "C++"
 
@@ -26,6 +26,7 @@ project "EGSS"
 
     includedirs
     {
+        "%{prj.name}/src",
         "%{prj.name}/vendor/spdlog/include"
     }
 

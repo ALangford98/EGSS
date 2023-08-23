@@ -4,6 +4,9 @@
     <Filter Include="Egss">
       <UniqueIdentifier>{17AB847C-03E2-850D-ACCE-6B1098E4010F}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Egss\Events">
+      <UniqueIdentifier>{1B1796BE-87CC-0EB4-10C1-088B7C7505B8}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\Egss.h" />
@@ -15,6 +18,18 @@
     </ClInclude>
     <ClInclude Include="src\Egss\EntryPoint.h">
       <Filter>Egss</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Egss\Events\ApplicationEvent.h">
+      <Filter>Egss\Events</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Egss\Events\Event.h">
+      <Filter>Egss\Events</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Egss\Events\KeyEvent.h">
+      <Filter>Egss\Events</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Egss\Events\MouseEvent.h">
+      <Filter>Egss\Events</Filter>
     </ClInclude>
     <ClInclude Include="src\Egss\Log.h">
       <Filter>Egss</Filter>

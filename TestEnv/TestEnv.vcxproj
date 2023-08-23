@@ -126,7 +126,7 @@
     <ClCompile Include="src\TestApp.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\EGSS\EGSS.vcxproj">
+    <ProjectReference Include="..\Egss\EGSS.vcxproj">
       <Project>{B71E847C-A355-850D-4C42-6B103858010F}</Project>
     </ProjectReference>
   </ItemGroup>
