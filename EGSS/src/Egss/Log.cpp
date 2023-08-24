@@ -1,3 +1,4 @@
+#include "egsspch.h"
 #include "Log.h"
 
 namespace Egss {
@@ -12,6 +13,7 @@ namespace Egss {
 		s_CoreLogger->set_level(spdlog::level::trace);
 		s_ClientLogger = spdlog::stdout_color_mt("APPLICATION");
 		s_ClientLogger->set_level(spdlog::level::trace);
+
 	}
 
 }

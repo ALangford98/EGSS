@@ -2,8 +2,6 @@
 
 #include "Event.h"
 
-#include <sstream>
-
 namespace Egss {
 
 	class EGSS_API WindowResizeEvent : public Event

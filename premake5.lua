@@ -18,6 +18,9 @@ project "EGSS"
     targetdir ("bin/" .. outputdir .. "/%{prj.name}")
     objdir ("bin-int/" .. outputdir .. "/%{prj.name}")
 
+    pchheader "egsspch.h"
+    pchsource "EGSS/src/egsspch.cpp"
+
     files
     {
         "%{prj.name}/src/**.h",

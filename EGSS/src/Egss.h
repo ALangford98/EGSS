@@ -1,6 +1,5 @@
 #pragma once
 
-
 #include "Egss/Application.h"
 #include "Egss/Log.h"
 

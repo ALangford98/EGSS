@@ -1,7 +1,6 @@
 #pragma once
-
+#include "egsspch.h"
 #include "Core.h"
-# include "Events/Event.h"
 
 namespace Egss {
 

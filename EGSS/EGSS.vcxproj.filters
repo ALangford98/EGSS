@@ -34,6 +34,7 @@
     <ClInclude Include="src\Egss\Log.h">
       <Filter>Egss</Filter>
     </ClInclude>
+    <ClInclude Include="src\egsspch.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Egss\Application.cpp">
@@ -42,5 +43,6 @@
     <ClCompile Include="src\Egss\Log.cpp">
       <Filter>Egss</Filter>
     </ClCompile>
+    <ClCompile Include="src\egsspch.cpp" />
   </ItemGroup>
 </Project>
