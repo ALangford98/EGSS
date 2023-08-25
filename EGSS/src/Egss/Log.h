@@ -26,11 +26,11 @@ namespace Egss {
 #define EGSS_CORE_INFO(...)  ::Egss::Log::GetCoreLogger()->info  (__VA_ARGS__)
 #define EGSS_CORE_WARN(...)  ::Egss::Log::GetCoreLogger()->warn  (__VA_ARGS__)
 #define EGSS_CORE_ERROR(...) ::Egss::Log::GetCoreLogger()->error (__VA_ARGS__)
-#define EGSS_CORE_FATAL(...) ::Egss::Log::GetCoreLogger()->fatal (__VA_ARGS__)
+#define EGSS_CORE_CRITICAL(...) ::Egss::Log::GetCoreLogger()->critical (__VA_ARGS__)
 
 #define EGSS_TRACE(...) ::Egss::Log::GetClientLogger()->trace (__VA_ARGS__)
 #define EGSS_INFO(...)  ::Egss::Log::GetClientLogger()->info  (__VA_ARGS__)
 #define EGSS_WARN(...)  ::Egss::Log::GetClientLogger()->warn  (__VA_ARGS__)
 #define EGSS_ERROR(...) ::Egss::Log::GetClientLogger()->error (__VA_ARGS__)
-#define EGSS_FATAL(...) ::Egss::Log::GetClientLogger()->fatal (__VA_ARGS__)
+#define EGSS_CRITICAL(...) ::Egss::Log::GetClientLogger()->critical (__VA_ARGS__)
 

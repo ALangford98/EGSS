@@ -10,6 +10,12 @@ workspace "EGSS"
 
 outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
 
+--include directories 
+IncludeDir = {}
+IncludeDir["GLFW"] = "EGSS/vendor/GLFW/include"
+
+include "EGSS/vendor/GLFW"
+
 project "EGSS"
     location "Egss"
     kind "SharedLib"
@@ -30,7 +36,14 @@ project "EGSS"
     includedirs
     {
         "%{prj.name}/src",
-        "%{prj.name}/vendor/spdlog/include"
+        "%{prj.name}/vendor/spdlog/include",
+        "%{IncludeDir.GLFW}",
+    }
+
+    links
+    {
+        "GLFW",
+        "opengl32.lib"
     }
 
     filter "system:windows"
@@ -66,7 +79,7 @@ project "EGSS"
 project "TestEnv"
     location "TestEnv"
     kind "ConsoleApp"
-    language "C++"
+    language "C++" 
 
     targetdir ("bin/" .. outputdir .. "/%{prj.name}")
     objdir ("bin-int/" .. outputdir .. "/%{prj.name}")
