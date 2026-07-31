@@ -1,285 +1,379 @@
+// Breakout, as a worked example of building on EGSS.
+//
+// Read docs/ENGINE.md first for the shape of the engine; this is the same
+// material from the other side. Everything here is game code -- no engine
+// internals are touched, and every engine call is one of the dozen or so in
+// that document's API list.
+//
+// The previous sandbox (framebuffer viewport panel + mouse picking) is at
+// commit a282175 if you want the editor-style setup back.
+//
+// Things marked TRY: are deliberate places to experiment.
+
 #include <Egss.h>
 
 #include <imgui.h>
-#include <glm/gtc/matrix_transform.hpp>
 
-// A hand-built 4x4 sprite atlas. Generated rather than loaded so the sandbox
-// has no asset dependency -- Texture2D::Create(path) handles real image files.
-static constexpr unsigned int s_CellSize = 16;
-static constexpr unsigned int s_AtlasCells = 4;
-static constexpr unsigned int s_AtlasSize = s_CellSize * s_AtlasCells;
+// ---------------------------------------------------------------------------
+// World units, not pixels.
+//
+// The camera decides how much of the world fits on screen, so a paddle 0.36
+// wide is 0.36 wide at any resolution. Only the camera cares about aspect
+// ratio; nothing below does. Half-height is fixed at 0.9, and half-width
+// follows from the window's shape.
+// ---------------------------------------------------------------------------
+static constexpr float s_WorldHalfHeight = 0.9f;
 
-// Picking IDs for the two non-tile sprites, kept above any tile index so they
-// cannot collide with one.
-static constexpr int s_SpinnerID = 1000000;
-static constexpr int s_WideSpriteID = 1000001;
+static constexpr float s_PaddleY = -0.75f;
+static constexpr float s_PaddleSpeed = 2.2f;
+static const glm::vec2 s_PaddleSize = { 0.36f, 0.045f };
 
-class Sandbox2D : public Egss::Layer
+static constexpr float s_BallRadius = 0.028f;
+static constexpr float s_BallStartSpeed = 1.1f;
+
+static constexpr int s_BrickCols = 9;
+static constexpr int s_BrickRows = 5;
+static const glm::vec2 s_BrickSize = { 0.26f, 0.09f };
+static constexpr float s_BrickGap = 0.02f;
+static constexpr float s_BrickTop = 0.78f;
+
+struct Brick
+{
+	glm::vec2 Position;
+	glm::vec4 Color;
+	bool Alive = true;
+};
+
+// Axis-aligned overlap test. Both arguments are centre + full size, which is
+// the same convention Renderer2D::DrawQuad uses -- keeping one convention
+// everywhere is what stops collision code turning into off-by-half bugs.
+static bool Overlaps(const glm::vec2& aCentre, const glm::vec2& aSize,
+	const glm::vec2& bCentre, const glm::vec2& bSize)
+{
+	return std::abs(aCentre.x - bCentre.x) * 2.0f < (aSize.x + bSize.x)
+		&& std::abs(aCentre.y - bCentre.y) * 2.0f < (aSize.y + bSize.y);
+}
+
+class Breakout : public Egss::Layer
 {
 public:
-	Sandbox2D()
-		: Layer("Sandbox2D"), m_Camera(-1.6f, 1.6f, -0.9f, 0.9f)
+	Breakout()
+		: Layer("Breakout"), m_Camera(-1.6f, 1.6f, -s_WorldHalfHeight, s_WorldHalfHeight)
 	{
 	}
 
+	// Called once when the layer is pushed. Load assets and build state here,
+	// never in the constructor -- at construction time there is no GL context
+	// yet, so a Texture2D::Create would fail.
 	void OnAttach() override
 	{
-		std::vector<unsigned int> pixels(s_AtlasSize * s_AtlasSize);
-
-		// Each cell gets a distinct hue and motif, so it's obvious which
-		// region a given sprite was cut from.
-		const unsigned int cellColors[16] = {
-			0xff4444dd, 0xff44dd44, 0xffdd4444, 0xffdddd44,
-			0xffdd44dd, 0xff44dddd, 0xffdd8844, 0xff8844dd,
-			0xff44dd88, 0xffdd4488, 0xff8888dd, 0xff88dd88,
-			0xffdd8888, 0xffaaaaaa, 0xff666699, 0xffeeeeee
-		};
-
-		for (unsigned int cy = 0; cy < s_AtlasCells; cy++)
+		// A flat colour would not need a texture at all (Renderer2D keeps a
+		// white one for that), so this builds a small vertical gradient to
+		// show the Create(w,h) + SetData path. Swap it for
+		// Texture2D::Create("assets/bricks.png") once you have real art.
+		constexpr unsigned int size = 8;
+		std::vector<unsigned int> pixels(size * size);
+		for (unsigned int y = 0; y < size; y++)
 		{
-			for (unsigned int cx = 0; cx < s_AtlasCells; cx++)
+			for (unsigned int x = 0; x < size; x++)
 			{
-				unsigned int fill = cellColors[cy * s_AtlasCells + cx];
-
-				for (unsigned int y = 0; y < s_CellSize; y++)
-				{
-					for (unsigned int x = 0; x < s_CellSize; x++)
-					{
-						bool border = (x == 0 || y == 0 || x == s_CellSize - 1 || y == s_CellSize - 1);
-						bool motif = ((x / 2 + y / 2) % 2) == 0;
-
-						unsigned int color = border ? 0xff202020 : (motif ? fill : 0xff1a1a1a);
-
-						unsigned int px = cx * s_CellSize + x;
-						unsigned int py = cy * s_CellSize + y;
-						pixels[py * s_AtlasSize + px] = color;
-					}
-				}
+				// 0xAABBGGRR -- little-endian RGBA8.
+				unsigned int shade = 235 - y * 14;
+				pixels[y * size + x] = 0xff000000 | (shade << 16) | (shade << 8) | shade;
 			}
 		}
 
-		m_Atlas.reset(Egss::Texture2D::Create(s_AtlasSize, s_AtlasSize));
-		m_Atlas->SetData(pixels.data(), (unsigned int)(pixels.size() * sizeof(unsigned int)));
+		m_BrickTexture.reset(Egss::Texture2D::Create(size, size));
+		m_BrickTexture->SetData(pixels.data(), (unsigned int)(pixels.size() * sizeof(unsigned int)));
 
-		// Cut all 16 cells out as individual sprites.
-		for (unsigned int y = 0; y < s_AtlasCells; y++)
-		{
-			for (unsigned int x = 0; x < s_AtlasCells; x++)
-			{
-				m_Sprites.emplace_back(Egss::SubTexture2D::CreateFromCoords(
-					m_Atlas, { (float)x, (float)y }, { (float)s_CellSize, (float)s_CellSize }));
-			}
-		}
-
-		// A 2x1 sprite, showing spriteSize spanning more than one cell.
-		m_WideSprite.reset(Egss::SubTexture2D::CreateFromCoords(
-			m_Atlas, { 0.0f, 3.0f }, { (float)s_CellSize, (float)s_CellSize }, { 2.0f, 1.0f }));
-
-		// Size is provisional -- the first frame resizes it to whatever the
-		// viewport panel actually turns out to be. The RED_INTEGER attachment
-		// is what picking reads back.
-		Egss::FramebufferSpecification spec;
-		spec.Width = 1280;
-		spec.Height = 720;
-		spec.Attachments = {
-			Egss::FramebufferTextureFormat::RGBA8,
-			Egss::FramebufferTextureFormat::RED_INTEGER,
-			Egss::FramebufferTextureFormat::DEPTH24STENCIL8
-		};
-		m_Framebuffer.reset(Egss::Framebuffer::Create(spec));
+		Reset();
 	}
 
+	void Reset()
+	{
+		m_Bricks.clear();
+
+		// TRY: give the top rows more hit points by adding a Health field to
+		// Brick and only clearing Alive when it reaches zero.
+		const glm::vec4 rowColors[s_BrickRows] = {
+			{ 0.90f, 0.30f, 0.30f, 1.0f },
+			{ 0.90f, 0.60f, 0.25f, 1.0f },
+			{ 0.85f, 0.85f, 0.30f, 1.0f },
+			{ 0.35f, 0.80f, 0.40f, 1.0f },
+			{ 0.35f, 0.60f, 0.90f, 1.0f }
+		};
+
+		float pitchX = s_BrickSize.x + s_BrickGap;
+		float rowWidth = s_BrickCols * pitchX - s_BrickGap;
+
+		for (int row = 0; row < s_BrickRows; row++)
+		{
+			for (int col = 0; col < s_BrickCols; col++)
+			{
+				Brick brick;
+				brick.Position = {
+					-rowWidth * 0.5f + pitchX * 0.5f + col * pitchX,
+					s_BrickTop - row * (s_BrickSize.y + s_BrickGap)
+				};
+				brick.Color = rowColors[row];
+				m_Bricks.push_back(brick);
+			}
+		}
+
+		m_PaddleX = 0.0f;
+		m_Score = 0;
+		m_Lives = 3;
+		m_GameOver = false;
+		LaunchBall();
+	}
+
+	void LaunchBall()
+	{
+		m_BallPosition = { m_PaddleX, s_PaddleY + 0.08f };
+		m_BallVelocity = { s_BallStartSpeed * 0.45f, s_BallStartSpeed };
+		m_BallStuck = true;
+	}
+
+	// The whole game. Called once per frame with the seconds elapsed since the
+	// last one -- multiply every rate by it and the game runs the same on a
+	// 60Hz and a 144Hz display.
 	void OnUpdate(Egss::Timestep ts) override
 	{
 		m_FrameTime = ts.GetMilliseconds();
 
-		// The panel size is only known after ImGui has laid it out, so this
-		// acts on last frame's measurement. One frame of lag while dragging is
-		// invisible, and it avoids resizing mid-frame with the target bound.
-		const Egss::FramebufferSpecification& spec = m_Framebuffer->GetSpecification();
-		if (m_ViewportSize.x > 0.0f && m_ViewportSize.y > 0.0f &&
-			((unsigned int)m_ViewportSize.x != spec.Width || (unsigned int)m_ViewportSize.y != spec.Height))
-		{
-			m_Framebuffer->Resize((unsigned int)m_ViewportSize.x, (unsigned int)m_ViewportSize.y);
+		if (!m_Paused && !m_GameOver)
+			Step(ts);
 
-			// Without this the scene stretches: the projection has to track
-			// the panel's shape, not the window's.
-			float aspect = m_ViewportSize.x / m_ViewportSize.y;
-			m_Camera.SetProjection(-aspect * m_ZoomLevel, aspect * m_ZoomLevel, -m_ZoomLevel, m_ZoomLevel);
+		Draw();
+	}
+
+	void Step(Egss::Timestep ts)
+	{
+		// --- Paddle ------------------------------------------------------
+		// Polling, not events: this asks "is the key down right now", which is
+		// what continuous movement wants. An event fires once per press.
+		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT) || Egss::Input::IsKeyPressed(EGSS_KEY_A))
+			m_PaddleX -= s_PaddleSpeed * ts;
+		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT) || Egss::Input::IsKeyPressed(EGSS_KEY_D))
+			m_PaddleX += s_PaddleSpeed * ts;
+
+		float limit = m_WorldHalfWidth - s_PaddleSize.x * 0.5f;
+		m_PaddleX = std::max(-limit, std::min(limit, m_PaddleX));
+
+		// The ball rides the paddle until launched. Launching is handled in
+		// OnEvent, not here: polling only sees a key that is *still* down when
+		// the frame runs, so a quick tap between two frames is missed entirely.
+		// Continuous movement wants polling; one-shot actions want events.
+		if (m_BallStuck)
+		{
+			m_BallPosition = { m_PaddleX, s_PaddleY + 0.08f };
+			return;
 		}
 
-		// Only drive the camera when the scene panel has focus, so arrow keys
-		// typed into a widget don't also pan the world.
-		if (m_ViewportFocused)
-		{
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))
-				m_CameraPosition.x -= m_CameraMoveSpeed * ts;
-			else if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT))
-				m_CameraPosition.x += m_CameraMoveSpeed * ts;
+		// --- Ball --------------------------------------------------------
+		m_BallPosition += m_BallVelocity * (float)ts;
 
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))
-				m_CameraPosition.y -= m_CameraMoveSpeed * ts;
-			else if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))
-				m_CameraPosition.y += m_CameraMoveSpeed * ts;
+		// Walls. Reflecting one velocity component is the whole of a bounce.
+		// Snapping the position back to the wall first stops the ball getting
+		// stuck jittering inside it on a slow frame.
+		if (m_BallPosition.x - s_BallRadius < -m_WorldHalfWidth)
+		{
+			m_BallPosition.x = -m_WorldHalfWidth + s_BallRadius;
+			m_BallVelocity.x = std::abs(m_BallVelocity.x);
+		}
+		else if (m_BallPosition.x + s_BallRadius > m_WorldHalfWidth)
+		{
+			m_BallPosition.x = m_WorldHalfWidth - s_BallRadius;
+			m_BallVelocity.x = -std::abs(m_BallVelocity.x);
 		}
 
-		m_Camera.SetPosition(m_CameraPosition);
-		m_Rotation += ts * 45.0f;
+		if (m_BallPosition.y + s_BallRadius > s_WorldHalfHeight)
+		{
+			m_BallPosition.y = s_WorldHalfHeight - s_BallRadius;
+			m_BallVelocity.y = -std::abs(m_BallVelocity.y);
+		}
 
+		// --- Paddle collision ---------------------------------------------
+		glm::vec2 ballSize = { s_BallRadius * 2.0f, s_BallRadius * 2.0f };
+		glm::vec2 paddleCentre = { m_PaddleX, s_PaddleY };
+
+		if (m_BallVelocity.y < 0.0f && Overlaps(m_BallPosition, ballSize, paddleCentre, s_PaddleSize))
+		{
+			m_BallVelocity.y = std::abs(m_BallVelocity.y);
+
+			// Where it hit steers it: -1 at the left edge, +1 at the right.
+			// This is the difference between Breakout and a physics toy -- the
+			// player needs control over the angle.
+			float offset = (m_BallPosition.x - m_PaddleX) / (s_PaddleSize.x * 0.5f);
+			m_BallVelocity.x = offset * s_BallStartSpeed;
+
+			// TRY: multiply the velocity by 1.02 here so rallies get harder.
+		}
+
+		// --- Bricks -------------------------------------------------------
+		for (Brick& brick : m_Bricks)
+		{
+			if (!brick.Alive)
+				continue;
+
+			if (!Overlaps(m_BallPosition, ballSize, brick.Position, s_BrickSize))
+				continue;
+
+			brick.Alive = false;
+			m_Score += 10;
+
+			// Reflect on whichever axis was less overlapped -- the cheap way to
+			// tell a side hit from a top hit. Good enough for Breakout; a real
+			// physics pass would test the swept path instead of the end state.
+			float overlapX = (s_BrickSize.x + ballSize.x) * 0.5f - std::abs(m_BallPosition.x - brick.Position.x);
+			float overlapY = (s_BrickSize.y + ballSize.y) * 0.5f - std::abs(m_BallPosition.y - brick.Position.y);
+
+			if (overlapY < overlapX)
+				m_BallVelocity.y = -m_BallVelocity.y;
+			else
+				m_BallVelocity.x = -m_BallVelocity.x;
+
+			break;  // one brick per frame keeps the bounce predictable
+		}
+
+		// --- Losing and winning -------------------------------------------
+		if (m_BallPosition.y < -s_WorldHalfHeight - 0.1f)
+		{
+			if (--m_Lives <= 0)
+				m_GameOver = true;
+			else
+				LaunchBall();
+		}
+
+		bool anyLeft = false;
+		for (const Brick& brick : m_Bricks)
+			anyLeft |= brick.Alive;
+
+		if (!anyLeft)
+			m_GameOver = true;
+	}
+
+	void Draw()
+	{
 		Egss::Renderer2D::ResetStats();
 
-		// Everything between Bind and Unbind lands in the framebuffer's
-		// texture rather than the window.
-		m_Framebuffer->Bind();
-
-		Egss::RenderCommand::SetClearColor({ 0.08f, 0.08f, 0.1f, 1.0f });
+		Egss::RenderCommand::SetClearColor({ 0.07f, 0.07f, 0.09f, 1.0f });
 		Egss::RenderCommand::Clear();
 
-		// glClear only carries a float colour, so the integer attachment needs
-		// clearing on its own. -1 is the "nothing here" ID.
-		m_Framebuffer->ClearAttachment(1, -1);
-
+		// Everything between BeginScene and EndScene accumulates into one
+		// vertex buffer. Nothing reaches the driver until EndScene flushes it,
+		// which is why the whole board costs one draw call.
 		Egss::Renderer2D::BeginScene(m_Camera);
 
-		// A tilemap. Every tile is a different sprite, but all 16 sprites come
-		// from one atlas -- so this is one texture slot and one draw call, no
-		// matter how many distinct tiles are on screen.
-		for (int y = 0; y < m_MapSize; y++)
+		for (const Brick& brick : m_Bricks)
 		{
-			for (int x = 0; x < m_MapSize; x++)
+			if (brick.Alive)
 			{
-				// Deterministic pseudo-random tile choice.
-				unsigned int pick = (unsigned int)((x * 7 + y * 13 + x * y * 3) % m_Sprites.size());
-
-				int id = y * m_MapSize + x;
-
-				// Uses last frame's pick result, so the highlight lags by a
-				// frame. At 60fps that isn't perceptible.
-				glm::vec4 tint = (id == m_HoveredEntity)
-					? glm::vec4(2.0f, 2.0f, 2.0f, 1.0f)
-					: glm::vec4(1.0f);
-
-				float fx = (x - m_MapSize / 2.0f) * 0.13f;
-				float fy = (y - m_MapSize / 2.0f) * 0.13f;
-				Egss::Renderer2D::DrawQuad({ fx, fy }, { 0.125f, 0.125f }, m_Sprites[pick], 1.0f, tint, id);
+				// Texture supplies the shading, the colour multiplies it. All
+				// bricks share one texture, so they all land in one batch.
+				Egss::Renderer2D::DrawQuad(brick.Position, s_BrickSize, m_BrickTexture, 1.0f, brick.Color);
 			}
 		}
 
-		// A rotating sprite and the 2x1 wide sprite, both from the same atlas.
-		// Their IDs sit above any tile index so they can't collide.
-		Egss::Renderer2D::DrawRotatedQuad({ -1.15f, 0.0f, 0.1f }, { 0.4f, 0.4f },
-			m_Rotation, m_Sprites[m_SelectedSprite], 1.0f, glm::vec4(1.0f), s_SpinnerID);
-		Egss::Renderer2D::DrawQuad({ 1.15f, 0.0f, 0.1f }, { 0.6f, 0.3f }, m_WideSprite,
-			1.0f, glm::vec4(1.0f), s_WideSpriteID);
+		Egss::Renderer2D::DrawQuad({ m_PaddleX, s_PaddleY }, s_PaddleSize,
+			glm::vec4(0.85f, 0.85f, 0.90f, 1.0f));
+
+		Egss::Renderer2D::DrawQuad(m_BallPosition, { s_BallRadius * 2.0f, s_BallRadius * 2.0f },
+			glm::vec4(1.00f, 0.95f, 0.60f, 1.0f));
 
 		Egss::Renderer2D::EndScene();
-
-		// Read back while the framebuffer is still bound. The mouse is in
-		// window coordinates, so it has to be rebased onto the panel and
-		// flipped, since GL's origin is bottom-left.
-		auto [mouseX, mouseY] = Egss::Input::GetMousePosition();
-		float localX = mouseX - m_ViewportBounds[0].x;
-		float localY = m_ViewportSize.y - (mouseY - m_ViewportBounds[0].y);
-
-		if (localX >= 0.0f && localY >= 0.0f && localX < m_ViewportSize.x && localY < m_ViewportSize.y)
-			m_HoveredEntity = m_Framebuffer->ReadPixel(1, (int)localX, (int)localY);
-		else
-			m_HoveredEntity = -1;
-
-		m_Framebuffer->Unbind();
-
-		// The window itself is now only ever covered by ImGui, but it still
-		// needs clearing -- otherwise the areas no panel covers keep whatever
-		// was left there.
-		Egss::RenderCommand::SetClearColor({ 0.05f, 0.05f, 0.06f, 1.0f });
-		Egss::RenderCommand::Clear();
 	}
 
+	// Events, unlike polling, fire once per change -- right for actions.
+	void OnEvent(Egss::Event& e) override
+	{
+		Egss::EventDispatcher dispatcher(e);
+
+		dispatcher.Dispatch<Egss::WindowResizeEvent>([this](Egss::WindowResizeEvent& e)
+		{
+			// The only place aspect ratio matters. Half-height stays fixed, so
+			// a wider window shows more world rather than stretching it.
+			if (e.GetHeight() == 0)
+				return false;
+
+			m_WorldHalfWidth = ((float)e.GetWidth() / (float)e.GetHeight()) * s_WorldHalfHeight;
+			m_Camera.SetProjection(-m_WorldHalfWidth, m_WorldHalfWidth,
+				-s_WorldHalfHeight, s_WorldHalfHeight);
+
+			return false;  // false = don't consume it; other layers still see it
+		});
+
+		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& e)
+		{
+			// GetRepeatCount() > 0 means the OS auto-repeat is firing, which
+			// you almost never want for an action.
+			if (e.GetRepeatCount() > 0)
+				return false;
+
+			if (e.GetKeyCode() == EGSS_KEY_SPACE)
+				m_BallStuck = false;
+			if (e.GetKeyCode() == EGSS_KEY_R)
+				Reset();
+			if (e.GetKeyCode() == EGSS_KEY_P)
+				m_Paused = !m_Paused;
+
+			return false;
+		});
+	}
+
+	// Debug UI. Runs every frame, after the game has drawn and before the
+	// buffer swap.
 	void OnImGuiRender() override
 	{
 		auto stats = Egss::Renderer2D::GetStats();
 
-		// Without a starting size the window auto-fits its content, and its
-		// only content is an image sized from the window -- so it collapses to
-		// nothing and never recovers.
-		ImGui::SetNextWindowSize(ImVec2(900.0f, 520.0f), ImGuiCond_FirstUseEver);
-		ImGui::SetNextWindowPos(ImVec2(340.0f, 40.0f), ImGuiCond_FirstUseEver);
+		ImGui::Begin("Breakout");
 
-		// No padding, so the image sits flush against the panel border.
-		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-		ImGui::Begin("Viewport");
+		ImGui::Text("Score: %d", m_Score);
+		ImGui::Text("Lives: %d", m_Lives);
 
-		m_ViewportFocused = ImGui::IsWindowFocused();
+		if (m_GameOver)
+			ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Game over - R to restart");
+		else if (m_BallStuck)
+			ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f), "Space to launch");
+		else if (m_Paused)
+			ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "Paused");
 
-		ImVec2 available = ImGui::GetContentRegionAvail();
-		m_ViewportSize = { available.x, available.y };
-
-		// Where the image lands on screen, which is what the mouse position
-		// has to be rebased onto. Taken before the image is drawn, since the
-		// cursor is at its top-left corner at this point.
-		ImVec2 imagePos = ImGui::GetCursorScreenPos();
-		m_ViewportBounds[0] = { imagePos.x, imagePos.y };
-		m_ViewportBounds[1] = { imagePos.x + available.x, imagePos.y + available.y };
-
-		// UVs are flipped vertically: GL's origin is bottom-left, ImGui's is
-		// top-left, so an unflipped image renders upside down.
-		ImGui::Image((ImTextureID)(uintptr_t)m_Framebuffer->GetColorAttachmentRendererID(),
-			available, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
-
-		ImGui::End();
-		ImGui::PopStyleVar();
-
-		ImGui::Begin("Renderer2D");
-		ImGui::Text("Frame time: %.2f ms (%.0f fps)", m_FrameTime,
-			m_FrameTime > 0.0f ? 1000.0f / m_FrameTime : 0.0f);
 		ImGui::Separator();
+		ImGui::Text("Left/Right or A/D  move");
+		ImGui::Text("Space              launch");
+		ImGui::Text("P / R              pause / restart");
+
+		ImGui::Separator();
+		ImGui::Text("Frame: %.2f ms (%.0f fps)", m_FrameTime,
+			m_FrameTime > 0.0f ? 1000.0f / m_FrameTime : 0.0f);
 		ImGui::Text("Draw calls: %u", stats.DrawCalls);
 		ImGui::Text("Quads:      %u", stats.QuadCount);
-		ImGui::Text("Vertices:   %u", stats.GetTotalVertexCount());
-		ImGui::Text("Indices:    %u", stats.GetTotalIndexCount());
-		ImGui::Separator();
-		ImGui::Text("Viewport:   %ux%u", m_Framebuffer->GetSpecification().Width,
-			m_Framebuffer->GetSpecification().Height);
-		ImGui::Separator();
-		ImGui::Separator();
-
-		if (m_HoveredEntity == s_SpinnerID)
-			ImGui::Text("Hovered:    spinner");
-		else if (m_HoveredEntity == s_WideSpriteID)
-			ImGui::Text("Hovered:    wide sprite");
-		else if (m_HoveredEntity >= 0)
-			ImGui::Text("Hovered:    tile %d  (%d, %d)", m_HoveredEntity,
-				m_HoveredEntity % m_MapSize, m_HoveredEntity / m_MapSize);
-		else
-			ImGui::Text("Hovered:    -");
 
 		ImGui::Separator();
-		ImGui::Text("%zu sprites, all from one atlas", m_Sprites.size());
-		ImGui::SliderInt("Map size", &m_MapSize, 1, 100);
-		ImGui::Text("(%d tiles)", m_MapSize * m_MapSize);
-		ImGui::SliderInt("Spinner sprite", &m_SelectedSprite, 0, (int)m_Sprites.size() - 1);
+		if (ImGui::Button("Restart"))
+			Reset();
+
 		ImGui::End();
 	}
+
 private:
-	std::shared_ptr<Egss::Texture2D> m_Atlas;
-	std::vector<std::shared_ptr<Egss::SubTexture2D>> m_Sprites;
-	std::shared_ptr<Egss::SubTexture2D> m_WideSprite;
-
-	std::shared_ptr<Egss::Framebuffer> m_Framebuffer;
-	glm::vec2 m_ViewportSize = { 0.0f, 0.0f };
-	// Top-left and bottom-right of the image in screen space.
-	glm::vec2 m_ViewportBounds[2] = { { 0.0f, 0.0f }, { 0.0f, 0.0f } };
-	bool m_ViewportFocused = false;
-	int m_HoveredEntity = -1;
-
 	Egss::OrthographicCamera m_Camera;
-	glm::vec3 m_CameraPosition = { 0.0f, 0.0f, 0.0f };
-	float m_CameraMoveSpeed = 2.0f;
-	float m_ZoomLevel = 0.9f;
+	float m_WorldHalfWidth = 1.6f;
 
-	int m_MapSize = 20;
-	int m_SelectedSprite = 0;
-	float m_Rotation = 0.0f;
+	std::shared_ptr<Egss::Texture2D> m_BrickTexture;
+	std::vector<Brick> m_Bricks;
+
+	float m_PaddleX = 0.0f;
+	glm::vec2 m_BallPosition = { 0.0f, 0.0f };
+	glm::vec2 m_BallVelocity = { 0.0f, 0.0f };
+	bool m_BallStuck = true;
+
+	int m_Score = 0;
+	int m_Lives = 3;
+	bool m_GameOver = false;
+	bool m_Paused = false;
+
 	float m_FrameTime = 0.0f;
 };
 
@@ -288,16 +382,11 @@ class TestEnv : public Egss::Application
 public:
 	TestEnv()
 	{
-		PushLayer(new Sandbox2D());
-	}
-	~TestEnv()
-	{
-
+		PushLayer(new Breakout());
 	}
 };
 
-
-
+// The one function the engine requires of you.
 Egss::Application* Egss::CreateApplication()
 {
 	return new TestEnv();

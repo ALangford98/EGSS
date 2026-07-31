@@ -8,10 +8,14 @@ sandbox application that links against it.
 
 **Current state:** a window with an OpenGL 3.3 core context, a working event
 system, a layer stack, polled input, frame timing, a renderer abstraction, a
-**batched 2D quad renderer** with sprite-sheet support, and ImGui as a debug
-overlay. `TestEnv` draws a tilemap of distinct sprites cut from one atlas in a
-single draw call, and reports live renderer statistics. See
-[Roadmap](#roadmap) for what's left.
+**batched 2D quad renderer** with sprite-sheet support, framebuffers with
+integer-attachment mouse picking, and ImGui (docking) as a debug overlay.
+`TestEnv` is a playable Breakout. See [Roadmap](#roadmap) for what's left.
+
+> **New to the codebase?** Start with **[docs/ENGINE.md](docs/ENGINE.md)** — the
+> frame's call path, the five decisions that explain the rest, and the whole
+> API you'd use day to day. Then read `TestEnv/src/TestApp.cpp`, which is a
+> commented worked example of building on it.
 
 ## Layout
 
@@ -666,6 +670,19 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-01 (a game, and orientation docs)
+
+- **[docs/ENGINE.md](docs/ENGINE.md)** — the frame's call path from `main` to
+  `glDrawElements`, the five design decisions that explain the rest, and the
+  day-to-day API on one screen.
+- `TestEnv` is now **Breakout** — paddle, ball, brick grid, AABB collision,
+  lives and score, in ~300 commented lines against nothing but the public API.
+  It replaces the tilemap/viewport sandbox, which is still at commit `a282175`.
+- **Dropped `ImGuiConfigFlags_NavEnableKeyboard`.** With it, any nav-focused
+  widget set `io.WantCaptureKeyboard`, and `ImGuiLayer::OnEvent` then marked
+  every key event handled — so a focused Restart button silently swallowed the
+  game's keys. Found by the ball refusing to launch.
 
 ### 2026-08-01 (docking and mouse picking)
 

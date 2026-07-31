@@ -26,9 +26,13 @@ namespace Egss {
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
 		ImGuiIO& io = ImGui::GetIO();
-		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-		// Requires the submodule to track ImGui's docking branch; master has
-		// no such flag and will not compile this.
+
+		// Deliberately NOT ImGuiConfigFlags_NavEnableKeyboard. With it, any
+		// nav-focused widget makes io.WantCaptureKeyboard true, and OnEvent
+		// below then marks every key event handled -- so a stray focused
+		// button silently eats the game's keys. Without it the keyboard is
+		// only captured while a text field is active, which is what a game
+		// wants.
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
 		ImGui::StyleColorsDark();
