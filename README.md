@@ -504,9 +504,45 @@ resizing a target that is currently bound. The same measurement drives
 `OrthographicCamera::SetProjection` — without that, the scene stretches with
 the panel instead of revealing more world.
 
-This is the piece an editor needs. It is also what mouse picking and any
-post-processing pass will be built on, since both need the rendered result
-readable rather than already presented.
+## Mouse picking
+
+A framebuffer can carry more than the picture. Adding a `RED_INTEGER`
+attachment gives every pixel a 32-bit signed integer alongside its colour, and
+`Renderer2D` writes an entity ID into it from a second fragment output:
+
+```glsl
+layout(location = 0) out vec4 color;
+layout(location = 1) out int entityID;
+```
+
+Hit testing then costs one `glReadPixels` at the cursor. No ray casting, no
+CPU-side bounding boxes, and it is exact for rotated quads, irregular sprite
+shapes, and overlapping geometry — whatever the depth test decided is visible
+is what the ID buffer holds. `-1` is the clear value, meaning nothing was drawn
+there.
+
+Four things make this work:
+
+- **The ID travels as a vertex attribute.** A batched renderer has no per-draw
+  channel — 10,000 quads are one draw call — so the ID is per-vertex, declared
+  `flat` so it is not interpolated across the quad.
+- **`glVertexAttribIPointer`, not `glVertexAttribPointer`.** The float variant
+  converts the bytes on the way in, so an `int` read in the shader comes out
+  as garbage. `OpenGLVertexArray` switches on the attribute type.
+- **`glDrawBuffers` must list every attachment.** Fragment outputs are routed
+  by draw-buffer index; without it only attachment 0 is written and the ID
+  buffer stays empty.
+- **`glClear` cannot clear it.** It only carries a float colour, so the integer
+  attachment is cleared separately with `glClearBufferiv` via
+  `ClearAttachment`. Integer textures also cannot be filtered — `GL_LINEAR`
+  makes the framebuffer incomplete, so they are created `GL_NEAREST`.
+
+The read is synchronous and stalls the pipeline, which is fine once per frame
+under the cursor and not something to do in a loop.
+
+Together with render-to-texture this is the piece an editor needs; the same
+framebuffer is also what any post-processing pass will be built on, since it
+needs the rendered result readable rather than already presented.
 
 ## Debugging rendering
 
@@ -553,11 +589,11 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       the 16-slot floor, and generate the sampler switch to match
 - [ ] **A PCH for `TestEnv`.** Only the engine has one
 - [ ] **Vendor a `premake5` binary per platform**, or script fetching it
-- [ ] **ImGui docking.** The submodule tracks `master`, which has no
-      `ImGuiConfigFlags_DockingEnable`, so panels float rather than dock. The
-      `docking` branch fetches cleanly if this becomes worth doing
-- [ ] **Mouse picking**, now that the framebuffer exists — an integer entity-ID
-      attachment read back under the cursor
+- [ ] **Multi-viewport ImGui.** Docking is on; `ImGuiConfigFlags_ViewportsEnable`
+      would let panels be dragged out into their own OS windows, but it needs
+      the platform-window loop in `ImGuiLayer::End` and a GL context restore
+- [ ] **A scene/entity layer.** Picking returns an integer ID, but nothing owns
+      those IDs yet — the sandbox invents them per draw
 
 ## Done
 
@@ -595,10 +631,20 @@ calls track the number of distinct textures rather than the number of quads —
 10,000 quads render in one call. `Renderer2D::GetStats()` exposes draw calls,
 quad, vertex, and index counts.
 
-**Framebuffers.** `Framebuffer` with an OpenGL implementation: an RGBA8 colour
-texture plus a packed depth-stencil attachment, recreated on resize. The
-sandbox renders the scene into one and displays it in an ImGui panel, with the
-camera's projection following the panel's aspect ratio.
+**Framebuffers.** `Framebuffer` with an OpenGL implementation, taking a list of
+attachment formats: an RGBA8 colour texture, an optional `RED_INTEGER`
+attachment, and a packed depth-stencil, all recreated on resize. The sandbox
+renders the scene into one and displays it in an ImGui panel, with the camera's
+projection following the panel's aspect ratio.
+
+**Mouse picking.** Every `Renderer2D` draw takes an optional entity ID, written
+to the integer attachment by a second fragment output. `ReadPixel` returns the
+ID under the cursor, so hit testing costs one pixel read rather than any
+CPU-side geometry work, and it is exact for rotated and overlapping quads.
+
+**Docking.** The ImGui submodule tracks the `docking` branch and
+`ImGuiLayer::Begin` opens a dockspace over the main viewport, so panels can be
+docked, tabbed, and split.
 
 **Tooling.** ImGui as an overlay layer, with the GLFW and OpenGL3 backends and
 input capture so ImGui windows swallow clicks instead of leaking them to the
@@ -620,6 +666,27 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-01 (docking and mouse picking)
+
+- The ImGui submodule now tracks the **docking** branch, `.gitmodules` records
+  it, and `ImGuiLayer` sets `ImGuiConfigFlags_DockingEnable` and opens a
+  `DockSpaceOverViewport` in `Begin`, so panels dock, tab, and split.
+  `EnableDockspace(false)` turns it off for a game that owns the whole window.
+- `FramebufferSpecification` now takes a list of attachment formats — `RGBA8`,
+  `RED_INTEGER`, `DEPTH24STENCIL8` — instead of a fixed colour+depth pair, with
+  `ReadPixel` and `ClearAttachment` for the integer ones.
+- Every `Renderer2D` draw takes an optional `entityID`, carried as a `flat`
+  vertex attribute and written by a second fragment output. The sandbox reads
+  it back under the cursor and highlights the hovered tile.
+- **Fixed a latent bug in `OpenGLVertexArray`:** integer attributes were set up
+  with `glVertexAttribPointer`, which converts to float. Nothing used an `int`
+  attribute before, so it had never shown. Now switches to
+  `glVertexAttribIPointer` for the `Int*` and `Bool` types.
+
+Verified by a deterministic in-code readback with the camera pinned at the
+origin: the framebuffer's centre pixel and a computed corner pixel returned
+exactly the entity IDs of the quads drawn there.
 
 ### 2026-08-01 (framebuffers and a viewport panel)
 

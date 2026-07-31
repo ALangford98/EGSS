@@ -10,3 +10,5 @@
 [submodule "EGSS/vendor/imgui"]
 	path = EGSS/vendor/imgui
 	url = https://github.com/ocornut/imgui.git
+	# Docking and multi-viewport live on this branch, not on master.
+	branch = docking

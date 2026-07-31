@@ -27,6 +27,9 @@ namespace Egss {
 		ImGui::CreateContext();
 		ImGuiIO& io = ImGui::GetIO();
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+		// Requires the submodule to track ImGui's docking branch; master has
+		// no such flag and will not compile this.
+		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
 		ImGui::StyleColorsDark();
 
@@ -64,6 +67,13 @@ namespace Egss {
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
+
+		// A full-window dock target, created before any layer renders so that
+		// every panel can dock into it. PassthruCentralNode leaves the middle
+		// undrawn when nothing is docked there, rather than covering the
+		// window with an opaque background.
+		if (m_DockspaceEnabled)
+			ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 	}
 
 	void ImGuiLayer::End()

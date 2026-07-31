@@ -9,6 +9,11 @@ static constexpr unsigned int s_CellSize = 16;
 static constexpr unsigned int s_AtlasCells = 4;
 static constexpr unsigned int s_AtlasSize = s_CellSize * s_AtlasCells;
 
+// Picking IDs for the two non-tile sprites, kept above any tile index so they
+// cannot collide with one.
+static constexpr int s_SpinnerID = 1000000;
+static constexpr int s_WideSpriteID = 1000001;
+
 class Sandbox2D : public Egss::Layer
 {
 public:
@@ -71,10 +76,16 @@ public:
 			m_Atlas, { 0.0f, 3.0f }, { (float)s_CellSize, (float)s_CellSize }, { 2.0f, 1.0f }));
 
 		// Size is provisional -- the first frame resizes it to whatever the
-		// viewport panel actually turns out to be.
+		// viewport panel actually turns out to be. The RED_INTEGER attachment
+		// is what picking reads back.
 		Egss::FramebufferSpecification spec;
 		spec.Width = 1280;
 		spec.Height = 720;
+		spec.Attachments = {
+			Egss::FramebufferTextureFormat::RGBA8,
+			Egss::FramebufferTextureFormat::RED_INTEGER,
+			Egss::FramebufferTextureFormat::DEPTH24STENCIL8
+		};
 		m_Framebuffer.reset(Egss::Framebuffer::Create(spec));
 	}
 
@@ -124,6 +135,10 @@ public:
 		Egss::RenderCommand::SetClearColor({ 0.08f, 0.08f, 0.1f, 1.0f });
 		Egss::RenderCommand::Clear();
 
+		// glClear only carries a float colour, so the integer attachment needs
+		// clearing on its own. -1 is the "nothing here" ID.
+		m_Framebuffer->ClearAttachment(1, -1);
+
 		Egss::Renderer2D::BeginScene(m_Camera);
 
 		// A tilemap. Every tile is a different sprite, but all 16 sprites come
@@ -136,18 +151,40 @@ public:
 				// Deterministic pseudo-random tile choice.
 				unsigned int pick = (unsigned int)((x * 7 + y * 13 + x * y * 3) % m_Sprites.size());
 
+				int id = y * m_MapSize + x;
+
+				// Uses last frame's pick result, so the highlight lags by a
+				// frame. At 60fps that isn't perceptible.
+				glm::vec4 tint = (id == m_HoveredEntity)
+					? glm::vec4(2.0f, 2.0f, 2.0f, 1.0f)
+					: glm::vec4(1.0f);
+
 				float fx = (x - m_MapSize / 2.0f) * 0.13f;
 				float fy = (y - m_MapSize / 2.0f) * 0.13f;
-				Egss::Renderer2D::DrawQuad({ fx, fy }, { 0.125f, 0.125f }, m_Sprites[pick]);
+				Egss::Renderer2D::DrawQuad({ fx, fy }, { 0.125f, 0.125f }, m_Sprites[pick], 1.0f, tint, id);
 			}
 		}
 
 		// A rotating sprite and the 2x1 wide sprite, both from the same atlas.
+		// Their IDs sit above any tile index so they can't collide.
 		Egss::Renderer2D::DrawRotatedQuad({ -1.15f, 0.0f, 0.1f }, { 0.4f, 0.4f },
-			m_Rotation, m_Sprites[m_SelectedSprite]);
-		Egss::Renderer2D::DrawQuad({ 1.15f, 0.0f, 0.1f }, { 0.6f, 0.3f }, m_WideSprite);
+			m_Rotation, m_Sprites[m_SelectedSprite], 1.0f, glm::vec4(1.0f), s_SpinnerID);
+		Egss::Renderer2D::DrawQuad({ 1.15f, 0.0f, 0.1f }, { 0.6f, 0.3f }, m_WideSprite,
+			1.0f, glm::vec4(1.0f), s_WideSpriteID);
 
 		Egss::Renderer2D::EndScene();
+
+		// Read back while the framebuffer is still bound. The mouse is in
+		// window coordinates, so it has to be rebased onto the panel and
+		// flipped, since GL's origin is bottom-left.
+		auto [mouseX, mouseY] = Egss::Input::GetMousePosition();
+		float localX = mouseX - m_ViewportBounds[0].x;
+		float localY = m_ViewportSize.y - (mouseY - m_ViewportBounds[0].y);
+
+		if (localX >= 0.0f && localY >= 0.0f && localX < m_ViewportSize.x && localY < m_ViewportSize.y)
+			m_HoveredEntity = m_Framebuffer->ReadPixel(1, (int)localX, (int)localY);
+		else
+			m_HoveredEntity = -1;
 
 		m_Framebuffer->Unbind();
 
@@ -177,6 +214,13 @@ public:
 		ImVec2 available = ImGui::GetContentRegionAvail();
 		m_ViewportSize = { available.x, available.y };
 
+		// Where the image lands on screen, which is what the mouse position
+		// has to be rebased onto. Taken before the image is drawn, since the
+		// cursor is at its top-left corner at this point.
+		ImVec2 imagePos = ImGui::GetCursorScreenPos();
+		m_ViewportBounds[0] = { imagePos.x, imagePos.y };
+		m_ViewportBounds[1] = { imagePos.x + available.x, imagePos.y + available.y };
+
 		// UVs are flipped vertically: GL's origin is bottom-left, ImGui's is
 		// top-left, so an unflipped image renders upside down.
 		ImGui::Image((ImTextureID)(uintptr_t)m_Framebuffer->GetColorAttachmentRendererID(),
@@ -197,6 +241,19 @@ public:
 		ImGui::Text("Viewport:   %ux%u", m_Framebuffer->GetSpecification().Width,
 			m_Framebuffer->GetSpecification().Height);
 		ImGui::Separator();
+		ImGui::Separator();
+
+		if (m_HoveredEntity == s_SpinnerID)
+			ImGui::Text("Hovered:    spinner");
+		else if (m_HoveredEntity == s_WideSpriteID)
+			ImGui::Text("Hovered:    wide sprite");
+		else if (m_HoveredEntity >= 0)
+			ImGui::Text("Hovered:    tile %d  (%d, %d)", m_HoveredEntity,
+				m_HoveredEntity % m_MapSize, m_HoveredEntity / m_MapSize);
+		else
+			ImGui::Text("Hovered:    -");
+
+		ImGui::Separator();
 		ImGui::Text("%zu sprites, all from one atlas", m_Sprites.size());
 		ImGui::SliderInt("Map size", &m_MapSize, 1, 100);
 		ImGui::Text("(%d tiles)", m_MapSize * m_MapSize);
@@ -210,7 +267,10 @@ private:
 
 	std::shared_ptr<Egss::Framebuffer> m_Framebuffer;
 	glm::vec2 m_ViewportSize = { 0.0f, 0.0f };
+	// Top-left and bottom-right of the image in screen space.
+	glm::vec2 m_ViewportBounds[2] = { { 0.0f, 0.0f }, { 0.0f, 0.0f } };
 	bool m_ViewportFocused = false;
+	int m_HoveredEntity = -1;
 
 	Egss::OrthographicCamera m_Camera;
 	glm::vec3 m_CameraPosition = { 0.0f, 0.0f, 0.0f };

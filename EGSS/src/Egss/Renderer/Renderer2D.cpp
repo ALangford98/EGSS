@@ -17,6 +17,11 @@ namespace Egss {
 		glm::vec2 TexCoord;
 		float TexIndex;
 		float TilingFactor;
+
+		// Written straight through to the framebuffer's integer attachment.
+		// Per-vertex rather than per-draw because there is no per-draw channel
+		// in a batched renderer -- everything is one draw call.
+		int EntityID;
 	};
 
 	struct Renderer2DData
@@ -59,7 +64,8 @@ namespace Egss {
 			{ ShaderDataType::Float4, "a_Color"        },
 			{ ShaderDataType::Float2, "a_TexCoord"     },
 			{ ShaderDataType::Float,  "a_TexIndex"     },
-			{ ShaderDataType::Float,  "a_TilingFactor" }
+			{ ShaderDataType::Float,  "a_TilingFactor" },
+			{ ShaderDataType::Int,    "a_EntityID"     }
 		});
 		s_Data.QuadVertexArray->AddVertexBuffer(s_Data.QuadVertexBuffer);
 
@@ -103,6 +109,7 @@ namespace Egss {
 			layout(location = 2) in vec2 a_TexCoord;
 			layout(location = 3) in float a_TexIndex;
 			layout(location = 4) in float a_TilingFactor;
+			layout(location = 5) in int   a_EntityID;
 
 			uniform mat4 u_ViewProjection;
 
@@ -110,6 +117,8 @@ namespace Egss {
 			out vec2 v_TexCoord;
 			out float v_TexIndex;
 			out float v_TilingFactor;
+			// flat: an ID must not be interpolated across the quad.
+			flat out int v_EntityID;
 
 			void main()
 			{
@@ -117,6 +126,7 @@ namespace Egss {
 				v_TexCoord     = a_TexCoord;
 				v_TexIndex     = a_TexIndex;
 				v_TilingFactor = a_TilingFactor;
+				v_EntityID     = a_EntityID;
 				gl_Position    = u_ViewProjection * vec4(a_Position, 1.0);
 			}
 		)";
@@ -125,11 +135,15 @@ namespace Egss {
 			#version 330 core
 
 			layout(location = 0) out vec4 color;
+			// Matches colour attachment 1 on the bound framebuffer. Writing
+			// both outputs in one pass is what makes picking free.
+			layout(location = 1) out int entityID;
 
 			in vec4 v_Color;
 			in vec2 v_TexCoord;
 			in float v_TexIndex;
 			in float v_TilingFactor;
+			flat in int v_EntityID;
 
 			uniform sampler2D u_Textures[16];
 
@@ -159,6 +173,7 @@ namespace Egss {
 				}
 
 				color = texColor * v_Color;
+				entityID = v_EntityID;
 			}
 		)";
 
@@ -245,7 +260,7 @@ namespace Egss {
 
 	// Core path: every DrawQuad overload funnels into this.
 	static void SubmitQuad(const glm::mat4& transform, const glm::vec4& color,
-		float textureIndex, float tilingFactor, const glm::vec2* texCoords)
+		float textureIndex, float tilingFactor, const glm::vec2* texCoords, int entityID)
 	{
 		for (int i = 0; i < 4; i++)
 		{
@@ -254,6 +269,7 @@ namespace Egss {
 			s_Data.QuadVertexBufferPtr->TexCoord = texCoords[i];
 			s_Data.QuadVertexBufferPtr->TexIndex = textureIndex;
 			s_Data.QuadVertexBufferPtr->TilingFactor = tilingFactor;
+			s_Data.QuadVertexBufferPtr->EntityID = entityID;
 			s_Data.QuadVertexBufferPtr++;
 		}
 
@@ -290,12 +306,14 @@ namespace Egss {
 		return s_Data.QuadIndexCount >= Renderer2DData::MaxIndices;
 	}
 
-	void Renderer2D::DrawQuad(const glm::vec2& position, const glm::vec2& size, const glm::vec4& color)
+	void Renderer2D::DrawQuad(const glm::vec2& position, const glm::vec2& size, const glm::vec4& color,
+		int entityID)
 	{
-		DrawQuad({ position.x, position.y, 0.0f }, size, color);
+		DrawQuad({ position.x, position.y, 0.0f }, size, color, entityID);
 	}
 
-	void Renderer2D::DrawQuad(const glm::vec3& position, const glm::vec2& size, const glm::vec4& color)
+	void Renderer2D::DrawQuad(const glm::vec3& position, const glm::vec2& size, const glm::vec4& color,
+		int entityID)
 	{
 		if (BatchIsFull())
 			NextBatch();
@@ -303,17 +321,17 @@ namespace Egss {
 		glm::mat4 transform = glm::translate(glm::mat4(1.0f), position) *
 			glm::scale(glm::mat4(1.0f), { size.x, size.y, 1.0f });
 
-		SubmitQuad(transform, color, 0.0f, 1.0f, s_FullTexCoords);
+		SubmitQuad(transform, color, 0.0f, 1.0f, s_FullTexCoords, entityID);
 	}
 
 	void Renderer2D::DrawQuad(const glm::vec2& position, const glm::vec2& size,
-		const std::shared_ptr<Texture2D>& texture, float tilingFactor, const glm::vec4& tint)
+		const std::shared_ptr<Texture2D>& texture, float tilingFactor, const glm::vec4& tint, int entityID)
 	{
-		DrawQuad({ position.x, position.y, 0.0f }, size, texture, tilingFactor, tint);
+		DrawQuad({ position.x, position.y, 0.0f }, size, texture, tilingFactor, tint, entityID);
 	}
 
 	void Renderer2D::DrawQuad(const glm::vec3& position, const glm::vec2& size,
-		const std::shared_ptr<Texture2D>& texture, float tilingFactor, const glm::vec4& tint)
+		const std::shared_ptr<Texture2D>& texture, float tilingFactor, const glm::vec4& tint, int entityID)
 	{
 		if (BatchIsFull())
 			NextBatch();
@@ -323,17 +341,17 @@ namespace Egss {
 		glm::mat4 transform = glm::translate(glm::mat4(1.0f), position) *
 			glm::scale(glm::mat4(1.0f), { size.x, size.y, 1.0f });
 
-		SubmitQuad(transform, tint, textureIndex, tilingFactor, s_FullTexCoords);
+		SubmitQuad(transform, tint, textureIndex, tilingFactor, s_FullTexCoords, entityID);
 	}
 
 	void Renderer2D::DrawRotatedQuad(const glm::vec2& position, const glm::vec2& size,
-		float rotation, const glm::vec4& color)
+		float rotation, const glm::vec4& color, int entityID)
 	{
-		DrawRotatedQuad({ position.x, position.y, 0.0f }, size, rotation, color);
+		DrawRotatedQuad({ position.x, position.y, 0.0f }, size, rotation, color, entityID);
 	}
 
 	void Renderer2D::DrawRotatedQuad(const glm::vec3& position, const glm::vec2& size,
-		float rotation, const glm::vec4& color)
+		float rotation, const glm::vec4& color, int entityID)
 	{
 		if (BatchIsFull())
 			NextBatch();
@@ -342,17 +360,17 @@ namespace Egss {
 			glm::rotate(glm::mat4(1.0f), glm::radians(rotation), { 0.0f, 0.0f, 1.0f }) *
 			glm::scale(glm::mat4(1.0f), { size.x, size.y, 1.0f });
 
-		SubmitQuad(transform, color, 0.0f, 1.0f, s_FullTexCoords);
+		SubmitQuad(transform, color, 0.0f, 1.0f, s_FullTexCoords, entityID);
 	}
 
 	void Renderer2D::DrawRotatedQuad(const glm::vec2& position, const glm::vec2& size,
-		float rotation, const std::shared_ptr<Texture2D>& texture, float tilingFactor, const glm::vec4& tint)
+		float rotation, const std::shared_ptr<Texture2D>& texture, float tilingFactor, const glm::vec4& tint, int entityID)
 	{
-		DrawRotatedQuad({ position.x, position.y, 0.0f }, size, rotation, texture, tilingFactor, tint);
+		DrawRotatedQuad({ position.x, position.y, 0.0f }, size, rotation, texture, tilingFactor, tint, entityID);
 	}
 
 	void Renderer2D::DrawRotatedQuad(const glm::vec3& position, const glm::vec2& size,
-		float rotation, const std::shared_ptr<Texture2D>& texture, float tilingFactor, const glm::vec4& tint)
+		float rotation, const std::shared_ptr<Texture2D>& texture, float tilingFactor, const glm::vec4& tint, int entityID)
 	{
 		if (BatchIsFull())
 			NextBatch();
@@ -363,17 +381,17 @@ namespace Egss {
 			glm::rotate(glm::mat4(1.0f), glm::radians(rotation), { 0.0f, 0.0f, 1.0f }) *
 			glm::scale(glm::mat4(1.0f), { size.x, size.y, 1.0f });
 
-		SubmitQuad(transform, tint, textureIndex, tilingFactor, s_FullTexCoords);
+		SubmitQuad(transform, tint, textureIndex, tilingFactor, s_FullTexCoords, entityID);
 	}
 
 	void Renderer2D::DrawQuad(const glm::vec2& position, const glm::vec2& size,
-		const std::shared_ptr<SubTexture2D>& subTexture, float tilingFactor, const glm::vec4& tint)
+		const std::shared_ptr<SubTexture2D>& subTexture, float tilingFactor, const glm::vec4& tint, int entityID)
 	{
-		DrawQuad({ position.x, position.y, 0.0f }, size, subTexture, tilingFactor, tint);
+		DrawQuad({ position.x, position.y, 0.0f }, size, subTexture, tilingFactor, tint, entityID);
 	}
 
 	void Renderer2D::DrawQuad(const glm::vec3& position, const glm::vec2& size,
-		const std::shared_ptr<SubTexture2D>& subTexture, float tilingFactor, const glm::vec4& tint)
+		const std::shared_ptr<SubTexture2D>& subTexture, float tilingFactor, const glm::vec4& tint, int entityID)
 	{
 		if (BatchIsFull())
 			NextBatch();
@@ -385,17 +403,17 @@ namespace Egss {
 		glm::mat4 transform = glm::translate(glm::mat4(1.0f), position) *
 			glm::scale(glm::mat4(1.0f), { size.x, size.y, 1.0f });
 
-		SubmitQuad(transform, tint, textureIndex, tilingFactor, subTexture->GetTexCoords());
+		SubmitQuad(transform, tint, textureIndex, tilingFactor, subTexture->GetTexCoords(), entityID);
 	}
 
 	void Renderer2D::DrawRotatedQuad(const glm::vec2& position, const glm::vec2& size,
-		float rotation, const std::shared_ptr<SubTexture2D>& subTexture, float tilingFactor, const glm::vec4& tint)
+		float rotation, const std::shared_ptr<SubTexture2D>& subTexture, float tilingFactor, const glm::vec4& tint, int entityID)
 	{
-		DrawRotatedQuad({ position.x, position.y, 0.0f }, size, rotation, subTexture, tilingFactor, tint);
+		DrawRotatedQuad({ position.x, position.y, 0.0f }, size, rotation, subTexture, tilingFactor, tint, entityID);
 	}
 
 	void Renderer2D::DrawRotatedQuad(const glm::vec3& position, const glm::vec2& size,
-		float rotation, const std::shared_ptr<SubTexture2D>& subTexture, float tilingFactor, const glm::vec4& tint)
+		float rotation, const std::shared_ptr<SubTexture2D>& subTexture, float tilingFactor, const glm::vec4& tint, int entityID)
 	{
 		if (BatchIsFull())
 			NextBatch();
@@ -406,7 +424,7 @@ namespace Egss {
 			glm::rotate(glm::mat4(1.0f), glm::radians(rotation), { 0.0f, 0.0f, 1.0f }) *
 			glm::scale(glm::mat4(1.0f), { size.x, size.y, 1.0f });
 
-		SubmitQuad(transform, tint, textureIndex, tilingFactor, subTexture->GetTexCoords());
+		SubmitQuad(transform, tint, textureIndex, tilingFactor, subTexture->GetTexCoords(), entityID);
 	}
 
 	Renderer2D::Statistics Renderer2D::GetStats()

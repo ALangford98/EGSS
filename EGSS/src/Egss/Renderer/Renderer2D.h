@@ -10,6 +10,10 @@ namespace Egss {
 
 	// Batched 2D quad renderer.
 	//
+	// Every draw takes an optional entity ID, written to a second integer
+	// attachment on the bound framebuffer. Reading that attachment back at the
+	// cursor is how picking works: -1 means nothing was drawn there.
+	//
 	// Quads are accumulated into one CPU-side vertex buffer between BeginScene
 	// and EndScene, then uploaded and drawn in as few draw calls as possible.
 	// A batch is flushed early when it runs out of vertex room or texture
@@ -26,43 +30,53 @@ namespace Egss {
 		static void Flush();
 
 		// Flat colour
-		static void DrawQuad(const glm::vec2& position, const glm::vec2& size, const glm::vec4& color);
-		static void DrawQuad(const glm::vec3& position, const glm::vec2& size, const glm::vec4& color);
+		static void DrawQuad(const glm::vec2& position, const glm::vec2& size, const glm::vec4& color,
+			int entityID = -1);
+		static void DrawQuad(const glm::vec3& position, const glm::vec2& size, const glm::vec4& color,
+			int entityID = -1);
 
 		// Textured, optionally tiled and tinted
 		static void DrawQuad(const glm::vec2& position, const glm::vec2& size,
 			const std::shared_ptr<Texture2D>& texture,
-			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f));
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
 		static void DrawQuad(const glm::vec3& position, const glm::vec2& size,
 			const std::shared_ptr<Texture2D>& texture,
-			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f));
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
 
 		// Sprite-sheet regions. The whole point of an atlas: many distinct
 		// sprites share one texture slot, so they batch together.
 		static void DrawQuad(const glm::vec2& position, const glm::vec2& size,
 			const std::shared_ptr<SubTexture2D>& subTexture,
-			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f));
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
 		static void DrawQuad(const glm::vec3& position, const glm::vec2& size,
 			const std::shared_ptr<SubTexture2D>& subTexture,
-			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f));
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
 
 		// Rotation is in degrees, about the z axis.
 		static void DrawRotatedQuad(const glm::vec2& position, const glm::vec2& size,
-			float rotation, const glm::vec4& color);
+			float rotation, const glm::vec4& color, int entityID = -1);
 		static void DrawRotatedQuad(const glm::vec3& position, const glm::vec2& size,
-			float rotation, const glm::vec4& color);
+			float rotation, const glm::vec4& color, int entityID = -1);
 		static void DrawRotatedQuad(const glm::vec2& position, const glm::vec2& size,
 			float rotation, const std::shared_ptr<Texture2D>& texture,
-			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f));
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
 		static void DrawRotatedQuad(const glm::vec3& position, const glm::vec2& size,
 			float rotation, const std::shared_ptr<Texture2D>& texture,
-			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f));
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
 		static void DrawRotatedQuad(const glm::vec2& position, const glm::vec2& size,
 			float rotation, const std::shared_ptr<SubTexture2D>& subTexture,
-			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f));
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
 		static void DrawRotatedQuad(const glm::vec3& position, const glm::vec2& size,
 			float rotation, const std::shared_ptr<SubTexture2D>& subTexture,
-			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f));
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
 
 		struct Statistics
 		{

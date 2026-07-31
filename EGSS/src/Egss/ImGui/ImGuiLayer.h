@@ -27,8 +27,13 @@ namespace Egss {
 		// When set, ImGui consumes mouse and keyboard input that lands on its
 		// windows instead of letting it fall through to the game.
 		void BlockEvents(bool block) { m_BlockEvents = block; }
+
+		// A game that draws to the whole window wants this off; an editor
+		// wants it on.
+		void EnableDockspace(bool enable) { m_DockspaceEnabled = enable; }
 	private:
 		bool m_BlockEvents = true;
+		bool m_DockspaceEnabled = true;
 	};
 
 }

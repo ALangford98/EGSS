@@ -65,12 +65,34 @@ namespace Egss {
 		for (const auto& element : layout)
 		{
 			glEnableVertexAttribArray(m_VertexBufferIndex);
-			glVertexAttribPointer(m_VertexBufferIndex,
-				element.GetComponentCount(),
-				ShaderDataTypeToOpenGLBaseType(element.Type),
-				element.Normalized ? GL_TRUE : GL_FALSE,
-				layout.GetStride(),
-				(const void*)element.Offset);
+
+			switch (element.Type)
+			{
+				case ShaderDataType::Int:
+				case ShaderDataType::Int2:
+				case ShaderDataType::Int3:
+				case ShaderDataType::Int4:
+				case ShaderDataType::Bool:
+					// Integer attributes need the I variant. The float one
+					// converts the bytes to float, which silently mangles any
+					// value a shader reads back as an int.
+					glVertexAttribIPointer(m_VertexBufferIndex,
+						element.GetComponentCount(),
+						ShaderDataTypeToOpenGLBaseType(element.Type),
+						layout.GetStride(),
+						(const void*)element.Offset);
+					break;
+
+				default:
+					glVertexAttribPointer(m_VertexBufferIndex,
+						element.GetComponentCount(),
+						ShaderDataTypeToOpenGLBaseType(element.Type),
+						element.Normalized ? GL_TRUE : GL_FALSE,
+						layout.GetStride(),
+						(const void*)element.Offset);
+					break;
+			}
+
 			m_VertexBufferIndex++;
 		}
 
