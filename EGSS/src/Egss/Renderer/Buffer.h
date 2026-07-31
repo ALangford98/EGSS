@@ -123,7 +123,13 @@ namespace Egss {
 		virtual const BufferLayout& GetLayout() const = 0;
 		virtual void SetLayout(const BufferLayout& layout) = 0;
 
+		// Re-uploads vertex data each frame; batching needs this.
+		virtual void SetData(const void* data, unsigned int size) = 0;
+
 		static VertexBuffer* Create(float* vertices, unsigned int size);
+
+		// Allocates without initialising, for buffers filled via SetData.
+		static VertexBuffer* Create(unsigned int size);
 	};
 
 	class EGSS_API IndexBuffer

@@ -72,6 +72,11 @@ project "EGSS"
         staticruntime "On"
         systemversion "latest"
 
+        -- C4251: exported classes hold std::string/vector/shared_ptr members.
+        -- Harmless here because the engine and app share one runtime, and it
+        -- would otherwise fire on nearly every EGSS_API class.
+        disablewarnings { "4251" }
+
         removefiles { "%{prj.name}/src/Platform/Linux/**" }
 
         defines
@@ -170,6 +175,8 @@ project "TestEnv"
         cppdialect "C++17"
         staticruntime "On"
         systemversion "latest"
+
+        disablewarnings { "4251" }
 
         defines
         {

@@ -3,6 +3,7 @@
 #include "Egss/Renderer/RenderCommand.h"
 #include "Egss/Renderer/OrthographicCamera.h"
 #include "Egss/Renderer/Shader.h"
+#include "Egss/Renderer/Renderer2D.h"
 
 namespace Egss {
 
@@ -10,6 +11,7 @@ namespace Egss {
 	{
 	public:
 		static void Init();
+		static void Shutdown();
 		static void OnWindowResize(unsigned int width, unsigned int height);
 
 		static void BeginScene(OrthographicCamera& camera);

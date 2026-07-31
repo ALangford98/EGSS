@@ -8,10 +8,12 @@ namespace Egss {
 	{
 	public:
 		OpenGLVertexBuffer(float* vertices, unsigned int size);
+		OpenGLVertexBuffer(unsigned int size);
 		virtual ~OpenGLVertexBuffer();
 
 		void Bind() const override;
 		void Unbind() const override;
+		void SetData(const void* data, unsigned int size) override;
 
 		const BufferLayout& GetLayout() const override { return m_Layout; }
 		void SetLayout(const BufferLayout& layout) override { m_Layout = layout; }

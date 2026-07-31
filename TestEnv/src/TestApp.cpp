@@ -3,135 +3,78 @@
 #include <imgui.h>
 #include <glm/gtc/matrix_transform.hpp>
 
-class ExampleLayer : public Egss::Layer
+// A hand-built 4x4 sprite atlas. Generated rather than loaded so the sandbox
+// has no asset dependency -- Texture2D::Create(path) handles real image files.
+static constexpr unsigned int s_CellSize = 16;
+static constexpr unsigned int s_AtlasCells = 4;
+static constexpr unsigned int s_AtlasSize = s_CellSize * s_AtlasCells;
+
+class Sandbox2D : public Egss::Layer
 {
 public:
-	ExampleLayer()
-		: Layer("Example"), m_Camera(-1.6f, 1.6f, -0.9f, 0.9f)
+	Sandbox2D()
+		: Layer("Sandbox2D"), m_Camera(-1.6f, 1.6f, -0.9f, 0.9f)
 	{
-		// ---- Flat-colour triangle -------------------------------------
-		m_TriangleVA.reset(Egss::VertexArray::Create());
+	}
 
-		float triangleVertices[3 * 7] = {
-			-0.5f, -0.5f, 0.0f,  0.9f, 0.2f, 0.3f, 1.0f,
-			 0.5f, -0.5f, 0.0f,  0.3f, 0.8f, 0.4f, 1.0f,
-			 0.0f,  0.5f, 0.0f,  0.3f, 0.4f, 0.9f, 1.0f
+	void OnAttach() override
+	{
+		std::vector<unsigned int> pixels(s_AtlasSize * s_AtlasSize);
+
+		// Each cell gets a distinct hue and motif, so it's obvious which
+		// region a given sprite was cut from.
+		const unsigned int cellColors[16] = {
+			0xff4444dd, 0xff44dd44, 0xffdd4444, 0xffdddd44,
+			0xffdd44dd, 0xff44dddd, 0xffdd8844, 0xff8844dd,
+			0xff44dd88, 0xffdd4488, 0xff8888dd, 0xff88dd88,
+			0xffdd8888, 0xffaaaaaa, 0xff666699, 0xffeeeeee
 		};
 
-		std::shared_ptr<Egss::VertexBuffer> triangleVB;
-		triangleVB.reset(Egss::VertexBuffer::Create(triangleVertices, sizeof(triangleVertices)));
-		triangleVB->SetLayout({
-			{ Egss::ShaderDataType::Float3, "a_Position" },
-			{ Egss::ShaderDataType::Float4, "a_Color" }
-		});
-		m_TriangleVA->AddVertexBuffer(triangleVB);
-
-		unsigned int triangleIndices[3] = { 0, 1, 2 };
-		std::shared_ptr<Egss::IndexBuffer> triangleIB;
-		triangleIB.reset(Egss::IndexBuffer::Create(triangleIndices, 3));
-		m_TriangleVA->SetIndexBuffer(triangleIB);
-
-		// ---- Textured quad --------------------------------------------
-		m_QuadVA.reset(Egss::VertexArray::Create());
-
-		// Position (3) + texture coordinate (2).
-		float quadVertices[4 * 5] = {
-			-0.75f, -0.75f, 0.0f,  0.0f, 0.0f,
-			 0.75f, -0.75f, 0.0f,  1.0f, 0.0f,
-			 0.75f,  0.75f, 0.0f,  1.0f, 1.0f,
-			-0.75f,  0.75f, 0.0f,  0.0f, 1.0f
-		};
-
-		std::shared_ptr<Egss::VertexBuffer> quadVB;
-		quadVB.reset(Egss::VertexBuffer::Create(quadVertices, sizeof(quadVertices)));
-		quadVB->SetLayout({
-			{ Egss::ShaderDataType::Float3, "a_Position" },
-			{ Egss::ShaderDataType::Float2, "a_TexCoord" }
-		});
-		m_QuadVA->AddVertexBuffer(quadVB);
-
-		// Two triangles sharing an edge -- the reason index buffers exist.
-		unsigned int quadIndices[6] = { 0, 1, 2, 2, 3, 0 };
-		std::shared_ptr<Egss::IndexBuffer> quadIB;
-		quadIB.reset(Egss::IndexBuffer::Create(quadIndices, 6));
-		m_QuadVA->SetIndexBuffer(quadIB);
-
-		// ---- Shaders ---------------------------------------------------
-		std::string colorVertexSrc = R"(
-			#version 330 core
-			layout(location = 0) in vec3 a_Position;
-			layout(location = 1) in vec4 a_Color;
-			uniform mat4 u_ViewProjection;
-			uniform mat4 u_Transform;
-			out vec4 v_Color;
-			void main()
-			{
-				v_Color = a_Color;
-				gl_Position = u_ViewProjection * u_Transform * vec4(a_Position, 1.0);
-			}
-		)";
-
-		std::string colorFragmentSrc = R"(
-			#version 330 core
-			layout(location = 0) out vec4 color;
-			in vec4 v_Color;
-			void main() { color = v_Color; }
-		)";
-
-		m_ColorShader.reset(Egss::Shader::Create("FlatColor", colorVertexSrc, colorFragmentSrc));
-
-		std::string textureVertexSrc = R"(
-			#version 330 core
-			layout(location = 0) in vec3 a_Position;
-			layout(location = 1) in vec2 a_TexCoord;
-			uniform mat4 u_ViewProjection;
-			uniform mat4 u_Transform;
-			out vec2 v_TexCoord;
-			void main()
-			{
-				v_TexCoord = a_TexCoord;
-				gl_Position = u_ViewProjection * u_Transform * vec4(a_Position, 1.0);
-			}
-		)";
-
-		std::string textureFragmentSrc = R"(
-			#version 330 core
-			layout(location = 0) out vec4 color;
-			in vec2 v_TexCoord;
-			uniform sampler2D u_Texture;
-			uniform vec4 u_Tint;
-			void main() { color = texture(u_Texture, v_TexCoord) * u_Tint; }
-		)";
-
-		m_TextureShader.reset(Egss::Shader::Create("Texture", textureVertexSrc, textureFragmentSrc));
-
-		// ---- Texture ---------------------------------------------------
-		// Generated rather than loaded from disk, so the sandbox has no asset
-		// dependency. Texture2D::Create(path) handles real image files.
-		const unsigned int size = 8;
-		unsigned int pixels[size * size];
-		for (unsigned int y = 0; y < size; y++)
+		for (unsigned int cy = 0; cy < s_AtlasCells; cy++)
 		{
-			for (unsigned int x = 0; x < size; x++)
+			for (unsigned int cx = 0; cx < s_AtlasCells; cx++)
 			{
-				bool light = ((x + y) % 2) == 0;
-				// RGBA, little-endian byte order.
-				pixels[y * size + x] = light ? 0xffcccccc : 0xff4444aa;
+				unsigned int fill = cellColors[cy * s_AtlasCells + cx];
+
+				for (unsigned int y = 0; y < s_CellSize; y++)
+				{
+					for (unsigned int x = 0; x < s_CellSize; x++)
+					{
+						bool border = (x == 0 || y == 0 || x == s_CellSize - 1 || y == s_CellSize - 1);
+						bool motif = ((x / 2 + y / 2) % 2) == 0;
+
+						unsigned int color = border ? 0xff202020 : (motif ? fill : 0xff1a1a1a);
+
+						unsigned int px = cx * s_CellSize + x;
+						unsigned int py = cy * s_CellSize + y;
+						pixels[py * s_AtlasSize + px] = color;
+					}
+				}
 			}
 		}
 
-		m_Texture.reset(Egss::Texture2D::Create(size, size));
-		m_Texture->SetData(pixels, sizeof(pixels));
+		m_Atlas.reset(Egss::Texture2D::Create(s_AtlasSize, s_AtlasSize));
+		m_Atlas->SetData(pixels.data(), (unsigned int)(pixels.size() * sizeof(unsigned int)));
 
-		m_TextureShader->Bind();
-		m_TextureShader->SetInt("u_Texture", 0);
+		// Cut all 16 cells out as individual sprites.
+		for (unsigned int y = 0; y < s_AtlasCells; y++)
+		{
+			for (unsigned int x = 0; x < s_AtlasCells; x++)
+			{
+				m_Sprites.emplace_back(Egss::SubTexture2D::CreateFromCoords(
+					m_Atlas, { (float)x, (float)y }, { (float)s_CellSize, (float)s_CellSize }));
+			}
+		}
+
+		// A 2x1 sprite, showing spriteSize spanning more than one cell.
+		m_WideSprite.reset(Egss::SubTexture2D::CreateFromCoords(
+			m_Atlas, { 0.0f, 3.0f }, { (float)s_CellSize, (float)s_CellSize }, { 2.0f, 1.0f }));
 	}
 
 	void OnUpdate(Egss::Timestep ts) override
 	{
 		m_FrameTime = ts.GetMilliseconds();
 
-		// Camera movement, scaled by delta time so it's framerate independent.
 		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))
 			m_CameraPosition.x -= m_CameraMoveSpeed * ts;
 		else if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT))
@@ -142,65 +85,71 @@ public:
 		else if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))
 			m_CameraPosition.y += m_CameraMoveSpeed * ts;
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_A))
-			m_CameraRotation += m_CameraRotationSpeed * ts;
-		else if (Egss::Input::IsKeyPressed(EGSS_KEY_D))
-			m_CameraRotation -= m_CameraRotationSpeed * ts;
-
 		m_Camera.SetPosition(m_CameraPosition);
-		m_Camera.SetRotation(m_CameraRotation);
+		m_Rotation += ts * 45.0f;
 
-		Egss::RenderCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1.0f });
+		Egss::Renderer2D::ResetStats();
+
+		Egss::RenderCommand::SetClearColor({ 0.08f, 0.08f, 0.1f, 1.0f });
 		Egss::RenderCommand::Clear();
 
-		Egss::Renderer::BeginScene(m_Camera);
+		Egss::Renderer2D::BeginScene(m_Camera);
 
-		m_TextureShader->Bind();
-		m_TextureShader->SetFloat4("u_Tint", m_Tint);
-		m_Texture->Bind(0);
-		Egss::Renderer::Submit(m_TextureShader, m_QuadVA);
+		// A tilemap. Every tile is a different sprite, but all 16 sprites come
+		// from one atlas -- so this is one texture slot and one draw call, no
+		// matter how many distinct tiles are on screen.
+		for (int y = 0; y < m_MapSize; y++)
+		{
+			for (int x = 0; x < m_MapSize; x++)
+			{
+				// Deterministic pseudo-random tile choice.
+				unsigned int pick = (unsigned int)((x * 7 + y * 13 + x * y * 3) % m_Sprites.size());
 
-		// Nudged forward so it sits in front of the quad.
-		glm::mat4 triangleTransform = glm::translate(glm::mat4(1.0f), { 0.0f, 0.0f, 0.1f });
-		Egss::Renderer::Submit(m_ColorShader, m_TriangleVA, triangleTransform);
+				float fx = (x - m_MapSize / 2.0f) * 0.13f;
+				float fy = (y - m_MapSize / 2.0f) * 0.13f;
+				Egss::Renderer2D::DrawQuad({ fx, fy }, { 0.125f, 0.125f }, m_Sprites[pick]);
+			}
+		}
 
-		Egss::Renderer::EndScene();
+		// A rotating sprite and the 2x1 wide sprite, both from the same atlas.
+		Egss::Renderer2D::DrawRotatedQuad({ -1.15f, 0.0f, 0.1f }, { 0.4f, 0.4f },
+			m_Rotation, m_Sprites[m_SelectedSprite]);
+		Egss::Renderer2D::DrawQuad({ 1.15f, 0.0f, 0.1f }, { 0.6f, 0.3f }, m_WideSprite);
+
+		Egss::Renderer2D::EndScene();
 	}
 
 	void OnImGuiRender() override
 	{
-		ImGui::Begin("Debug");
-		ImGui::Text("Frame time: %.2f ms (%.0f fps)", m_FrameTime, m_FrameTime > 0.0f ? 1000.0f / m_FrameTime : 0.0f);
+		auto stats = Egss::Renderer2D::GetStats();
+
+		ImGui::Begin("Renderer2D");
+		ImGui::Text("Frame time: %.2f ms (%.0f fps)", m_FrameTime,
+			m_FrameTime > 0.0f ? 1000.0f / m_FrameTime : 0.0f);
 		ImGui::Separator();
-		ImGui::Text("Camera");
-		ImGui::DragFloat3("Position", &m_CameraPosition.x, 0.01f);
-		ImGui::DragFloat("Rotation", &m_CameraRotation, 1.0f);
+		ImGui::Text("Draw calls: %u", stats.DrawCalls);
+		ImGui::Text("Quads:      %u", stats.QuadCount);
+		ImGui::Text("Vertices:   %u", stats.GetTotalVertexCount());
+		ImGui::Text("Indices:    %u", stats.GetTotalIndexCount());
 		ImGui::Separator();
-		ImGui::ColorEdit4("Quad tint", &m_Tint.x);
+		ImGui::Text("%zu sprites, all from one atlas", m_Sprites.size());
+		ImGui::SliderInt("Map size", &m_MapSize, 1, 100);
+		ImGui::Text("(%d tiles)", m_MapSize * m_MapSize);
+		ImGui::SliderInt("Spinner sprite", &m_SelectedSprite, 0, (int)m_Sprites.size() - 1);
 		ImGui::End();
 	}
-
-	void OnEvent(Egss::Event& event) override
-	{
-		if (event.GetEventType() == Egss::EventType::KeyPressed)
-		{
-			auto& e = (Egss::KeyPressedEvent&)event;
-			EGSS_TRACE("{0}", e.ToString());
-		}
-	}
 private:
-	std::shared_ptr<Egss::VertexArray> m_TriangleVA, m_QuadVA;
-	std::shared_ptr<Egss::Shader> m_ColorShader, m_TextureShader;
-	std::shared_ptr<Egss::Texture2D> m_Texture;
+	std::shared_ptr<Egss::Texture2D> m_Atlas;
+	std::vector<std::shared_ptr<Egss::SubTexture2D>> m_Sprites;
+	std::shared_ptr<Egss::SubTexture2D> m_WideSprite;
 
 	Egss::OrthographicCamera m_Camera;
 	glm::vec3 m_CameraPosition = { 0.0f, 0.0f, 0.0f };
-	float m_CameraRotation = 0.0f;
-
 	float m_CameraMoveSpeed = 2.0f;
-	float m_CameraRotationSpeed = 90.0f;
 
-	glm::vec4 m_Tint = { 1.0f, 1.0f, 1.0f, 1.0f };
+	int m_MapSize = 20;
+	int m_SelectedSprite = 0;
+	float m_Rotation = 0.0f;
 	float m_FrameTime = 0.0f;
 };
 
@@ -209,7 +158,7 @@ class TestEnv : public Egss::Application
 public:
 	TestEnv()
 	{
-		PushLayer(new ExampleLayer());
+		PushLayer(new Sandbox2D());
 	}
 	~TestEnv()
 	{

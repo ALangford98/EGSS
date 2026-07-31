@@ -7,12 +7,11 @@ series. `EGSS` is the engine itself, built as a shared library; `TestEnv` is a
 sandbox application that links against it.
 
 **Current state:** a window with an OpenGL 3.3 core context, a working event
-system, a layer stack, polled input, frame timing, a renderer abstraction
-(vertex/index buffers, declarative vertex layouts, shaders, textures, an
-orthographic camera), and ImGui as a debug overlay. `TestEnv` draws a textured
-quad and a colored triangle, moves the camera with the arrow keys, and exposes
-frame time and camera state in an ImGui panel. See [Roadmap](#roadmap) for
-what's left.
+system, a layer stack, polled input, frame timing, a renderer abstraction, a
+**batched 2D quad renderer** with sprite-sheet support, and ImGui as a debug
+overlay. `TestEnv` draws a tilemap of distinct sprites cut from one atlas in a
+single draw call, and reports live renderer statistics. See
+[Roadmap](#roadmap) for what's left.
 
 ## Layout
 
@@ -71,10 +70,13 @@ premake5.lua  ──[ BuildProject.sh ]──>  Makefile, EGSS/Makefile, TestEnv
               ──[ BuildProject.bat ]──> EGSS.sln, *.vcxproj
 ```
 
-Four projects build in dependency order: **GLFW** (static lib) → **Glad**
-(static lib) → **EGSS** (shared lib) → **TestEnv** (executable). The two vendor
-projects have their own `premake5.lua` files, pulled in by `include` directives
-at the top of the root script.
+Five projects build in dependency order: **GLFW**, **Glad**, and **ImGui**
+(static libs) → **EGSS** (shared lib) → **TestEnv** (executable). GLFW and Glad
+carry their own `premake5.lua`; ImGui ships none, so EGSS supplies one at
+`EGSS/vendor/imgui_premake5.lua` — deliberately outside the submodule, since a
+file added inside it would be lost on re-clone and would leave the submodule
+permanently dirty. All three are pulled in by `include` directives at the top
+of the root script.
 
 **Linux:**
 
@@ -147,14 +149,19 @@ the folder anywhere and it still runs.
 
 On Windows, `bin\Debug-windows-x86_64\TestEnv\TestEnv.exe`.
 
-You should see a 1280x720 window with a colored triangle, and:
+You should see a 1280x720 window with a tilemap of sprites, a rotating sprite,
+and a wide 2x1 sprite, plus:
 
 ```
-[20:37:54] EGSS: Creating Window Every Game Starts Somewhere (1280, 720)
-[20:37:54] EGSS: OpenGL 4.6 (Core Profile) Mesa 26.1.5 | Mesa Intel(R) Iris(R) Xe Graphics (RPL-U)
+[22:00:24] EGSS: Creating Window Every Game Starts Somewhere (1280, 720)
+[22:00:24] EGSS: OpenGL 4.6 (Core Profile) Mesa 26.1.5 | Mesa Intel(R) Iris(R) Xe Graphics (RPL-U)
+[22:00:24] EGSS: Renderer2D initialized (10000 quads/batch, 16 texture slots)
+[22:00:24] EGSS: ImGui 1.92.9b initialized
 ```
 
-Arrow keys move the camera; `A` and `D` rotate it. Closing the window exits
+Arrow keys move the camera. The ImGui panel reports frame time and renderer
+statistics; its map-size slider is a quick way to watch the batcher split,
+since passing 10,000 quads forces a second draw call. Closing the window exits
 cleanly.
 
 ## VS Code
@@ -314,8 +321,12 @@ This is the single most common reason a first triangle comes out black.
 
 ## The triangle
 
-All of this is in `Application`'s constructor. It's temporary — it belongs in a
-renderer, and the roadmap tracks moving it there.
+This walkthrough describes drawing a single triangle by hand. That code no
+longer lives in the engine — `Renderer2D` now wraps all of it behind
+`DrawQuad`, and `TestEnv` never touches GL directly. It is kept because every
+concept below still describes what `Renderer2D` does internally, one layer
+down, and because reading it is the fastest way to understand what the batcher
+is actually batching.
 
 ### Vertex array and vertex buffer
 
@@ -485,20 +496,17 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 
 ## Still outstanding
 
-- [ ] **Batching in `Renderer`.** `Submit` draws immediately;
-      `BeginScene`/`EndScene` exist to make batching possible but don't batch
-      yet. This is the single biggest performance item
 - [ ] **A `ShaderLibrary`**, so shaders are looked up by name rather than
       passed around as `shared_ptr`s
 - [ ] **A profiler** — instrumentation timers and scope macros, ideally
       feeding a Chrome-tracing JSON
+- [ ] **Query `GL_MAX_TEXTURE_IMAGE_UNITS`** at runtime rather than assuming
+      the 16-slot floor, and generate the sampler switch to match
 - [ ] **Verify the Windows build.** Nothing since the Linux port has been
       compiled there. The platform code is mirrored and the premake filters
       are symmetric, but it is unverified
 - [ ] **A PCH for `TestEnv`.** Only the engine has one
 - [ ] **Vendor a `premake5` binary per platform**, or script fetching it
-- [ ] **A 2D renderer layer** (`Renderer2D::DrawQuad`) over the current
-      primitives, which is where the Hazel series goes next
 - [ ] **Framebuffers**, needed before an editor viewport is possible
 
 ## Done
@@ -523,6 +531,20 @@ cache), `Texture2D`, `RendererAPI` / `RenderCommand`, `Renderer` with
 implementations live under `Platform/OpenGL/`; glm provides the math and
 stb_image the image loading.
 
+**Sprite sheets.** `SubTexture2D` describes a rectangular region of a texture,
+with `CreateFromCoords` cutting cells out of a regular grid (and `spriteSize`
+for sprites spanning several cells). `Renderer2D::DrawQuad` and
+`DrawRotatedQuad` take one directly. Because the slot is resolved from the
+underlying atlas, any number of distinct sprites cut from the same sheet share
+one texture slot and batch together.
+
+**Renderer2D.** A batched quad renderer: `DrawQuad` and `DrawRotatedQuad` in
+flat-colour and textured forms, accumulating geometry into one dynamic vertex
+buffer and flushing when it runs out of vertex room or texture slots. Draw
+calls track the number of distinct textures rather than the number of quads —
+10,000 quads render in one call. `Renderer2D::GetStats()` exposes draw calls,
+quad, vertex, and index counts.
+
 **Tooling.** ImGui as an overlay layer, with the GLFW and OpenGL3 backends and
 input capture so ImGui windows swallow clicks instead of leaking them to the
 game. GL debug context plus `glDebugMessageCallback` in debug builds, routing
@@ -538,6 +560,38 @@ in `.gitmodules`.
 ---
 
 # Changelog
+
+### 2026-07-31 (sprite sheets)
+
+- `SubTexture2D`, describing a rectangular region of a texture in normalised
+  coordinates. `CreateFromCoords` cuts cells out of a regular grid, with an
+  optional `spriteSize` for sprites spanning more than one cell.
+- `Renderer2D::DrawQuad` and `DrawRotatedQuad` overloads taking a
+  `SubTexture2D`. The texture slot is resolved from the underlying atlas, so
+  every sprite cut from one sheet shares a slot and batches together.
+- `SubmitQuad` now takes explicit texture coordinates rather than hardcoding
+  the unit square; whole-texture draws pass a shared constant.
+- The sandbox is now a tilemap: 400 tiles drawn from 16 distinct sprites in a
+  single atlas, measured at 402 quads in **1 draw call**.
+
+### 2026-07-31 (Renderer2D and batching)
+
+- `Renderer2D` with `DrawQuad` / `DrawRotatedQuad`, in flat-colour and
+  textured variants, plus tiling and tint. Quads accumulate into a single
+  dynamic vertex buffer and are flushed in as few draw calls as possible.
+  Measured: 1,602 quads in 1 draw call; 10,002 quads in 2.
+- A batch flushes when it exhausts vertex room (10,000 quads) or texture slots
+  (16). Slot 0 is a permanent 1x1 white texture, so flat-colour quads take the
+  same shader path as textured ones instead of needing a second shader.
+- `VertexBuffer::SetData` and a size-only `Create` overload, for buffers
+  respecified every frame with `GL_DYNAMIC_DRAW`.
+- `RenderCommand::DrawIndexed` takes an optional index count, so a partly
+  filled batch draws only what it wrote.
+- `Renderer2D::GetStats()` / `ResetStats()`, surfaced in the sandbox's ImGui
+  panel alongside a grid-size slider for stress testing.
+- The batching shader uses a `switch` over texture slots rather than dynamic
+  sampler-array indexing, which GLSL 330 does not permit. This keeps the GL
+  3.3 floor instead of forcing a 4.5 context.
 
 ### 2026-07-31 (textures and ImGui)
 

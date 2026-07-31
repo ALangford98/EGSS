@@ -20,11 +20,13 @@
 // RENDERER ***************
 
 #include "Egss/Renderer/Renderer.h"
+#include "Egss/Renderer/Renderer2D.h"
 #include "Egss/Renderer/RenderCommand.h"
 #include "Egss/Renderer/Buffer.h"
 #include "Egss/Renderer/VertexArray.h"
 #include "Egss/Renderer/Shader.h"
 #include "Egss/Renderer/Texture.h"
+#include "Egss/Renderer/SubTexture2D.h"
 #include "Egss/Renderer/OrthographicCamera.h"
 
 // ENTRY POINT ************
