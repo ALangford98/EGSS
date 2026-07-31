@@ -1,6 +1,6 @@
 #pragma once
 
-#ifdef EGSS_PLATFORM_WINDOWS
+#if defined(EGSS_PLATFORM_WINDOWS) || defined(EGSS_PLATFORM_LINUX)
 
 extern Egss::Application* Egss::CreateApplication();
 

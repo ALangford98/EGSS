@@ -1,25 +1,25 @@
 #include "egsspch.h"
-#include "WindowsWindow.h"
+#include "LinuxWindow.h"
 
 namespace Egss {
 	static bool s_GLFWInitialized = false;
 
 	Window* Window::Create(const WindowProps& props)
 	{
-		return new WindowsWindow(props);
+		return new LinuxWindow(props);
 	}
 
-	WindowsWindow::WindowsWindow(const WindowProps& props)
+	LinuxWindow::LinuxWindow(const WindowProps& props)
 	{
 		Init(props);
 	}
 
-	WindowsWindow::~WindowsWindow()
+	LinuxWindow::~LinuxWindow()
 	{
 		Shutdown();
 	}
 
-	void WindowsWindow::Init(const WindowProps& props)
+	void LinuxWindow::Init(const WindowProps& props)
 	{
 		m_Data.Title = props.Title;
 		m_Data.Width = props.Width;
@@ -34,25 +34,25 @@ namespace Egss {
 			EGSS_CORE_ASSERT(success, "Could not initialize GLFW");
 			s_GLFWInitialized = true;
 		}
-		
+
 		m_Window = glfwCreateWindow((int)props.Width, (int)props.Height, m_Data.Title.c_str(), nullptr, nullptr);
 		glfwMakeContextCurrent(m_Window);
 		glfwSetWindowUserPointer(m_Window, &m_Data);
 		SetVSync(true);
 	}
 
-	void WindowsWindow::Shutdown()
+	void LinuxWindow::Shutdown()
 	{
 		glfwDestroyWindow(m_Window);
 	}
 
-	void WindowsWindow::OnUpdate()
+	void LinuxWindow::OnUpdate()
 	{
 		glfwPollEvents();
 		glfwSwapBuffers(m_Window);
 	}
 
-	void WindowsWindow::SetVSync(bool enabled)
+	void LinuxWindow::SetVSync(bool enabled)
 	{
 		if (enabled)
 			glfwSwapInterval(1);
@@ -62,7 +62,7 @@ namespace Egss {
 		m_Data.VSync = enabled;
 	}
 
-	bool WindowsWindow::IsVSync() const
+	bool LinuxWindow::IsVSync() const
 	{
 		return m_Data.VSync;
 	}

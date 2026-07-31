@@ -5,3 +5,8 @@ bin-int/
 
 # files
 *.user
+
+# premake-generated makefiles (regenerate with BuildProject.sh)
+/Makefile
+/EGSS/Makefile
+/TestEnv/Makefile
