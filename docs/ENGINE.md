@@ -142,8 +142,15 @@ on screen, so `{0.5f, 0.5f}` is half a unit wide regardless of resolution.
 
 - **New `.cpp` file? Re-run `./BuildProject.sh`.** premake expands file globs at
   *generation* time. Your file will compile in the editor and never link.
-- **Draw order is submission order.** There's no depth sorting; later draws land
-  on top. The `z` in a `vec3` position exists but nothing sorts by it.
+- **Depth testing is on, and `z` decides what covers what — not draw order.**
+  Higher `z` is nearer. At *equal* `z` the depth test (`GL_LESS`) rejects the
+  later fragment, so the **first** thing submitted wins, which is the opposite
+  of the painter's-algorithm behaviour you might expect. Give overlapping
+  sprites different `z` values; don't rely on ordering.
+
+  Measured: two overlapping quads at `z = 0` — the one drawn first stays whole
+  and the second is clipped. Raise the second to `z = 0.2` and it covers the
+  first even when drawn earlier.
 - **`EndScene` is not optional.** Forget it and the last batch never flushes —
   you get a blank screen with no error.
 - **Asserts only exist in Debug.** `EGSS_ENABLE_ASSERTS` is only defined there.
