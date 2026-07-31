@@ -87,7 +87,11 @@ project "EGSS"
 
         links
         {
-            "opengl32.lib"
+            "opengl32",
+            "gdi32",
+            "user32",
+            "shell32",
+            "winmm"
         }
 
         postbuildcommands
@@ -168,7 +172,8 @@ project "TestEnv"
 
     links 
     {
-        "EGSS"
+        "EGSS",
+        "ImGui"
     }
 
     filter "system:windows"

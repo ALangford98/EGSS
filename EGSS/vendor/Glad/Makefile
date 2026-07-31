@@ -44,27 +44,27 @@ define POSTBUILDCMDS
 endef
 
 ifeq ($(config),debug)
-TARGETDIR = bin/Debug-linux-x86_64/Glad
-TARGET = $(TARGETDIR)/libGlad.a
-OBJDIR = bin-int/Debug-linux-x86_64/Glad
-ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -fPIC -g -w
-ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -fPIC -g -w
+TARGETDIR = bin/Debug-windows-x86_64/Glad
+TARGET = $(TARGETDIR)/Glad.lib
+OBJDIR = bin-int/Debug-windows-x86_64/Glad
+ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -g -w
+ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -g -w
 ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64
 
 else ifeq ($(config),release)
-TARGETDIR = bin/Release-linux-x86_64/Glad
-TARGET = $(TARGETDIR)/libGlad.a
-OBJDIR = bin-int/Release-linux-x86_64/Glad
-ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -O3 -fPIC -w
-ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -O3 -fPIC -w
+TARGETDIR = bin/Release-windows-x86_64/Glad
+TARGET = $(TARGETDIR)/Glad.lib
+OBJDIR = bin-int/Release-windows-x86_64/Glad
+ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -O3 -w
+ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -O3 -w
 ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64 -s
 
 else ifeq ($(config),dist)
-TARGETDIR = bin/Dist-linux-x86_64/Glad
-TARGET = $(TARGETDIR)/libGlad.a
-OBJDIR = bin-int/Dist-linux-x86_64/Glad
-ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -O3 -fPIC -w
-ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -O3 -fPIC -w
+TARGETDIR = bin/Dist-windows-x86_64/Glad
+TARGET = $(TARGETDIR)/Glad.lib
+OBJDIR = bin-int/Dist-windows-x86_64/Glad
+ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -O3 -w
+ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -O3 -w
 ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64 -s
 
 endif
@@ -118,7 +118,7 @@ ifeq (posix,$(SHELLTYPE))
 	$(SILENT) rm -rf $(OBJDIR)
 else
 	$(SILENT) if exist $(subst /,\\,$(TARGET)) del $(subst /,\\,$(TARGET))
-	$(SILENT) if exist $(subst /,\\,$(GENERATED)) del /s /q $(subst /,\\,$(GENERATED))
+	$(SILENT) $(foreach f,$(subst /,\\,$(GENERATED)),if exist $(f) del /s /q $(f) >nul &)
 	$(SILENT) if exist $(subst /,\\,$(OBJDIR)) rmdir /s /q $(subst /,\\,$(OBJDIR))
 endif
 

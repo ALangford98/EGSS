@@ -108,5 +108,6 @@ namespace Egss {
 
 			m_Window->OnUpdate();
 		}
+		EGSS_CORE_INFO("Application run loop exiting");
 	}
 }
