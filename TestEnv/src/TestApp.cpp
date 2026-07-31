@@ -69,26 +69,57 @@ public:
 		// A 2x1 sprite, showing spriteSize spanning more than one cell.
 		m_WideSprite.reset(Egss::SubTexture2D::CreateFromCoords(
 			m_Atlas, { 0.0f, 3.0f }, { (float)s_CellSize, (float)s_CellSize }, { 2.0f, 1.0f }));
+
+		// Size is provisional -- the first frame resizes it to whatever the
+		// viewport panel actually turns out to be.
+		Egss::FramebufferSpecification spec;
+		spec.Width = 1280;
+		spec.Height = 720;
+		m_Framebuffer.reset(Egss::Framebuffer::Create(spec));
 	}
 
 	void OnUpdate(Egss::Timestep ts) override
 	{
 		m_FrameTime = ts.GetMilliseconds();
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))
-			m_CameraPosition.x -= m_CameraMoveSpeed * ts;
-		else if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT))
-			m_CameraPosition.x += m_CameraMoveSpeed * ts;
+		// The panel size is only known after ImGui has laid it out, so this
+		// acts on last frame's measurement. One frame of lag while dragging is
+		// invisible, and it avoids resizing mid-frame with the target bound.
+		const Egss::FramebufferSpecification& spec = m_Framebuffer->GetSpecification();
+		if (m_ViewportSize.x > 0.0f && m_ViewportSize.y > 0.0f &&
+			((unsigned int)m_ViewportSize.x != spec.Width || (unsigned int)m_ViewportSize.y != spec.Height))
+		{
+			m_Framebuffer->Resize((unsigned int)m_ViewportSize.x, (unsigned int)m_ViewportSize.y);
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))
-			m_CameraPosition.y -= m_CameraMoveSpeed * ts;
-		else if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))
-			m_CameraPosition.y += m_CameraMoveSpeed * ts;
+			// Without this the scene stretches: the projection has to track
+			// the panel's shape, not the window's.
+			float aspect = m_ViewportSize.x / m_ViewportSize.y;
+			m_Camera.SetProjection(-aspect * m_ZoomLevel, aspect * m_ZoomLevel, -m_ZoomLevel, m_ZoomLevel);
+		}
+
+		// Only drive the camera when the scene panel has focus, so arrow keys
+		// typed into a widget don't also pan the world.
+		if (m_ViewportFocused)
+		{
+			if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))
+				m_CameraPosition.x -= m_CameraMoveSpeed * ts;
+			else if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT))
+				m_CameraPosition.x += m_CameraMoveSpeed * ts;
+
+			if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))
+				m_CameraPosition.y -= m_CameraMoveSpeed * ts;
+			else if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))
+				m_CameraPosition.y += m_CameraMoveSpeed * ts;
+		}
 
 		m_Camera.SetPosition(m_CameraPosition);
 		m_Rotation += ts * 45.0f;
 
 		Egss::Renderer2D::ResetStats();
+
+		// Everything between Bind and Unbind lands in the framebuffer's
+		// texture rather than the window.
+		m_Framebuffer->Bind();
 
 		Egss::RenderCommand::SetClearColor({ 0.08f, 0.08f, 0.1f, 1.0f });
 		Egss::RenderCommand::Clear();
@@ -117,11 +148,42 @@ public:
 		Egss::Renderer2D::DrawQuad({ 1.15f, 0.0f, 0.1f }, { 0.6f, 0.3f }, m_WideSprite);
 
 		Egss::Renderer2D::EndScene();
+
+		m_Framebuffer->Unbind();
+
+		// The window itself is now only ever covered by ImGui, but it still
+		// needs clearing -- otherwise the areas no panel covers keep whatever
+		// was left there.
+		Egss::RenderCommand::SetClearColor({ 0.05f, 0.05f, 0.06f, 1.0f });
+		Egss::RenderCommand::Clear();
 	}
 
 	void OnImGuiRender() override
 	{
 		auto stats = Egss::Renderer2D::GetStats();
+
+		// Without a starting size the window auto-fits its content, and its
+		// only content is an image sized from the window -- so it collapses to
+		// nothing and never recovers.
+		ImGui::SetNextWindowSize(ImVec2(900.0f, 520.0f), ImGuiCond_FirstUseEver);
+		ImGui::SetNextWindowPos(ImVec2(340.0f, 40.0f), ImGuiCond_FirstUseEver);
+
+		// No padding, so the image sits flush against the panel border.
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+		ImGui::Begin("Viewport");
+
+		m_ViewportFocused = ImGui::IsWindowFocused();
+
+		ImVec2 available = ImGui::GetContentRegionAvail();
+		m_ViewportSize = { available.x, available.y };
+
+		// UVs are flipped vertically: GL's origin is bottom-left, ImGui's is
+		// top-left, so an unflipped image renders upside down.
+		ImGui::Image((ImTextureID)(uintptr_t)m_Framebuffer->GetColorAttachmentRendererID(),
+			available, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+
+		ImGui::End();
+		ImGui::PopStyleVar();
 
 		ImGui::Begin("Renderer2D");
 		ImGui::Text("Frame time: %.2f ms (%.0f fps)", m_FrameTime,
@@ -131,6 +193,9 @@ public:
 		ImGui::Text("Quads:      %u", stats.QuadCount);
 		ImGui::Text("Vertices:   %u", stats.GetTotalVertexCount());
 		ImGui::Text("Indices:    %u", stats.GetTotalIndexCount());
+		ImGui::Separator();
+		ImGui::Text("Viewport:   %ux%u", m_Framebuffer->GetSpecification().Width,
+			m_Framebuffer->GetSpecification().Height);
 		ImGui::Separator();
 		ImGui::Text("%zu sprites, all from one atlas", m_Sprites.size());
 		ImGui::SliderInt("Map size", &m_MapSize, 1, 100);
@@ -143,9 +208,14 @@ private:
 	std::vector<std::shared_ptr<Egss::SubTexture2D>> m_Sprites;
 	std::shared_ptr<Egss::SubTexture2D> m_WideSprite;
 
+	std::shared_ptr<Egss::Framebuffer> m_Framebuffer;
+	glm::vec2 m_ViewportSize = { 0.0f, 0.0f };
+	bool m_ViewportFocused = false;
+
 	Egss::OrthographicCamera m_Camera;
 	glm::vec3 m_CameraPosition = { 0.0f, 0.0f, 0.0f };
 	float m_CameraMoveSpeed = 2.0f;
+	float m_ZoomLevel = 0.9f;
 
 	int m_MapSize = 20;
 	int m_SelectedSprite = 0;

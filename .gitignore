@@ -10,6 +10,7 @@ bin-int/
 /Makefile
 /EGSS/Makefile
 /EGSS/vendor/Makefile
+/EGSS/vendor/Glad/Makefile
 /TestEnv/Makefile
 *.sln
 *.vcxproj

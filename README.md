@@ -462,8 +462,51 @@ blocks until the display refreshes and the loop is capped at the monitor's
 refresh rate. That is currently the only thing keeping this loop from spinning
 a core at 100%.
 
-There is no frame timing yet, so nothing can be animated at a rate independent
-of framerate. Delta time is on the roadmap.
+`Run` also derives a delta time each frame from a monotonic clock and hands it
+to `Layer::OnUpdate` as a `Timestep`, so animation rates are independent of
+framerate.
+
+## Render targets
+
+By default, draw calls land in the window's back buffer — the only target the
+context creates. A **framebuffer object** is a second target you allocate
+yourself: bind it, draw, and the result ends up in a texture instead of on
+screen.
+
+`Framebuffer` wraps one. The OpenGL implementation allocates two attachments:
+
+| Attachment | Format | Why |
+| --- | --- | --- |
+| Colour | `GL_RGBA8` texture | What gets displayed; a texture rather than a renderbuffer so it can be sampled |
+| Depth + stencil | `GL_DEPTH24_STENCIL8` texture | Packed into one attachment — no more memory than depth alone, and the stencil is there when it's needed |
+
+Attachment storage is immutable once allocated, so `Resize` cannot resize in
+place: it deletes the objects and rebuilds them. That's what `Invalidate` does,
+and it is why resizing is a per-panel-drag operation rather than a per-frame
+one. `glCheckFramebufferStatus` is asserted after each rebuild — an incomplete
+framebuffer silently discards every draw call otherwise.
+
+Two details are easy to get wrong:
+
+- **The viewport is global state.** `Bind` sets it to the framebuffer's size,
+  because it will otherwise still be sized to the window and the render will be
+  cropped or letterboxed. `Unbind` deliberately does not restore it; ImGui's
+  backend sets its own viewport before drawing, and anything else that draws to
+  the window afterwards must set it itself.
+- **The V axis is flipped.** GL's texture origin is bottom-left, ImGui's is
+  top-left, so the image renders upside down unless the UVs are swapped:
+  `ImGui::Image(id, size, {0, 1}, {1, 0})`.
+
+The panel's size is only known after ImGui has laid it out, so the sandbox
+records it during `OnImGuiRender` and acts on it at the top of the next
+`OnUpdate`. One frame of lag while dragging is invisible, and it avoids
+resizing a target that is currently bound. The same measurement drives
+`OrthographicCamera::SetProjection` — without that, the scene stretches with
+the panel instead of revealing more world.
+
+This is the piece an editor needs. It is also what mouse picking and any
+post-processing pass will be built on, since both need the rendered result
+readable rather than already presented.
 
 ## Debugging rendering
 
@@ -480,9 +523,15 @@ mistakes are silent. Work through this list before reaching for a debugger:
 5. **Are you calling GL before `gladLoadGLLoader`?** That's a null function
    pointer, and often a segfault rather than a blank screen.
 
-`glGetError` is not called anywhere yet. A debug-context callback
-(`GL_DEBUG_OUTPUT` with `glDebugMessageCallback`) is a much better answer and
-is on the roadmap — it turns silent failures into log lines automatically.
+Debug builds request a debug context and install `glDebugMessageCallback`, so
+driver messages reach the log by severity without any `glGetError` calls. If
+the window is black and the log is empty, the problem is more likely one of the
+five above than a GL error.
+
+A sixth failure mode arrives with framebuffers: if the scene disappears the
+moment it moves into a panel, check that the target is bound *before* the
+clear, that the viewport matches its size, and that the framebuffer is
+complete.
 
 [**RenderDoc**](https://renderdoc.org/) is the tool worth installing when the
 above isn't enough. It captures a frame and lets you inspect every draw call,
@@ -502,12 +551,13 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       feeding a Chrome-tracing JSON
 - [ ] **Query `GL_MAX_TEXTURE_IMAGE_UNITS`** at runtime rather than assuming
       the 16-slot floor, and generate the sampler switch to match
-- [ ] **Verify the Windows build.** Nothing since the Linux port has been
-      compiled there. The platform code is mirrored and the premake filters
-      are symmetric, but it is unverified
 - [ ] **A PCH for `TestEnv`.** Only the engine has one
 - [ ] **Vendor a `premake5` binary per platform**, or script fetching it
-- [ ] **Framebuffers**, needed before an editor viewport is possible
+- [ ] **ImGui docking.** The submodule tracks `master`, which has no
+      `ImGuiConfigFlags_DockingEnable`, so panels float rather than dock. The
+      `docking` branch fetches cleanly if this becomes worth doing
+- [ ] **Mouse picking**, now that the framebuffer exists — an integer entity-ID
+      attachment read back under the cursor
 
 ## Done
 
@@ -545,6 +595,11 @@ calls track the number of distinct textures rather than the number of quads —
 10,000 quads render in one call. `Renderer2D::GetStats()` exposes draw calls,
 quad, vertex, and index counts.
 
+**Framebuffers.** `Framebuffer` with an OpenGL implementation: an RGBA8 colour
+texture plus a packed depth-stencil attachment, recreated on resize. The
+sandbox renders the scene into one and displays it in an ImGui panel, with the
+camera's projection following the panel's aspect ratio.
+
 **Tooling.** ImGui as an overlay layer, with the GLFW and OpenGL3 backends and
 input capture so ImGui windows swallow clicks instead of leaking them to the
 game. GL debug context plus `glDebugMessageCallback` in debug builds, routing
@@ -557,9 +612,32 @@ nothing, including the GLFW and Glad init checks.
 generated `.sln`/`.vcxproj` files (now gitignored), and the dead `GLFW` entry
 in `.gitmodules`.
 
+**Windows.** The port was verified on Windows after the Linux work: the
+solution generates, builds, and runs. `NOMINMAX` and `WIN32_LEAN_AND_MEAN`
+guard the `<Windows.h>` include in the PCH, C4251 is suppressed for the
+exported classes, and the system libraries GLFW needs are named explicitly.
+
 ---
 
 # Changelog
+
+### 2026-08-01 (framebuffers and a viewport panel)
+
+- `Framebuffer` and `OpenGLFramebuffer` — an RGBA8 colour texture plus a packed
+  `GL_DEPTH24_STENCIL8` attachment, with completeness asserted on every
+  rebuild. `Bind` sets the viewport to the target's size; `Resize` recreates
+  the attachments, since their storage is immutable once allocated.
+- The sandbox now renders into a framebuffer and shows it in an ImGui
+  **Viewport** panel, flipping the UVs so GL's bottom-left origin matches
+  ImGui's top-left one. The camera's projection follows the panel's aspect
+  ratio, and camera keys only act while the panel has focus.
+- Documented render targets under [Rendering](#render-targets), including the
+  two things that bite: the viewport being global state, and the V flip.
+- Untracked `EGSS/vendor/Glad/Makefile`. It is premake output, so it changed on
+  every regeneration and flip-flopped between platforms.
+
+Verified at 900x501 and again at 341x153 after a resize: the tilemap stays
+square, and 402 quads still render in **1 draw call**.
 
 ### 2026-07-31 (sprite sheets)
 
