@@ -13,8 +13,14 @@ outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
 --include directories 
 IncludeDir = {}
 IncludeDir["GLFW"] = "EGSS/vendor/glfw/include"
+IncludeDir["Glad"] = "EGSS/vendor/Glad/include"
+IncludeDir["glm"] = "EGSS/vendor/glm"
+IncludeDir["ImGui"] = "EGSS/vendor/imgui"
+IncludeDir["stb_image"] = "EGSS/vendor/stb_image"
 
 include "EGSS/vendor/glfw"
+include "EGSS/vendor/Glad"
+include "EGSS/vendor/imgui_premake5.lua"
 
 project "EGSS"
     -- Must match the case of the source folder: on Windows this resolved to
@@ -32,7 +38,9 @@ project "EGSS"
     files
     {
         "%{prj.name}/src/**.h",
-        "%{prj.name}/src/**.cpp"
+        "%{prj.name}/src/**.cpp",
+        "%{prj.name}/vendor/stb_image/**.h",
+        "%{prj.name}/vendor/stb_image/**.cpp"
     }
 
     includedirs
@@ -40,11 +48,23 @@ project "EGSS"
         "%{prj.name}/src",
         "%{prj.name}/vendor/spdlog/include",
         "%{IncludeDir.GLFW}",
+        "%{IncludeDir.Glad}",
+        "%{IncludeDir.glm}",
+        "%{IncludeDir.ImGui}",
+        "%{IncludeDir.stb_image}",
     }
 
     links
     {
-        "GLFW"
+        "GLFW",
+        "Glad",
+        "ImGui"
+    }
+
+    -- Glad provides the GL headers; stop GLFW from pulling in its own.
+    defines
+    {
+        "GLFW_INCLUDE_NONE"
     }
 
     filter "system:windows"
@@ -100,17 +120,22 @@ project "EGSS"
             ("{COPY} %{cfg.buildtarget.relpath} ../bin/" .. outputdir .. "/TestEnv" )
         }
 
-        filter "configurations:Debug"
-            defines "EGSS_DEBUG"
-            symbols "On"
+    filter "configurations:Debug"
+        defines { "EGSS_DEBUG", "EGSS_ENABLE_ASSERTS" }
+        runtime "Debug"
+        symbols "On"
 
-            filter "configurations:Release"
-            defines "EGSS_RELEASE"
-            symbols "On"
+    filter "configurations:Release"
+        defines "EGSS_RELEASE"
+        runtime "Release"
+        optimize "On"
+        symbols "On"
 
-            filter "configurations:Dist"
-            defines "EGSS_DIST"
-            symbols "On"
+    filter "configurations:Dist"
+        defines "EGSS_DIST"
+        runtime "Release"
+        optimize "Full"
+        symbols "Off"
 
             
 
@@ -131,7 +156,9 @@ project "TestEnv"
     includedirs
     {
         "EGSS/vendor/spdlog/include",
-        "EGSS/src"
+        "EGSS/src",
+        "%{IncludeDir.glm}",
+        "%{IncludeDir.ImGui}"
     }
 
     links 
@@ -167,14 +194,19 @@ project "TestEnv"
         -- Find libEGSS.so next to the executable instead of on the system path.
         linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
 
-        filter "configurations:Debug"
-            defines "EGSS_DEBUG"
-            symbols "On"
+    filter "configurations:Debug"
+        defines { "EGSS_DEBUG", "EGSS_ENABLE_ASSERTS" }
+        runtime "Debug"
+        symbols "On"
 
-            filter "configurations:Release"
-            defines "EGSS_RELEASE"
-            symbols "On"
+    filter "configurations:Release"
+        defines "EGSS_RELEASE"
+        runtime "Release"
+        optimize "On"
+        symbols "On"
 
-            filter "configurations:Dist"
-            defines "EGSS_DIST"
-            symbols "On"
+    filter "configurations:Dist"
+        defines "EGSS_DIST"
+        runtime "Release"
+        optimize "Full"
+        symbols "Off"

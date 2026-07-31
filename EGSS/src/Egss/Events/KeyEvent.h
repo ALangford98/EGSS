@@ -6,16 +6,18 @@ namespace Egss {
 
 	class EGSS_API KeyEvent : public Event
 	{
-	public: inline int GerKeyCode() const { return m_KeyCode; }
+	public:
+		inline int GetKeyCode() const { return m_KeyCode; }
 
-		  EVENT_CLASS_CATEGORY(EventCategoryKeyboard | EventCategoryInput)
-			  protected:
-				  KeyEvent(int keycode)
-					  : m_KeyCode(keycode) {}
-			  int m_KeyCode
+		EVENT_CLASS_CATEGORY(EventCategoryKeyboard | EventCategoryInput)
+	protected:
+		KeyEvent(int keycode)
+			: m_KeyCode(keycode) {}
+
+		int m_KeyCode;
 	};
-	
-	class EGSS_API KeyPressedEvent : public KeyEvent 
+
+	class EGSS_API KeyPressedEvent : public KeyEvent
 	{
 	public:
 		KeyPressedEvent(int keycode, int repeatCount)
@@ -50,5 +52,22 @@ namespace Egss {
 		EVENT_CLASS_TYPE(KeyReleased)
 	};
 
+	// Produced by GLFW's character callback: a text codepoint rather than a
+	// physical key, which is what text input needs.
+	class EGSS_API KeyTypedEvent : public KeyEvent
+	{
+	public:
+		KeyTypedEvent(int keycode)
+			: KeyEvent(keycode) {}
+
+		std::string ToString() const override
+		{
+			std::stringstream ss;
+			ss << "KeyTypedEvent: " << m_KeyCode;
+			return ss.str();
+		}
+
+		EVENT_CLASS_TYPE(KeyTyped)
+	};
 
 }

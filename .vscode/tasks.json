@@ -1,0 +1,45 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build debug",
+            "type": "shell",
+            "command": "make config=debug -j$(nproc)",
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "build release",
+            "type": "shell",
+            "command": "make config=release -j$(nproc)",
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": "build",
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            // Run after adding, renaming, or deleting any source file --
+            // premake expands the file globs at generation time.
+            "label": "regenerate makefiles",
+            "type": "shell",
+            "command": "./BuildProject.sh",
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": []
+        },
+        {
+            "label": "clean",
+            "type": "shell",
+            "command": "make clean config=debug",
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": []
+        },
+        {
+            // Requires bear:  sudo dnf install bear
+            "label": "generate compile_commands.json",
+            "type": "shell",
+            "command": "make clean config=debug && bear -- make config=debug",
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": []
+        }
+    ]
+}

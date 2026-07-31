@@ -1,0 +1,34 @@
+#pragma once
+
+#include "Egss/Renderer/RenderCommand.h"
+#include "Egss/Renderer/OrthographicCamera.h"
+#include "Egss/Renderer/Shader.h"
+
+namespace Egss {
+
+	class EGSS_API Renderer
+	{
+	public:
+		static void Init();
+		static void OnWindowResize(unsigned int width, unsigned int height);
+
+		static void BeginScene(OrthographicCamera& camera);
+		static void EndScene();
+
+		static void Submit(const std::shared_ptr<Shader>& shader,
+			const std::shared_ptr<VertexArray>& vertexArray,
+			const glm::mat4& transform = glm::mat4(1.0f));
+
+		inline static RendererAPI::API GetAPI() { return RendererAPI::GetAPI(); }
+	private:
+		// Per-scene state captured at BeginScene. A real renderer would batch
+		// submissions here rather than drawing immediately.
+		struct SceneData
+		{
+			glm::mat4 ViewProjectionMatrix;
+		};
+
+		static SceneData* s_SceneData;
+	};
+
+}

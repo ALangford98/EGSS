@@ -2,6 +2,7 @@
 #include "Egss/Window.h"
 #include "Egss/Log.h"
 
+#include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
 namespace Egss {
@@ -21,9 +22,12 @@ namespace Egss {
 		inline void SetEventCallback(const EventCallbackFn& callback) override { m_Data.EventCallback = callback; }
 		void SetVSync(bool enabled) override;
 		bool IsVSync() const override;
+
+		inline void* GetNativeWindow() const override { return m_Window; }
 	private:
 		virtual void Init(const WindowProps& props);
 		virtual void Shutdown();
+		void SetGLFWCallbacks();
 	private:
 		GLFWwindow* m_Window;
 

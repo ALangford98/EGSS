@@ -13,8 +13,8 @@ namespace Egss {
 	{
 		None = 0,
 		WindowClose, WindowResize, WindowFocus, WindowLostFocus, WindowMoved, 
-		AppTick, AppUpdate, AppRender, 
-		KeyPressed, KeyReleased, 
+		AppTick, AppUpdate, AppRender,
+		KeyPressed, KeyReleased, KeyTyped,
 		MouseButtonPressed, MouseButtonReleased, MouseMoved, MouseScrolled
 	};
 
@@ -47,6 +47,9 @@ namespace Egss {
 		{
 			return GetCategoryFlags() & category;
 		}
+
+		inline bool IsHandled() const { return m_Handled; }
+		inline void SetHandled(bool handled) { m_Handled = handled; }
 	protected:
 		bool m_Handled = false;
 	};

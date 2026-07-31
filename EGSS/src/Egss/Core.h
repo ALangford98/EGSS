@@ -31,3 +31,6 @@
 
 
 #define BIT(x) (1 << x)
+
+// Binds a member function as an event handler: EGSS_BIND_EVENT_FN(OnWindowClose)
+#define EGSS_BIND_EVENT_FN(fn) std::bind(&fn, this, std::placeholders::_1)

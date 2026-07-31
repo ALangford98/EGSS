@@ -69,15 +69,15 @@ namespace Egss {
 
 		std::string ToString() const override
 		{
-			Std::stringstream ss:
-			ss << "MouseButtonPressedEvent: " m_Button;
-			return ss.str()
+			std::stringstream ss;
+			ss << "MouseButtonPressedEvent: " << m_Button;
+			return ss.str();
 		}
 
 		EVENT_CLASS_TYPE(MouseButtonPressed)
 	};
 
-	class EGSS_API MouseButtonReleasedEvent : Public MouseButtonEvent
+	class EGSS_API MouseButtonReleasedEvent : public MouseButtonEvent
 	{
 	public:
 		MouseButtonReleasedEvent(int button)
