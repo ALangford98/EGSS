@@ -11,6 +11,8 @@
 #include <Egss.h>
 #include <imgui.h>
 
+#include "Demo.h"
+
 class ProfilerPanel : public Egss::Layer
 {
 public:

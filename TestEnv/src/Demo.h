@@ -15,18 +15,20 @@ enum class Demo
 	Breakout = 0,
 	Cube3D,
 	Physics2D,
+	Lighting2D,
 
 	Count
 };
 
-inline Demo g_ActiveDemo = Demo::Physics2D;
+inline Demo g_ActiveDemo = Demo::Lighting2D;
 
 // Order must match the enum -- the selector indexes straight into this.
 inline const char* s_DemoNames[] =
 {
 	"Breakout (2D, batched quads)",
 	"Cube3D (3D, lit meshes)",
-	"Physics2D (rigid bodies)"
+	"Physics2D (rigid bodies)",
+	"Lighting2D (2D, lit quads)"
 };
 
 static_assert(sizeof(s_DemoNames) / sizeof(s_DemoNames[0]) == (size_t)Demo::Count,

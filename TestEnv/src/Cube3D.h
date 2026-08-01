@@ -48,7 +48,10 @@ public:
 		m_EmitterPositions[0] = { -1.6f, 0.0f, 0.0f };
 		m_EmitterPositions[1] = { 1.6f, 0.0f, -1.6f };
 
-		StartEmitters();
+		// Deliberately not started here. OnAttach runs for every pushed layer
+		// whichever demo is selected, so starting a loop here plays it forever
+		// underneath whatever else you switch to. OnUpdate starts them once
+		// this demo is actually running.
 	}
 
 	// A looping clip has to be seamless or the loop point clicks. Using a
@@ -273,7 +276,20 @@ public:
 	void OnUpdate(Egss::Timestep ts) override
 	{
 		if (g_ActiveDemo != Demo::Cube3D)
+		{
+			// Hidden, not unloaded: a looping voice has to be stopped
+			// explicitly or it keeps sounding under another demo.
+			for (Egss::VoiceHandle& emitter : m_Emitters)
+			{
+				Egss::AudioEngine::Stop(emitter);
+				emitter = Egss::InvalidVoice;
+			}
 			return;
+		}
+
+		// Start (or restart) them now this demo is live.
+		if (!Egss::AudioEngine::IsPlaying(m_Emitters[0]))
+			StartEmitters();
 
 		m_FrameTime = ts.GetMilliseconds();
 

@@ -31,6 +31,14 @@ namespace Egss {
 		glm::vec4 Color;
 	};
 
+	// Same layout as LineVertex, which is why both batches can share one
+	// shader -- only the primitive type differs.
+	struct TriangleVertex
+	{
+		glm::vec3 Position;
+		glm::vec4 Color;
+	};
+
 	struct Renderer2DData
 	{
 		static constexpr unsigned int MaxQuads = 10000;
@@ -41,6 +49,7 @@ namespace Egss {
 		static constexpr unsigned int MaxTextureSlots = 16;
 		// Two vertices per segment, and debug geometry is usually sparse.
 		static constexpr unsigned int MaxLineVertices = MaxQuads * 2;
+		static constexpr unsigned int MaxTriangleVertices = MaxQuads * 3;
 
 		std::shared_ptr<VertexArray> QuadVertexArray;
 		std::shared_ptr<VertexBuffer> QuadVertexBuffer;
@@ -60,6 +69,13 @@ namespace Egss {
 		LineVertex* LineVertexBufferPtr = nullptr;
 
 		float LineWidth = 1.0f;
+
+		std::shared_ptr<VertexArray> TriangleVertexArray;
+		std::shared_ptr<VertexBuffer> TriangleVertexBuffer;
+
+		unsigned int TriangleVertexCount = 0;
+		TriangleVertex* TriangleVertexBufferBase = nullptr;
+		TriangleVertex* TriangleVertexBufferPtr = nullptr;
 
 		std::array<std::shared_ptr<Texture2D>, MaxTextureSlots> TextureSlots;
 		// Slot 0 is permanently the white texture, so flat-colour quads take
@@ -159,6 +175,21 @@ namespace Egss {
 		)";
 
 		s_Data.LineShader.reset(Shader::Create("Renderer2D_Line", lineVertexSrc, lineFragmentSrc));
+
+		// --- Triangle batch ----------------------------------------------
+		// Its own buffer, because the primitive type differs, but the same
+		// shader: position and colour is all either one needs.
+		s_Data.TriangleVertexArray.reset(VertexArray::Create());
+
+		s_Data.TriangleVertexBuffer.reset(VertexBuffer::Create(
+			Renderer2DData::MaxTriangleVertices * sizeof(TriangleVertex)));
+		s_Data.TriangleVertexBuffer->SetLayout({
+			{ ShaderDataType::Float3, "a_Position" },
+			{ ShaderDataType::Float4, "a_Color"    }
+		});
+		s_Data.TriangleVertexArray->AddVertexBuffer(s_Data.TriangleVertexBuffer);
+
+		s_Data.TriangleVertexBufferBase = new TriangleVertex[Renderer2DData::MaxTriangleVertices];
 
 		// 1x1 white pixel, so a flat-colour quad is just a white texture
 		// multiplied by its colour.
@@ -274,6 +305,9 @@ namespace Egss {
 
 		delete[] s_Data.LineVertexBufferBase;
 		s_Data.LineVertexBufferBase = nullptr;
+
+		delete[] s_Data.TriangleVertexBufferBase;
+		s_Data.TriangleVertexBufferBase = nullptr;
 	}
 
 	// Takes any Camera, so debug lines can be drawn in a perspective scene as
@@ -299,6 +333,9 @@ namespace Egss {
 
 		s_Data.LineVertexCount = 0;
 		s_Data.LineVertexBufferPtr = s_Data.LineVertexBufferBase;
+
+		s_Data.TriangleVertexCount = 0;
+		s_Data.TriangleVertexBufferPtr = s_Data.TriangleVertexBufferBase;
 	}
 
 	void Renderer2D::EndScene()
@@ -310,8 +347,26 @@ namespace Egss {
 	{
 		EGSS_PROFILE_SCOPE("Renderer2D::Flush");
 
+		// Triangles before lines, so debug outlines draw on top of any filled
+		// geometry rather than under it.
 		FlushQuads();
+		FlushTriangles();
 		FlushLines();
+	}
+
+	void Renderer2D::FlushTriangles()
+	{
+		if (s_Data.TriangleVertexCount == 0)
+			return;
+
+		unsigned int dataSize = (unsigned int)((unsigned char*)s_Data.TriangleVertexBufferPtr -
+			(unsigned char*)s_Data.TriangleVertexBufferBase);
+		s_Data.TriangleVertexBuffer->SetData(s_Data.TriangleVertexBufferBase, dataSize);
+
+		s_Data.LineShader->Bind();
+		RenderCommand::DrawTriangles(s_Data.TriangleVertexArray, s_Data.TriangleVertexCount);
+
+		s_Data.Stats.DrawCalls++;
 	}
 
 	void Renderer2D::FlushQuads()
@@ -589,6 +644,40 @@ namespace Egss {
 
 		for (int i = 0; i < 4; i++)
 			DrawLine(corners[i], corners[(i + 1) % 4], color);
+	}
+
+	void Renderer2D::DrawTriangle(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
+		const glm::vec4& color)
+	{
+		DrawTriangle(a, b, c, color, color, color);
+	}
+
+	// Per-corner colour, which is what gives a light polygon its falloff: the
+	// centre bright, the outer edge dim.
+	void Renderer2D::DrawTriangle(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
+		const glm::vec4& colorA, const glm::vec4& colorB, const glm::vec4& colorC)
+	{
+		if (s_Data.TriangleVertexCount + 3 > Renderer2DData::MaxTriangleVertices)
+			NextBatch();
+
+		const glm::vec3 positions[3] = { a, b, c };
+		const glm::vec4 colors[3] = { colorA, colorB, colorC };
+
+		for (int i = 0; i < 3; i++)
+		{
+			s_Data.TriangleVertexBufferPtr->Position = positions[i];
+			s_Data.TriangleVertexBufferPtr->Color = colors[i];
+			s_Data.TriangleVertexBufferPtr++;
+		}
+
+		s_Data.TriangleVertexCount += 3;
+		s_Data.Stats.TriangleCount++;
+	}
+
+	void Renderer2D::DrawTriangle(const glm::vec2& a, const glm::vec2& b, const glm::vec2& c,
+		const glm::vec4& color)
+	{
+		DrawTriangle(glm::vec3(a, 0.0f), glm::vec3(b, 0.0f), glm::vec3(c, 0.0f), color);
 	}
 
 	float Renderer2D::GetLineWidth()

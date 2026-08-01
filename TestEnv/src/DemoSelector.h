@@ -104,6 +104,7 @@ private:
 			case Demo::Breakout: return "Breakout";
 			case Demo::Cube3D:   return "Cube3D";
 			case Demo::Physics2D: return "Physics";
+			case Demo::Lighting2D: return "Lighting2D";
 			default: break;
 		}
 		return "?";

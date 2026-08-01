@@ -96,6 +96,17 @@ namespace Egss {
 		static void DrawRect(const glm::mat4& transform,
 			const glm::vec4& color = glm::vec4(1.0f));
 
+		// Filled triangles, for generated geometry -- light polygons, vision
+		// cones, anything that isn't a quad. Their own batch, so they cost one
+		// draw call however many you submit.
+		static void DrawTriangle(const glm::vec2& a, const glm::vec2& b, const glm::vec2& c,
+			const glm::vec4& color = glm::vec4(1.0f));
+		static void DrawTriangle(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
+			const glm::vec4& color = glm::vec4(1.0f));
+		// Per-corner colour: bright at the light, dim at the edge.
+		static void DrawTriangle(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
+			const glm::vec4& colorA, const glm::vec4& colorB, const glm::vec4& colorC);
+
 		// Values above 1.0 are ignored by most core-profile drivers.
 		static float GetLineWidth();
 		static void SetLineWidth(float width);
@@ -105,6 +116,7 @@ namespace Egss {
 			unsigned int DrawCalls = 0;
 			unsigned int QuadCount = 0;
 			unsigned int LineCount = 0;
+			unsigned int TriangleCount = 0;
 
 			unsigned int GetTotalVertexCount() const { return QuadCount * 4; }
 			unsigned int GetTotalIndexCount() const { return QuadCount * 6; }
@@ -117,6 +129,7 @@ namespace Egss {
 		static void NextBatch();
 		static void FlushQuads();
 		static void FlushLines();
+		static void FlushTriangles();
 	};
 
 }

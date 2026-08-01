@@ -40,6 +40,11 @@ namespace Egss {
 			s_RendererAPI->DrawLines(vertexArray, vertexCount);
 		}
 
+		inline static void DrawTriangles(const std::shared_ptr<VertexArray>& vertexArray, unsigned int vertexCount)
+		{
+			s_RendererAPI->DrawTriangles(vertexArray, vertexCount);
+		}
+
 		inline static void SetLineWidth(float width)
 		{
 			s_RendererAPI->SetLineWidth(width);

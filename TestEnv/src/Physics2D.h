@@ -30,7 +30,10 @@ public:
 		BuildScene();
 		m_ImpactClip = MakeImpactClip();
 		m_ToneClip = MakeToneClip();
-		StartEmitter();
+		// Deliberately not started here. OnAttach runs for every layer that
+		// was pushed, whichever demo is selected, so starting a looping sound
+		// here means it plays forever behind whatever else you switch to.
+		// UpdateOcclusion starts it once this demo is actually running.
 	}
 
 	// Synthesised rather than loaded, so the sandbox still needs no asset
@@ -220,7 +223,13 @@ public:
 	void OnFixedUpdate(Egss::Timestep fixedStep) override
 	{
 		if (g_ActiveDemo != Demo::Physics2D)
+		{
+			// Hidden, not unloaded: a looping voice has to be stopped
+			// explicitly or it keeps playing under another demo.
+			Egss::AudioEngine::Stop(m_Emitter);
+			m_Emitter = Egss::InvalidVoice;
 			return;
+		}
 
 		if (m_Paused)
 			return;

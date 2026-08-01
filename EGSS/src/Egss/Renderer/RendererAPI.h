@@ -33,6 +33,12 @@ namespace Egss {
 		// endpoints, which debug geometry generally doesn't.
 		virtual void DrawLines(const std::shared_ptr<VertexArray>& vertexArray, unsigned int vertexCount) = 0;
 
+		// Unindexed triangles: every three vertices are one triangle. Used for
+		// generated geometry like light polygons, where nothing is reused and
+		// an index buffer would only add bookkeeping.
+		virtual void DrawTriangles(const std::shared_ptr<VertexArray>& vertexArray, unsigned int vertexCount) = 0;
+		
+		// virtual void DrawTriangles(const std::shared_ptr<VertexArray>& vertexArray,unsigned int vertexCount) = 0;
 		// Widths above 1.0 are not guaranteed in a core profile and are
 		// ignored by most drivers -- thick lines have to be built from quads.
 		virtual void SetLineWidth(float width) = 0;

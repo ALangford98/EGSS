@@ -95,6 +95,13 @@ namespace Egss {
 			body.Type = BodyType::Static;
 			return body;
 		}
+
+		static RigidBody2D MakeStaticCircle(const glm::vec2& position, float radius)
+		{
+			RigidBody2D body = MakeCircle(position, radius, 0.0f);
+			body.Type = BodyType::Static;
+			return body;
+		}
 	};
 
 }

@@ -22,6 +22,7 @@
 #include "Breakout.h"
 #include "Cube3D.h"
 #include "Physics2D.h"
+#include "Lighting2D.h"
 #include "ProfilerPanel.h"
 
 class TestEnv : public Egss::Application
@@ -35,6 +36,7 @@ public:
 		PushLayer(new Breakout());
 		PushLayer(new Cube3D());
 		PushLayer(new Physics2D());
+		PushLayer(new Lighting2D());
 		PushLayer(new DemoSelector());
 		PushLayer(new ProfilerPanel());
 	}

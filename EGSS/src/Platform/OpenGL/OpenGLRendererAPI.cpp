@@ -71,6 +71,12 @@ namespace Egss {
 		glDrawArrays(GL_LINES, 0, vertexCount);
 	}
 
+	void OpenGLRendererAPI::DrawTriangles(const std::shared_ptr<VertexArray>& vertexArray, unsigned int vertexCount)
+	{
+		vertexArray->Bind();
+		glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+	}
+
 	void OpenGLRendererAPI::SetLineWidth(float width)
 	{
 		glLineWidth(width);
