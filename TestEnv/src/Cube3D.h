@@ -33,6 +33,65 @@ public:
 		BuildCube();
 		BuildShader();
 		BuildTexture();
+		BuildAudio();
+	}
+
+	// Two looping emitters parked in the world. With the listener riding the
+	// fly camera, walking and turning changes what you hear -- which is the
+	// whole point of positional audio and impossible to demonstrate with a
+	// fixed 2D view.
+	void BuildAudio()
+	{
+		m_HumClip = MakeHum(196.0f, 2.0f);
+		m_ChimeClip = MakeHum(587.0f, 2.0f);
+
+		m_EmitterPositions[0] = { -1.6f, 0.0f, 0.0f };
+		m_EmitterPositions[1] = { 1.6f, 0.0f, -1.6f };
+
+		StartEmitters();
+	}
+
+	// A looping clip has to be seamless or the loop point clicks. Using a
+	// whole number of cycles in the buffer means the end lines up with the
+	// start exactly.
+	static std::shared_ptr<Egss::AudioClip> MakeHum(float frequency, float seconds)
+	{
+		const unsigned int rate = Egss::AudioEngine::GetSampleRate();
+		unsigned int frames = (unsigned int)(seconds * rate);
+
+		float cycles = std::round(frequency * seconds);
+		float exactFrequency = cycles / seconds;
+		frames = (unsigned int)std::round(cycles * rate / exactFrequency);
+
+		std::vector<float> samples(frames);
+		for (unsigned int i = 0; i < frames; i++)
+		{
+			float t = (float)i / (float)rate;
+			// A little second harmonic, so it is not a pure sine.
+			samples[i] = (std::sin(glm::two_pi<float>() * exactFrequency * t) * 0.6f
+				+ std::sin(glm::two_pi<float>() * exactFrequency * 2.0f * t) * 0.2f) * 0.5f;
+		}
+
+		return Egss::AudioClip::CreateFromSamples(std::move(samples), 1);
+	}
+
+	void StartEmitters()
+	{
+		for (int i = 0; i < 2; i++)
+		{
+			Egss::AudioEngine::Stop(m_Emitters[i]);
+
+			Egss::Audio3DParams params;
+			params.Position = m_EmitterPositions[i];
+			params.Volume = 0.5f;
+			params.Loop = true;
+			params.MinDistance = m_EmitterMinDistance;
+			params.MaxDistance = m_EmitterMaxDistance;
+			params.DopplerFactor = m_DopplerFactor;
+
+			m_Emitters[i] = Egss::AudioEngine::PlayAt(
+				i == 0 ? m_HumClip : m_ChimeClip, params);
+		}
 	}
 
 	// ---------------------------------------------------------------------
@@ -218,7 +277,22 @@ public:
 
 		m_FrameTime = ts.GetMilliseconds();
 
+		glm::vec3 previousCameraPosition = m_Camera.GetPosition();
 		MoveCamera(ts);
+
+		// The listener rides the camera. PerspectiveCamera already hands back
+		// position, forward and up in exactly the form a listener wants.
+		Egss::AudioListener listener;
+		listener.Position = m_Camera.GetPosition();
+		listener.Forward = m_Camera.GetForward();
+		listener.Up = m_Camera.GetUp();
+		// Velocity is only needed for Doppler, and is just how far the camera
+		// moved this frame over how long the frame took.
+		listener.Velocity = ts > 0.0f
+			? (m_Camera.GetPosition() - previousCameraPosition) / (float)ts
+			: glm::vec3(0.0f);
+
+		Egss::AudioEngine::SetListener(listener);
 
 		if (m_Spinning)
 			m_Rotation += ts * 35.0f;
@@ -271,11 +345,52 @@ public:
 		// Debug lines under a perspective camera. Renderer2D::BeginScene takes
 		// any Camera, so the line batch works here exactly as it does in 2D --
 		// the "2D" in the name is about the primitives, not the projection.
-		if (m_ShowGrid)
+		if (m_ShowGrid || m_ShowEmitters)
 		{
 			Egss::Renderer2D::BeginScene(m_Camera);
-			DrawGrid();
+
+			if (m_ShowGrid)
+				DrawGrid();
+
+			if (m_ShowEmitters)
+				DrawEmitters();
+
 			Egss::Renderer2D::EndScene();
+		}
+	}
+
+	// A box round each emitter, brightened by how loud it currently is, so
+	// what you hear and what you see agree.
+	void DrawEmitters()
+	{
+		for (int i = 0; i < 2; i++)
+		{
+			Egss::VoiceDebug debug;
+			bool live = Egss::AudioEngine::GetVoiceDebug(m_Emitters[i], debug);
+
+			float brightness = live ? 0.25f + debug.Gain * 0.75f : 0.15f;
+			glm::vec4 color = i == 0
+				? glm::vec4(0.35f, 0.85f, 1.0f, 1.0f) * brightness
+				: glm::vec4(1.0f, 0.75f, 0.35f, 1.0f) * brightness;
+			color.a = 1.0f;
+
+			const glm::vec3& p = m_EmitterPositions[i];
+			const float r = 0.22f;
+
+			// A wireframe cube, drawn from the lines we already have.
+			glm::vec3 corners[8] = {
+				{ p.x - r, p.y - r, p.z - r }, { p.x + r, p.y - r, p.z - r },
+				{ p.x + r, p.y + r, p.z - r }, { p.x - r, p.y + r, p.z - r },
+				{ p.x - r, p.y - r, p.z + r }, { p.x + r, p.y - r, p.z + r },
+				{ p.x + r, p.y + r, p.z + r }, { p.x - r, p.y + r, p.z + r }
+			};
+
+			for (int e = 0; e < 4; e++)
+			{
+				Egss::Renderer2D::DrawLine(corners[e], corners[(e + 1) % 4], color);
+				Egss::Renderer2D::DrawLine(corners[4 + e], corners[4 + (e + 1) % 4], color);
+				Egss::Renderer2D::DrawLine(corners[e], corners[4 + e], color);
+			}
 		}
 	}
 
@@ -386,6 +501,32 @@ public:
 		ImGui::Checkbox("Show grid", &m_ShowGrid);
 
 		ImGui::Separator();
+		ImGui::Text("Audio: %s   %u voices", Egss::AudioEngine::GetBackendName(),
+			Egss::AudioEngine::GetActiveVoiceCount());
+		ImGui::Checkbox("Show emitters", &m_ShowEmitters);
+
+		for (int i = 0; i < 2; i++)
+		{
+			Egss::VoiceDebug debug;
+			if (Egss::AudioEngine::GetVoiceDebug(m_Emitters[i], debug))
+			{
+				ImGui::Text("emitter %d: %.2fm  gain %.2f  pan %+.2f  doppler %.3f",
+					i, debug.Distance, debug.Gain, debug.Pan, debug.PitchScale);
+			}
+			else
+			{
+				ImGui::TextDisabled("emitter %d: not playing", i);
+			}
+		}
+
+		if (ImGui::SliderFloat("Emitter range", &m_EmitterMaxDistance, 1.0f, 40.0f))
+			StartEmitters();
+		if (ImGui::SliderFloat("Doppler", &m_DopplerFactor, 0.0f, 8.0f))
+			StartEmitters();
+		if (ImGui::Button("Restart emitters"))
+			StartEmitters();
+
+		ImGui::Separator();
 		ImGui::SliderInt("Grid", &m_GridSize, 1, 8);
 		ImGui::SliderFloat("Scale", &m_Scale, 0.2f, 1.5f);
 		ImGui::SliderFloat("Ambient", &m_Ambient, 0.0f, 1.0f);
@@ -408,6 +549,15 @@ private:
 
 	float m_Rotation = 0.0f;
 	bool m_Spinning = true;
+
+	std::shared_ptr<Egss::AudioClip> m_HumClip;
+	std::shared_ptr<Egss::AudioClip> m_ChimeClip;
+	Egss::VoiceHandle m_Emitters[2] = { Egss::InvalidVoice, Egss::InvalidVoice };
+	glm::vec3 m_EmitterPositions[2];
+	float m_EmitterMinDistance = 1.0f;
+	float m_EmitterMaxDistance = 12.0f;
+	float m_DopplerFactor = 2.0f;
+	bool m_ShowEmitters = true;
 
 	bool m_ShowGrid = true;
 	int m_GridSize = 3;

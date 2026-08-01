@@ -29,6 +29,8 @@ public:
 	{
 		BuildScene();
 		m_ImpactClip = MakeImpactClip();
+		m_ToneClip = MakeToneClip();
+		StartEmitter();
 	}
 
 	// Synthesised rather than loaded, so the sandbox still needs no asset
@@ -56,6 +58,108 @@ public:
 		}
 
 		return Egss::AudioClip::CreateFromSamples(std::move(samples), 1);
+	}
+
+	// A steady tone, so occlusion is audible as a change in timbre rather
+	// than something you have to catch during a one-shot.
+	static std::shared_ptr<Egss::AudioClip> MakeToneClip()
+	{
+		const unsigned int rate = Egss::AudioEngine::GetSampleRate();
+		const float seconds = 1.0f;
+
+		// A whole number of cycles, so the loop point is seamless.
+		float cycles = std::round(330.0f * seconds);
+		unsigned int frames = (unsigned int)(seconds * rate);
+
+		std::vector<float> samples(frames);
+		for (unsigned int i = 0; i < frames; i++)
+		{
+			float t = (float)i / (float)frames;
+			// Harmonics matter here: a pure sine has nothing above its
+			// fundamental for the occlusion filter to remove, so it would
+			// barely change. Real sounds are not pure sines.
+			float phase = glm::two_pi<float>() * cycles * t;
+			samples[i] = (std::sin(phase) * 0.5f
+				+ std::sin(phase * 3.0f) * 0.25f
+				+ std::sin(phase * 7.0f) * 0.15f) * 0.6f;
+		}
+
+		return Egss::AudioClip::CreateFromSamples(std::move(samples), 1);
+	}
+
+	void StartEmitter()
+	{
+		Egss::AudioEngine::Stop(m_Emitter);
+
+		Egss::Audio3DParams params;
+		params.Position = { m_EmitterPosition.x, m_EmitterPosition.y, 0.0f };
+		params.Volume = 0.45f;
+		params.Loop = true;
+		params.MinDistance = m_ListenerMinDistance;
+		params.MaxDistance = m_ListenerMaxDistance;
+		params.DopplerFactor = 0.0f;
+
+		m_Emitter = Egss::AudioEngine::PlayAt(m_ToneClip, params);
+	}
+
+	// A reverb zone is just a region the game tests the listener against. The
+	// engine crossfades between whatever settings it is handed, so stepping
+	// over the boundary is a change of room rather than a click -- there is no
+	// need for the zone itself to know anything about fading.
+	void UpdateReverbZone()
+	{
+		glm::vec2 offset = glm::abs(m_ListenerPosition - m_ZoneCentre);
+		m_ListenerInZone = offset.x <= m_ZoneHalfExtents.x && offset.y <= m_ZoneHalfExtents.y;
+
+		Egss::ReverbSettings settings;
+		if (m_ListenerInZone)
+		{
+			settings.Wet = m_ZoneWet;
+			settings.RoomSize = m_ZoneRoomSize;
+			settings.Damping = m_ZoneDamping;
+			settings.Width = 1.0f;
+		}
+		else
+		{
+			// Outside, the space is open: no reverb at all.
+			settings.Wet = 0.0f;
+		}
+
+		Egss::AudioEngine::SetReverb(settings);
+	}
+
+	// Occlusion is a game question, not an audio one -- the engine has no idea
+	// what counts as an obstruction. Three rays rather than one gives a graded
+	// answer instead of a hard on/off, so a source edging behind a body fades
+	// rather than snapping.
+	void UpdateOcclusion()
+	{
+		if (!Egss::AudioEngine::IsPlaying(m_Emitter))
+			StartEmitter();
+
+		glm::vec2 delta = m_EmitterPosition - m_ListenerPosition;
+		float distance = glm::length(delta);
+
+		if (distance < 0.0001f)
+		{
+			m_Occlusion = 0.0f;
+			Egss::AudioEngine::SetVoiceOcclusion(m_Emitter, 0.0f);
+			return;
+		}
+
+		glm::vec2 direction = delta / distance;
+		glm::vec2 perpendicular = { -direction.y, direction.x };
+
+		int blocked = 0;
+		for (int i = 0; i < 3; i++)
+		{
+			glm::vec2 offset = perpendicular * (float)(i - 1) * 0.05f;
+			m_OcclusionRayHit[i] = m_World.Raycast(m_ListenerPosition + offset, direction, distance).Hit;
+			blocked += m_OcclusionRayHit[i] ? 1 : 0;
+		}
+
+		m_Occlusion = (float)blocked / 3.0f;
+		Egss::AudioEngine::SetVoiceOcclusion(m_Emitter, m_Occlusion);
 	}
 
 	void BuildScene()
@@ -132,10 +236,20 @@ public:
 			}
 		}
 
+		// The listener sits slightly in front of the plane looking at it, so
+		// sources are never at exactly zero distance.
+		Egss::AudioListener listener;
+		listener.Position = { m_ListenerPosition.x, m_ListenerPosition.y, 1.0f };
+		listener.Forward = { 0.0f, 0.0f, -1.0f };
+		listener.Up = { 0.0f, 1.0f, 0.0f };
+		Egss::AudioEngine::SetListener(listener);
+
 		m_World.Gravity = { 0.0f, m_Gravity };
 		m_World.Step(fixedStep);
 
 		PlayImpactSounds();
+		UpdateOcclusion();
+		UpdateReverbZone();
 	}
 
 	// A contact carries the total impulse the solver applied along its normal,
@@ -160,15 +274,22 @@ public:
 			if (contact.NormalImpulse < m_ImpactThreshold)
 				continue;
 
-			Egss::AudioParams params;
+			// Positioned in the world rather than panned by hand: the engine
+			// works out gain and pan from where the listener is, so moving the
+			// listener slider below changes what you hear without this code
+			// knowing anything about it.
+			Egss::Audio3DParams params;
+			params.Position = { contact.Point.x, contact.Point.y, 0.0f };
 			params.Volume = std::min(contact.NormalImpulse * 1.6f, 1.0f) * m_ImpactVolume;
-			// Pan from where it happened -- the cheapest possible positional
-			// audio, and a preview of what a real listener will do.
-			params.Pan = std::min(std::max(contact.Point.x / 1.45f, -1.0f), 1.0f);
 			// Vary the pitch so repeated hits don't sound mechanical.
 			params.Pitch = 0.85f + 0.3f * std::abs(std::sin((float)m_SpawnCounter * 12.9898f));
+			params.MinDistance = m_ListenerMinDistance;
+			params.MaxDistance = m_ListenerMaxDistance;
+			// Impacts are instantaneous; Doppler on a one-shot this short is
+			// not worth the confusion.
+			params.DopplerFactor = 0.0f;
 
-			Egss::AudioEngine::Play(m_ImpactClip, params);
+			Egss::AudioEngine::PlayAt(m_ImpactClip, params);
 		}
 
 		m_PreviousContacts.swap(m_CurrentContacts);
@@ -226,6 +347,41 @@ public:
 
 		if (m_ShowRays)
 			DrawRayFan();
+
+		// Where the ears are.
+		Egss::Renderer2D::DrawRect(m_ListenerPosition, { 0.07f, 0.07f },
+			glm::vec4(1.0f, 0.85f, 0.2f, 1.0f));
+
+		// The reverb zone, brighter while the listener is inside it.
+		glm::vec4 zoneColor = m_ListenerInZone
+			? glm::vec4(0.55f, 0.45f, 1.0f, 1.0f)
+			: glm::vec4(0.30f, 0.25f, 0.55f, 1.0f);
+		Egss::Renderer2D::DrawRect(m_ZoneCentre, m_ZoneHalfExtents * 2.0f, zoneColor);
+
+		// The emitter, and the three rays deciding how muffled it sounds.
+		Egss::Renderer2D::DrawRect(m_EmitterPosition, { 0.09f, 0.09f },
+			glm::vec4(0.4f, 1.0f, 0.6f, 1.0f));
+
+		glm::vec2 delta = m_EmitterPosition - m_ListenerPosition;
+		float distance = glm::length(delta);
+		if (distance > 0.0001f)
+		{
+			glm::vec2 direction = delta / distance;
+			glm::vec2 perpendicular = { -direction.y, direction.x };
+
+			for (int i = 0; i < 3; i++)
+			{
+				glm::vec2 offset = perpendicular * (float)(i - 1) * 0.05f;
+				glm::vec4 color = m_OcclusionRayHit[i]
+					? glm::vec4(1.0f, 0.3f, 0.3f, 1.0f)
+					: glm::vec4(0.4f, 1.0f, 0.6f, 1.0f);
+
+				Egss::Renderer2D::DrawLine(m_ListenerPosition + offset,
+					m_EmitterPosition + offset, color);
+			}
+		}
+		DrawCircleOutline(m_ListenerPosition, m_ListenerMaxDistance,
+			glm::vec4(1.0f, 0.85f, 0.2f, 0.25f));
 
 		Egss::Renderer2D::EndScene();
 	}
@@ -376,6 +532,28 @@ public:
 
 		ImGui::SliderFloat("Impact volume", &m_ImpactVolume, 0.0f, 1.0f);
 		ImGui::SliderFloat("Impact threshold", &m_ImpactThreshold, 0.0f, 0.5f);
+		ImGui::SliderFloat2("Listener", &m_ListenerPosition.x, -1.4f, 1.4f);
+		ImGui::SliderFloat2("Emitter", &m_EmitterPosition.x, -1.4f, 1.4f);
+
+		Egss::VoiceDebug debug;
+		if (Egss::AudioEngine::GetVoiceDebug(m_Emitter, debug))
+		{
+			ImGui::Text("emitter: %.2fm  gain %.2f  pan %+.2f", debug.Distance, debug.Gain, debug.Pan);
+			ImGui::Text("occlusion: %.2f requested, %.2f applied", m_Occlusion, debug.Occlusion);
+		}
+		else
+		{
+			ImGui::TextDisabled("emitter: not playing");
+		}
+		ImGui::SliderFloat("Hearing range", &m_ListenerMaxDistance, 0.5f, 8.0f);
+
+		ImGui::Separator();
+		ImGui::Text("Reverb zone: %s", m_ListenerInZone ? "inside" : "outside");
+		ImGui::Text("applied wet %.3f", Egss::AudioEngine::GetReverb().Wet);
+		ImGui::SliderFloat2("Zone centre", &m_ZoneCentre.x, -1.4f, 1.4f);
+		ImGui::SliderFloat("Zone wet", &m_ZoneWet, 0.0f, 1.0f);
+		ImGui::SliderFloat("Zone room size", &m_ZoneRoomSize, 0.0f, 0.95f);
+		ImGui::SliderFloat("Zone damping", &m_ZoneDamping, 0.0f, 1.0f);
 
 		ImGui::Separator();
 		ImGui::Checkbox("Show colliders", &m_ShowColliders);
@@ -435,6 +613,21 @@ private:
 	std::unordered_set<unsigned long long> m_PreviousContacts;
 	std::unordered_set<unsigned long long> m_CurrentContacts;
 	float m_ImpactVolume = 0.55f;
+	glm::vec2 m_ListenerPosition = { -1.0f, 0.35f };
+	glm::vec2 m_EmitterPosition = { 1.1f, -0.3f };
+	std::shared_ptr<Egss::AudioClip> m_ToneClip;
+	Egss::VoiceHandle m_Emitter = Egss::InvalidVoice;
+	float m_Occlusion = 0.0f;
+
+	glm::vec2 m_ZoneCentre = { 0.85f, -0.1f };
+	glm::vec2 m_ZoneHalfExtents = { 0.5f, 0.55f };
+	float m_ZoneWet = 0.65f;
+	float m_ZoneRoomSize = 0.85f;
+	float m_ZoneDamping = 0.25f;
+	bool m_ListenerInZone = false;
+	bool m_OcclusionRayHit[3] = { false, false, false };
+	float m_ListenerMinDistance = 0.35f;
+	float m_ListenerMaxDistance = 3.0f;
 	float m_ImpactThreshold = 0.05f;
 
 	float m_FrameTime = 0.0f;

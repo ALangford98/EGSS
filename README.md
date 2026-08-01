@@ -616,10 +616,10 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       profiler entry below), so this stays unstarted deliberately. The trigger
       is heavy raycasting — hundreds of rays against hundreds of bodies — not
       the collision pairs
-- [ ] **Positional audio** — a listener on the camera, distance rolloff, and
-      Doppler from physics velocities. Playback and panning are done; see
-      [Audio and acoustics](#audio-and-acoustics) below
-- [ ] **Acoustics** — occlusion via raycasts, then reverb zones
+- [ ] **Early reflections and convolution reverb** — the next steps up from
+      zones. See [Audio and acoustics](#audio-and-acoustics) below
+- [ ] **3D physics or a 3D occlusion query.** `Raycast` is 2D, so Cube3D's
+      emitters cannot be occluded — only the 2D demo can
 
 ---
 
@@ -835,6 +835,108 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-01 (reverb zones)
+
+- **`AudioEngine::SetReverb`** with wet, room size, damping and width, applied
+  to the master bus. A Schroeder arrangement: four damped comb filters in
+  parallel into two allpasses in series, per channel, with Freeverb's delay
+  lengths scaled from 44.1kHz to 48kHz.
+- The delay lengths matter more than they look. Lengths sharing common factors
+  make echoes line up, which is heard as a ringing tone rather than a room;
+  the right channel's are offset by 25 samples, and that offset is the whole
+  of the stereo image.
+- Damping is a low pass **inside** each comb's feedback path, so every trip
+  round the delay loses a little more top end -- which is what real rooms do,
+  and what stops the tail sounding metallic.
+- Settings crossfade over ~0.35s, so a "zone" is just a region the game tests
+  the listener against. It needs to know nothing about fading. When the wet
+  level reaches zero the effect is skipped entirely, so a game with no reverb
+  pays nothing for it.
+- Buffers are allocated once in `Init`; the audio thread never allocates.
+- Physics2D has a zone rectangle that lights up when the listener is inside.
+
+Verified numerically: dry gives a tail energy of exactly **0** (the bypass is
+clean), a room size of 0.85 gives **106.2**, and 0.40 gives **49.1** -- a
+bigger room, a longer tail.
+
+That test first reported zero tail for every setting. The reverb was fine: the
+shortest comb delay is 1214 samples and I was measuring the first 1024, so no
+echo had arrived yet. Measuring past the delay line was all it needed.
+
+### 2026-08-01 (occlusion)
+
+- **`AudioEngine::SetVoiceOcclusion`** — 0 is a clear line, 1 is fully
+  blocked. Drops the voice to 30% gain *and* rolls its top end off with a
+  one-pole low pass (18 kHz down to 480 Hz). Attenuation alone just sounds
+  further away; losing the high frequencies is what sells "behind a wall".
+- Changes are smoothed over ~50 ms, so a ray flicking across an edge does not
+  click. `VoiceDebug` reports both requested and applied values.
+- **The engine deliberately does not raycast for itself.** What counts as an
+  occluder is a game question, and the audio system has no business depending
+  on the physics one — especially as physics is 2D and audio is 3D. The demo
+  casts three rays from listener to source and feeds in the blocked fraction,
+  which grades the effect instead of snapping it on and off.
+- `GetVoiceDebug` now fills a `VoiceDebug` struct rather than four out
+  parameters, which stops the signature growing every time something is added.
+
+Verified numerically, with predictions worked out independently of the code:
+
+| | measured | predicted |
+| --- | --- | --- |
+| clear DC | 0.70711 | 0.70711 (centre pan) |
+| occluded DC | 0.21213 | 0.21213 (0.30x gain, DC passes the filter) |
+| clear Nyquist | 0.70711 | unfiltered |
+| occluded Nyquist | 0.006662 | 0.00666 (one-pole at 480 Hz) |
+
+The first run of that test looked wrong -- occluded DC read 0.267 against an
+expected 0.212. It was right: the smoothing had only reached 0.888 of the way,
+and 0.7071 x (1 + (0.3 - 1) x 0.888) is 0.267 exactly. The exponential settles
+to 1 - 0.9467^n per block, which is precisely what it did. The test now renders
+long enough to converge.
+
+### 2026-08-01 (positional audio)
+
+- **`AudioListener`** — position, forward, up and velocity. `PerspectiveCamera`
+  already exposes the first three in exactly that form, which is not an
+  accident.
+- **`AudioEngine::PlayAt`** with `Audio3DParams`: world position, velocity,
+  min/max distance and a Doppler factor. Gain, pan and pitch are recomputed
+  from the listener **on every audio block**, not once at Play, so a moving
+  source or a turning listener is heard immediately without the caller doing
+  anything.
+- **`VoiceHandle`** with a generation counter, so a handle to a finished
+  one-shot cannot control whatever sound later reused its slot. `Stop`,
+  `IsPlaying`, `SetVoicePosition/Volume/Pitch`, and `GetVoiceDebug` for
+  showing why something sounds the way it does.
+- Attenuation is inverse-distance multiplied by a linear fade, so it actually
+  reaches zero at `MaxDistance`. Pure inverse-distance never does, and distant
+  sources pile up and muddy everything.
+- Voice parameters that can change mid-playback are individually atomic; the
+  mixer still takes no locks.
+- Cube3D puts two looping emitters in the world with the listener riding the
+  fly camera — the only way to demonstrate this, since it needs movement.
+  Physics2D positions its impacts and has a draggable listener.
+
+**A bug worth recording.** Every spatial reading came back as uninitialised
+garbage. The cause was in handle packing: I OR'd `0x80000000` in as a
+"never zero" marker, but the generation field occupies bits 8-31, so the
+marker landed inside it and *every* handle failed its own generation check.
+The marker was never needed — generation starts at 1, so a valid handle is
+always at least 0x100. My test also deserved blame for printing uninitialised
+floats instead of checking the returned bool; it now fails loudly.
+
+Verified numerically with the device stopped: a source inside MinDistance is
+at full gain and centred; one 3 units to the right reads gain 0.25926
+(= (1/3) x (1 - 2/9)) and pan +1.0, mirrored exactly on the left; beyond
+MaxDistance the output is silent; a source receding at 34.3 m/s gives a pitch
+ratio of 0.90909 (= 343/377.3) and approaching gives 1.11111 (= 343/308.7);
+and a stale handle reports not-playing. All exact.
+
+Live check against the geometry: with the camera at (0, 1.6, 6), emitters at
+(-1.6, 0, 0) and (1.6, 0, -1.6) report 6.41m / 7.93m — matching their true
+distances — with pan -0.25 and +0.20, and gains matching the attenuation
+formula to two decimal places.
 
 ### 2026-08-01 (audio playback)
 

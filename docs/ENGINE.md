@@ -195,6 +195,22 @@ AudioEngine::Play(clip, { volume, pitch, pan, loop });
 AudioEngine::SetMasterVolume(0.8f);
 AudioEngine::IsAvailable();                          // false = no device, still safe
 
+// Positional — gain, pan and Doppler recomputed from the listener every block
+AudioEngine::SetListener({ cam.GetPosition(), cam.GetForward(), cam.GetUp(), velocity });
+VoiceHandle v = AudioEngine::PlayAt(clip, { position, velocity, volume, pitch, loop,
+                                            minDistance, maxDistance, dopplerFactor });
+AudioEngine::SetVoicePosition(v, newPosition, newVelocity);   // ignored if stale
+AudioEngine::Stop(v);
+
+// Occlusion — you raycast, the engine muffles. 0 clear, 1 fully blocked.
+auto hit = world.Raycast(listenerPos, toSource, distance);
+AudioEngine::SetVoiceOcclusion(v, hit.Hit ? 1.0f : 0.0f);
+VoiceDebug d; AudioEngine::GetVoiceDebug(v, d);   // Distance/Gain/Pan/Occlusion
+
+// Reverb — a "zone" is just a region you test the listener against;
+// the engine crossfades between whatever settings you hand it.
+AudioEngine::SetReverb({ wet, roomSize, damping, width });
+
 // Physics — a standalone world; step it from OnFixedUpdate
 PhysicsWorld2D world;
 world.Gravity = { 0.0f, -9.81f };
