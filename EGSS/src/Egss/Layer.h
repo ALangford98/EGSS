@@ -18,7 +18,18 @@ namespace Egss {
 
 		virtual void OnAttach() {}
 		virtual void OnDetach() {}
+
+		// Simulation. Called zero or more times per frame with a step that is
+		// always the same length, so results do not depend on framerate and a
+		// replay reproduces exactly. Anything physical belongs here.
+		virtual void OnFixedUpdate(Timestep fixedStep) {}
+
+		// Presentation. Called exactly once per frame with the real elapsed
+		// time. Camera feel, animation, and drawing belong here; use
+		// Application::Get().GetInterpolationAlpha() to blend between the last
+		// two simulation states so motion stays smooth.
 		virtual void OnUpdate(Timestep ts) {}
+
 		virtual void OnImGuiRender() {}
 		virtual void OnEvent(Event& event) {}
 

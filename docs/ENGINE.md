@@ -14,7 +14,8 @@ You write one class. Everything else already exists:
 class MyGame : public Egss::Layer
 {
     void OnAttach() override            {}  // load textures, build state
-    void OnUpdate(Egss::Timestep ts) override {}  // move things, draw them
+    void OnFixedUpdate(Egss::Timestep step) override {}  // simulate
+    void OnUpdate(Egss::Timestep ts) override {}         // draw
     void OnImGuiRender() override       {}  // debug panels
     void OnEvent(Egss::Event& e) override {} // one-shot input
 };
@@ -40,14 +41,19 @@ One frame, top to bottom:
 ```
 main()                                    EntryPoint.h  (engine-owned)
   └─ CreateApplication()                  yours
-  └─ Application::Run()                   Application.cpp:89
-       ├─ Timestep = now - lastFrame      Application.cpp:94
-       ├─ for each layer: OnUpdate(ts)    Application.cpp:100   ← your game runs here
+  └─ Application::Run()
+       ├─ frameTime = now - lastFrame     clamped to 0.25s
+       ├─ accumulator += frameTime
+       ├─ while accumulator >= fixedStep  ← 0, 1, or many times per frame
+       │    ├─ for each layer: OnFixedUpdate(fixedStep)   ← simulation
+       │    └─ accumulator -= fixedStep
+       ├─ alpha = accumulator / fixedStep
+       ├─ for each layer: OnUpdate(frameTime)             ← exactly once
        │    └─ Renderer2D::DrawQuad(...)  accumulates into a CPU buffer
        ├─ ImGuiLayer::Begin()             opens the dockspace
-       ├─ for each layer: OnImGuiRender() Application.cpp:104
+       ├─ for each layer: OnImGuiRender()
        ├─ ImGuiLayer::End()               uploads + draws ImGui's vertices
-       └─ Window::OnUpdate()              Application.cpp:109  poll events, swap buffers
+       └─ Window::OnUpdate()              poll events, swap buffers
 ```
 
 `DrawQuad` does **not** talk to OpenGL. It appends four vertices to an array in
@@ -85,9 +91,28 @@ if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))   // held → continuous
     x -= speed * ts;
 ```
 
-**3. `Timestep` is seconds, and converts to float.** Multiply anything
-per-second by it and framerate stops mattering. `speed * ts` is the idiom;
-a bare `speed` is a bug.
+**3. Simulation and presentation run at different rates.** `OnFixedUpdate` is
+called with a step that never varies — zero, one, or several times a frame,
+whatever it takes to keep up with real time. `OnUpdate` is called exactly once
+with the real elapsed time. Physics goes in the first, drawing and camera feel
+in the second.
+
+The reason is that variable-length steps make a simulation depend on frame
+rate: the same scene resolves differently at 60 and 144 fps, one long frame
+lets a fast body pass straight through a wall, and nothing replays. A fixed
+step removes all three.
+
+The cost is that the simulation and the display drift out of phase, which shows
+up as judder. `GetInterpolationAlpha()` is the fix — keep the previous state
+and render between the two:
+
+```cpp
+float alpha = Application::Get().GetInterpolationAlpha();
+glm::vec2 drawAt = glm::mix(m_PreviousPosition, m_Position, alpha);
+```
+
+`Timestep` itself is just seconds wrapped so the unit is explicit, and it
+converts to float. `speed * ts` is the idiom; a bare `speed` is a bug.
 
 **4. The renderer is split in three.** `Renderer2D` (batching, sprite logic) →
 `RenderCommand` (a thin static façade) → `RendererAPI` (the virtual backend
@@ -98,12 +123,20 @@ There are **two paths through it**, and they don't overlap:
 
 | | `Renderer2D` | `Renderer::Submit` |
 | --- | --- | --- |
-| geometry | quads only, fixed 4 vertices | any vertex array |
-| batching | thousands of quads → 1 draw call | one draw call each |
-| use for | sprites, tiles, UI | meshes, 3D |
+| geometry | quads and lines | any vertex array |
+| batching | thousands → 1 draw call per primitive type | one draw call each |
+| use for | sprites, tiles, UI, debug lines | meshes, 3D |
 
 `Renderer2D`'s batching is quad-specific and does not generalise to meshes, so
-3D goes through `Submit`. Both end up at the same `RenderCommand::DrawIndexed`.
+3D goes through `Submit`.
+
+Lines are a second batch inside `Renderer2D` with their own buffer and shader.
+They can't merge with the quads — a different primitive type needs a different
+draw call — so anything drawn with `DrawLine` costs exactly one extra call, no
+matter how many segments. They are drawn unindexed, via `glDrawArrays(GL_LINES)`.
+
+`Renderer2D::BeginScene` takes any `Camera`, so debug lines work under a
+perspective camera too. The "2D" is about the primitives, not the projection.
 
 **5. Interfaces live in `Egss/`, implementations in `Platform/`.** `Texture2D::Create`
 is declared in `Renderer/Texture.h` and *defined* in `Platform/OpenGL/OpenGLTexture.cpp`.
@@ -116,7 +149,15 @@ you're looking for what you can call, it's in `Egss/`.
 
 ```cpp
 // Lifecycle — override what you need
-OnAttach() / OnDetach() / OnUpdate(Timestep) / OnImGuiRender() / OnEvent(Event&)
+OnAttach() / OnDetach() / OnImGuiRender() / OnEvent(Event&)
+OnFixedUpdate(Timestep fixedStep)   // simulation, 0..n times a frame
+OnUpdate(Timestep ts)               // presentation, exactly once a frame
+
+// The loop
+Application::Get().GetInterpolationAlpha();   // 0..1, for blending render state
+Application::Get().GetFixedTimestep();        // seconds per simulation step
+Application::Get().SetFixedTimestep(1/120.f);
+Application::Get().GetFixedStepsLastFrame();  // >1 consistently = falling behind
 
 // Drawing — always between BeginScene and EndScene
 Renderer2D::BeginScene(camera);
@@ -126,6 +167,12 @@ Renderer2D::DrawQuad(pos, size, subTexture, tiling, tint); // sprite-sheet regio
 Renderer2D::DrawRotatedQuad(pos, size, degrees, ...);      // same four forms
 Renderer2D::EndScene();
 
+// Debug geometry — same batch, one extra draw call however many segments
+Renderer2D::DrawLine(from, to, color);              // vec2 or vec3
+Renderer2D::DrawRect(centre, size, color);          // outline, DrawQuad's convention
+Renderer2D::DrawRect(transform, color);             // rotated / scaled
+Renderer2D::SetLineWidth(2.0f);                     // >1 ignored by most drivers
+
 // Screen
 RenderCommand::SetClearColor({r,g,b,a});
 RenderCommand::Clear();
@@ -134,6 +181,14 @@ RenderCommand::Clear();
 Input::IsKeyPressed(EGSS_KEY_SPACE);
 Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
 Input::GetMousePosition();          // {x, y}, window coordinates
+
+// Physics — a standalone world; step it from OnFixedUpdate
+PhysicsWorld2D world;
+world.Gravity = { 0.0f, -9.81f };
+auto handle = world.AddBody(RigidBody2D::MakeCircle(pos, radius, mass));
+world.AddBody(RigidBody2D::MakeStaticBox(pos, halfExtents));
+world.Step(fixedStep);
+const RigidBody2D& body = world.GetBody(handle);   // Position, Velocity, Awake
 
 // Assets
 Texture2D::Create("path.png");      // or Create(width, height) + SetData

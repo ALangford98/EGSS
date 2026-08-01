@@ -64,4 +64,16 @@ namespace Egss {
 		// draws -- the second draw onwards sampled nothing and came out black.
 	}
 
+	void OpenGLRendererAPI::DrawLines(const std::shared_ptr<VertexArray>& vertexArray, unsigned int vertexCount)
+	{
+		vertexArray->Bind();
+		// glDrawArrays, not glDrawElements: no index buffer is involved.
+		glDrawArrays(GL_LINES, 0, vertexCount);
+	}
+
+	void OpenGLRendererAPI::SetLineWidth(float width)
+	{
+		glLineWidth(width);
+	}
+
 }

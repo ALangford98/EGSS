@@ -124,6 +124,7 @@ public:
 		}
 
 		m_PaddleX = 0.0f;
+		m_PaddlePrevX = 0.0f;
 		m_Score = 0;
 		m_Lives = 3;
 		m_GameOver = false;
@@ -135,20 +136,40 @@ public:
 		m_BallPosition = { m_PaddleX, s_PaddleY + 0.08f };
 		m_BallVelocity = { s_BallStartSpeed * 0.45f, s_BallStartSpeed };
 		m_BallStuck = true;
+
+		// Teleports are not motion; without this the next frame interpolates
+		// from wherever the ball died to the paddle.
+		m_BallPrevPosition = m_BallPosition;
 	}
 
-	// The whole game. Called once per frame with the seconds elapsed since the
-	// last one -- multiply every rate by it and the game runs the same on a
-	// 60Hz and a 144Hz display.
+	// Simulation. Runs on a fixed step, so the ball travels the same arc
+	// whatever the frame rate -- and, because the step never varies, it cannot
+	// tunnel through a brick just because one frame ran long.
+	void OnFixedUpdate(Egss::Timestep fixedStep) override
+	{
+		if (g_ActiveDemo != Demo::Breakout)
+			return;
+
+		// Snapshot before stepping. Rendering blends from here to the new
+		// state, which is what keeps motion smooth when the frame rate and the
+		// step rate don't divide evenly. Taken even while paused, so the
+		// blend collapses to a no-op instead of jittering between two states.
+		m_PaddlePrevX = m_PaddleX;
+		m_BallPrevPosition = m_BallPosition;
+
+		if (m_Paused || m_GameOver)
+			return;
+
+		Step(fixedStep);
+	}
+
+	// Presentation only. Called once per frame, whatever the simulation did.
 	void OnUpdate(Egss::Timestep ts) override
 	{
 		if (g_ActiveDemo != Demo::Breakout)
 			return;
 
 		m_FrameTime = ts.GetMilliseconds();
-
-		if (!m_Paused && !m_GameOver)
-			Step(ts);
 
 		Draw();
 	}
@@ -261,6 +282,12 @@ public:
 
 	void Draw()
 	{
+		// Where the simulation sits between its last two steps.
+		float alpha = Egss::Application::Get().GetInterpolationAlpha();
+
+		float paddleX = glm::mix(m_PaddlePrevX, m_PaddleX, alpha);
+		glm::vec2 ballPosition = glm::mix(m_BallPrevPosition, m_BallPosition, alpha);
+
 		Egss::Renderer2D::ResetStats();
 
 		Egss::RenderCommand::SetClearColor({ 0.07f, 0.07f, 0.09f, 1.0f });
@@ -281,11 +308,44 @@ public:
 			}
 		}
 
-		Egss::Renderer2D::DrawQuad({ m_PaddleX, s_PaddleY }, s_PaddleSize,
+		// Interpolated, not the raw simulation state -- that is the whole
+		// point of keeping the previous positions around.
+		Egss::Renderer2D::DrawQuad({ paddleX, s_PaddleY }, s_PaddleSize,
 			glm::vec4(0.85f, 0.85f, 0.90f, 1.0f));
 
-		Egss::Renderer2D::DrawQuad(m_BallPosition, { s_BallRadius * 2.0f, s_BallRadius * 2.0f },
+		Egss::Renderer2D::DrawQuad(ballPosition, { s_BallRadius * 2.0f, s_BallRadius * 2.0f },
 			glm::vec4(1.00f, 0.95f, 0.60f, 1.0f));
+
+		// Debug geometry. Lines are a separate primitive, so this always adds
+		// exactly one draw call on top of the quad batch -- watch the counter.
+		if (m_ShowDebug)
+		{
+			// Play area.
+			Egss::Renderer2D::DrawRect(glm::vec2(0.0f, 0.0f),
+				{ m_WorldHalfWidth * 2.0f, s_WorldHalfHeight * 2.0f },
+				glm::vec4(0.25f, 0.30f, 0.40f, 1.0f));
+
+			// Collider outlines, using the same centre-and-size arguments the
+			// collision test uses -- if these ever disagree with what the ball
+			// bounces off, the bug is visible instead of theoretical.
+			for (const Brick& brick : m_Bricks)
+			{
+				if (brick.Alive)
+					Egss::Renderer2D::DrawRect(brick.Position, s_BrickSize,
+						glm::vec4(0.0f, 0.9f, 0.5f, 0.5f));
+			}
+
+			Egss::Renderer2D::DrawRect(glm::vec2(paddleX, s_PaddleY), s_PaddleSize,
+				glm::vec4(0.0f, 0.9f, 0.5f, 1.0f));
+			Egss::Renderer2D::DrawRect(ballPosition,
+				{ s_BallRadius * 2.0f, s_BallRadius * 2.0f },
+				glm::vec4(0.0f, 0.9f, 0.5f, 1.0f));
+
+			// Velocity, scaled to a visible length. The first thing you want
+			// to see when a bounce looks wrong.
+			Egss::Renderer2D::DrawLine(ballPosition, ballPosition + m_BallVelocity * 0.25f,
+				glm::vec4(1.0f, 0.4f, 0.2f, 1.0f));
+		}
 
 		Egss::Renderer2D::EndScene();
 	}
@@ -365,6 +425,23 @@ public:
 			m_FrameTime > 0.0f ? 1000.0f / m_FrameTime : 0.0f);
 		ImGui::Text("Draw calls: %u", stats.DrawCalls);
 		ImGui::Text("Quads:      %u", stats.QuadCount);
+		ImGui::Text("Lines:      %u", stats.LineCount);
+		ImGui::Checkbox("Show colliders", &m_ShowDebug);
+
+		ImGui::Separator();
+
+		Egss::Application& app = Egss::Application::Get();
+
+		ImGui::Text("Sim steps this frame: %u", app.GetFixedStepsLastFrame());
+		ImGui::Text("Interpolation alpha:  %.2f", app.GetInterpolationAlpha());
+
+		// Drop this to 10 Hz: the simulation visibly coarsens but the ball
+		// keeps moving smoothly, because rendering interpolates between steps.
+		// Comment out the mix() calls in Draw() to see what it looks like
+		// without.
+		int hz = (int)(1.0f / app.GetFixedTimestep() + 0.5f);
+		if (ImGui::SliderInt("Sim rate (Hz)", &hz, 5, 240))
+			app.SetFixedTimestep(1.0f / (float)hz);
 
 		ImGui::Separator();
 		if (ImGui::Button("Restart"))
@@ -381,9 +458,14 @@ private:
 	std::vector<Brick> m_Bricks;
 
 	float m_PaddleX = 0.0f;
+	// Previous simulation state, kept purely so rendering can interpolate.
+	float m_PaddlePrevX = 0.0f;
 	glm::vec2 m_BallPosition = { 0.0f, 0.0f };
+	glm::vec2 m_BallPrevPosition = { 0.0f, 0.0f };
 	glm::vec2 m_BallVelocity = { 0.0f, 0.0f };
 	bool m_BallStuck = true;
+
+	bool m_ShowDebug = true;
 
 	int m_Score = 0;
 	int m_Lives = 3;

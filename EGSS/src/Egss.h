@@ -17,6 +17,11 @@
 #include "Egss/Events/KeyEvent.h"
 #include "Egss/Events/MouseEvent.h"
 
+// PHYSICS ****************
+
+#include "Egss/Physics/RigidBody2D.h"
+#include "Egss/Physics/PhysicsWorld2D.h"
+
 // RENDERER ***************
 
 #include "Egss/Renderer/Renderer.h"

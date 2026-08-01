@@ -208,6 +208,9 @@ public:
 		m_Texture->SetData(pixels.data(), (unsigned int)(pixels.size() * sizeof(unsigned int)));
 	}
 
+	// Presentation only -- no OnFixedUpdate. Nothing here is simulated: the
+	// camera is feel, and the spin is decoration, so both want the real frame
+	// time rather than a fixed step. Not everything needs the simulation loop.
 	void OnUpdate(Egss::Timestep ts) override
 	{
 		if (g_ActiveDemo != Demo::Cube3D)
@@ -264,6 +267,38 @@ public:
 		}
 
 		Egss::Renderer::EndScene();
+
+		// Debug lines under a perspective camera. Renderer2D::BeginScene takes
+		// any Camera, so the line batch works here exactly as it does in 2D --
+		// the "2D" in the name is about the primitives, not the projection.
+		if (m_ShowGrid)
+		{
+			Egss::Renderer2D::BeginScene(m_Camera);
+			DrawGrid();
+			Egss::Renderer2D::EndScene();
+		}
+	}
+
+	// A ground plane and the world axes. Both are the sort of thing you want
+	// permanently available once a scene stops being a single object at the
+	// origin.
+	void DrawGrid()
+	{
+		const int half = 6;
+		const float y = -0.9f;
+		const glm::vec4 gridColor = { 0.25f, 0.27f, 0.32f, 1.0f };
+
+		for (int i = -half; i <= half; i++)
+		{
+			Egss::Renderer2D::DrawLine({ (float)i, y, (float)-half }, { (float)i, y, (float)half }, gridColor);
+			Egss::Renderer2D::DrawLine({ (float)-half, y, (float)i }, { (float)half, y, (float)i }, gridColor);
+		}
+
+		// X red, Y green, Z blue -- the usual convention, and the fastest way
+		// to work out which way a scene is facing.
+		Egss::Renderer2D::DrawLine({ 0, y, 0 }, { 2.0f, y, 0 }, { 0.9f, 0.25f, 0.25f, 1.0f });
+		Egss::Renderer2D::DrawLine({ 0, y, 0 }, { 0, y + 2.0f, 0 }, { 0.3f, 0.85f, 0.3f, 1.0f });
+		Egss::Renderer2D::DrawLine({ 0, y, 0 }, { 0, y, 2.0f }, { 0.35f, 0.5f, 0.95f, 1.0f });
 	}
 
 	// Fly camera: WASD along the ground, Q/E straight up and down, arrows to
@@ -346,7 +381,9 @@ public:
 		ImGui::Text("Yaw %.0f  Pitch %.0f", m_Camera.GetYaw(), m_Camera.GetPitch());
 		ImGui::Text("Frame: %.2f ms (%.0f fps)", m_FrameTime,
 			m_FrameTime > 0.0f ? 1000.0f / m_FrameTime : 0.0f);
-		ImGui::Text("Draw calls: %d  (one per cube)", m_GridSize * m_GridSize);
+		ImGui::Text("Draw calls: %d  (one per cube, plus one for the grid)",
+			m_GridSize * m_GridSize + (m_ShowGrid ? 1 : 0));
+		ImGui::Checkbox("Show grid", &m_ShowGrid);
 
 		ImGui::Separator();
 		ImGui::SliderInt("Grid", &m_GridSize, 1, 8);
@@ -372,6 +409,7 @@ private:
 	float m_Rotation = 0.0f;
 	bool m_Spinning = true;
 
+	bool m_ShowGrid = true;
 	int m_GridSize = 3;
 	float m_Scale = 0.8f;
 

@@ -103,6 +103,7 @@ private:
 		{
 			case Demo::Breakout: return "Breakout";
 			case Demo::Cube3D:   return "Cube3D";
+			case Demo::Physics2D: return "Physics";
 			default: break;
 		}
 		return "?";

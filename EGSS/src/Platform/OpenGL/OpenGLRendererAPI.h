@@ -13,6 +13,9 @@ namespace Egss {
 		void Clear() override;
 
 		void DrawIndexed(const std::shared_ptr<VertexArray>& vertexArray, unsigned int indexCount = 0) override;
+		void DrawLines(const std::shared_ptr<VertexArray>& vertexArray, unsigned int vertexCount) override;
+
+		void SetLineWidth(float width) override;
 	};
 
 }

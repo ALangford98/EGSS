@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Egss/Renderer/Camera.h"
 #include "Egss/Renderer/OrthographicCamera.h"
 #include "Egss/Renderer/Texture.h"
 #include "Egss/Renderer/SubTexture2D.h"
@@ -25,7 +26,7 @@ namespace Egss {
 		static void Init();
 		static void Shutdown();
 
-		static void BeginScene(const OrthographicCamera& camera);
+		static void BeginScene(const Camera& camera);
 		static void EndScene();
 		static void Flush();
 
@@ -78,10 +79,32 @@ namespace Egss {
 			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
 			int entityID = -1);
 
+		// Debug geometry: outlines, normals, rays. Lines are their own
+		// primitive type, so they always cost one draw call on top of the
+		// quads -- they cannot join that batch.
+		static void DrawLine(const glm::vec2& from, const glm::vec2& to,
+			const glm::vec4& color = glm::vec4(1.0f));
+		static void DrawLine(const glm::vec3& from, const glm::vec3& to,
+			const glm::vec4& color = glm::vec4(1.0f));
+
+		// Same centre-and-size convention as DrawQuad, so a collider and its
+		// outline take identical arguments.
+		static void DrawRect(const glm::vec2& position, const glm::vec2& size,
+			const glm::vec4& color = glm::vec4(1.0f));
+		static void DrawRect(const glm::vec3& position, const glm::vec2& size,
+			const glm::vec4& color = glm::vec4(1.0f));
+		static void DrawRect(const glm::mat4& transform,
+			const glm::vec4& color = glm::vec4(1.0f));
+
+		// Values above 1.0 are ignored by most core-profile drivers.
+		static float GetLineWidth();
+		static void SetLineWidth(float width);
+
 		struct Statistics
 		{
 			unsigned int DrawCalls = 0;
 			unsigned int QuadCount = 0;
+			unsigned int LineCount = 0;
 
 			unsigned int GetTotalVertexCount() const { return QuadCount * 4; }
 			unsigned int GetTotalIndexCount() const { return QuadCount * 6; }
@@ -92,6 +115,8 @@ namespace Egss {
 	private:
 		static void StartBatch();
 		static void NextBatch();
+		static void FlushQuads();
+		static void FlushLines();
 	};
 
 }

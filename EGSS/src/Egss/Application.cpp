@@ -86,24 +86,60 @@ namespace Egss {
 		return false;
 	}
 
+	// Longest real interval fed into the accumulator in one go. Without this,
+	// a pause at a breakpoint or a dragged window queues up thousands of
+	// simulation steps, which take longer to run than the time they represent,
+	// so the loop falls further behind every frame and never recovers -- the
+	// "spiral of death". Clamping means the simulation simply loses that time.
+	static const float s_MaxFrameTime = 0.25f;
+
 	void Application::Run()
 	{
 		while (m_Running)
 		{
 			float time = GetTime();
-			Timestep timestep = time - m_LastFrameTime;
+			float frameTime = time - m_LastFrameTime;
 			m_LastFrameTime = time;
+
+			if (frameTime > s_MaxFrameTime)
+				frameTime = s_MaxFrameTime;
 
 			if (!m_Minimized)
 			{
+				// Bank the real time, then spend it in fixed-size pieces. The
+				// remainder stays in the accumulator for next frame, which is
+				// what keeps the simulation rate independent of the frame rate.
+				m_Accumulator += frameTime;
+				m_FixedStepsLastFrame = 0;
+
+				while (m_Accumulator >= m_FixedTimestep)
+				{
+					for (Layer* layer : m_LayerStack)
+						layer->OnFixedUpdate(m_FixedTimestep);
+
+					m_Accumulator -= m_FixedTimestep;
+					m_FixedStepsLastFrame++;
+				}
+
+				// Whatever is left over, as a fraction of one step. Layers use
+				// it to render between the last two simulation states rather
+				// than snapping to the most recent one.
+				m_InterpolationAlpha = m_Accumulator / m_FixedTimestep;
+
 				// Bottom-up, so later layers draw over earlier ones.
 				for (Layer* layer : m_LayerStack)
-					layer->OnUpdate(timestep);
+					layer->OnUpdate(frameTime);
 
 				m_ImGuiLayer->Begin();
 				for (Layer* layer : m_LayerStack)
 					layer->OnImGuiRender();
 				m_ImGuiLayer->End();
+			}
+			else
+			{
+				// Nothing is simulating while minimized, so drop the banked
+				// time instead of releasing it in a burst on restore.
+				m_Accumulator = 0.0f;
 			}
 
 			m_Window->OnUpdate();

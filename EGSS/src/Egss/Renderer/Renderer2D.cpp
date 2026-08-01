@@ -24,6 +24,12 @@ namespace Egss {
 		int EntityID;
 	};
 
+	struct LineVertex
+	{
+		glm::vec3 Position;
+		glm::vec4 Color;
+	};
+
 	struct Renderer2DData
 	{
 		static constexpr unsigned int MaxQuads = 10000;
@@ -32,6 +38,8 @@ namespace Egss {
 		// OpenGL 3.3 guarantees at least 16 fragment texture units, so this is
 		// the largest value that is safe without querying the driver.
 		static constexpr unsigned int MaxTextureSlots = 16;
+		// Two vertices per segment, and debug geometry is usually sparse.
+		static constexpr unsigned int MaxLineVertices = MaxQuads * 2;
 
 		std::shared_ptr<VertexArray> QuadVertexArray;
 		std::shared_ptr<VertexBuffer> QuadVertexBuffer;
@@ -41,6 +49,16 @@ namespace Egss {
 		unsigned int QuadIndexCount = 0;
 		QuadVertex* QuadVertexBufferBase = nullptr;
 		QuadVertex* QuadVertexBufferPtr = nullptr;
+
+		std::shared_ptr<VertexArray> LineVertexArray;
+		std::shared_ptr<VertexBuffer> LineVertexBuffer;
+		std::shared_ptr<Shader> LineShader;
+
+		unsigned int LineVertexCount = 0;
+		LineVertex* LineVertexBufferBase = nullptr;
+		LineVertex* LineVertexBufferPtr = nullptr;
+
+		float LineWidth = 1.0f;
 
 		std::array<std::shared_ptr<Texture2D>, MaxTextureSlots> TextureSlots;
 		// Slot 0 is permanently the white texture, so flat-colour quads take
@@ -91,6 +109,55 @@ namespace Egss {
 		quadIB.reset(IndexBuffer::Create(quadIndices, Renderer2DData::MaxIndices));
 		s_Data.QuadVertexArray->SetIndexBuffer(quadIB);
 		delete[] quadIndices;
+
+		// --- Line batch --------------------------------------------------
+		// Deliberately separate from the quad batch: lines need a different
+		// primitive type, so they cannot share a draw call however they are
+		// buffered.
+		s_Data.LineVertexArray.reset(VertexArray::Create());
+
+		s_Data.LineVertexBuffer.reset(VertexBuffer::Create(
+			Renderer2DData::MaxLineVertices * sizeof(LineVertex)));
+		s_Data.LineVertexBuffer->SetLayout({
+			{ ShaderDataType::Float3, "a_Position" },
+			{ ShaderDataType::Float4, "a_Color"    }
+		});
+		s_Data.LineVertexArray->AddVertexBuffer(s_Data.LineVertexBuffer);
+
+		// No index buffer: DrawLines uses glDrawArrays.
+		s_Data.LineVertexBufferBase = new LineVertex[Renderer2DData::MaxLineVertices];
+
+		std::string lineVertexSrc = R"(
+			#version 330 core
+
+			layout(location = 0) in vec3 a_Position;
+			layout(location = 1) in vec4 a_Color;
+
+			uniform mat4 u_ViewProjection;
+
+			out vec4 v_Color;
+
+			void main()
+			{
+				v_Color     = a_Color;
+				gl_Position = u_ViewProjection * vec4(a_Position, 1.0);
+			}
+		)";
+
+		std::string lineFragmentSrc = R"(
+			#version 330 core
+
+			layout(location = 0) out vec4 color;
+
+			in vec4 v_Color;
+
+			void main()
+			{
+				color = v_Color;
+			}
+		)";
+
+		s_Data.LineShader.reset(Shader::Create("Renderer2D_Line", lineVertexSrc, lineFragmentSrc));
 
 		// 1x1 white pixel, so a flat-colour quad is just a white texture
 		// multiplied by its colour.
@@ -203,12 +270,22 @@ namespace Egss {
 	{
 		delete[] s_Data.QuadVertexBufferBase;
 		s_Data.QuadVertexBufferBase = nullptr;
+
+		delete[] s_Data.LineVertexBufferBase;
+		s_Data.LineVertexBufferBase = nullptr;
 	}
 
-	void Renderer2D::BeginScene(const OrthographicCamera& camera)
+	// Takes any Camera, so debug lines can be drawn in a perspective scene as
+	// easily as an orthographic one.
+	void Renderer2D::BeginScene(const Camera& camera)
 	{
+		const glm::mat4& viewProjection = camera.GetViewProjectionMatrix();
+
 		s_Data.TextureShader->Bind();
-		s_Data.TextureShader->SetMat4("u_ViewProjection", camera.GetViewProjectionMatrix());
+		s_Data.TextureShader->SetMat4("u_ViewProjection", viewProjection);
+
+		s_Data.LineShader->Bind();
+		s_Data.LineShader->SetMat4("u_ViewProjection", viewProjection);
 
 		StartBatch();
 	}
@@ -218,6 +295,9 @@ namespace Egss {
 		s_Data.QuadIndexCount = 0;
 		s_Data.QuadVertexBufferPtr = s_Data.QuadVertexBufferBase;
 		s_Data.TextureSlotIndex = 1;
+
+		s_Data.LineVertexCount = 0;
+		s_Data.LineVertexBufferPtr = s_Data.LineVertexBufferBase;
 	}
 
 	void Renderer2D::EndScene()
@@ -226,6 +306,12 @@ namespace Egss {
 	}
 
 	void Renderer2D::Flush()
+	{
+		FlushQuads();
+		FlushLines();
+	}
+
+	void Renderer2D::FlushQuads()
 	{
 		if (s_Data.QuadIndexCount == 0)
 			return;
@@ -242,6 +328,24 @@ namespace Egss {
 		s_Data.QuadVertexArray->Bind();
 		RenderCommand::DrawIndexed(s_Data.QuadVertexArray, s_Data.QuadIndexCount);
 
+		s_Data.Stats.DrawCalls++;
+	}
+
+	void Renderer2D::FlushLines()
+	{
+		if (s_Data.LineVertexCount == 0)
+			return;
+
+		unsigned int dataSize = (unsigned int)((unsigned char*)s_Data.LineVertexBufferPtr -
+			(unsigned char*)s_Data.LineVertexBufferBase);
+		s_Data.LineVertexBuffer->SetData(s_Data.LineVertexBufferBase, dataSize);
+
+		s_Data.LineShader->Bind();
+		RenderCommand::SetLineWidth(s_Data.LineWidth);
+		RenderCommand::DrawLines(s_Data.LineVertexArray, s_Data.LineVertexCount);
+
+		// Lines always cost their own draw call -- a different primitive type
+		// cannot be merged into the quad batch.
 		s_Data.Stats.DrawCalls++;
 	}
 
@@ -425,6 +529,73 @@ namespace Egss {
 			glm::scale(glm::mat4(1.0f), { size.x, size.y, 1.0f });
 
 		SubmitQuad(transform, tint, textureIndex, tilingFactor, subTexture->GetTexCoords(), entityID);
+	}
+
+	void Renderer2D::DrawLine(const glm::vec3& from, const glm::vec3& to, const glm::vec4& color)
+	{
+		if (s_Data.LineVertexCount + 2 > Renderer2DData::MaxLineVertices)
+			NextBatch();
+
+		s_Data.LineVertexBufferPtr->Position = from;
+		s_Data.LineVertexBufferPtr->Color = color;
+		s_Data.LineVertexBufferPtr++;
+
+		s_Data.LineVertexBufferPtr->Position = to;
+		s_Data.LineVertexBufferPtr->Color = color;
+		s_Data.LineVertexBufferPtr++;
+
+		s_Data.LineVertexCount += 2;
+		s_Data.Stats.LineCount++;
+	}
+
+	void Renderer2D::DrawLine(const glm::vec2& from, const glm::vec2& to, const glm::vec4& color)
+	{
+		DrawLine(glm::vec3(from, 0.0f), glm::vec3(to, 0.0f), color);
+	}
+
+	// Outline rather than fill: four segments round the edge, taking the same
+	// centre-and-size convention as DrawQuad so a collider and its debug
+	// outline can be given identical arguments.
+	void Renderer2D::DrawRect(const glm::vec3& position, const glm::vec2& size, const glm::vec4& color)
+	{
+		glm::vec3 half = { size.x * 0.5f, size.y * 0.5f, 0.0f };
+
+		glm::vec3 bottomLeft  = { position.x - half.x, position.y - half.y, position.z };
+		glm::vec3 bottomRight = { position.x + half.x, position.y - half.y, position.z };
+		glm::vec3 topRight    = { position.x + half.x, position.y + half.y, position.z };
+		glm::vec3 topLeft     = { position.x - half.x, position.y + half.y, position.z };
+
+		DrawLine(bottomLeft,  bottomRight, color);
+		DrawLine(bottomRight, topRight,    color);
+		DrawLine(topRight,    topLeft,     color);
+		DrawLine(topLeft,     bottomLeft,  color);
+	}
+
+	void Renderer2D::DrawRect(const glm::vec2& position, const glm::vec2& size, const glm::vec4& color)
+	{
+		DrawRect(glm::vec3(position, 0.0f), size, color);
+	}
+
+	// Takes a full transform, so a rotated or scaled collider outlines
+	// correctly -- the corners are transformed, not the extents.
+	void Renderer2D::DrawRect(const glm::mat4& transform, const glm::vec4& color)
+	{
+		glm::vec3 corners[4];
+		for (int i = 0; i < 4; i++)
+			corners[i] = glm::vec3(transform * s_Data.QuadVertexPositions[i]);
+
+		for (int i = 0; i < 4; i++)
+			DrawLine(corners[i], corners[(i + 1) % 4], color);
+	}
+
+	float Renderer2D::GetLineWidth()
+	{
+		return s_Data.LineWidth;
+	}
+
+	void Renderer2D::SetLineWidth(float width)
+	{
+		s_Data.LineWidth = width;
 	}
 
 	Renderer2D::Statistics Renderer2D::GetStats()

@@ -154,8 +154,7 @@ the folder anywhere and it still runs.
 
 On Windows, `bin\Debug-windows-x86_64\TestEnv\TestEnv.exe`.
 
-You should see a 1280x720 window with a tilemap of sprites, a rotating sprite,
-and a wide 2x1 sprite, plus:
+You should see a 1280x720 window running one of the two demos, plus:
 
 ```
 [22:00:24] EGSS: Creating Window Every Game Starts Somewhere (1280, 720)
@@ -164,10 +163,17 @@ and a wide 2x1 sprite, plus:
 [22:00:24] EGSS: ImGui 1.92.9b initialized
 ```
 
-Arrow keys move the camera. The ImGui panel reports frame time and renderer
-statistics; its map-size slider is a quick way to watch the batcher split,
-since passing 10,000 quads forces a second draw call. Closing the window exits
-cleanly.
+The **Demos** panel switches between them; **F1** cycles.
+
+- **Breakout** — Left/Right or A/D to move, Space to launch, P pause, R restart.
+  Its panel shows simulation steps per frame and the interpolation alpha, with
+  a slider for the simulation rate. Drop it to 10 Hz: the physics coarsens but
+  the ball keeps moving smoothly, because rendering interpolates between steps.
+- **Cube3D** — WASD to move, Q/E up and down, arrows to look, Space to pause the
+  spin. Its grid slider shows that meshes cost one draw call each, unlike the
+  2D batcher.
+
+Closing the window exits cleanly.
 
 ## VS Code
 
@@ -605,11 +611,12 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       not switched on — 2D quads would need checking first
 - [ ] **Material handling.** The 3D demo sets uniforms by hand; there is no
       notion of a material binding a shader to its parameters
-- [ ] **A fixed timestep** in `Application::Run` — a prerequisite for physics,
-      see below
-- [ ] **`Renderer2D::DrawLine`.** Only quads exist, so colliders and contact
-      normals can't be drawn. Small, and needed the moment physics is debugged
-- [ ] **Physics with gravity** — see [Physics](#physics) below
+- [ ] **Physics: rotation.** Bodies translate but never spin. Needs SAT for
+      oriented shapes, multi-point manifolds and angular impulses
+- [ ] **Physics: raycasts.** Needed by audio occlusion, and by anything that
+      wants to ask what is in front of it
+- [ ] **Physics: a real broadphase.** Brute-force pair testing is O(n^2); a
+      uniform grid or sweep-and-prune replaces exactly one loop
 - [ ] **Audio and acoustics** — see [Audio and acoustics](#audio-and-acoustics)
       below
 
@@ -827,6 +834,77 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-01 (2D physics)
+
+- **`PhysicsWorld2D`** — a standalone rigid-body world in the shape Box2D and
+  Jolt use: it owns its bodies and knows nothing about the renderer. Semi-
+  implicit Euler, gravity with a per-body scale, brute-force broadphase,
+  circle/box/circle-box narrowphase, sequential impulses with restitution and
+  Coulomb friction, iterated position correction, and sleeping.
+- **`RigidBody2D`** stores *inverse* mass, so a static body is simply
+  `InverseMass = 0` and the solver needs no special case for it.
+- Bodies keep their previous position, so the `Physics2D` demo renders
+  interpolated against the fixed timestep's alpha.
+- Limits, deliberately: **no rotation**, circles and axis-aligned boxes only,
+  and an O(n^2) broadphase. All three are listed in the roadmap.
+
+Three bugs found by measuring rather than watching:
+
+- **Nothing could sleep.** Static bodies default to awake and never sleep, so
+  "wake the sleeper on contact" woke anything resting on the floor every step.
+- **Stacks sank into themselves.** Position correction ran once per step
+  against penetrations measured before correcting, so pushing the bottom box
+  up drove it into the one above and that overlap went unseen until the next
+  step. Now iterated, re-measuring each pass.
+- **Stacks would not settle.** Eight solver iterations left 0.05-0.14 of
+  residual velocity; forty got it to 0.003. Warm starting -- carrying each
+  contact's accumulated impulse into the next step -- reaches 0.00005 at
+  eight, better than forty without it.
+
+A fourth appeared once sleeping worked: the first body in a stack to sleep
+became immovable, which jolted its neighbour, which woke it again -- a limit
+cycle that never settled. Fixed by sleeping whole contact islands atomically,
+via union-find over the contact graph.
+
+Verified headlessly: a lone box rests at exactly the 0.005 slop below the
+floor's surface and sleeps; a five-box stack settles to within 0.0002-0.0019
+of ideal spacing and the whole island sleeps.
+
+### 2026-08-01 (line rendering)
+
+- **`Renderer2D::DrawLine` and `DrawRect`**, backed by a second batch with its
+  own vertex buffer and shader. Lines can't share the quads' draw call — a
+  different primitive type needs a different call — so debug geometry costs
+  exactly one extra call however many segments it contains. Drawn unindexed
+  through new `RendererAPI::DrawLines` / `SetLineWidth` entry points.
+- **`Renderer2D::BeginScene` now takes `const Camera&`** instead of a concrete
+  orthographic one, so the line batch works under a perspective camera. The
+  Cube3D demo uses it for a ground grid and world axes.
+- Breakout draws its play area, every brick collider, and the ball's velocity
+  vector, all behind a "Show colliders" toggle. Measured: 2 draw calls, 46
+  quads, 189 lines — 4 + 44x4 + 4 + 4 + 1, exactly as expected.
+- `Statistics` gained `LineCount`.
+- The sandbox now opens on Breakout rather than Cube3D.
+
+### 2026-08-01 (fixed timestep)
+
+- **`Application::Run` now runs simulation on a fixed step.** Real elapsed time
+  goes into an accumulator, which is spent in equal slices; the remainder
+  carries to the next frame. Clamped at 0.25s so a breakpoint or a dragged
+  window can't queue thousands of steps the loop will never catch up on.
+- **`Layer::OnFixedUpdate(Timestep)`** for simulation, called zero or more
+  times per frame; `OnUpdate` stays presentation-only and runs exactly once.
+- **`GetInterpolationAlpha()`** for rendering between the last two simulation
+  states, plus `Get/SetFixedTimestep` and `GetFixedStepsLastFrame`.
+- Breakout's ball and paddle moved to `OnFixedUpdate` and now render
+  interpolated, so the motion stays smooth when the sim rate and frame rate
+  don't divide evenly. Its panel shows steps-per-frame and alpha, with a slider
+  for the sim rate. Cube3D deliberately has no `OnFixedUpdate` — nothing in it
+  is simulated.
+
+Measured at ~60 fps: 60 Hz → 1 step per frame, 240 Hz → 3–4, 10 Hz → mostly 0
+with a step every sixth frame. Alpha stayed within 0..1 throughout.
 
 ### 2026-08-01 (demo selector)
 

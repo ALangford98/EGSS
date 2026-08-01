@@ -4,6 +4,7 @@
 //   Breakout.h     -- a playable 2D game on Renderer2D's batched quads
 //   Cube3D.h       -- lit, textured cubes on the perspective camera and
 //                     Renderer::Submit
+//   Physics2D.h    -- rigid bodies falling, stacking and bouncing
 //   DemoSelector.h -- the "Demos" panel; owns switching so the demo layers
 //                     don't have to agree about it
 //
@@ -19,6 +20,7 @@
 #include "DemoSelector.h"
 #include "Breakout.h"
 #include "Cube3D.h"
+#include "Physics2D.h"
 
 class TestEnv : public Egss::Application
 {
@@ -30,6 +32,7 @@ public:
 		// it consumes F1 before either demo does.
 		PushLayer(new Breakout());
 		PushLayer(new Cube3D());
+		PushLayer(new Physics2D());
 		PushLayer(new DemoSelector());
 	}
 };
