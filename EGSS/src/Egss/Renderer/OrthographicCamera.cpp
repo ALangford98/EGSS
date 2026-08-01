@@ -6,15 +6,16 @@
 namespace Egss {
 
 	OrthographicCamera::OrthographicCamera(float left, float right, float bottom, float top)
-		: m_ProjectionMatrix(glm::ortho(left, right, bottom, top, -1.0f, 1.0f)), m_ViewMatrix(1.0f)
 	{
-		m_ViewProjectionMatrix = m_ProjectionMatrix * m_ViewMatrix;
+		SetProjection(left, right, bottom, top);
 	}
 
 	void OrthographicCamera::SetProjection(float left, float right, float bottom, float top)
 	{
+		// Depth range is -1..1 rather than 0..1: glm::ortho negates z on the
+		// way to clip space, so a *higher* world z ends up nearer the viewer.
 		m_ProjectionMatrix = glm::ortho(left, right, bottom, top, -1.0f, 1.0f);
-		m_ViewProjectionMatrix = m_ProjectionMatrix * m_ViewMatrix;
+		RecalculateViewProjection();
 	}
 
 	void OrthographicCamera::RecalculateViewMatrix()
@@ -24,7 +25,7 @@ namespace Egss {
 
 		// The view matrix is the inverse of the camera's transform.
 		m_ViewMatrix = glm::inverse(transform);
-		m_ViewProjectionMatrix = m_ProjectionMatrix * m_ViewMatrix;
+		RecalculateViewProjection();
 	}
 
 }

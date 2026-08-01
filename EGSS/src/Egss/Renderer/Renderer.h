@@ -1,7 +1,9 @@
 #pragma once
 
 #include "Egss/Renderer/RenderCommand.h"
+#include "Egss/Renderer/Camera.h"
 #include "Egss/Renderer/OrthographicCamera.h"
+#include "Egss/Renderer/PerspectiveCamera.h"
 #include "Egss/Renderer/Shader.h"
 #include "Egss/Renderer/Renderer2D.h"
 
@@ -14,7 +16,9 @@ namespace Egss {
 		static void Shutdown();
 		static void OnWindowResize(unsigned int width, unsigned int height);
 
-		static void BeginScene(OrthographicCamera& camera);
+		// Takes any Camera -- orthographic or perspective. All the renderer
+		// needs from one is its view-projection matrix.
+		static void BeginScene(const Camera& camera);
 		static void EndScene();
 
 		static void Submit(const std::shared_ptr<Shader>& shader,

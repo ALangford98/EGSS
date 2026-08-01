@@ -94,6 +94,17 @@ a bare `speed` is a bug.
 interface, implemented by `OpenGLRendererAPI`). You call the first, never the
 third. This is what makes a second backend possible without touching game code.
 
+There are **two paths through it**, and they don't overlap:
+
+| | `Renderer2D` | `Renderer::Submit` |
+| --- | --- | --- |
+| geometry | quads only, fixed 4 vertices | any vertex array |
+| batching | thousands of quads → 1 draw call | one draw call each |
+| use for | sprites, tiles, UI | meshes, 3D |
+
+`Renderer2D`'s batching is quad-specific and does not generalise to meshes, so
+3D goes through `Submit`. Both end up at the same `RenderCommand::DrawIndexed`.
+
 **5. Interfaces live in `Egss/`, implementations in `Platform/`.** `Texture2D::Create`
 is declared in `Renderer/Texture.h` and *defined* in `Platform/OpenGL/OpenGLTexture.cpp`.
 If you're looking for how something actually works, it's in `Platform/`. If
@@ -128,10 +139,25 @@ Input::GetMousePosition();          // {x, y}, window coordinates
 Texture2D::Create("path.png");      // or Create(width, height) + SetData
 SubTexture2D::CreateFromCoords(atlas, cell, cellSize, spriteSize);
 
-// Camera — z is unused in 2D beyond draw ordering
-OrthographicCamera cam(-aspect, aspect, -1, 1);
-cam.SetPosition({x, y, 0});
+// Cameras — both derive from Camera, which is all Renderer::BeginScene wants
+OrthographicCamera cam2d(-aspect, aspect, -1, 1);
+cam2d.SetPosition({x, y, 0});
+
+PerspectiveCamera cam3d(45.0f, aspect, 0.1f, 100.0f);
+cam3d.SetPosition({x, y, z});
+cam3d.SetRotation(yawDegrees, pitchDegrees);   // pitch clamped to ±89
+cam3d.GetForward(); cam3d.GetRight();          // for movement
+
+// Meshes — build a vertex array, then submit it with a transform
+Renderer::BeginScene(camera);
+shader->Bind();
+shader->SetFloat3("u_LightDirection", dir);    // your own uniforms first
+Renderer::Submit(shader, vertexArray, transform);  // sets u_ViewProjection + u_Transform
+Renderer::EndScene();
 ```
+
+`Submit` binds the shader itself, but uniform values belong to the program and
+survive a rebind, so setting your own before the call is fine.
 
 Positions are **world units**, not pixels. The camera decides how many units fit
 on screen, so `{0.5f, 0.5f}` is half a unit wide regardless of resolution.
@@ -154,3 +180,10 @@ on screen, so `{0.5f, 0.5f}` is half a unit wide regardless of resolution.
 - **`EndScene` is not optional.** Forget it and the last batch never flushes —
   you get a blank screen with no error.
 - **Asserts only exist in Debug.** `EGSS_ENABLE_ASSERTS` is only defined there.
+- **Every layer sees the same event.** If two layers act on one key press they
+  will fight. Return `true` from a dispatcher lambda to mark the event handled;
+  `Application` then stops walking the stack. Returning `false` means "I looked,
+  let it through".
+- **ImGui takes some keys before you do.** `Tab` cycles widget focus and turns
+  sliders into text fields, which then sets `io.WantCaptureKeyboard` and
+  swallows everything. Pick function keys for global shortcuts.

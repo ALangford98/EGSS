@@ -9,8 +9,9 @@ sandbox application that links against it.
 **Current state:** a window with an OpenGL 3.3 core context, a working event
 system, a layer stack, polled input, frame timing, a renderer abstraction, a
 **batched 2D quad renderer** with sprite-sheet support, framebuffers with
-integer-attachment mouse picking, and ImGui (docking) as a debug overlay.
-`TestEnv` is a playable Breakout. See [Roadmap](#roadmap) for what's left.
+integer-attachment mouse picking, perspective and orthographic cameras, and
+ImGui (docking) as a debug overlay. `TestEnv` holds two demos — a playable
+Breakout and a lit 3D cube grid — with **F1** switching between them. See [Roadmap](#roadmap) for what's left.
 
 > **New to the codebase?** Start with **[docs/ENGINE.md](docs/ENGINE.md)** — the
 > frame's call path, the five decisions that explain the rest, and the whole
@@ -598,6 +599,12 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       the platform-window loop in `ImGuiLayer::End` and a GL context restore
 - [ ] **A scene/entity layer.** Picking returns an integer ID, but nothing owns
       those IDs yet — the sandbox invents them per draw
+- [ ] **Mesh loading.** 3D geometry is hand-built in the demo; nothing reads an
+      `.obj` or `.gltf` yet. tinyobjloader is the small first step
+- [ ] **Back-face culling.** The cube is wound consistently for it, but it is
+      not switched on — 2D quads would need checking first
+- [ ] **Material handling.** The 3D demo sets uniforms by hand; there is no
+      notion of a material binding a shader to its parameters
 
 ## Done
 
@@ -670,6 +677,26 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-01 (3D: camera hierarchy and a lit cube)
+
+- **`Camera` base class** holding projection, view, and their product.
+  `OrthographicCamera` now derives from it, and `Renderer::BeginScene` takes
+  `const Camera&` instead of a concrete orthographic one — the only thing that
+  was actually blocking 3D.
+- **`PerspectiveCamera`** — field of view, yaw/pitch with pitch clamped to ±89
+  where the view matrix degenerates, and `GetForward`/`GetRight`/`GetUp` for
+  movement code.
+- **`Cube3D` demo** — 24-vertex cube (a corner needs three normals, so
+  positions can't be shared), Blinn-Phong directional lighting, checkerboard
+  texture, and a keyboard fly camera. Drawn through `Renderer::Submit`, which
+  had been implemented since the renderer abstraction went in and never called.
+- `TestEnv` now holds both demos, **F1** switches. Split into `Breakout.h`,
+  `Cube3D.h`, and `Demo.h`.
+- **Fixed: `OpenGLRendererAPI::DrawIndexed` unbound the texture after every
+  draw.** Invisible to `Renderer2D`, which rebinds its slots on every flush,
+  but it meant any caller binding once and issuing several draws got one
+  textured object and the rest black. Found immediately by the cube grid.
 
 ### 2026-08-01 (a game, and orientation docs)
 

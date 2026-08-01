@@ -57,7 +57,11 @@ namespace Egss {
 	{
 		unsigned int count = indexCount ? indexCount : vertexArray->GetIndexBuffer()->GetCount();
 		glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_INT, nullptr);
-		glBindTexture(GL_TEXTURE_2D, 0);
+
+		// Deliberately does not unbind the texture. It used to, which was
+		// invisible for Renderer2D because every flush rebinds its slots, but
+		// it silently broke any caller that binds once and then issues several
+		// draws -- the second draw onwards sampled nothing and came out black.
 	}
 
 }
