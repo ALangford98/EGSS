@@ -605,6 +605,156 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       not switched on — 2D quads would need checking first
 - [ ] **Material handling.** The 3D demo sets uniforms by hand; there is no
       notion of a material binding a shader to its parameters
+- [ ] **A fixed timestep** in `Application::Run` — a prerequisite for physics,
+      see below
+- [ ] **`Renderer2D::DrawLine`.** Only quads exist, so colliders and contact
+      normals can't be drawn. Small, and needed the moment physics is debugged
+- [ ] **Physics with gravity** — see [Physics](#physics) below
+- [ ] **Audio and acoustics** — see [Audio and acoustics](#audio-and-acoustics)
+      below
+
+---
+
+## Physics
+
+### The prerequisite: a fixed timestep
+
+`Application::Run` currently measures wall-clock time between frames and hands
+that straight to every layer:
+
+```cpp
+Timestep timestep = time - m_LastFrameTime;   // Application.cpp:94
+```
+
+That is right for rendering and wrong for simulation. With a variable `dt` the
+same scene gives different results at 60 and 144 fps, a stall makes bodies
+tunnel through walls in a single step, and nothing is reproducible.
+
+The fix is an accumulator: bank the elapsed time, run the simulation in fixed
+slices, and keep the remainder for next frame.
+
+```
+accumulator += frameTime          // clamped, or a long stall spirals
+while (accumulator >= FIXED_DT)   // FIXED_DT = 1/60 s
+    world.Step(FIXED_DT)
+    accumulator -= FIXED_DT
+alpha = accumulator / FIXED_DT    // for interpolating the render transform
+```
+
+Rendering then interpolates between the previous and current physics state by
+`alpha`, otherwise motion stutters whenever the loop runs at a rate that isn't
+a multiple of the step. This changes the shape of the main loop and affects
+every layer, so it wants doing before anything is built on top.
+
+### Build it or vendor it
+
+Worth deciding deliberately, because the answer differs by dimension:
+
+- **2D — write it.** A rigid-body solver with gravity, collisions, friction and
+  resting contacts is tractable and is the single best way to understand what
+  a physics engine actually does. Box2D remains the reference if you get stuck.
+- **3D — vendor it.** Jolt or Bullet. A correct 3D solver — convex hulls, GJK/EPA,
+  constraint islands, continuous collision — is a multi-month project on its own,
+  and not the interesting part if the goal is building games.
+
+### What a 2D engine needs
+
+- **`RigidBody2D`** — position, velocity, angular velocity, inverse mass
+  (storing the inverse means static bodies are just `invMass = 0`, with no
+  branching), restitution, friction, and a type: static, dynamic, or kinematic.
+- **Integration** — semi-implicit Euler: apply forces to velocity first, then
+  velocity to position. One line different from explicit Euler and dramatically
+  more stable for the same cost.
+- **Gravity** — a world-level acceleration (`{0, -9.81}`), applied to every
+  dynamic body each step, plus a per-body scale so a character can feel floaty
+  or heavy without a second world.
+- **Broadphase** — brute-force pair testing is genuinely fine to a few hundred
+  bodies. Replace with a uniform grid or sweep-and-prune when profiling says to,
+  not before.
+- **Narrowphase** — circles and AABBs first, then SAT for oriented boxes and
+  convex polygons. Output is a contact manifold: normal, penetration depth,
+  contact points.
+- **Resolution** — sequential impulses, iterated a handful of times per step.
+  Then positional correction (Baumgarte, with a small slop) so stacked bodies
+  don't sink into each other, and a tangential impulse for friction.
+- **Sleeping** — bodies below a velocity threshold for long enough stop being
+  integrated. Both a large performance win and the cure for resting jitter.
+
+Determinism comes from a fixed `dt` plus a fixed iteration order. Get both and
+a replay reproduces exactly; miss either and it won't.
+
+### What it depends on
+
+Physics wants the **scene/entity layer** that's already outstanding — bodies
+need owners, and the transform has to be shared with the renderer rather than
+duplicated. It also wants **`DrawLine`**, because debugging a solver without
+seeing colliders and contact normals is guesswork.
+
+---
+
+## Audio and acoustics
+
+These are two very different problems and the roadmap should keep them apart.
+Making sound come out is a week. Simulating how sound behaves in a space is
+open-ended.
+
+### Stage 1 — playback
+
+- **Backend.** [miniaudio](https://miniaud.io/) is the pragmatic pick: single
+  header, public domain, and it handles device setup, decoding and mixing.
+  OpenAL Soft is the alternative if 3D positioning and HRTF matter more than
+  simplicity — it does those natively.
+- **`AudioEngine`** initialised alongside `Renderer::Init`, torn down with it.
+- **`AudioClip`** for decoded, fully-resident effects; streaming for music,
+  which shouldn't be held in memory.
+- **`AudioSource`** — play, pause, stop, loop, gain, pitch.
+
+The real hazard here is not the DSP, it's threading. Audio runs on a callback
+thread driven by the device, not by your frame loop. Anything the game touches
+while a sound is playing has to be lock-free or double-buffered; taking a mutex
+in the audio callback produces glitches you'll struggle to reproduce.
+
+### Stage 2 — positional audio
+
+- **`AudioListener`** attached to the camera. `PerspectiveCamera` already
+  exposes `GetPosition`, `GetForward` and `GetUp`, which is exactly the frame a
+  listener needs.
+- **Distance attenuation** — inverse, linear or exponential rolloff between a
+  min and max distance.
+- **Panning** from the listener-relative direction, or HRTF for real spatial
+  cues over headphones.
+- **Doppler** from relative velocity — which is only available once physics is
+  tracking velocities, so it naturally follows that work.
+
+### Stage 3 — acoustics
+
+This is where it stops being playback. Ordered by value per unit of effort:
+
+- **Occlusion and obstruction** — raycast from listener to source through the
+  physics broadphase; attenuate and low-pass by whatever it passes through. A
+  muffled sound behind a wall is most of the perceived realism, and it's why
+  acoustics depends on physics rather than on audio.
+- **Reverb zones** — per-region parameters with a crossfade on transitions.
+  Cheap, and convincing enough that most shipped games stop here.
+- **Early reflections** — image-source method against nearby planes. Gives a
+  real sense of room size.
+- **Convolution reverb** — baked impulse responses per space, convolved at
+  runtime. Needs an FFT, and is the practical ceiling for a project this size.
+- **Wave simulation** — FDTD or ray-traced impulse responses computed offline.
+  Genuinely a research-scale undertaking; worth knowing it exists and that it
+  is not the next step.
+
+### Suggested order
+
+1. Fixed timestep — small, and blocks physics
+2. Scene/entity layer — already outstanding, wanted by both
+3. `DrawLine` — small, makes the next item debuggable
+4. 2D physics with gravity and collisions
+5. Audio playback
+6. Positional audio (Doppler once velocities exist)
+7. Occlusion and reverb zones
+
+---
 
 ## Done
 
@@ -677,6 +827,21 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-01 (demo selector)
+
+- A **`DemoSelector`** layer with a "Demos" panel: a dropdown, quick-select
+  buttons with the live one highlighted, and F1 to cycle. Adding a demo means
+  an enumerator, a name in `s_DemoNames`, and a `PushLayer` — a `static_assert`
+  catches the enum and the name list drifting apart.
+- Switching now lives in **one** layer. Previously each demo handled the key
+  itself, and since every layer sees the same event, one would select the other
+  demo and the second would select it straight back. Centralising it removed
+  the problem instead of working around it.
+- Demo panels get a default position clear of the selector.
+- Roadmap: outlined **physics** (fixed timestep first, then a 2D rigid-body
+  solver with gravity) and **audio/acoustics** (playback, positional, then
+  occlusion via physics raycasts), with dependencies and a suggested order.
 
 ### 2026-08-01 (3D: camera hierarchy and a lit cube)
 

@@ -316,20 +316,10 @@ public:
 			if (e.GetRepeatCount() > 0)
 				return false;
 
-			// The active check must come first. Every layer sees this same
-			// event, so if both demos acted on Tab, one would set the demo
-			// and the other would set it straight back.
+			// Switching demos is DemoSelector's job, not this layer's -- it
+			// sits above this one and consumes F1 before it gets here.
 			if (g_ActiveDemo != Demo::Cube3D)
 				return false;
-
-			if (e.GetKeyCode() == EGSS_KEY_F1)
-			{
-				g_ActiveDemo = Demo::Breakout;
-				// true marks the event handled, and Application stops walking
-				// the stack. Without it the other demo layer sees the same
-				// key press and switches straight back.
-				return true;
-			}
 
 			if (e.GetKeyCode() == EGSS_KEY_SPACE)
 				m_Spinning = !m_Spinning;
@@ -343,11 +333,12 @@ public:
 		if (g_ActiveDemo != Demo::Cube3D)
 			return;
 
+		// Clear of the Demos panel on first run; ImGui remembers it after.
+		ImGui::SetNextWindowPos(ImVec2(20.0f, 180.0f), ImGuiCond_FirstUseEver);
 		ImGui::Begin("Cube3D");
 
 		ImGui::Text("WASD   move      Q/E  up / down");
 		ImGui::Text("Arrows look      Space  pause spin");
-		ImGui::Text("F1     switch to Breakout");
 
 		ImGui::Separator();
 		glm::vec3 p = m_Camera.GetPosition();

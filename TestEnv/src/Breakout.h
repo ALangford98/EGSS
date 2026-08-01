@@ -316,19 +316,10 @@ public:
 			if (e.GetRepeatCount() > 0)
 				return false;
 
-			// See the note in Cube3D.h: check first, then act, or the two
-			// layers cancel each other out on the same key press.
+			// Switching demos is DemoSelector's job, not this layer's -- it
+			// sits above this one and consumes F1 before it gets here.
 			if (g_ActiveDemo != Demo::Breakout)
 				return false;
-
-			if (e.GetKeyCode() == EGSS_KEY_F1)
-			{
-				g_ActiveDemo = Demo::Cube3D;
-				// true marks the event handled, and Application stops walking
-				// the stack. Without it the other demo layer sees the same
-				// key press and switches straight back.
-				return true;
-			}
 
 			if (e.GetKeyCode() == EGSS_KEY_SPACE)
 				m_BallStuck = false;
@@ -350,6 +341,8 @@ public:
 
 		auto stats = Egss::Renderer2D::GetStats();
 
+		// Clear of the Demos panel on first run; ImGui remembers it after.
+		ImGui::SetNextWindowPos(ImVec2(20.0f, 180.0f), ImGuiCond_FirstUseEver);
 		ImGui::Begin("Breakout");
 
 		ImGui::Text("Score: %d", m_Score);
@@ -374,7 +367,6 @@ public:
 		ImGui::Text("Quads:      %u", stats.QuadCount);
 
 		ImGui::Separator();
-		ImGui::Text("F1                 switch to the 3D demo");
 		if (ImGui::Button("Restart"))
 			Reset();
 
