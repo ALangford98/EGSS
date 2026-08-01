@@ -25,7 +25,7 @@ Breakout and a lit 3D cube grid — with **F1** switching between them. See [Roa
 | `EGSS/src/Egss/` | Engine core — application loop, layers, events, input, logging |
 | `EGSS/src/Egss/Renderer/` | Backend-agnostic renderer interfaces |
 | `EGSS/src/Platform/` | Backends: `Windows/`, `Linux/`, and `OpenGL/` |
-| `EGSS/vendor/` | GLFW, spdlog, glm, imgui (submodules); Glad and stb_image (checked in) |
+| `EGSS/vendor/` | GLFW, spdlog, glm, imgui (submodules); Glad, stb_image and miniaudio (checked in) |
 | `TestEnv/src/` | Sandbox app that consumes the engine |
 | `premake5.lua` | Build definition — the source of truth for both platforms |
 | `.vscode/` | Editor tasks, IntelliSense config, and debug launch configs |
@@ -594,8 +594,6 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 
 - [ ] **A `ShaderLibrary`**, so shaders are looked up by name rather than
       passed around as `shared_ptr`s
-- [ ] **A profiler** — instrumentation timers and scope macros, ideally
-      feeding a Chrome-tracing JSON
 - [ ] **Query `GL_MAX_TEXTURE_IMAGE_UNITS`** at runtime rather than assuming
       the 16-slot floor, and generate the sampler switch to match
 - [ ] **A PCH for `TestEnv`.** Only the engine has one
@@ -613,12 +611,15 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       notion of a material binding a shader to its parameters
 - [ ] **Physics: rotation.** Bodies translate but never spin. Needs SAT for
       oriented shapes, multi-point manifolds and angular impulses
-- [ ] **Physics: raycasts.** Needed by audio occlusion, and by anything that
-      wants to ask what is in front of it
-- [ ] **Physics: a real broadphase.** Brute-force pair testing is O(n^2); a
-      uniform grid or sweep-and-prune replaces exactly one loop
-- [ ] **Audio and acoustics** — see [Audio and acoustics](#audio-and-acoustics)
-      below
+- [ ] **Physics: a real broadphase.** Brute-force pair testing is O(n^2) and
+      raycasting is O(rays x bodies). Both measured negligible so far (see the
+      profiler entry below), so this stays unstarted deliberately. The trigger
+      is heavy raycasting — hundreds of rays against hundreds of bodies — not
+      the collision pairs
+- [ ] **Positional audio** — a listener on the camera, distance rolloff, and
+      Doppler from physics velocities. Playback and panning are done; see
+      [Audio and acoustics](#audio-and-acoustics) below
+- [ ] **Acoustics** — occlusion via raycasts, then reverb zones
 
 ---
 
@@ -834,6 +835,91 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-01 (audio playback)
+
+- **miniaudio vendored** as a single header plus one C translation unit. It is
+  compiled as C, so premake marks `**.c` `NoPCH` — handing a C file the C++
+  precompiled header does not end well.
+- **`AudioEngine`** on a raw `ma_device` with a mixer of our own rather than
+  miniaudio's higher-level engine, because per-voice gain, pan and pitch are
+  exactly what positional audio will need to drive. 32 voices, f32 stereo at
+  48kHz, equal-power panning, linear interpolation for fractional pitch.
+- **`AudioClip`** decodes to the engine's format *on load*, so the mixer never
+  resamples on the audio thread. `CreateFromSamples` covers procedural audio.
+- **No locks.** The mixer runs on a device-driven thread that must never block
+  or allocate, so voices are claimed with atomics: the main thread only writes
+  to an inactive voice and publishes with a release store, and the audio
+  thread only touches voices it acquired as active. A finished voice releases
+  its slot but never drops its clip reference — freeing memory in the audio
+  callback is the same class of mistake as taking a lock there.
+- A missing device is not an error: `Init` warns, `IsAvailable` returns false,
+  and everything else carries on silently.
+- Both demos use it. Physics impacts play from the contact's accumulated
+  normal impulse — which is precisely "how hard did these two hit" — and only
+  for *new* contacts, since a resting body has a large normal impulse every
+  step and would otherwise buzz continuously. Breakout pans its bounces by x.
+
+Verified with `RenderForTest`, which runs the mixer into a buffer with no
+device attached: centre pan gives 0.35355 in both channels (cos(pi/4) x 0.5),
+hard left gives 0.5 and 0.0, doubling the pitch consumes 100 source frames in
+50, two voices sum to 0.70711, clips free their voice on completion, and
+StopAll clears them. All exact.
+
+The first run failed one case — pitch showed 0.8536 instead of 0.3536. The
+mixer was right and the test was wrong: a 100-frame voice from the previous
+case was still playing after only 50 frames had been rendered, and 0.5 + 0.3536
+is exactly what should come out. The test now clears voices between cases.
+
+### 2026-08-01 (physics raycasts)
+
+- **`PhysicsWorld2D::Raycast`** returning nearest hit: body, point, normal,
+  distance and fraction along the ray. Ray-circle solves the quadratic;
+  ray-box uses the slab method and reports which face was crossed. The
+  direction is normalised internally, so a plain "to minus from" vector works,
+  and an `ignore` handle skips the caster.
+- A ray starting inside a body reports distance 0 with the normal facing back
+  down the ray — there is no correct answer there, but this one never hands
+  back a zero-length normal.
+- The `Physics2D` demo draws a 360-degree ray fan with normals at each hit,
+  which is the same query audio occlusion will make.
+
+Verified headlessly against known geometry — both box faces, a circle behind
+an ignored body, misses, a too-short ray, an unnormalised direction, and an
+origin inside a body. All seven exact.
+
+Cost, Release, 96 rays against ~100 bodies: **0.069 ms per frame**, about 0.4%
+of the frame and roughly the same as the whole physics step. Raycasting is
+O(rays x bodies), so it — not collision pairs — is what would eventually
+justify a spatial broadphase.
+
+### 2026-08-01 (profiler)
+
+- **`Instrumentor`** — RAII scope timers behind `EGSS_PROFILE_SCOPE`, with two
+  outputs: a live per-frame summary, and a Chrome trace written to JSON for
+  `chrome://tracing` or `ui.perfetto.dev`. `EGSS_PROFILE` is defined in Debug
+  and Release; Dist compiles the macros to nothing.
+- Instrumented the frame loop, the fixed-update loop, ImGui, the buffer swap,
+  `Renderer2D::Flush`, and each phase of `PhysicsWorld2D::Step`.
+- **`ProfilerPanel`** in `TestEnv` shows the live table and captures traces.
+
+The live view exists because VSync makes the frame counter useless: the swap
+blocks until the display is ready, so a frame doing 2ms of work and one doing
+12ms both report 16.7ms.
+
+What it immediately settled:
+
+- **Debug numbers are worthless for tuning.** Physics went from 2.456 ms per
+  step in Debug to **0.118 ms** in Release — 21x. The broadphase alone went
+  from 1.257 ms to **0.011 ms**, a factor of 110.
+- **The O(n^2) broadphase does not need replacing.** At ~150 bodies it is
+  0.011 ms, roughly 0.06% of the frame. It stays on the roadmap, unstarted,
+  which is the right outcome — that decision was going to be a guess.
+- **Attributing GPU wait needs care.** Between Debug and Release the swap wait
+  fell from 5.6 ms to 0.4 ms while `Layer::OnUpdate` doubled: with VSync the
+  driver blocks wherever it likes, often inside a GL call. Scopes that touch
+  no GL are trustworthy; the rest are work plus an unknown wait. The panel
+  says so rather than implying a clean split.
 
 ### 2026-08-01 (2D physics)
 

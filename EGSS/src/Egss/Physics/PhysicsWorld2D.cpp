@@ -1,5 +1,6 @@
 #include "egsspch.h"
 #include "Egss/Physics/PhysicsWorld2D.h"
+#include "Egss/Debug/Instrumentor.h"
 
 namespace Egss {
 
@@ -57,11 +58,15 @@ namespace Egss {
 
 	void PhysicsWorld2D::Step(float dt)
 	{
+		EGSS_PROFILE_SCOPE("Physics::Step");
+
 		Integrate(dt);
 		GenerateContacts();
 
 		// Replay last step's impulses before solving anything.
 		WarmStart();
+
+		EGSS_PROFILE_SCOPE("Physics::Solve");
 
 		// Sequential impulses: each pass corrects the error the previous one
 		// left behind. One pass resolves a single collision fine; a stack
@@ -82,6 +87,8 @@ namespace Egss {
 
 	void PhysicsWorld2D::Integrate(float dt)
 	{
+		EGSS_PROFILE_SCOPE("Physics::Integrate");
+
 		m_AwakeBodyCount = 0;
 
 		for (RigidBody2D& body : m_Bodies)
@@ -237,6 +244,8 @@ namespace Egss {
 
 	void PhysicsWorld2D::GenerateContacts()
 	{
+		EGSS_PROFILE_SCOPE("Physics::Broadphase+Narrowphase");
+
 		m_Contacts.clear();
 
 		// Brute force. Every unordered pair, once. Fine to a few hundred
@@ -354,6 +363,8 @@ namespace Egss {
 
 	void PhysicsWorld2D::CorrectPositions()
 	{
+		EGSS_PROFILE_SCOPE("Physics::CorrectPositions");
+
 		// The velocity solver stops bodies approaching, but it cannot undo an
 		// overlap that already exists -- gravity sinks a resting body a little
 		// every step, and without this it slowly disappears through the floor.
@@ -391,6 +402,155 @@ namespace Egss {
 		}
 	}
 
+	// --- Raycasting ---------------------------------------------------------
+
+	// Quadratic in t: |origin + dir*t - centre|^2 = r^2. Only the nearer root
+	// matters, and only if it lies within the ray.
+	static bool RaycastCircle(const glm::vec2& origin, const glm::vec2& direction,
+		float maxDistance, const RigidBody2D& body, float& outDistance, glm::vec2& outNormal)
+	{
+		glm::vec2 toOrigin = origin - body.Position;
+
+		float b = glm::dot(toOrigin, direction);
+		float c = glm::dot(toOrigin, toOrigin) - body.Radius * body.Radius;
+
+		// Outside and pointing away.
+		if (c > 0.0f && b > 0.0f)
+			return false;
+
+		float discriminant = b * b - c;
+		if (discriminant < 0.0f)
+			return false;
+
+		float t = -b - std::sqrt(discriminant);
+
+		// Negative means the origin is inside the circle.
+		if (t < 0.0f)
+			t = 0.0f;
+
+		if (t > maxDistance)
+			return false;
+
+		glm::vec2 point = origin + direction * t;
+		glm::vec2 normal = point - body.Position;
+
+		float length = glm::length(normal);
+		outNormal = length > 0.0001f ? normal / length : -direction;
+		outDistance = t;
+		return true;
+	}
+
+	// Slab method: clip the ray against each axis' pair of planes and keep the
+	// overlap. If the overlap ever empties, the ray misses.
+	static bool RaycastBox(const glm::vec2& origin, const glm::vec2& direction,
+		float maxDistance, const RigidBody2D& body, float& outDistance, glm::vec2& outNormal)
+	{
+		glm::vec2 boxMin = body.Position - body.HalfExtents;
+		glm::vec2 boxMax = body.Position + body.HalfExtents;
+
+		float tMin = 0.0f;
+		float tMax = maxDistance;
+
+		int hitAxis = -1;
+		float hitSign = 0.0f;
+
+		for (int axis = 0; axis < 2; axis++)
+		{
+			if (std::abs(direction[axis]) < 0.00001f)
+			{
+				// Parallel to this pair of planes: either always inside the
+				// slab or never.
+				if (origin[axis] < boxMin[axis] || origin[axis] > boxMax[axis])
+					return false;
+
+				continue;
+			}
+
+			float inverse = 1.0f / direction[axis];
+			float t1 = (boxMin[axis] - origin[axis]) * inverse;
+			float t2 = (boxMax[axis] - origin[axis]) * inverse;
+
+			float sign = -1.0f;
+			if (t1 > t2)
+			{
+				std::swap(t1, t2);
+				sign = 1.0f;
+			}
+
+			if (t1 > tMin)
+			{
+				tMin = t1;
+				hitAxis = axis;
+				hitSign = sign;
+			}
+
+			tMax = std::min(tMax, t2);
+
+			if (tMin > tMax)
+				return false;
+		}
+
+		outDistance = tMin;
+
+		if (hitAxis < 0)
+		{
+			// Started inside: no face was crossed on the way in.
+			outNormal = -direction;
+		}
+		else
+		{
+			outNormal = { 0.0f, 0.0f };
+			outNormal[hitAxis] = hitSign;
+		}
+
+		return true;
+	}
+
+	RaycastHit PhysicsWorld2D::Raycast(const glm::vec2& origin, const glm::vec2& direction,
+		float maxDistance, unsigned int ignore) const
+	{
+		EGSS_PROFILE_SCOPE("Physics::Raycast");
+
+		RaycastHit result;
+
+		float length = glm::length(direction);
+		if (length < 0.00001f || maxDistance <= 0.0f)
+			return result;
+
+		glm::vec2 unit = direction / length;
+		float nearest = maxDistance;
+
+		for (unsigned int i = 0; i < m_Bodies.size(); i++)
+		{
+			if (i == ignore)
+				continue;
+
+			const RigidBody2D& body = m_Bodies[i];
+
+			float distance = 0.0f;
+			glm::vec2 normal(0.0f);
+
+			bool hit = body.Shape == ColliderShape::Circle
+				? RaycastCircle(origin, unit, nearest, body, distance, normal)
+				: RaycastBox(origin, unit, nearest, body, distance, normal);
+
+			if (!hit || distance > nearest)
+				continue;
+
+			// Keeping `nearest` tight also prunes later candidates.
+			nearest = distance;
+
+			result.Hit = true;
+			result.Body = i;
+			result.Distance = distance;
+			result.Fraction = distance / maxDistance;
+			result.Point = origin + unit * distance;
+			result.Normal = normal;
+		}
+
+		return result;
+	}
+
 	// Union-find over the contact graph, so bodies that are touching are
 	// treated as one unit.
 	static unsigned int FindRoot(std::vector<unsigned int>& parent, unsigned int i)
@@ -405,6 +565,8 @@ namespace Egss {
 
 	void PhysicsWorld2D::UpdateSleeping(float dt)
 	{
+		EGSS_PROFILE_SCOPE("Physics::Sleeping");
+
 		if (!AllowSleeping)
 		{
 			for (RigidBody2D& body : m_Bodies)

@@ -17,6 +17,7 @@ IncludeDir["Glad"] = "EGSS/vendor/Glad/include"
 IncludeDir["glm"] = "EGSS/vendor/glm"
 IncludeDir["ImGui"] = "EGSS/vendor/imgui"
 IncludeDir["stb_image"] = "EGSS/vendor/stb_image"
+IncludeDir["miniaudio"] = "EGSS/vendor/miniaudio"
 
 include "EGSS/vendor/glfw"
 include "EGSS/vendor/Glad"
@@ -40,8 +41,16 @@ project "EGSS"
         "%{prj.name}/src/**.h",
         "%{prj.name}/src/**.cpp",
         "%{prj.name}/vendor/stb_image/**.h",
-        "%{prj.name}/vendor/stb_image/**.cpp"
+        "%{prj.name}/vendor/stb_image/**.cpp",
+        "%{prj.name}/vendor/miniaudio/**.h",
+        "%{prj.name}/vendor/miniaudio/**.c"
     }
+
+    -- miniaudio.c is C, so it must not be handed the C++ precompiled header.
+    filter "files:**.c"
+        flags { "NoPCH" }
+
+    filter {}
 
     includedirs
     {
@@ -52,6 +61,7 @@ project "EGSS"
         "%{IncludeDir.glm}",
         "%{IncludeDir.ImGui}",
         "%{IncludeDir.stb_image}",
+        "%{IncludeDir.miniaudio}",
     }
 
     links
@@ -130,12 +140,12 @@ project "EGSS"
         }
 
     filter "configurations:Debug"
-        defines { "EGSS_DEBUG", "EGSS_ENABLE_ASSERTS" }
+        defines { "EGSS_DEBUG", "EGSS_ENABLE_ASSERTS", "EGSS_PROFILE" }
         runtime "Debug"
         symbols "On"
 
     filter "configurations:Release"
-        defines "EGSS_RELEASE"
+        defines { "EGSS_RELEASE", "EGSS_PROFILE" }
         runtime "Release"
         optimize "On"
         symbols "On"
@@ -207,12 +217,12 @@ project "TestEnv"
         linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
 
     filter "configurations:Debug"
-        defines { "EGSS_DEBUG", "EGSS_ENABLE_ASSERTS" }
+        defines { "EGSS_DEBUG", "EGSS_ENABLE_ASSERTS", "EGSS_PROFILE" }
         runtime "Debug"
         symbols "On"
 
     filter "configurations:Release"
-        defines "EGSS_RELEASE"
+        defines { "EGSS_RELEASE", "EGSS_PROFILE" }
         runtime "Release"
         optimize "On"
         symbols "On"

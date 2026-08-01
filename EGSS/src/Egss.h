@@ -6,6 +6,7 @@
 #include "Egss/Log.h"
 #include "Egss/Layer.h"
 #include "Egss/Timestep.h"
+#include "Egss/Debug/Instrumentor.h"
 #include "Egss/ImGui/ImGuiLayer.h"
 
 #include "Egss/Input.h"
@@ -16,6 +17,11 @@
 #include "Egss/Events/ApplicationEvent.h"
 #include "Egss/Events/KeyEvent.h"
 #include "Egss/Events/MouseEvent.h"
+
+// AUDIO ******************
+
+#include "Egss/Audio/AudioClip.h"
+#include "Egss/Audio/AudioEngine.h"
 
 // PHYSICS ****************
 

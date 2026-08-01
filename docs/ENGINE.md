@@ -182,6 +182,19 @@ Input::IsKeyPressed(EGSS_KEY_SPACE);
 Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
 Input::GetMousePosition();          // {x, y}, window coordinates
 
+// Profiling — compiled out in Dist
+EGSS_PROFILE_SCOPE("MyThing");                 // RAII, times the enclosing scope
+EGSS_PROFILE_FUNCTION();                       // same, named after the function
+EGSS_PROFILE_BEGIN_SESSION("run", "trace.json");  // Chrome trace capture
+EGSS_PROFILE_END_SESSION();
+Instrumentor::GetLastFrame();                  // live per-scope totals
+
+// Audio — Init/Shutdown are handled by Application
+auto clip = AudioClip::Create("hit.wav");            // or CreateFromSamples
+AudioEngine::Play(clip, { volume, pitch, pan, loop });
+AudioEngine::SetMasterVolume(0.8f);
+AudioEngine::IsAvailable();                          // false = no device, still safe
+
 // Physics — a standalone world; step it from OnFixedUpdate
 PhysicsWorld2D world;
 world.Gravity = { 0.0f, -9.81f };
@@ -189,6 +202,9 @@ auto handle = world.AddBody(RigidBody2D::MakeCircle(pos, radius, mass));
 world.AddBody(RigidBody2D::MakeStaticBox(pos, halfExtents));
 world.Step(fixedStep);
 const RigidBody2D& body = world.GetBody(handle);   // Position, Velocity, Awake
+
+RaycastHit hit = world.Raycast(origin, direction, maxDistance);  // dir auto-normalised
+if (hit.Hit) { hit.Point; hit.Normal; hit.Distance; hit.Fraction; }
 
 // Assets
 Texture2D::Create("path.png");      // or Create(width, height) + SetData

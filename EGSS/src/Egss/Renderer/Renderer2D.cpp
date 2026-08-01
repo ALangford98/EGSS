@@ -5,6 +5,7 @@
 #include "Egss/Renderer/Shader.h"
 #include "Egss/Renderer/RenderCommand.h"
 #include "Egss/Log.h"
+#include "Egss/Debug/Instrumentor.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -307,6 +308,8 @@ namespace Egss {
 
 	void Renderer2D::Flush()
 	{
+		EGSS_PROFILE_SCOPE("Renderer2D::Flush");
+
 		FlushQuads();
 		FlushLines();
 	}

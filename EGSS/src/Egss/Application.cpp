@@ -6,6 +6,8 @@
 #include"Log.h"
 
 #include "Egss/Renderer/Renderer.h"
+#include "Egss/Debug/Instrumentor.h"
+#include "Egss/Audio/AudioEngine.h"
 
 namespace Egss {
 
@@ -28,6 +30,7 @@ namespace Egss {
 		m_Window->SetEventCallback(EGSS_BIND_EVENT_FN(Application::OnEvent));
 
 		Renderer::Init();
+		AudioEngine::Init();
 
 		// Owned by the layer stack, but kept as a pointer so Run can bracket
 		// the per-layer ImGui rendering.
@@ -37,6 +40,7 @@ namespace Egss {
 
 	Application::~Application()
 	{
+		AudioEngine::Shutdown();
 		Renderer::Shutdown();
 	}
 
@@ -97,6 +101,10 @@ namespace Egss {
 	{
 		while (m_Running)
 		{
+			// Rolls last frame's totals over before anything is timed.
+			Instrumentor::NextFrame();
+			EGSS_PROFILE_SCOPE("Frame");
+
 			float time = GetTime();
 			float frameTime = time - m_LastFrameTime;
 			m_LastFrameTime = time;
@@ -114,6 +122,8 @@ namespace Egss {
 
 				while (m_Accumulator >= m_FixedTimestep)
 				{
+					EGSS_PROFILE_SCOPE("Layer::OnFixedUpdate");
+
 					for (Layer* layer : m_LayerStack)
 						layer->OnFixedUpdate(m_FixedTimestep);
 
@@ -126,14 +136,22 @@ namespace Egss {
 				// than snapping to the most recent one.
 				m_InterpolationAlpha = m_Accumulator / m_FixedTimestep;
 
-				// Bottom-up, so later layers draw over earlier ones.
-				for (Layer* layer : m_LayerStack)
-					layer->OnUpdate(frameTime);
+				{
+					EGSS_PROFILE_SCOPE("Layer::OnUpdate");
 
-				m_ImGuiLayer->Begin();
-				for (Layer* layer : m_LayerStack)
-					layer->OnImGuiRender();
-				m_ImGuiLayer->End();
+					// Bottom-up, so later layers draw over earlier ones.
+					for (Layer* layer : m_LayerStack)
+						layer->OnUpdate(frameTime);
+				}
+
+				{
+					EGSS_PROFILE_SCOPE("ImGui");
+
+					m_ImGuiLayer->Begin();
+					for (Layer* layer : m_LayerStack)
+						layer->OnImGuiRender();
+					m_ImGuiLayer->End();
+				}
 			}
 			else
 			{
@@ -142,7 +160,12 @@ namespace Egss {
 				m_Accumulator = 0.0f;
 			}
 
-			m_Window->OnUpdate();
+			{
+				// Mostly the VSync wait: the swap blocks until the display is
+				// ready. A large number here is the GPU idling, not work.
+				EGSS_PROFILE_SCOPE("Window::OnUpdate (swap + poll)");
+				m_Window->OnUpdate();
+			}
 		}
 		EGSS_CORE_INFO("Application run loop exiting");
 	}

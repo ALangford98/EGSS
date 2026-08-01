@@ -37,6 +37,22 @@ namespace Egss {
 		float RestitutionBias = 0.0f;
 	};
 
+	// What a ray found, if anything.
+	struct EGSS_API RaycastHit
+	{
+		bool Hit = false;
+		unsigned int Body = ~0u;
+
+		glm::vec2 Point = { 0.0f, 0.0f };
+		// Surface normal at the hit, pointing back towards the ray's origin.
+		glm::vec2 Normal = { 0.0f, 0.0f };
+
+		float Distance = 0.0f;
+		// Where along the ray, 0..1 of maxDistance. Handy for attenuating by
+		// how far something is without dividing again.
+		float Fraction = 0.0f;
+	};
+
 	// A standalone rigid-body world, in the shape Box2D and Jolt use: it owns
 	// its bodies and knows nothing about the renderer, the scene, or entities.
 	// Whatever ends up owning game objects later just holds handles into this.
@@ -72,6 +88,20 @@ namespace Egss {
 		// Advance by exactly dt. Integrate, find contacts, solve them, then
 		// push overlapping bodies apart.
 		void Step(float dt);
+
+		// Nearest body along the ray, or a miss.
+		//
+		// The direction need not be unit length -- it is normalised here, so
+		// callers can pass a "to minus from" vector directly. Pass a handle in
+		// `ignore` to skip the caster, which is nearly always what you want
+		// when a body casts a ray from its own centre.
+		//
+		// A ray starting inside a body reports a hit at distance 0 with the
+		// normal facing back down the ray; there is no single correct answer
+		// in that case, and this one at least never leaves the caller with a
+		// zero-length normal.
+		RaycastHit Raycast(const glm::vec2& origin, const glm::vec2& direction,
+			float maxDistance, unsigned int ignore = ~0u) const;
 
 		// Contacts from the last Step, for drawing.
 		const std::vector<Contact>& GetContacts() const { return m_Contacts; }

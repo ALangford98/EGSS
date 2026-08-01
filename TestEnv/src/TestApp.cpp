@@ -7,6 +7,7 @@
 //   Physics2D.h    -- rigid bodies falling, stacking and bouncing
 //   DemoSelector.h -- the "Demos" panel; owns switching so the demo layers
 //                     don't have to agree about it
+//   ProfilerPanel.h -- live per-scope timings, and Chrome trace capture
 //
 // Reading both side by side is the point: they share the window, the events,
 // the input, the layer stack, the shaders, the buffers and the textures. What
@@ -21,6 +22,7 @@
 #include "Breakout.h"
 #include "Cube3D.h"
 #include "Physics2D.h"
+#include "ProfilerPanel.h"
 
 class TestEnv : public Egss::Application
 {
@@ -34,6 +36,7 @@ public:
 		PushLayer(new Cube3D());
 		PushLayer(new Physics2D());
 		PushLayer(new DemoSelector());
+		PushLayer(new ProfilerPanel());
 	}
 };
 

@@ -15,6 +15,9 @@
 #include <Egss.h>
 #include <imgui.h>
 
+// glm::two_pi -- do not rely on another header pulling this in.
+#include <glm/gtc/constants.hpp>
+
 #include "Demo.h"
 
 // ---------------------------------------------------------------------------
@@ -89,7 +92,38 @@ public:
 		m_BrickTexture.reset(Egss::Texture2D::Create(size, size));
 		m_BrickTexture->SetData(pixels.data(), (unsigned int)(pixels.size() * sizeof(unsigned int)));
 
+		// Synthesised, so the sandbox still has no asset files. A short
+		// decaying tone is enough to feel like a hit.
+		m_BounceClip = MakeTone(520.0f, 0.07f, 40.0f);
+		m_BrickClip = MakeTone(880.0f, 0.10f, 26.0f);
+
 		Reset();
+	}
+
+	static std::shared_ptr<Egss::AudioClip> MakeTone(float frequency, float seconds, float decay)
+	{
+		const unsigned int rate = Egss::AudioEngine::GetSampleRate();
+		const unsigned int frames = (unsigned int)(seconds * rate);
+
+		std::vector<float> samples(frames);
+		for (unsigned int i = 0; i < frames; i++)
+		{
+			float t = (float)i / (float)rate;
+			samples[i] = std::sin(glm::two_pi<float>() * frequency * t) * std::exp(-decay * t) * 0.5f;
+		}
+
+		return Egss::AudioClip::CreateFromSamples(std::move(samples), 1);
+	}
+
+	// Pan follows the x position, so a hit on the left is heard on the left.
+	// That is the whole idea behind positional audio, just without a listener.
+	void PlayAt(const std::shared_ptr<Egss::AudioClip>& clip, float x, float volume, float pitch)
+	{
+		Egss::AudioParams params;
+		params.Volume = volume;
+		params.Pitch = pitch;
+		params.Pan = std::min(std::max(x / m_WorldHalfWidth, -1.0f), 1.0f);
+		Egss::AudioEngine::Play(clip, params);
 	}
 
 	void Reset()
@@ -234,6 +268,8 @@ public:
 			float offset = (m_BallPosition.x - m_PaddleX) / (s_PaddleSize.x * 0.5f);
 			m_BallVelocity.x = offset * s_BallStartSpeed;
 
+			PlayAt(m_BounceClip, m_BallPosition.x, 0.5f, 1.0f);
+
 			// TRY: multiply the velocity by 1.02 here so rallies get harder.
 		}
 
@@ -248,6 +284,11 @@ public:
 
 			brick.Alive = false;
 			m_Score += 10;
+
+			// Pitch rises as the wall thins out -- the cheapest way to make
+			// scoring feel like progress.
+			float progress = 1.0f - (float)CountAlive() / (float)m_Bricks.size();
+			PlayAt(m_BrickClip, brick.Position.x, 0.45f, 1.0f + progress * 0.5f);
 
 			// Reflect on whichever axis was less overlapped -- the cheap way to
 			// tell a side hit from a top hit. Good enough for Breakout; a real
@@ -272,12 +313,16 @@ public:
 				LaunchBall();
 		}
 
-		bool anyLeft = false;
-		for (const Brick& brick : m_Bricks)
-			anyLeft |= brick.Alive;
-
-		if (!anyLeft)
+		if (CountAlive() == 0)
 			m_GameOver = true;
+	}
+
+	size_t CountAlive() const
+	{
+		size_t alive = 0;
+		for (const Brick& brick : m_Bricks)
+			alive += brick.Alive ? 1 : 0;
+		return alive;
 	}
 
 	void Draw()
@@ -455,6 +500,8 @@ private:
 	float m_WorldHalfWidth = 1.6f;
 
 	std::shared_ptr<Egss::Texture2D> m_BrickTexture;
+	std::shared_ptr<Egss::AudioClip> m_BounceClip;
+	std::shared_ptr<Egss::AudioClip> m_BrickClip;
 	std::vector<Brick> m_Bricks;
 
 	float m_PaddleX = 0.0f;
