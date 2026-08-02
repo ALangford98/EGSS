@@ -226,6 +226,26 @@ VoiceDebug d; AudioEngine::GetVoiceDebug(v, d);   // Distance/Gain/Pan/Occlusion
 // the engine crossfades between whatever settings you hand it.
 AudioEngine::SetReverb({ wet, roomSize, damping, width });
 
+// Early reflections — delayed, quietened, panned copies behind the direct
+// sound. Three numbers each; where they came from is not the mixer's business.
+AudioReflection taps[] = { { 0.021f, 0.4f, -0.6f }, { 0.037f, 0.25f, 0.3f } };
+AudioEngine::SetVoiceReflections(v, taps, 2);
+
+// Acoustics — where those three numbers can come from. Rays leave the source,
+// bounce off the physics world losing energy, and report what reached the ear.
+AcousticsSettings settings;
+settings.RayCount = 192;
+settings.Absorption = 0.15f;                    // energy lost per bounce
+settings.PerBodyAbsorption = &absorptionByBody; // optional, indexed by handle
+
+AcousticsResult r = Acoustics2D::Trace(world, sourcePos, listenerPos, settings);
+
+r.Occlusion;          // graded, from five probes across the listener
+r.Reflections;        // delay, gain, arrival direction, bounce count
+r.ReverbTime;         // RT60 -- check ReverbTimeMeasured before trusting it
+r.EffectiveRadius;    // how far the sound actually carries
+r.Echogram;           // energy per 5 ms bin, for drawing
+
 // Physics — a standalone world; step it from OnFixedUpdate
 PhysicsWorld2D world;
 world.Gravity = { 0.0f, -9.81f };
@@ -293,6 +313,32 @@ works from the output directory.
 
 `Submit` binds the shader itself, but uniform values belong to the program and
 survive a rebind, so setting your own before the call is fine.
+
+### Acoustics, briefly
+
+`Acoustics2D::Trace` is stochastic ray tracing: rays leave the source, reflect
+specularly, lose a fraction of their energy at every surface, and at each bounce
+ask whether the listener is visible from there. Every yes is one path sound
+could take — its length gives a delay, its surviving energy a gain, its last leg
+a direction. Binned by arrival time, they are the room's impulse response.
+
+It costs milliseconds, not microseconds, and geometry changes slowly. Trace when
+something has moved enough to matter, not every frame, and never on the audio
+thread.
+
+Two things are worth knowing before you trust a number it gives you:
+
+- **`ReverbTime` is only measured if the trace ran long enough.** Fitting a
+  decay needs the tail to reach 25 dB down inside the traced span; past that
+  the bins are zero because tracing stopped, not because the room went quiet,
+  and backward integration turns that cliff into a convincing wrong answer.
+  When it cannot measure, it says so via `ReverbTimeMeasured` and falls back to
+  `SabineTime` — the formula fed the geometry the trace did measure.
+- **Spreading applies to the last leg, not the whole path.** A ray's energy
+  packet does not shrink as it travels; what varies is how much of what a
+  surface re-radiates the listener catches, which depends only on how far away
+  that surface is. Applying `1/d²` over the total path counts distance twice
+  and halves every RT60 you measure.
 
 Positions are **world units**, not pixels. The camera decides how many units fit
 on screen, so `{0.5f, 0.5f}` is half a unit wide regardless of resolution.

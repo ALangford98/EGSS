@@ -84,6 +84,18 @@ namespace Egss {
 		float Width = 1.0f;
 	};
 
+	// One echo: the same sound again, later, quieter, from somewhere else.
+	//
+	// Deliberately just three numbers. Where they come from -- a ray trace, a
+	// hand-authored preset, a lookup table -- is not the mixer's business, in
+	// the same way that occlusion is handed in rather than worked out.
+	struct EGSS_API AudioReflection
+	{
+		float Delay = 0.0f;   // seconds behind the direct sound
+		float Gain = 0.0f;    // linear, relative to the voice's own volume
+		float Pan = 0.0f;     // -1 left, +1 right
+	};
+
 	// Refers to a playing voice. Carries a generation counter, so a handle to
 	// a sound that has already finished cannot accidentally control whatever
 	// sound reused its slot.
@@ -147,6 +159,24 @@ namespace Egss {
 		// Changes are smoothed over a few milliseconds, so a ray flicking
 		// between blocked and clear does not click.
 		static void SetVoiceOcclusion(VoiceHandle voice, float amount);
+
+		// Early reflections for one voice: a handful of delayed, quietened,
+		// panned copies mixed in behind the direct sound. This is what turns
+		// "the same sound, further away" into "the same sound, in a room".
+		//
+		// Taps past GetMaxReflections() are dropped, and so are delays longer
+		// than GetMaxReflectionDelay() -- past about 80 ms the ear stops
+		// hearing separate echoes and wants a reverb tail instead, which is
+		// what SetReverb is for.
+		//
+		// Safe to call every frame. The mixer picks up whole tap sets at a
+		// time, never a half-updated one.
+		static void SetVoiceReflections(VoiceHandle voice,
+			const AudioReflection* reflections, unsigned int count);
+		static void ClearVoiceReflections(VoiceHandle voice);
+
+		static unsigned int GetMaxReflections();
+		static float GetMaxReflectionDelay();
 
 		static void SetListener(const AudioListener& listener);
 		static AudioListener GetListener();

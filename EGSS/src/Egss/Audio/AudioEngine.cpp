@@ -38,6 +38,20 @@ namespace Egss {
 		// enough to feel immediate.
 		constexpr float s_OcclusionSmoothing = 0.05f;
 
+		// Early reflections. Eight taps is enough for a room to read as a room;
+		// past that the ear is hearing a tail, not echoes, and a tail is what
+		// the reverb is for.
+		constexpr unsigned int s_MaxReflections = 8;
+		// 200 ms of history per voice. At 48 kHz that is 38 KB a voice, which
+		// buys the whole early-reflection window with room to spare.
+		constexpr float s_MaxReflectionDelay = 0.200f;
+
+		// Tap sets are published by rotating through a ring of them, so the
+		// mixer is never reading the one being written. Eight deep means a set
+		// is not reused for eight updates -- over a tenth of a second at frame
+		// rate, and orders of magnitude longer than an audio block.
+		constexpr unsigned int s_TapSetCount = 8;
+
 		// Seconds to crossfade between reverb settings, so stepping through a
 		// doorway is a change of room rather than a click.
 		constexpr float s_ReverbSmoothing = 0.35f;
@@ -162,8 +176,28 @@ namespace Egss {
 			}
 		};
 
+		// A whole tap set is published at once. The fields are plain floats
+		// rather than atomics: the release store on the index orders every
+		// write here before the mixer's acquire can see the new index.
+		struct ReflectionTapSet
+		{
+			unsigned int Count = 0;
+			unsigned int DelaySamples[s_MaxReflections] = {};
+			float GainL[s_MaxReflections] = {};
+			float GainR[s_MaxReflections] = {};
+		};
+
 		struct Voice
 		{
+			Voice()
+			{
+				// The only allocation a voice ever makes, and it happens
+				// before any audio thread exists. Doing it lazily on first use
+				// would put a malloc in the mixer.
+				ReflectionHistory.assign(
+					(size_t)(s_MaxReflectionDelay * (float)s_SampleRate), 0.0f);
+			}
+
 			// The handshake between threads. Main writes the non-atomic fields
 			// only while this is false, then publishes with a release store;
 			// the audio thread acquires it before touching anything.
@@ -208,6 +242,19 @@ namespace Egss {
 			float SmoothedOcclusion = 0.0f;
 			float LowpassL = 0.0f;
 			float LowpassR = 0.0f;
+
+			// --- Early reflections ---
+			// The voice's recent output, so a tap can read what it played some
+			// milliseconds ago. Audio thread only.
+			std::vector<float> ReflectionHistory;
+			unsigned int ReflectionWrite = 0;
+
+			ReflectionTapSet TapSets[s_TapSetCount];
+			// Which set the mixer should read. Published with a release store
+			// after the set itself is filled.
+			std::atomic<unsigned int> ActiveTapSet{ 0 };
+			// Main thread only: where the next set goes.
+			unsigned int NextTapSet = 0;
 
 			// What the mixer last worked out, purely so a debug panel can show
 			// why something sounds the way it does.
@@ -409,6 +456,22 @@ namespace Egss {
 
 				bool loop = voice.Loop.load(std::memory_order_relaxed);
 
+				// One tap set for the whole block: picking it up once keeps
+				// every frame consistent, and a set can never be seen
+				// half-updated.
+				const ReflectionTapSet& taps =
+					voice.TapSets[voice.ActiveTapSet.load(std::memory_order_acquire)];
+
+				// Reflections carry their own attenuation -- the trace that
+				// produced them already accounted for how far each path
+				// travelled and what it bounced off. Scaling them by the
+				// direct sound's distance gain as well would count the
+				// distance twice, and echoes would vanish exactly when a
+				// room should be making them obvious.
+				float reflectionScale = voice.Volume.load(std::memory_order_relaxed) * master;
+
+				const size_t historySize = voice.ReflectionHistory.size();
+
 				for (unsigned int frame = 0; frame < frameCount; frame++)
 				{
 					unsigned int index = (unsigned int)voice.Cursor;
@@ -460,6 +523,30 @@ namespace Egss {
 
 					output[(size_t)frame * s_Channels + 0] += sampleL * left;
 					output[(size_t)frame * s_Channels + 1] += sampleR * right;
+
+					// --- Early reflections ---
+					if (historySize > 0)
+					{
+						// What the source emitted, before panning: an echo off
+						// a wall to the left arrives from the left whatever
+						// side the source itself is on.
+						voice.ReflectionHistory[voice.ReflectionWrite] =
+							0.5f * (sampleL + sampleR);
+
+						for (unsigned int t = 0; t < taps.Count; t++)
+						{
+							unsigned int delay = taps.DelaySamples[t];
+
+							// Wrap backwards without a modulo of a negative.
+							size_t read = (voice.ReflectionWrite + historySize - delay) % historySize;
+							float echo = voice.ReflectionHistory[read] * reflectionScale;
+
+							output[(size_t)frame * s_Channels + 0] += echo * taps.GainL[t];
+							output[(size_t)frame * s_Channels + 1] += echo * taps.GainR[t];
+						}
+
+						voice.ReflectionWrite = (voice.ReflectionWrite + 1) % (unsigned int)historySize;
+					}
 
 					voice.Cursor += pitch;
 				}
@@ -586,6 +673,13 @@ namespace Egss {
 				voice.LowpassL = 0.0f;
 				voice.LowpassR = 0.0f;
 				voice.Occlusion.store(0.0f, std::memory_order_relaxed);
+
+				// The previous sound's echoes must not leak into this one.
+				// Safe to touch here: the voice is inactive, so the mixer is
+				// not reading it.
+				std::fill(voice.ReflectionHistory.begin(), voice.ReflectionHistory.end(), 0.0f);
+				voice.ReflectionWrite = 0;
+				voice.TapSets[voice.ActiveTapSet.load(std::memory_order_relaxed)].Count = 0;
 
 				return MakeHandle(i, generation);
 			}
@@ -771,6 +865,63 @@ namespace Egss {
 	{
 		if (Voice* voice = Resolve(handle))
 			voice->Occlusion.store(std::min(std::max(amount, 0.0f), 1.0f), std::memory_order_relaxed);
+	}
+
+	unsigned int AudioEngine::GetMaxReflections() { return s_MaxReflections; }
+	float AudioEngine::GetMaxReflectionDelay() { return s_MaxReflectionDelay; }
+
+	void AudioEngine::SetVoiceReflections(VoiceHandle handle,
+		const AudioReflection* reflections, unsigned int count)
+	{
+		Voice* voice = Resolve(handle);
+		if (!voice)
+			return;
+
+		if (!reflections)
+			count = 0;
+
+		// Filled somewhere the mixer is not looking, then published. Writing
+		// the live set in place would let a block read three old taps and one
+		// new one, which is a click.
+		unsigned int slot = voice->NextTapSet;
+		ReflectionTapSet& set = voice->TapSets[slot];
+
+		const size_t historySize = voice->ReflectionHistory.size();
+		unsigned int written = 0;
+
+		for (unsigned int i = 0; i < count && written < s_MaxReflections; i++)
+		{
+			const AudioReflection& reflection = reflections[i];
+
+			// A tap at zero delay is the direct sound, which is already
+			// playing; one past the buffer would read the future.
+			unsigned int delay = (unsigned int)(reflection.Delay * (float)s_SampleRate + 0.5f);
+			if (delay == 0 || delay >= historySize)
+				continue;
+
+			if (!(reflection.Gain > 0.0f))
+				continue;
+
+			float left, right;
+			PanGains(std::min(std::max(reflection.Pan, -1.0f), 1.0f), left, right);
+
+			set.DelaySamples[written] = delay;
+			set.GainL[written] = left * reflection.Gain;
+			set.GainR[written] = right * reflection.Gain;
+			written++;
+		}
+
+		set.Count = written;
+
+		// Release: everything above must be visible before the mixer can
+		// select this set.
+		voice->ActiveTapSet.store(slot, std::memory_order_release);
+		voice->NextTapSet = (slot + 1) % s_TapSetCount;
+	}
+
+	void AudioEngine::ClearVoiceReflections(VoiceHandle handle)
+	{
+		SetVoiceReflections(handle, nullptr, 0);
 	}
 
 	void AudioEngine::SetListener(const AudioListener& listener)

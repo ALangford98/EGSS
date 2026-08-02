@@ -5,6 +5,9 @@
 //   Cube3D.h       -- lit, textured cubes on the perspective camera and
 //                     Renderer::Submit
 //   Physics2D.h    -- rigid bodies falling, stacking and bouncing
+//   Lighting2D.h   -- visibility-polygon lighting from raycasts
+//   SceneDemo.h    -- entities, components and pixel-exact picking
+//   Acoustics2DDemo.h -- ray-traced room acoustics driving the mixer
 //   DemoSelector.h -- the "Demos" panel; owns switching so the demo layers
 //                     don't have to agree about it
 //   ProfilerPanel.h -- live per-scope timings, and Chrome trace capture

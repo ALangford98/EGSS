@@ -17,9 +17,10 @@ raycasts and a uniform-grid broadphase; a lock-free **audio engine** with
 positional sound, occlusion and reverb; an instrumenting **profiler** with
 Chrome-trace export; and ImGui (docking) as a debug overlay.
 
-`TestEnv` holds five demos — Breakout, a 3D scene with transform gizmos and
+`TestEnv` holds six demos — Breakout, a 3D scene with transform gizmos and
 loadable models, a rigid-body sandbox, a 2D visibility-polygon lighting scene,
-and an entity/component scene with pixel-exact picking. See
+an entity/component scene with pixel-exact picking, and a room-acoustics scene
+where everything you hear is computed by bouncing rays off walls. See
 [Roadmap](#roadmap) for what's left.
 
 > **New to the codebase?** Start with **[docs/ENGINE.md](docs/ENGINE.md)** — the
@@ -39,7 +40,7 @@ and an entity/component scene with pixel-exact picking. See
 | `EGSS/src/Egss/Renderer/` | Backend-agnostic renderer interfaces |
 | `EGSS/src/Egss/Scene/` | `Scene`, `Entity`, `ComponentStore`, `Components` |
 | `EGSS/src/Egss/Physics/` | `PhysicsWorld2D`, `RigidBody2D`, raycasts, broadphase |
-| `EGSS/src/Egss/Audio/` | `AudioEngine`, `AudioClip` — mixer, positional sound, reverb |
+| `EGSS/src/Egss/Audio/` | `AudioEngine`, `AudioClip` — mixer, positional sound, reverb; `Acoustics2D` — ray-traced room response |
 | `EGSS/src/Egss/Debug/` | `Instrumentor` — scope timers and Chrome-trace capture |
 | `EGSS/src/Platform/` | Backends: `Windows/`, `Linux/`, and `OpenGL/` |
 | `EGSS/vendor/` | GLFW, spdlog, glm, imgui (submodules); Glad, stb_image and miniaudio (checked in) |
@@ -671,8 +672,17 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [ ] **Physics: rotation.** Bodies translate but never spin. Needs SAT for
       oriented shapes, multi-point manifolds and angular impulses
 
-- [ ] **Early reflections and convolution reverb** — the next steps up from
-      zones. See [Audio and acoustics](#audio-and-acoustics) below
+- [ ] **Convolution reverb.** The tracer already produces an echogram, which
+      is a coarse impulse response; convolving with it directly would replace
+      the Schroeder tail with the room's actual decay
+- [ ] **Frequency-dependent absorption.** One absorption figure per surface,
+      not one per band — so a traced room cannot get duller as it decays, which
+      is most of what makes a real tail sound real
+- [ ] **Scattering coefficients.** Reflections are purely specular, so a smooth
+      room leaves gaps in the tail that a real diffusing surface would fill
+- [ ] **3D acoustics.** `Acoustics2D` is 2D because `Raycast` is. A room's floor
+      and ceiling are half its reflecting area, so a traced RT60 is longer than
+      the same room in 3D
 - [ ] **3D physics or a 3D occlusion query.** `Raycast` is 2D, so Cube3D's
       emitters cannot be occluded — only the 2D demo can
 
@@ -890,6 +900,68 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-02 (ray-traced acoustics)
+
+Sound treated as geometry. Rays leave the source, bounce off walls losing
+energy to absorption, and at every bounce ask whether the listener can be seen
+from there. Each yes is a path the sound could actually take. Collected into an
+energy-versus-time histogram, those paths *are* the room's impulse response,
+coarsely sampled — early reflections at the front, a decaying tail behind.
+
+- **`Acoustics2D::Trace`** — the whole thing, and it touches no audio code and
+  no GL. It takes a `PhysicsWorld2D` and two points and returns numbers, which
+  is what makes it testable against formulas rather than by listening.
+- **One trace drives three separate things**: occlusion from whether the direct
+  line is blocked, early reflections from the loudest paths inside 80 ms, and
+  the reverb tail from how fast the traced energy decays.
+- **`AudioEngine::SetVoiceReflections`** — a per-voice multi-tap delay, up to
+  eight taps over 200 ms, each with its own delay, gain and pan. Tap sets are
+  published by rotating through a ring of eight and releasing an index, so the
+  mixer picks up whole sets and never a half-updated one. No allocation on the
+  audio thread; the history buffer is allocated when the voice is constructed.
+- **The engine still does not work acoustics out for itself.** It takes three
+  numbers per tap and asks no questions about where they came from — the same
+  boundary occlusion already had.
+- **An effective radius**, which is the thing a falloff distance cannot
+  express: sound carries 40 m down a corridor and 5.6 m across a small room of
+  equally hard walls.
+
+Four bugs found by measuring rather than listening:
+
+- **Spreading was applied to the whole path** instead of only the last leg. The
+  packet a ray carries keeps its energy as it travels; what varies is how much
+  of what a surface re-radiates the listener happens to catch. Applying `1/d²`
+  over the total path counts the distance falloff twice, and since path length
+  grows with time it showed up as decay — every measured RT60 came out at
+  roughly half what the room's absorption says it should be.
+- **Running out of path budget was being counted as escaping**, which made a
+  sealed room report 512 of 512 rays leaking out. One extra unbounded cast on
+  the miss tells the two apart.
+- **The decay fit ran into its own truncation.** Backward integration of an
+  echogram that stops early turns the cliff into a plunge that looks exactly
+  like a very dead room — a confident, wrong number. It now fits only inside
+  the traced span, and *refuses* when the tail outlasts the trace, falling back
+  to the Sabine estimate and saying which one you got.
+- **Late/direct energy divided by what got through**, so a fully occluded
+  source reported a dry room — at exactly the moment when all there is to hear
+  *is* the room. The reference is now the unoccluded direct energy.
+
+Verified with 40 checks. The geometry against analytic results the tracer knows
+nothing about: mean free path against `pi x Area / Perimeter` (3.5%), and RT60
+against Sabine/Eyring across four absorptions (within 10% at every one). The
+DSP against arithmetic, using `RenderForTest` to run the mixer with no device:
+an impulse plus one tap at 0.5 gain lands **0.3536 at sample 480 exactly**, a
+hard-left tap appears only on the left, and zero-delay, over-long and silent
+taps are refused.
+
+The traced RT60 sits consistently ~10% *above* the formula. That is not noise
+and not a bug: Sabine and Eyring assume a diffuse field, and a rectangle with
+mirror walls never becomes one — a ray's direction only ever takes four values,
+so it runs a periodic orbit. Adding round scatterers to break the orbits moves
+the bias from +9.6% to +7.5%, which is the direction that explanation predicts.
+The residual is chord-length variance, which makes any renewal process decay
+more slowly than the exponential of its mean.
 
 ### 2026-08-02 (a 3D scene, and clicking things in it)
 

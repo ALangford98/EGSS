@@ -19,6 +19,7 @@
 #include "Physics2D.h"
 #include "Lighting2D.h"
 #include "SceneDemo.h"
+#include "Acoustics2DDemo.h"
 
 struct DemoEntry
 {
@@ -34,7 +35,8 @@ inline const DemoEntry s_Demos[] =
 	{ "Cube3D (3D, lit meshes)",      "Cube3D",    []() -> DemoLayer* { return new Cube3D(); } },
 	{ "Physics2D (rigid bodies)",     "Physics",   []() -> DemoLayer* { return new Physics2D(); } },
 	{ "Lighting2D (visibility)",      "Lighting",  []() -> DemoLayer* { return new Lighting2D(); } },
-	{ "Scene (entities + components)","Scene",     []() -> DemoLayer* { return new SceneDemo(); } }
+	{ "Scene (entities + components)","Scene",     []() -> DemoLayer* { return new SceneDemo(); } },
+	{ "Acoustics2D (ray-traced sound)","Acoustics", []() -> DemoLayer* { return new Acoustics2DDemo(); } }
 };
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));

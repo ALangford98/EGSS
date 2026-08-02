@@ -22,6 +22,7 @@
 
 #include "Egss/Audio/AudioClip.h"
 #include "Egss/Audio/AudioEngine.h"
+#include "Egss/Audio/Acoustics2D.h"
 
 // SCENE ******************
 
