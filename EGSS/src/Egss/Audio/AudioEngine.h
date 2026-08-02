@@ -96,6 +96,17 @@ namespace Egss {
 		float Pan = 0.0f;     // -1 left, +1 right
 	};
 
+	// One impulse in a room's response. Unlike a reflection, Gain is *signed*:
+	// a tail built from same-sign impulses sums coherently and rings like a
+	// comb filter, and it is the random signs that make it sound like a room
+	// rather than a pipe.
+	struct EGSS_API ReverbTap
+	{
+		float Delay = 0.0f;   // seconds
+		float Gain = 0.0f;    // linear, may be negative
+		float Pan = 0.0f;     // -1 left, +1 right
+	};
+
 	// Refers to a playing voice. Carries a generation counter, so a handle to
 	// a sound that has already finished cannot accidentally control whatever
 	// sound reused its slot.
@@ -184,6 +195,25 @@ namespace Egss {
 		// Crossfaded over a fraction of a second rather than applied instantly.
 		static void SetReverb(const ReverbSettings& settings);
 		static ReverbSettings GetReverb();
+
+		// Replaces the parametric tail with an actual impulse response: the
+		// mixed output is convolved with these taps instead of being run
+		// through comb and allpass filters. RoomSize and Damping stop applying;
+		// Wet still does, because it is the only thing left to balance.
+		//
+		// This is direct convolution with a *sparse* response -- a few hundred
+		// impulses rather than a dense recorded one. A dense two-second
+		// response is 96,000 taps a sample, which needs partitioned FFT
+		// convolution; a sparse one is affordable as written and is what the
+		// ray tracer naturally produces anyway.
+		//
+		// Acoustics2D::BuildImpulseTaps turns a traced result into these.
+		static void SetReverbImpulse(const ReverbTap* taps, unsigned int count);
+		static void ClearReverbImpulse();
+		static bool HasReverbImpulse();
+
+		static unsigned int GetMaxReverbTaps();
+		static float GetMaxImpulseLength();
 
 		static void SetMasterVolume(float volume);
 		static float GetMasterVolume();

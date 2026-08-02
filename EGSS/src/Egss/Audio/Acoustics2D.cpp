@@ -115,6 +115,86 @@ namespace Egss {
 
 	}
 
+	std::vector<ReverbTap> Acoustics2D::BuildImpulseTaps(const AcousticsResult& result,
+		const ImpulseSettings& settings, float binSeconds)
+	{
+		std::vector<ReverbTap> taps;
+
+		if (result.Echogram.empty() || binSeconds <= 0.0f)
+			return taps;
+
+		// The tail runs from the cutoff to the last bin that actually holds
+		// anything -- not to the end of the array, which is mostly zeros.
+		size_t firstBin = (size_t)glm::max(0.0f, std::floor(settings.StartSeconds / binSeconds));
+		size_t lastBin = 0;
+		for (size_t i = result.Echogram.size(); i-- > 0; )
+		{
+			if (result.Echogram[i] > 0.0f) { lastBin = i; break; }
+		}
+
+		if (lastBin <= firstBin)
+			return taps;
+
+		float start = (float)firstBin * binSeconds;
+		float end = (float)(lastBin + 1) * binSeconds;
+		float span = end - start;
+
+		int count = (int)(span * (float)settings.Density);
+		count = glm::clamp(count, 1, glm::min(settings.MaxTaps, (int)AudioEngine::GetMaxReverbTaps()));
+
+		float interval = span / (float)count;
+
+		// A fixed generator rather than std::rand: the same room must give the
+		// same tail every time it is rebuilt, or a stationary listener hears
+		// the reverb shimmer as it is recomputed.
+		unsigned int rng = settings.Seed ? settings.Seed : 1u;
+		auto next = [&rng]() {
+			// xorshift32 -- small, fast, and good enough for noise.
+			rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+			return rng;
+		};
+		auto unit = [&next]() { return (float)(next() >> 8) / (float)(1 << 24); };
+
+		taps.reserve(count);
+
+		for (int i = 0; i < count; i++)
+		{
+			// One per interval, jittered inside it.
+			float time = start + ((float)i + unit()) * interval;
+
+			size_t bin = (size_t)(time / binSeconds);
+			if (bin >= result.Echogram.size())
+				continue;
+
+			float energy = result.Echogram[bin];
+			if (energy <= 0.0f)
+				continue;
+
+			// Each impulse stands for its own interval, and carries the energy
+			// the echogram says that interval holds: the bin's energy scaled by
+			// how much of a bin the interval covers.
+			//
+			// Counting impulses per bin instead -- energy / n -- looks
+			// equivalent and is not. At low density an interval is about one
+			// bin wide, jitter pushes taps into neighbouring bins, and bins
+			// left empty lose their energy entirely. That is exactly what a
+			// sparse tail measured 7.5% quiet than a dense one.
+			float amplitude = std::sqrt(energy * interval / binSeconds) * settings.Gain;
+
+			ReverbTap tap;
+			tap.Delay = time;
+			tap.Gain = (next() & 1u) ? amplitude : -amplitude;
+			// Spread across the field. Correlated pans would collapse the
+			// tail towards the middle, which is the one thing a diffuse tail
+			// should never sound like.
+			tap.Pan = unit() * 2.0f - 1.0f;
+
+			taps.push_back(tap);
+		}
+
+		return taps;
+	}
+
 	float Acoustics2D::SabineReverbTime(float meanFreePath, float absorption, float speedOfSound)
 	{
 		if (absorption <= 0.0f || absorption >= 1.0f || meanFreePath <= 0.0f || speedOfSound <= 0.0f)

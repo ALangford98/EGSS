@@ -231,6 +231,12 @@ AudioEngine::SetReverb({ wet, roomSize, damping, width });
 AudioReflection taps[] = { { 0.021f, 0.4f, -0.6f }, { 0.037f, 0.25f, 0.3f } };
 AudioEngine::SetVoiceReflections(v, taps, 2);
 
+// Convolution tail — the room's own decay instead of filters shaped to
+// resemble one. Sparse: a few hundred impulses, not a dense recording.
+auto impulse = Acoustics2D::BuildImpulseTaps(traced);
+AudioEngine::SetReverbImpulse(impulse.data(), (unsigned int)impulse.size());
+AudioEngine::ClearReverbImpulse();     // back to the parametric reverb
+
 // Acoustics — where those three numbers can come from. Rays leave the source,
 // bounce off the physics world losing energy, and report what reached the ear.
 AcousticsSettings settings;
@@ -244,7 +250,8 @@ r.Occlusion;          // graded, from five probes across the listener
 r.Reflections;        // delay, gain, arrival direction, bounce count
 r.ReverbTime;         // RT60 -- check ReverbTimeMeasured before trusting it
 r.EffectiveRadius;    // how far the sound actually carries
-r.Echogram;           // energy per 5 ms bin, for drawing
+r.Echogram;           // energy per 5 ms bin -- a coarse impulse response,
+                      // which is what BuildImpulseTaps convolves with
 
 // Physics — a standalone world; step it from OnFixedUpdate
 PhysicsWorld2D world;

@@ -672,9 +672,9 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [ ] **Physics: rotation.** Bodies translate but never spin. Needs SAT for
       oriented shapes, multi-point manifolds and angular impulses
 
-- [ ] **Convolution reverb.** The tracer already produces an echogram, which
-      is a coarse impulse response; convolving with it directly would replace
-      the Schroeder tail with the room's actual decay
+- [ ] **Partitioned FFT convolution.** The convolution reverb takes a *sparse*
+      response, which is what the ray tracer produces. A dense recorded impulse
+      is 96,000 taps a sample and needs overlap-save with an FFT
 - [ ] **Frequency-dependent absorption.** One absorption figure per surface,
       not one per band — so a traced room cannot get duller as it decays, which
       is most of what makes a real tail sound real
@@ -900,6 +900,54 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-02 (convolution reverb)
+
+The tail stops being described and starts being *played*. The echogram the
+tracer already produces is a coarse impulse response; convolving the mix with
+it replaces the comb-and-allpass reverb with the room's own decay.
+
+- **`AudioEngine::SetReverbImpulse`** — direct convolution with a **sparse**
+  response, a few hundred impulses rather than a dense recording. A dense
+  two-second response is 96,000 taps a sample and needs partitioned FFT
+  convolution; a sparse one is affordable as a plain loop, and is what a ray
+  tracer naturally produces anyway. Setting an impulse switches the mixer over;
+  clearing it puts the parametric reverb back.
+- **`Acoustics2D::BuildImpulseTaps`** turns a traced echogram into those
+  impulses, placed one per equal interval at a jittered offset — velvet noise.
+  Even spacing combs; fully random placement clumps and leaves gaps; one per
+  interval, jittered, gives even density without periodicity.
+- **The signs are random, and that is the whole trick.** Same-sign impulses sum
+  coherently into a ringing comb; random signs sum incoherently into noise,
+  which is what a diffuse tail *is*. It also fixes the amplitude: n incoherent
+  impulses of amplitude a carry n·a² of energy.
+- **Pans are spread rather than aimed.** A late tail is diffuse by definition —
+  if you can tell which direction it came from, it is still an early
+  reflection.
+- **The tail is fixed for a given room**, from a seeded xorshift rather than
+  `rand`, so a stationary listener does not hear the reverb shimmer as it is
+  rebuilt.
+
+One real bug, found by measuring energy at three densities: impulses were given
+`energy / (impulses in that bin)`, which looks equivalent to the right answer
+and is not. At low density an interval is about one bin wide, jitter pushes
+taps into neighbouring bins, and bins left empty lose their energy outright — a
+sparse tail measured 7.5% quiet compared to a dense one. Each impulse now
+carries the energy of *its own interval*, which is exact at every density.
+
+Verified with 18 checks, the important one being a closed loop: build an
+echogram with a decay chosen in advance, turn it into impulses, render what the
+mixer makes of them, and measure the RT60 back out with the same backward
+integration the tracer uses. **Asked for 1.200 s, rendered tail measures
+1.216 s — 1.3% off**, with every stage independent of the last. Plus: taps land
+at their exact delay and gain, negative taps stay negative, energy is preserved
+to 0.0% at densities of 200, 400 and 800, and clearing brings the comb reverb
+back audibly.
+
+Two of the three initial failures were the *test's* fault, not the code's — the
+reverb wet level is crossfaded over a fraction of a second, and measuring after
+a single block reads the ramp rather than the taps. It came out at 0.428 of the
+right answer at every tap, which is the shape of a ramp and not of a wrong gain.
 
 ### 2026-08-02 (ray-traced acoustics)
 

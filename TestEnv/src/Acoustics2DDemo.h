@@ -56,6 +56,7 @@ public:
 
 		// The room this demo described is not the next demo's room.
 		Egss::AudioEngine::SetReverb(Egss::ReverbSettings());
+		Egss::AudioEngine::ClearReverbImpulse();
 	}
 
 	// ---------------------------------------------------------------------
@@ -166,12 +167,15 @@ public:
 		// Sized from the *previous* trace's estimate, since the budget has to
 		// be chosen before the trace that would measure it. One frame of lag,
 		// and the estimate barely moves between frames.
-		if (m_TraceFullTail && m_Result.SabineTime > 0.0f)
+		float expectedTail = glm::max(m_Result.ReverbTime, m_Result.SabineTime);
+		if (m_TraceFullTail && expectedTail > 0.0f)
 		{
-			settings.MaxPathLength = glm::min(m_Result.SabineTime * 1.3f * 343.0f, 3000.0f);
-			settings.MaxBounces = glm::min(400,
+			// 1.6x the expected tail, so the decay fit has margin before the
+			// truncation cliff it is told to stay clear of.
+			settings.MaxPathLength = glm::min(expectedTail * 1.6f * settings.SpeedOfSound, 6000.0f);
+			settings.MaxBounces = glm::min(600,
 				(int)(settings.MaxPathLength / glm::max(m_Result.MeanFreePath, 1.0f)) + 8);
-			settings.MinEnergy = 1e-12f;
+			settings.MinEnergy = 1e-14f;
 		}
 
 		m_Result = Egss::Acoustics2D::Trace(m_World, m_Source, m_Listener,
@@ -209,6 +213,27 @@ public:
 		Egss::AudioEngine::SetVoiceReflections(m_Voice, m_Taps.data(), (unsigned int)m_Taps.size());
 
 		// --- The tail ---
+		// Two ways to make it, from the same trace. The parametric reverb is
+		// told *about* the room; the convolution one is given the room.
+		if (m_ApplyReverb && m_UseConvolution)
+		{
+			Egss::ImpulseSettings impulse;
+			impulse.Density = m_TailDensity;
+			impulse.Gain = m_TailGain;
+			// Starts where the discrete early reflections stop, or the first
+			// 80 ms would be played twice.
+			impulse.StartSeconds = 0.08f;
+
+			m_ImpulseTaps = Egss::Acoustics2D::BuildImpulseTaps(m_Result, impulse);
+			Egss::AudioEngine::SetReverbImpulse(m_ImpulseTaps.data(),
+				(unsigned int)m_ImpulseTaps.size());
+		}
+		else
+		{
+			Egss::AudioEngine::ClearReverbImpulse();
+			m_ImpulseTaps.clear();
+		}
+
 		Egss::ReverbSettings reverb;
 		if (m_ApplyReverb)
 		{
@@ -526,6 +551,28 @@ public:
 		ImGui::SliderFloat("Reflection gain", &m_ReflectionGain, 0.0f, 20.0f);
 		ImGui::SliderFloat("Wet scale", &m_WetScale, 0.0f, 8.0f);
 
+		m_Dirty |= ImGui::Checkbox("Convolution tail", &m_UseConvolution);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Off: comb and allpass filters told the room's size and damping.\n"
+				"On:  the traced echogram turned into a few hundred impulses and\n"
+				"     convolved with the mix -- the room's own decay rather than\n"
+				"     something shaped to resemble it.");
+
+		if (m_UseConvolution)
+		{
+			m_Dirty |= ImGui::SliderInt("Tail density", &m_TailDensity, 40, 800);
+			m_Dirty |= ImGui::SliderFloat("Tail gain", &m_TailGain, 0.1f, 10.0f);
+
+			ImGui::TextDisabled("%zu impulses over %.2f s of traced tail",
+				m_ImpulseTaps.size(), m_Result.TracedSeconds);
+
+			// The convolution can only be as long as the trace: past that
+			// there is no echogram to turn into impulses.
+			if (m_Result.TracedSeconds < m_Result.ReverbTime * 0.5f)
+				ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+					"Tail is cut short -- turn on \"Trace the whole tail\".");
+		}
+
 		Egss::ReverbSettings reverb = Egss::AudioEngine::GetReverb();
 		ImGui::TextDisabled("driving reverb: wet %.2f  size %.2f  damping %.2f",
 			reverb.Wet, reverb.RoomSize, reverb.Damping);
@@ -583,6 +630,11 @@ private:
 	bool m_UsePerBodyAbsorption = true;
 	int m_MaxTaps = 8;
 	bool m_TraceFullTail = false;
+
+	bool m_UseConvolution = true;
+	int m_TailDensity = 260;
+	float m_TailGain = 2.0f;
+	std::vector<Egss::ReverbTap> m_ImpulseTaps;
 
 	// Shared by the voice and the trace so both agree what "close" means.
 	static constexpr float s_SourceMinDistance = 1.5f;

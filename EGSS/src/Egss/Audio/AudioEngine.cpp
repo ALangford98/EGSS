@@ -52,6 +52,12 @@ namespace Egss {
 		// rate, and orders of magnitude longer than an audio block.
 		constexpr unsigned int s_TapSetCount = 8;
 
+		// Convolution reverb. 512 impulses over two seconds is roughly 250 a
+		// second, which is sparse enough to be affordable and dense enough
+		// that the ear hears a tail rather than a handful of echoes.
+		constexpr unsigned int s_MaxReverbTaps = 512;
+		constexpr float s_MaxImpulseSeconds = 2.0f;
+
 		// Seconds to crossfade between reverb settings, so stepping through a
 		// doorway is a change of room rather than a click.
 		constexpr float s_ReverbSmoothing = 0.35f;
@@ -265,8 +271,27 @@ namespace Egss {
 			std::atomic<float> DebugOcclusion{ 0.0f };
 		};
 
+		// The room's response, published whole. Same rotation trick as the
+		// per-voice reflection taps.
+		struct ImpulseSet
+		{
+			unsigned int Count = 0;
+			unsigned int DelaySamples[s_MaxReverbTaps] = {};
+			float GainL[s_MaxReverbTaps] = {};
+			float GainR[s_MaxReverbTaps] = {};
+		};
+
 		struct AudioState
 		{
+			AudioState()
+			{
+				// The mixer must never allocate, so the one buffer the
+				// convolution needs is sized here -- during the first touch of
+				// State(), which is always on the main thread.
+				ImpulseHistory.assign(
+					(size_t)(s_MaxImpulseSeconds * (float)s_SampleRate), 0.0f);
+			}
+
 			ma_device Device;
 			bool DeviceReady = false;
 			bool Initialised = false;
@@ -285,6 +310,18 @@ namespace Egss {
 			std::atomic<float> ReverbRoomSize{ 0.7f };
 			std::atomic<float> ReverbDamping{ 0.4f };
 			std::atomic<float> ReverbWidth{ 1.0f };
+
+			// --- Convolution reverb ---
+			// What the mix sounded like recently, so a tap can read it back.
+			// Audio thread only; sized once, below.
+			std::vector<float> ImpulseHistory;
+			unsigned int ImpulseWrite = 0;
+
+			ImpulseSet ImpulseSets[4];
+			std::atomic<unsigned int> ActiveImpulseSet{ 0 };
+			unsigned int NextImpulseSet = 0;
+			// Read by the mixer to decide which reverb to run at all.
+			std::atomic<bool> ImpulseActive{ false };
 
 			// Audio thread only: what is actually being applied right now.
 			float SmoothedWet = 0.0f;
@@ -564,11 +601,51 @@ namespace Egss {
 				state.SmoothedDamping += (state.ReverbDamping.load(std::memory_order_relaxed)
 					- state.SmoothedDamping) * smoothing;
 
+				bool convolving = state.ImpulseActive.load(std::memory_order_acquire);
+
+				// --- Convolution tail ---
+				// The mix, convolved with the room's own response, instead of
+				// being pushed through comb and allpass filters that only
+				// resemble one.
+				if (convolving && state.SmoothedWet > 0.0005f)
+				{
+					const ImpulseSet& impulse =
+						state.ImpulseSets[state.ActiveImpulseSet.load(std::memory_order_acquire)];
+
+					const size_t historySize = state.ImpulseHistory.size();
+					float wet = std::min(std::max(state.SmoothedWet, 0.0f), 1.0f);
+
+					for (unsigned int frame = 0; frame < frameCount; frame++)
+					{
+						float dryL = output[(size_t)frame * s_Channels + 0];
+						float dryR = output[(size_t)frame * s_Channels + 1];
+
+						// One shared input, as with the comb reverb: the
+						// stereo image comes from the taps' panning.
+						state.ImpulseHistory[state.ImpulseWrite] = (dryL + dryR) * 0.5f;
+
+						float wetL = 0.0f, wetR = 0.0f;
+						for (unsigned int t = 0; t < impulse.Count; t++)
+						{
+							size_t read = (state.ImpulseWrite + historySize
+								- impulse.DelaySamples[t]) % historySize;
+
+							float sample = state.ImpulseHistory[read];
+							wetL += sample * impulse.GainL[t];
+							wetR += sample * impulse.GainR[t];
+						}
+
+						output[(size_t)frame * s_Channels + 0] = dryL * (1.0f - wet) + wetL * wet;
+						output[(size_t)frame * s_Channels + 1] = dryR * (1.0f - wet) + wetR * wet;
+
+						state.ImpulseWrite = (state.ImpulseWrite + 1) % (unsigned int)historySize;
+					}
+				}
 				// Skipped entirely when dry, so a game with no reverb pays
 				// nothing for it. The tail is lost rather than faded, which is
 				// why the wet level is smoothed -- by the time it reaches zero
 				// there is nothing audible left to cut off.
-				if (state.SmoothedWet > 0.0005f)
+				else if (state.SmoothedWet > 0.0005f)
 				{
 					float feedback = std::min(std::max(state.SmoothedRoomSize, 0.0f), 0.98f);
 					float damping = std::min(std::max(state.SmoothedDamping, 0.0f), 1.0f);
@@ -964,6 +1041,69 @@ namespace Egss {
 		settings.Damping = state.ReverbDamping.load(std::memory_order_relaxed);
 		settings.Width = state.ReverbWidth.load(std::memory_order_relaxed);
 		return settings;
+	}
+
+	unsigned int AudioEngine::GetMaxReverbTaps() { return s_MaxReverbTaps; }
+	float AudioEngine::GetMaxImpulseLength() { return s_MaxImpulseSeconds; }
+
+	bool AudioEngine::HasReverbImpulse()
+	{
+		return State().ImpulseActive.load(std::memory_order_acquire);
+	}
+
+	void AudioEngine::SetReverbImpulse(const ReverbTap* taps, unsigned int count)
+	{
+		AudioState& state = State();
+
+		if (!taps)
+			count = 0;
+
+		unsigned int slot = state.NextImpulseSet;
+		ImpulseSet& set = state.ImpulseSets[slot];
+
+		const size_t historySize = state.ImpulseHistory.size();
+		unsigned int written = 0;
+
+		for (unsigned int i = 0; i < count && written < s_MaxReverbTaps; i++)
+		{
+			const ReverbTap& tap = taps[i];
+
+			unsigned int delay = (unsigned int)(tap.Delay * (float)s_SampleRate + 0.5f);
+			if (delay == 0 || delay >= historySize)
+				continue;
+
+			// Gain is signed here, unlike a reflection: the sign is what makes
+			// the tail diffuse rather than a ringing comb, so it must survive.
+			if (!(std::abs(tap.Gain) > 0.0f))
+				continue;
+
+			float left, right;
+			PanGains(std::min(std::max(tap.Pan, -1.0f), 1.0f), left, right);
+
+			set.DelaySamples[written] = delay;
+			set.GainL[written] = left * tap.Gain;
+			set.GainR[written] = right * tap.Gain;
+			written++;
+		}
+
+		set.Count = written;
+
+		state.ActiveImpulseSet.store(slot, std::memory_order_release);
+		state.NextImpulseSet = (slot + 1) % 4;
+
+		// Published last, so the mixer never selects the convolution path
+		// before the set it would read is complete.
+		state.ImpulseActive.store(written > 0, std::memory_order_release);
+	}
+
+	void AudioEngine::ClearReverbImpulse()
+	{
+		AudioState& state = State();
+
+		// Switched off before anything else, so the mixer stops reading the
+		// taps before they go.
+		state.ImpulseActive.store(false, std::memory_order_release);
+		state.ImpulseSets[state.ActiveImpulseSet.load(std::memory_order_relaxed)].Count = 0;
 	}
 
 	void AudioEngine::SetMasterVolume(float volume)

@@ -3,6 +3,7 @@
 #include "egsspch.h"
 #include "Egss/Core.h"
 #include "Egss/Physics/PhysicsWorld2D.h"
+#include "Egss/Audio/AudioEngine.h"
 
 #include <glm/glm.hpp>
 
@@ -123,6 +124,28 @@ namespace Egss {
 		std::vector<float> Echogram;
 	};
 
+	struct EGSS_API ImpulseSettings
+	{
+		// Impulses per second of tail. Too few and the tail rattles; too many
+		// and it costs more than it sounds like. A few hundred is the range
+		// where it stops being audible as separate events.
+		int Density = 260;
+		int MaxTaps = 512;
+
+		// Where the tail starts. Usually the early-reflection cutoff, since
+		// those are played as discrete taps on the voice and would otherwise
+		// be heard twice.
+		float StartSeconds = 0.08f;
+
+		// Overall level. The traced energies are on the same scale as the
+		// direct sound, which is rarely the scale a mix wants.
+		float Gain = 1.0f;
+
+		// Fixed by default, so a stationary room does not shimmer as its tail
+		// is rebuilt with different noise every retrace.
+		unsigned int Seed = 0x9E3779B9u;
+	};
+
 	// One traced ray, for drawing. Not produced unless asked for.
 	struct EGSS_API TracedRay
 	{
@@ -162,6 +185,27 @@ namespace Egss {
 			const glm::vec2& source, const glm::vec2& listener,
 			const AcousticsSettings& settings = AcousticsSettings(),
 			std::vector<TracedRay>* debugRays = nullptr);
+
+		// Turns a traced echogram into a sparse impulse response the mixer can
+		// convolve with.
+		//
+		// The impulses are placed one per equal interval at a pseudo-random
+		// offset inside it -- "velvet noise". Even spacing alone would comb;
+		// fully random placement clumps and leaves gaps. One per interval,
+		// jittered, gives even density without periodicity.
+		//
+		// **Signs are random, and that is the whole trick.** Same-sign
+		// impulses sum coherently into a ringing comb; random signs sum
+		// incoherently into noise, which is what a diffuse tail is. It also
+		// sets the amplitude: n incoherent impulses of amplitude a carry n*a*a
+		// of energy, so a bin holding energy E wants a = sqrt(E / n).
+		//
+		// Pans are spread across the field rather than aimed. A late tail is
+		// diffuse by definition -- if you can tell which direction it came
+		// from, it is still an early reflection.
+		static std::vector<ReverbTap> BuildImpulseTaps(const AcousticsResult& result,
+			const ImpulseSettings& settings = ImpulseSettings(),
+			float binSeconds = 0.005f);
 
 		// RT60 from the Sabine model, for comparison with a traced result.
 		// meanFreePath is pi * Area / Perimeter in 2D.
