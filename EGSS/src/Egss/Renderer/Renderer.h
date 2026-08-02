@@ -6,6 +6,7 @@
 #include "Egss/Renderer/PerspectiveCamera.h"
 #include "Egss/Renderer/Shader.h"
 #include "Egss/Renderer/Renderer2D.h"
+#include "Egss/Renderer/Mesh.h"
 
 namespace Egss {
 
@@ -23,6 +24,12 @@ namespace Egss {
 
 		static void Submit(const std::shared_ptr<Shader>& shader,
 			const std::shared_ptr<VertexArray>& vertexArray,
+			const glm::mat4& transform = glm::mat4(1.0f));
+
+		// Convenience over the above -- a Mesh is a vertex array plus the
+		// numbers describing it, and only the vertex array is needed to draw.
+		static void Submit(const std::shared_ptr<Shader>& shader,
+			const std::shared_ptr<Mesh>& mesh,
 			const glm::mat4& transform = glm::mat4(1.0f));
 
 		inline static RendererAPI::API GetAPI() { return RendererAPI::GetAPI(); }

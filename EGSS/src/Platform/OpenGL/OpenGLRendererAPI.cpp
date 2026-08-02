@@ -90,6 +90,22 @@ namespace Egss {
 			glDisable(GL_DEPTH_TEST);
 	}
 
+	void OpenGLRendererAPI::SetBackfaceCulling(bool enabled)
+	{
+		if (enabled)
+		{
+			glEnable(GL_CULL_FACE);
+			// GL's default: counter-clockwise is the front. Mesh's primitives
+			// and the .obj convention both agree with it, so nothing needs
+			// glFrontFace.
+			glCullFace(GL_BACK);
+		}
+		else
+		{
+			glDisable(GL_CULL_FACE);
+		}
+	}
+
 	void OpenGLRendererAPI::SetBlendMode(BlendMode mode)
 	{
 		switch (mode)

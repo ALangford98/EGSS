@@ -10,14 +10,16 @@ sandbox application that links against it.
 polled input, and a **fixed-timestep** loop with render interpolation. On top
 of that: a **batched 2D renderer** (quads, lines, triangles, circles) with
 sprite sheets and framebuffers with integer-attachment mouse picking;
-orthographic and perspective cameras; a **2D rigid-body physics** world with
-warm-started impulses, island sleeping, raycasts and a uniform-grid broadphase;
-a lock-free **audio engine** with positional sound, occlusion and reverb; an
-instrumenting **profiler** with Chrome-trace export; and ImGui (docking) as a
-debug overlay.
+orthographic and perspective cameras; **mesh loading** from Wavefront `.obj`;
+a **scene layer** with generational entity handles and dense component stores;
+a **2D rigid-body physics** world with warm-started impulses, island sleeping,
+raycasts and a uniform-grid broadphase; a lock-free **audio engine** with
+positional sound, occlusion and reverb; an instrumenting **profiler** with
+Chrome-trace export; and ImGui (docking) as a debug overlay.
 
-`TestEnv` holds four demos — Breakout, a 3D scene with transform gizmos,
-a rigid-body sandbox, and a 2D visibility-polygon lighting scene. See
+`TestEnv` holds five demos — Breakout, a 3D scene with transform gizmos and
+loadable models, a rigid-body sandbox, a 2D visibility-polygon lighting scene,
+and an entity/component scene with pixel-exact picking. See
 [Roadmap](#roadmap) for what's left.
 
 > **New to the codebase?** Start with **[docs/ENGINE.md](docs/ENGINE.md)** — the
@@ -35,12 +37,14 @@ a rigid-body sandbox, and a 2D visibility-polygon lighting scene. See
 | --- | --- |
 | `EGSS/src/Egss/` | Engine core — application loop, layers, events, input, logging |
 | `EGSS/src/Egss/Renderer/` | Backend-agnostic renderer interfaces |
+| `EGSS/src/Egss/Scene/` | `Scene`, `Entity`, `ComponentStore`, `Components` |
 | `EGSS/src/Egss/Physics/` | `PhysicsWorld2D`, `RigidBody2D`, raycasts, broadphase |
 | `EGSS/src/Egss/Audio/` | `AudioEngine`, `AudioClip` — mixer, positional sound, reverb |
 | `EGSS/src/Egss/Debug/` | `Instrumentor` — scope timers and Chrome-trace capture |
 | `EGSS/src/Platform/` | Backends: `Windows/`, `Linux/`, and `OpenGL/` |
 | `EGSS/vendor/` | GLFW, spdlog, glm, imgui (submodules); Glad, stb_image and miniaudio (checked in) |
 | `TestEnv/src/` | Sandbox app that consumes the engine |
+| `TestEnv/assets/` | Sample models; copied next to the executable on build |
 | `premake5.lua` | Build definition — the source of truth for both platforms |
 | `egss.py` | Build/run wrapper; always regenerates, so new files are never missed |
 | `docs/` | `ENGINE.md` (orientation), `LIGHTING_EXERCISE.md` (worked build) |
@@ -647,19 +651,19 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [ ] **Multi-viewport ImGui.** Docking is on; `ImGuiConfigFlags_ViewportsEnable`
       would let panels be dragged out into their own OS windows, but it needs
       the platform-window loop in `ImGuiLayer::End` and a GL context restore
-- [ ] **Mesh loading.** 3D geometry is hand-built in the demo; nothing reads an
-      `.obj` or `.gltf` yet. tinyobjloader is the small first step. Now the
-      more visible gap, since the gizmo can move objects that do not exist
-- [ ] **Back-face culling.** The cube is wound consistently for it, but it is
-      not switched on — 2D quads would need checking first
 - [ ] **Material handling.** The 3D demo sets uniforms by hand; there is no
-      notion of a material binding a shader to its parameters
+      notion of a material binding a shader to its parameters. The `.obj`
+      loader skips `mtllib` / `usemtl` for exactly this reason — parsing an
+      `.mtl` into nothing would be a lie about what the engine can do
+- [ ] **`.gltf` loading.** `.obj` carries geometry and nothing else — no
+      hierarchy, no skinning, no PBR parameters. glTF is where those live, and
+      is the format worth supporting second
 - [ ] **Gizmo: rotate and scale handles.** Translate works; rotation rings and
       scale boxes are the same picking maths applied to different geometry
-- [ ] **Click-to-select in 3D.** The gizmo target is a combo box. 2D picking
-      now works through the framebuffer's integer attachment; the 3D renderer
-      writes no entity ID yet, so the same trick needs the mesh shader
-      extending
+- [ ] **Smoothing *groups*, not just the on/off flag.** `s 1` and `s 2` meeting
+      at an edge should not share vertices; today both count as "smooth"
+- [ ] **Per-object materials.** Every mesh in the 3D scene shares one shader
+      and one texture. See material handling above
 - [ ] **Per-pixel 2D lighting.** Surfaces are shaded per *body*, so a long wall
       lights uniformly instead of brightest nearest the light. The fix is a
       shader that samples the light polygon — the biggest visual step left in
@@ -886,6 +890,102 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-02 (a 3D scene, and clicking things in it)
+
+Cube3D stops tracking one object by hand and becomes a small scene: five
+entities, each with a transform and a **`MeshComponent`**, drawn by a system
+that walks the store. Click an object to select it; the gizmo, the inspector
+and the hierarchy all follow.
+
+- **Pixel-exact picking in 3D.** The mesh shader writes `u_EntityID` into the
+  framebuffer's integer attachment alongside the colour. Meshes are submitted
+  one at a time rather than batched, so it can be a *uniform* — no per-vertex
+  attribute, unlike the 2D path. Free of geometry maths, which matters more in
+  3D than in 2D: it is right for a torus's hole, which any bounding volume
+  would claim you had clicked.
+- **A latent bug this uncovered.** The line/triangle shader wrote only
+  attachment 0. When a framebuffer has two draw buffers, a fragment output the
+  shader never assigns is *undefined* — not left alone — so every debug line
+  scribbled noise into the picking attachment. It had been doing this in the
+  2D scene demo already. Both shaders now write `-1`.
+- **Smoothing groups.** `s off` is the .obj default and it means *flat*: a
+  face's corners are not shared with its neighbours, so each keeps its own
+  normal. Ignoring it made every low-poly model look like a balloon — the
+  icosahedron rendered as a smooth blob. The fix is one extra field in the
+  vertex-dedup key: a face index when the normal has to be invented and
+  smoothing is off, `-1` when the corner may be shared. Then the *same*
+  averaging pass produces flat shading for unshared corners and smooth shading
+  for shared ones, because a flat corner belongs to exactly one face.
+- **Normals the file supplied are never overwritten**, even when other faces
+  in the same file have none.
+- **`RenderCommand::SetBackfaceCulling`.** Off by default — it is only safe
+  once every mesh in the pass is wound consistently, and one flipped model
+  shows up as holes. Enabled for the 3D mesh pass, disabled again before the
+  debug lines, which are not closed geometry.
+- **The gizmo grabs on a press *edge*, not a held button.** Polling "is the
+  button down" grabs whatever the cursor is near if the button was already
+  held — which is what a button held across a demo switch looks like. Found
+  when a stray automated click leaked into the next run and dragged an object
+  across the scene on startup.
+- **The selection box is built from the mesh's bounds** and transformed with
+  the object, so it rotates rather than swelling into an axis-aligned shell.
+
+Verified with a self-test projecting each entity's centre to a pixel and
+reading the attachment back: **5 entities named correctly, empty sky returned
+-1, 0 mismatches** — then interactively, hovering four objects and getting four
+correct names. The loader's 48 checks all pass against the new flat-shading
+expectations, including that each triangle's three corners share one normal
+when flat and do not when smooth.
+
+### 2026-08-02 (mesh loading)
+
+- **`Mesh`** — geometry on the GPU, plus the numbers worth knowing about it:
+  vertex and triangle counts, and a bounding box. No material, no transform,
+  no hierarchy, which is what lets one mesh be drawn a thousand times without
+  being copied once.
+- **`Mesh::CreateCube` / `CreateSphere` / `CreatePlane`.** The cube used to be
+  24 vertices and 36 indices written out inline in the demo; a demo now asks
+  for geometry instead of describing it.
+- **`ObjLoader`** — Wavefront `.obj`, written rather than vendored. It is a
+  plain-text format with one item per line, and the parts worth getting right
+  are the parts a library would hide: `v` / `vt` / `vn` / `f`, faces of any
+  size fan-triangulated, negative indices, and files carrying no normals.
+- **A face corner names three things**, and two corners are the same vertex
+  only if all three match. That is why a cube from an `.obj` still ends up
+  with 24 vertices from 8 positions — the dedup key is the whole triplet.
+- **Generated normals are area-weighted**, which costs nothing: the cross
+  product's length is already twice the triangle's area, so adding it
+  un-normalised weights each face by its size for free. Averaging face normals
+  equally would let one sliver pull as hard as a large face.
+- **`Mesh::Load` returns `nullptr` and logs**, and a failed parse leaves the
+  caller's `MeshData` untouched. A missing model should not take the program
+  with it, nor leave half a previous one behind.
+- **`ObjLoader::Parse` takes text, not a path**, so geometry can be verified
+  without a window, a GL context or the filesystem.
+- **`PerspectiveCamera::GetFov`** and a **"Frame it"** button. A loaded model
+  can be 0.1 units across or 500, and neither is worth discovering by flying
+  around looking for it. The distance that fits a sphere of radius r is
+  `r / sin(fov / 2)`.
+- **Assets are copied next to the executable** by premake after every link.
+  The two platforms need different arguments: `cp -rf src dst` puts src
+  *inside* dst when dst exists, while `xcopy` copies the contents — so the
+  naive form nested `assets/assets/assets` one level deeper per build. Caught
+  by running the build three times and looking.
+
+Three sample models ship in `TestEnv/assets/models`, chosen to exercise
+different parts of the parser: a torus with full `v`/`vt`/`vn` quads, an
+icosahedron with positions only and a negative-index face, and a pyramid small
+enough to read end to end.
+
+Verified with 39 checks against hand-computed values -- vertex and triangle
+counts, bounds, unit-length generated normals, all four face forms, negative
+indices, n-gon fanning, CRLF and comment handling, and five malformed files
+that must be *rejected*. One failure, which was the test's arithmetic and not
+the loader's: 48x24 is 1152 quads, not 2304.
+
+`MeshComponent` was deliberately not written. Nothing would read it yet, and a
+component with no system is the scaffolding this project keeps trying to avoid.
 
 ### 2026-08-02 (scene layer and pixel-exact picking)
 

@@ -27,7 +27,7 @@ using DemoId = int;
 constexpr DemoId InvalidDemo = -1;
 
 // Index into s_Demos. Change to whichever demo you are working on.
-inline DemoId g_ActiveDemo = 4;
+inline DemoId g_ActiveDemo = 1;
 
 // Base for every demo layer.
 //

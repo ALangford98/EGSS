@@ -3,6 +3,7 @@
 #include "egsspch.h"
 #include "Egss/Core.h"
 #include "Egss/Renderer/Texture.h"
+#include "Egss/Renderer/Mesh.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -57,6 +58,18 @@ namespace Egss {
 		// When false the transform drives the body; otherwise the body drives
 		// the transform. Static scenery usually wants the former.
 		bool DrivenByPhysics = true;
+	};
+
+	// 3D geometry. The mesh is shared rather than owned: a hundred entities
+	// pointing at one Mesh cost one copy of the geometry on the GPU. That is
+	// the whole reason the transform lives on the entity and not in the mesh.
+	struct MeshComponent
+	{
+		// Named Geometry, not Mesh -- a member cannot share its name with the
+		// type it is declared from inside the same struct.
+		std::shared_ptr<Egss::Mesh> Geometry;
+		glm::vec4 Color = { 1.0f, 1.0f, 1.0f, 1.0f };
+		bool Visible = true;
 	};
 
 	struct LightComponent

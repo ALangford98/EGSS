@@ -19,6 +19,7 @@ namespace Egss {
 		void SetLineWidth(float width) override;
 		void SetBlendMode(BlendMode mode) override;
 		void SetDepthTest(bool enabled) override;
+		void SetBackfaceCulling(bool enabled) override;
 	};
 
 }

@@ -59,6 +59,11 @@ namespace Egss {
 		{
 			s_RendererAPI->SetDepthTest(enabled);
 		}
+
+		inline static void SetBackfaceCulling(bool enabled)
+		{
+			s_RendererAPI->SetBackfaceCulling(enabled);
+		}
 	private:
 		static RendererAPI* s_RendererAPI;
 	};

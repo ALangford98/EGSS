@@ -165,12 +165,19 @@ namespace Egss {
 			#version 330 core
 
 			layout(location = 0) out vec4 color;
+			// Lines and triangles are not pickable, but the output still has to
+			// be written: when a framebuffer has two draw buffers, a fragment
+			// output the shader never assigns is *undefined*, not left alone.
+			// Skipping this scribbles noise into the picking attachment
+			// wherever a debug line crosses an object.
+			layout(location = 1) out int entityID;
 
 			in vec4 v_Color;
 
 			void main()
 			{
 				color = v_Color;
+				entityID = -1;
 			}
 		)";
 

@@ -42,4 +42,13 @@ namespace Egss {
 		RenderCommand::DrawIndexed(vertexArray);
 	}
 
+	void Renderer::Submit(const std::shared_ptr<Shader>& shader,
+		const std::shared_ptr<Mesh>& mesh, const glm::mat4& transform)
+	{
+		if (!mesh)
+			return;
+
+		Submit(shader, mesh->GetVertexArray(), transform);
+	}
+
 }

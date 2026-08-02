@@ -45,6 +45,8 @@
 #include "Egss/Renderer/Texture.h"
 #include "Egss/Renderer/Framebuffer.h"
 #include "Egss/Renderer/SubTexture2D.h"
+#include "Egss/Renderer/Mesh.h"
+#include "Egss/Renderer/ObjLoader.h"
 #include "Egss/Renderer/Camera.h"
 #include "Egss/Renderer/OrthographicCamera.h"
 #include "Egss/Renderer/PerspectiveCamera.h"

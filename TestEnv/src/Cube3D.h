@@ -11,6 +11,7 @@
 // Things marked TRY: are deliberate places to experiment.
 
 #include <Egss.h>
+#include <cstring>
 #include <imgui.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -30,10 +31,12 @@ public:
 		m_Camera.SetPosition({ 0.0f, 1.6f, 6.0f });
 		m_Camera.SetRotation(-90.0f, -12.0f);
 
-		BuildCube();
+		BuildMeshes();
+		BuildScene();
 		BuildShader();
 		BuildTexture();
 		BuildAudio();
+		BuildTarget();
 	}
 
 	// -- attach runs for every demo whichever one is showing, which is how
@@ -109,77 +112,135 @@ public:
 	// ---------------------------------------------------------------------
 	// Geometry
 	//
-	// 24 vertices for 6 faces rather than 8 shared corners: a cube corner has
-	// three different normals and three different texture coordinates
-	// depending on which face you are on, and a vertex can only carry one of
-	// each. Sharing is possible only where every attribute matches.
 	// ---------------------------------------------------------------------
-	void BuildCube()
+	// The geometry used to be built by hand right here -- 24 vertices, 36
+	// indices, a layout and two buffers, all inline in the demo. Mesh does
+	// that now, so a demo asks for geometry instead of describing it.
+	// ---------------------------------------------------------------------
+	void BuildMeshes()
 	{
-		struct Vertex
+		m_Primitives[0].reset(Egss::Mesh::CreateCube(1.0f));
+		m_Primitives[1].reset(Egss::Mesh::CreateSphere(0.6f, 32, 16));
+		m_Primitives[2].reset(Egss::Mesh::CreatePlane(2.0f));
+
+		// Anything in assets/models, so the path box starts somewhere useful
+		// rather than at whatever the working directory happens to be.
+		std::strncpy(m_LoadPath, "assets/models/torus.obj", sizeof(m_LoadPath) - 1);
+
+		// Loaded at startup so the scene has something that came off disk. A
+		// failure is not fatal -- the entity just gets a primitive instead.
+		m_Loaded.reset(Egss::Mesh::Load("assets/models/icosahedron.obj"));
+	}
+
+	// ---------------------------------------------------------------------
+	// The scene
+	//
+	// Five objects, each an entity with a transform and a mesh. Nothing here
+	// tracks them by hand any more: the render loop asks the scene for every
+	// MeshComponent and walks it, and picking hands back an entity the panel
+	// and the gizmo both understand.
+	// ---------------------------------------------------------------------
+	void BuildScene()
+	{
+		auto add = [this](const char* name, const std::shared_ptr<Egss::Mesh>& mesh,
+			const glm::vec3& position, const glm::vec4& color, float scale = 1.0f)
 		{
-			glm::vec3 Position;
-			glm::vec3 Normal;
-			glm::vec2 TexCoord;
+			Egss::Entity entity = m_Scene.CreateEntity(name);
+
+			auto* transform = entity.Get<Egss::TransformComponent>();
+			transform->Position = position;
+			transform->Scale = glm::vec3(scale);
+
+			Egss::MeshComponent mesh_;
+			mesh_.Geometry = mesh;
+			mesh_.Color = color;
+			entity.Add<Egss::MeshComponent>(mesh_);
+
+			return entity;
 		};
 
-		const glm::vec3 faceNormals[6] = {
-			{  0,  0,  1 }, {  0,  0, -1 },
-			{  1,  0,  0 }, { -1,  0,  0 },
-			{  0,  1,  0 }, {  0, -1,  0 }
-		};
+		// A wide, flat cube rather than the plane primitive: a plane is one
+		// quad with a single normal, so it goes uniformly dark as the light
+		// moves, and a floor is where that is most obvious.
+		Egss::Entity floor = add("Floor", m_Primitives[0], { 0.0f, -1.2f, 0.0f },
+			{ 0.55f, 0.57f, 0.62f, 1.0f });
+		floor.Get<Egss::TransformComponent>()->Scale = { 12.0f, 0.2f, 12.0f };
 
-		// Each face as four corners, wound counter-clockwise seen from
-		// outside. Consistent winding is what makes back-face culling safe to
-		// switch on later.
-		const glm::vec3 faceCorners[6][4] = {
-			{ {-0.5f,-0.5f, 0.5f}, { 0.5f,-0.5f, 0.5f}, { 0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f} }, // +Z
-			{ { 0.5f,-0.5f,-0.5f}, {-0.5f,-0.5f,-0.5f}, {-0.5f, 0.5f,-0.5f}, { 0.5f, 0.5f,-0.5f} }, // -Z
-			{ { 0.5f,-0.5f, 0.5f}, { 0.5f,-0.5f,-0.5f}, { 0.5f, 0.5f,-0.5f}, { 0.5f, 0.5f, 0.5f} }, // +X
-			{ {-0.5f,-0.5f,-0.5f}, {-0.5f,-0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f,-0.5f} }, // -X
-			{ {-0.5f, 0.5f, 0.5f}, { 0.5f, 0.5f, 0.5f}, { 0.5f, 0.5f,-0.5f}, {-0.5f, 0.5f,-0.5f} }, // +Y
-			{ {-0.5f,-0.5f,-0.5f}, { 0.5f,-0.5f,-0.5f}, { 0.5f,-0.5f, 0.5f}, {-0.5f,-0.5f, 0.5f} }  // -Y
-		};
+		add("Cube",   m_Primitives[0], { -2.2f, 0.0f,  0.0f }, { 1.00f, 0.55f, 0.35f, 1.0f });
+		add("Sphere", m_Primitives[1], {  0.0f, 0.0f,  0.0f }, { 0.45f, 0.75f, 1.00f, 1.0f });
+		add("Riser",  m_Primitives[0], {  2.2f, 0.0f, -1.4f }, { 0.65f, 1.00f, 0.55f, 1.0f }, 0.7f);
 
-		const glm::vec2 uvs[4] = { {0,0}, {1,0}, {1,1}, {0,1} };
+		m_Spinner = add("Icosahedron", m_Loaded ? m_Loaded : m_Primitives[1],
+			{ 2.2f, 0.4f, 1.2f }, { 0.90f, 0.60f, 1.00f, 1.0f }, 0.8f).GetId();
 
-		std::vector<Vertex> vertices;
-		std::vector<unsigned int> indices;
-		vertices.reserve(24);
-		indices.reserve(36);
+		m_Selected = m_Spinner;
+	}
 
-		for (int face = 0; face < 6; face++)
+	// Loads whatever is in the path box. A failure logs and leaves the current
+	// mesh alone -- a missing file should not empty the scene.
+	void LoadMeshFromPath()
+	{
+		Egss::Mesh* loaded = Egss::Mesh::Load(m_LoadPath);
+		if (!loaded)
 		{
-			unsigned int base = (unsigned int)vertices.size();
-
-			for (int corner = 0; corner < 4; corner++)
-				vertices.push_back({ faceCorners[face][corner], faceNormals[face], uvs[corner] });
-
-			// Two triangles per quad, same pattern Renderer2D uses.
-			indices.insert(indices.end(), {
-				base + 0, base + 1, base + 2,
-				base + 2, base + 3, base + 0
-			});
+			m_LoadError = "Could not load '" + std::string(m_LoadPath) + "' -- see the log";
+			return;
 		}
 
-		m_VertexArray.reset(Egss::VertexArray::Create());
+		m_LoadError.clear();
+		m_Loaded.reset(loaded);
 
-		std::shared_ptr<Egss::VertexBuffer> vb;
-		vb.reset(Egss::VertexBuffer::Create((float*)vertices.data(),
-			(unsigned int)(vertices.size() * sizeof(Vertex))));
+		// Assign it to whatever is selected, so loading a file has a visible
+		// effect rather than quietly filling a slot.
+		if (auto* mesh = m_Scene.GetComponent<Egss::MeshComponent>(m_Selected))
+			mesh->Geometry = m_Loaded;
 
-		// The layout is the only thing telling GL how to read those bytes.
-		// Order and types must match the Vertex struct exactly.
-		vb->SetLayout({
-			{ Egss::ShaderDataType::Float3, "a_Position" },
-			{ Egss::ShaderDataType::Float3, "a_Normal"   },
-			{ Egss::ShaderDataType::Float2, "a_TexCoord" }
-		});
-		m_VertexArray->AddVertexBuffer(vb);
+		FrameMesh();
+	}
 
-		std::shared_ptr<Egss::IndexBuffer> ib;
-		ib.reset(Egss::IndexBuffer::Create(indices.data(), (unsigned int)indices.size()));
-		m_VertexArray->SetIndexBuffer(ib);
+	// Puts the camera where the whole mesh fits, whatever size the file turned
+	// out to be. A loaded model can be 0.1 units across or 500, and neither is
+	// worth discovering by flying around looking for it.
+	void FrameMesh()
+	{
+		auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(m_Selected);
+		auto* mesh = m_Scene.GetComponent<Egss::MeshComponent>(m_Selected);
+		if (!transform || !mesh || !mesh->Geometry)
+			return;
+
+		// Half the vertical field of view is the angle from the view centre to
+		// the top of the frame, so the distance that fits a sphere of radius r
+		// is r / sin(halfFov). The 1.6 is headroom.
+		float halfFov = glm::radians(m_Camera.GetFov() * 0.5f);
+		float scale = glm::max(glm::max(transform->Scale.x, transform->Scale.y), transform->Scale.z);
+		float radius = glm::max(mesh->Geometry->GetBoundsRadius(), 0.001f) * scale;
+		float distance = (radius / std::sin(halfFov)) * 1.6f;
+
+		glm::vec3 target = transform->Position + mesh->Geometry->GetBoundsCentre() * scale;
+
+		// A three-quarter view, the angle modelling software frames to. Looking
+		// straight on hides the depth that is the whole point of a 3D model.
+		m_Camera.SetRotation(-90.0f, -30.0f);
+		m_Camera.SetPosition(target - m_Camera.GetForward() * distance);
+	}
+
+	// The offscreen target. The second attachment is what makes picking
+	// possible: an integer texture the fragment shader writes an entity into,
+	// alongside the colour nobody would want it mixed with.
+	void BuildTarget()
+	{
+		Egss::Window& window = Egss::Application::Get().GetWindow();
+
+		Egss::FramebufferSpecification spec;
+		spec.Width = window.GetWidth();
+		spec.Height = window.GetHeight();
+		spec.Attachments = {
+			Egss::FramebufferTextureFormat::RGBA8,
+			Egss::FramebufferTextureFormat::RED_INTEGER,
+			Egss::FramebufferTextureFormat::DEPTH24STENCIL8
+		};
+
+		m_Framebuffer.reset(Egss::Framebuffer::Create(spec));
 	}
 
 	void BuildShader()
@@ -218,6 +279,10 @@ public:
 			#version 330 core
 
 			layout(location = 0) out vec4 color;
+			// Matches the framebuffer's integer attachment. Meshes are drawn
+			// one at a time rather than batched, so this can be a uniform --
+			// no per-vertex attribute needed, unlike the 2D path.
+			layout(location = 1) out int entityID;
 
 			in vec3 v_WorldPosition;
 			in vec3 v_Normal;
@@ -233,6 +298,7 @@ public:
 			uniform float u_LightRange;
 			uniform vec3 u_CameraPosition;
 			uniform float u_AmbientStrength;
+			uniform int u_EntityID;
 
 			void main()
 			{
@@ -265,6 +331,7 @@ public:
 				             + specular * u_LightColor * attenuation * 0.35;
 
 				color = vec4(lit, 1.0);
+				entityID = u_EntityID;
 			}
 		)";
 
@@ -324,11 +391,71 @@ public:
 		if (m_Spinning)
 			m_Rotation += ts * 35.0f;
 
+		// The spinner's rotation is a property of the entity now, not a global
+		// the draw loop reaches for.
+		if (auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(m_Spinner))
+			transform->Rotation.y = m_Rotation;
+
+		ResizeTarget();
 		UpdateGizmo();
+
+		// --- Pass 1: the scene, into the picking framebuffer ---
+		m_Framebuffer->Bind();
 
 		Egss::RenderCommand::SetClearColor({ 0.06f, 0.07f, 0.09f, 1.0f });
 		Egss::RenderCommand::Clear();
+		// glClear only carries a float colour, so the integer attachment needs
+		// its own call. -1 means "nothing here".
+		m_Framebuffer->ClearAttachment(1, -1);
 
+		// Safe here because every mesh -- primitives and .obj alike -- is wound
+		// counter-clockwise. Off again before the debug lines, which are not
+		// closed geometry and would half disappear.
+		Egss::RenderCommand::SetBackfaceCulling(m_BackfaceCulling);
+
+		RenderMeshes();
+
+		Egss::RenderCommand::SetBackfaceCulling(false);
+
+		// Debug lines under a perspective camera. Renderer2D::BeginScene takes
+		// any Camera, so the line batch works here exactly as it does in 2D --
+		// the "2D" in the name is about the primitives, not the projection.
+		Egss::Renderer2D::BeginScene(m_Camera);
+
+		if (m_ShowGrid)
+			DrawGrid();
+
+		if (m_ShowEmitters)
+			DrawEmitters();
+
+		DrawSelectionBox();
+
+		if (m_ShowGizmo)
+			DrawGizmo();
+
+		// A marker where the light is, so it can be seen and grabbed even when
+		// it sits outside the lit geometry.
+		DrawLightMarker();
+
+		Egss::Renderer2D::EndScene();
+
+		// Read back while the framebuffer is still bound and the batch has
+		// already been flushed. Both matter.
+		ReadHoveredEntity();
+
+		m_Framebuffer->Unbind();
+
+		// --- Pass 2: the result, to the window ---
+		Egss::RenderCommand::SetClearColor({ 0.0f, 0.0f, 0.0f, 1.0f });
+		Egss::RenderCommand::Clear();
+
+		BlitToWindow();
+	}
+
+	// A system: every entity with a mesh, drawn with its own transform. It does
+	// not know or care which of them also has a body, a light or a name.
+	void RenderMeshes()
+	{
 		Egss::Renderer::BeginScene(m_Camera);
 
 		// Uniforms that aren't per-object are set once, with the shader bound.
@@ -344,55 +471,143 @@ public:
 
 		m_Texture->Bind(0);
 
-		// One cube at the origin by default. The grid is still available, but
-		// a single object is what the gizmo is for.
-		for (int y = 0; y < m_GridSize; y++)
+		auto& meshes = m_Scene.View<Egss::MeshComponent>();
+		m_DrawnMeshes = 0;
+
+		for (size_t i = 0; i < meshes.Size(); i++)
 		{
-			for (int x = 0; x < m_GridSize; x++)
-			{
-				glm::vec3 offset = {
-					(x - (m_GridSize - 1) * 0.5f) * 1.6f,
-					(y - (m_GridSize - 1) * 0.5f) * 1.6f,
-					0.0f
-				};
+			const Egss::MeshComponent& mesh = meshes.Components()[i];
+			if (!mesh.Visible || !mesh.Geometry)
+				continue;
 
-				// Transforms compose right-to-left: scale, then rotate, then
-				// translate. Swapping any two changes the result.
-				glm::mat4 transform =
-					glm::translate(glm::mat4(1.0f), m_CubePosition + offset) *
-					glm::rotate(glm::mat4(1.0f), glm::radians(m_CubeRotation.x), glm::vec3(1, 0, 0)) *
-					glm::rotate(glm::mat4(1.0f), glm::radians(m_CubeRotation.y), glm::vec3(0, 1, 0)) *
-					glm::rotate(glm::mat4(1.0f), glm::radians(m_CubeRotation.z + m_Rotation), glm::vec3(0, 0, 1)) *
-					glm::scale(glm::mat4(1.0f), m_CubeScale);
+			Egss::EntityId entity = meshes.Owner(i);
+			auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(entity);
+			if (!transform)
+				continue;
 
-				m_Shader->SetFloat4("u_Color", m_Tint);
-				Egss::Renderer::Submit(m_Shader, m_VertexArray, transform);
-			}
+			m_Shader->SetFloat4("u_Color", mesh.Color * m_Tint);
+			// The slot index, not the handle -- the attachment is a *signed*
+			// integer texture, and a handle whose generation passes 2047
+			// exceeds INT_MAX and reads back negative.
+			m_Shader->SetInt("u_EntityID", (int)Egss::EntityIds::Index(entity));
+
+			// TransformComponent already composes scale, then rotate, then
+			// translate, in that order. Swapping any two changes the result.
+			Egss::Renderer::Submit(m_Shader, mesh.Geometry, transform->GetTransform());
+			m_DrawnMeshes++;
 		}
 
 		Egss::Renderer::EndScene();
+	}
 
-		// Debug lines under a perspective camera. Renderer2D::BeginScene takes
-		// any Camera, so the line batch works here exactly as it does in 2D --
-		// the "2D" in the name is about the primitives, not the projection.
-		if (m_ShowGrid || m_ShowEmitters)
+	// Keeps the target the same size as the window, so a framebuffer pixel and
+	// a window pixel are the same thing and the mouse needs no rebasing.
+	void ResizeTarget()
+	{
+		Egss::Window& window = Egss::Application::Get().GetWindow();
+		const Egss::FramebufferSpecification& spec = m_Framebuffer->GetSpecification();
+
+		if (window.GetWidth() > 0 && window.GetHeight() > 0 &&
+			(spec.Width != window.GetWidth() || spec.Height != window.GetHeight()))
+			m_Framebuffer->Resize(window.GetWidth(), window.GetHeight());
+	}
+
+	// Draws the offscreen colour attachment over the window as one quad.
+	void BlitToWindow()
+	{
+		// Rebuilt whenever the framebuffer is recreated: a resize makes new
+		// textures and the old handle is gone.
+		unsigned int handle = m_Framebuffer->GetColorAttachmentRendererID(0);
+		if (!m_ColorAttachment || m_ColorHandle != handle)
 		{
-			Egss::Renderer2D::BeginScene(m_Camera);
+			m_ColorAttachment.reset(Egss::Texture2D::CreateFromHandle(handle,
+				m_Framebuffer->GetSpecification().Width,
+				m_Framebuffer->GetSpecification().Height));
+			m_ColorHandle = handle;
+		}
 
-			if (m_ShowGrid)
-				DrawGrid();
+		Egss::Renderer2D::BeginScene(m_BlitCamera);
+		Egss::Renderer2D::DrawQuad(glm::vec2(0.0f), glm::vec2(2.0f), m_ColorAttachment);
+		Egss::Renderer2D::EndScene();
+	}
 
-			if (m_ShowEmitters)
-				DrawEmitters();
+	// What is under the cursor, straight out of the integer attachment.
+	//
+	// Pixel-exact and free of geometry maths: no bounding boxes, no ray-mesh
+	// intersection, and it is right for a torus's hole -- which any bounding
+	// volume would claim you had clicked.
+	void ReadHoveredEntity()
+	{
+		m_Hovered = Egss::InvalidEntity;
 
-			if (m_ShowGizmo)
-				DrawGizmo();
+		// Dragging a gizmo handle must not re-pick, or the first frame of a
+		// drag would select whatever is behind the handle.
+		if (ImGui::GetIO().WantCaptureMouse || m_DragAxis >= 0)
+			return;
 
-			// A marker where the light is, so it can be seen and grabbed even
-			// when it sits outside the lit geometry.
-			DrawLightMarker();
+		auto [mouseX, mouseY] = Egss::Input::GetMousePosition();
+		const Egss::FramebufferSpecification& spec = m_Framebuffer->GetSpecification();
 
-			Egss::Renderer2D::EndScene();
+		// Flip y: window coordinates count down, GL counts up.
+		int x = (int)mouseX;
+		int y = (int)((float)spec.Height - mouseY);
+
+		if (x < 0 || y < 0 || x >= (int)spec.Width || y >= (int)spec.Height)
+			return;
+
+		int slot = m_Framebuffer->ReadPixel(1, x, y);
+		if (slot < 0)
+			return;
+
+		m_Hovered = m_Scene.EntityAtIndex((unsigned int)slot);
+	}
+
+	// A wireframe box round the selected object, sized from its mesh bounds so
+	// it fits whatever geometry the entity happens to hold.
+	void DrawSelectionBox()
+	{
+		for (int pass = 0; pass < 2; pass++)
+		{
+			Egss::EntityId entity = (pass == 0) ? m_Hovered : m_Selected;
+			if (!m_Scene.IsValid(entity) || (pass == 0 && entity == m_Selected))
+				continue;
+
+			auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(entity);
+			auto* mesh = m_Scene.GetComponent<Egss::MeshComponent>(entity);
+			if (!transform || !mesh || !mesh->Geometry)
+				continue;
+
+			glm::vec4 color = (pass == 0)
+				? glm::vec4(0.45f, 0.85f, 1.0f, 1.0f)    // hovered
+				: glm::vec4(1.00f, 0.85f, 0.3f, 1.0f);   // selected
+
+			glm::vec3 lo = mesh->Geometry->GetBoundsMin();
+			glm::vec3 hi = mesh->Geometry->GetBoundsMax();
+			glm::mat4 model = transform->GetTransform();
+
+			// The eight corners, transformed. Doing it in model space and then
+			// transforming means the box rotates with the object instead of
+			// being an axis-aligned shell that swells as it spins.
+			glm::vec3 corner[8];
+			for (int i = 0; i < 8; i++)
+			{
+				glm::vec3 local(
+					(i & 1) ? hi.x : lo.x,
+					(i & 2) ? hi.y : lo.y,
+					(i & 4) ? hi.z : lo.z);
+				corner[i] = glm::vec3(model * glm::vec4(local, 1.0f));
+			}
+
+			// Each edge joins two corners differing in exactly one bit.
+			for (int i = 0; i < 8; i++)
+			{
+				for (int bit = 1; bit <= 4; bit <<= 1)
+				{
+					if (i & bit)
+						continue;
+					Egss::Renderer2D::DrawLine(corner[i], corner[i | bit], color);
+				}
+			}
 		}
 	}
 
@@ -556,15 +771,25 @@ public:
 		return true;
 	}
 
-	glm::vec3& SelectedPosition()
+	// Where the gizmo sits, and what dragging it moves. Returns null when
+	// nothing is selected, which is why every caller checks.
+	glm::vec3* GizmoPosition()
 	{
-		return m_Selected == 0 ? m_CubePosition : m_LightPosition;
+		if (m_GizmoOnLight)
+			return &m_LightPosition;
+
+		auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(m_Selected);
+		return transform ? &transform->Position : nullptr;
 	}
 
 	// Distance in pixels from the cursor to an axis handle, for picking.
 	float AxisScreenDistance(int axis, const glm::vec2& mouse) const
 	{
-		glm::vec3 origin = m_Selected == 0 ? m_CubePosition : m_LightPosition;
+		glm::vec3* target = const_cast<Cube3D*>(this)->GizmoPosition();
+		if (!target)
+			return std::numeric_limits<float>::max();
+
+		glm::vec3 origin = *target;
 		glm::vec3 direction(0.0f);
 		direction[axis] = 1.0f;
 
@@ -587,8 +812,17 @@ public:
 		glm::vec2 mouse = { Egss::Input::GetMousePosition().first,
 							Egss::Input::GetMousePosition().second };
 
-		bool pressed = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT)
+		bool down = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT)
 			&& !ImGui::GetIO().WantCaptureMouse;
+
+		// A grab needs the button to go *down* while over a handle, not merely
+		// to be down. Polling "is it held" grabs whatever the cursor happens to
+		// be near if the button was already held when the demo started -- which
+		// is exactly what a button held across a demo switch looks like.
+		bool justPressed = down && !m_MouseDownLastFrame;
+		m_MouseDownLastFrame = down;
+
+		bool pressed = down;
 
 		if (!pressed)
 		{
@@ -614,19 +848,23 @@ public:
 		// --- Grab ---
 		if (m_DragAxis < 0)
 		{
-			if (m_HoverAxis < 0)
+			if (m_HoverAxis < 0 || !justPressed)
+				return;
+
+			glm::vec3* target = GizmoPosition();
+			if (!target)
 				return;
 
 			glm::vec3 axisDirection(0.0f);
 			axisDirection[m_HoverAxis] = 1.0f;
 
 			float t;
-			if (!ClosestPointOnAxis(SelectedPosition(), axisDirection, rayOrigin, rayDirection, t))
+			if (!ClosestPointOnAxis(*target, axisDirection, rayOrigin, rayDirection, t))
 				return;
 
 			m_DragAxis = m_HoverAxis;
 			m_DragStartT = t;
-			m_DragStartPosition = SelectedPosition();
+			m_DragStartPosition = *target;
 			return;
 		}
 
@@ -638,14 +876,22 @@ public:
 		if (!ClosestPointOnAxis(m_DragStartPosition, axisDirection, rayOrigin, rayDirection, t))
 			return;
 
+		glm::vec3* target = GizmoPosition();
+		if (!target)
+			return;
+
 		// Relative to where it was grabbed, so the object does not snap its
 		// origin to the cursor.
-		SelectedPosition() = m_DragStartPosition + axisDirection * (t - m_DragStartT);
+		*target = m_DragStartPosition + axisDirection * (t - m_DragStartT);
 	}
 
 	void DrawGizmo()
 	{
-		glm::vec3 origin = m_Selected == 0 ? m_CubePosition : m_LightPosition;
+		glm::vec3* target = GizmoPosition();
+		if (!target)
+			return;
+
+		glm::vec3 origin = *target;
 
 		const glm::vec4 axisColors[3] = {
 			{ 1.0f, 0.25f, 0.25f, 1.0f },   // X red
@@ -743,6 +989,21 @@ public:
 			return false;
 		});
 
+		dispatcher.Dispatch<Egss::MouseButtonPressedEvent>([this](Egss::MouseButtonPressedEvent& e)
+		{
+			// A click on empty space deselects, which is what makes the
+			// selection feel like it belongs to the scene rather than the
+			// panel. Grabbing a gizmo handle must not change the selection.
+			if (e.GetMouseButton() == EGSS_MOUSE_BUTTON_LEFT
+				&& !ImGui::GetIO().WantCaptureMouse && m_HoverAxis < 0)
+			{
+				m_Selected = m_Hovered;
+				m_GizmoOnLight = false;
+			}
+
+			return false;
+		});
+
 		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& e)
 		{
 			if (e.GetRepeatCount() > 0)
@@ -769,38 +1030,133 @@ public:
 		ImGui::Text("Arrows look      Middle-drag  mouse look");
 		ImGui::Text("Space  pause spin");
 
+		ImGui::Text("Click an object to select it.");
+
+		// --- Hierarchy --------------------------------------------------
+		ImGui::SeparatorText("Scene");
+
+		if (m_Scene.IsValid(m_Hovered))
+		{
+			auto* tag = m_Scene.GetComponent<Egss::TagComponent>(m_Hovered);
+			ImGui::Text("Hovered: %s", tag ? tag->Name.c_str() : "?");
+		}
+		else
+		{
+			ImGui::TextDisabled("Hovered: -");
+		}
+
+		ImGui::BeginChild("hierarchy", ImVec2(0.0f, 96.0f), ImGuiChildFlags_Borders);
+		for (Egss::EntityId entity : m_Scene.GetEntities())
+		{
+			auto* tag = m_Scene.GetComponent<Egss::TagComponent>(entity);
+			if (!tag)
+				continue;
+
+			// The label alone forms an ImGui widget's ID, so two entities
+			// sharing a name would share a row. PushID separates them.
+			ImGui::PushID((int)entity);
+			if (ImGui::Selectable(tag->Name.c_str(), entity == m_Selected))
+				m_Selected = entity;
+			ImGui::PopID();
+		}
+		ImGui::EndChild();
+
+		// --- Inspector --------------------------------------------------
 		ImGui::SeparatorText("Transform");
 
-		// Which object the gizmo is attached to.
-		const char* targets[] = { "Cube", "Light" };
-		ImGui::Combo("Gizmo target", &m_Selected, targets, 2);
+		ImGui::Checkbox("Gizmo drags the light", &m_GizmoOnLight);
 		ImGui::Checkbox("Show gizmo", &m_ShowGizmo);
 		ImGui::SameLine();
 		ImGui::TextDisabled(m_DragAxis >= 0 ? "dragging %c" : "drag an axis",
 			"XYZ"[m_DragAxis < 0 ? 0 : m_DragAxis]);
 
-		if (m_Selected == 0)
+		if (m_GizmoOnLight)
 		{
-			ImGui::DragFloat3("Position", &m_CubePosition.x, 0.01f);
-			ImGui::DragFloat3("Rotation", &m_CubeRotation.x, 0.5f);
-			ImGui::DragFloat3("Scale", &m_CubeScale.x, 0.01f, 0.05f, 5.0f);
+			ImGui::DragFloat3("Light position", &m_LightPosition.x, 0.01f);
+			ImGui::SliderFloat("Range", &m_LightRange, 1.0f, 40.0f);
+			ImGui::ColorEdit3("Colour", &m_LightColor.x);
+		}
+		else if (auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(m_Selected))
+		{
+			auto* tag = m_Scene.GetComponent<Egss::TagComponent>(m_Selected);
+			ImGui::Text("%s  (id %u)", tag ? tag->Name.c_str() : "?", m_Selected);
+
+			ImGui::DragFloat3("Position", &transform->Position.x, 0.01f);
+			ImGui::DragFloat3("Rotation", &transform->Rotation.x, 0.5f);
+			ImGui::DragFloat3("Scale", &transform->Scale.x, 0.01f, 0.05f, 20.0f);
+
+			if (auto* mesh = m_Scene.GetComponent<Egss::MeshComponent>(m_Selected))
+			{
+				ImGui::ColorEdit4("Mesh colour", &mesh->Color.x);
+				ImGui::Checkbox("Visible", &mesh->Visible);
+				if (mesh->Geometry)
+					ImGui::TextDisabled("%s: %zu verts, %zu tris",
+						mesh->Geometry->GetName().c_str(),
+						mesh->Geometry->GetVertexCount(),
+						mesh->Geometry->GetTriangleCount());
+			}
 
 			if (ImGui::Button("Reset transform"))
 			{
-				m_CubePosition = glm::vec3(0.0f);
-				m_CubeRotation = glm::vec3(0.0f);
-				m_CubeScale = glm::vec3(1.0f);
+				transform->Rotation = glm::vec3(0.0f);
+				transform->Scale = glm::vec3(1.0f);
 			}
+			ImGui::SameLine();
+			if (ImGui::Button("Frame it"))
+				FrameMesh();
 		}
 		else
 		{
-			ImGui::DragFloat3("Position", &m_LightPosition.x, 0.01f);
-			ImGui::SliderFloat("Range", &m_LightRange, 1.0f, 40.0f);
-			ImGui::ColorEdit3("Colour", &m_LightColor.x);
+			ImGui::TextDisabled("Nothing selected.");
 		}
 
 		ImGui::SliderFloat("Gizmo length", &m_GizmoLength, 0.3f, 3.0f);
 		ImGui::SliderFloat("Look sensitivity", &m_MouseLookSensitivity, 0.02f, 0.6f);
+
+		// --- Model ------------------------------------------------------
+		// Assigns geometry to whatever is selected. A mesh is shared, so
+		// pointing two entities at the same one costs nothing extra.
+		ImGui::SeparatorText("Model");
+
+		auto* selectedMesh = m_Scene.GetComponent<Egss::MeshComponent>(m_Selected);
+
+		if (!selectedMesh)
+		{
+			ImGui::TextDisabled("Select an object to change its mesh.");
+		}
+		else
+		{
+			const char* meshNames[] = { "Cube", "Sphere", "Plane", "Loaded file" };
+			int choice = -1;
+			for (int i = 0; i < 3; i++)
+				if (selectedMesh->Geometry == m_Primitives[i])
+					choice = i;
+			if (selectedMesh->Geometry == m_Loaded)
+				choice = 3;
+
+			if (ImGui::Combo("Mesh", &choice, meshNames, 4))
+			{
+				if (choice < 3)
+					selectedMesh->Geometry = m_Primitives[choice];
+				else if (m_Loaded)
+					selectedMesh->Geometry = m_Loaded;
+			}
+
+			ImGui::InputText(".obj path", m_LoadPath, sizeof(m_LoadPath));
+			ImGui::SameLine();
+			if (ImGui::Button("Load"))
+				LoadMeshFromPath();
+
+			if (!m_LoadError.empty())
+				ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", m_LoadError.c_str());
+
+			if (selectedMesh->Geometry)
+			{
+				glm::vec3 size = selectedMesh->Geometry->GetBoundsSize();
+				ImGui::TextDisabled("Bounds %.2f x %.2f x %.2f  (r %.2f)",
+					size.x, size.y, size.z, selectedMesh->Geometry->GetBoundsRadius());
+			}
+		}
 
 		ImGui::Separator();
 		glm::vec3 p = m_Camera.GetPosition();
@@ -808,8 +1164,9 @@ public:
 		ImGui::Text("Yaw %.0f  Pitch %.0f", m_Camera.GetYaw(), m_Camera.GetPitch());
 		ImGui::Text("Frame: %.2f ms (%.0f fps)", m_FrameTime,
 			m_FrameTime > 0.0f ? 1000.0f / m_FrameTime : 0.0f);
-		ImGui::Text("Draw calls: %d  (one per cube, plus one for the grid)",
-			m_GridSize * m_GridSize + (m_ShowGrid ? 1 : 0));
+		ImGui::Text("Draw calls: %d meshes + 1 line batch + 1 blit",
+			m_DrawnMeshes);
+		ImGui::Checkbox("Back-face culling", &m_BackfaceCulling);
 		ImGui::Checkbox("Show grid", &m_ShowGrid);
 
 		ImGui::Separator();
@@ -839,7 +1196,6 @@ public:
 			StartEmitters();
 
 		ImGui::Separator();
-		ImGui::SliderInt("Grid", &m_GridSize, 1, 8);
 		ImGui::SliderFloat("Ambient", &m_Ambient, 0.0f, 1.0f);
 		ImGui::ColorEdit3("Light colour", &m_LightColor.x);
 		ImGui::ColorEdit4("Tint", &m_Tint.x);
@@ -850,7 +1206,14 @@ public:
 private:
 	Egss::PerspectiveCamera m_Camera;
 
-	std::shared_ptr<Egss::VertexArray> m_VertexArray;
+	// The geometry available to assign. Entities point at these rather than
+	// owning meshes, so switching costs nothing and switching back reloads
+	// nothing.
+	std::shared_ptr<Egss::Mesh> m_Primitives[3];   // cube, sphere, plane
+	std::shared_ptr<Egss::Mesh> m_Loaded;
+
+	char m_LoadPath[256] = { 0 };
+	std::string m_LoadError;
 	std::shared_ptr<Egss::Shader> m_Shader;
 	std::shared_ptr<Egss::Texture2D> m_Texture;
 
@@ -870,7 +1233,6 @@ private:
 	bool m_ShowEmitters = true;
 
 	bool m_ShowGrid = true;
-	int m_GridSize = 1;
 
 	// The light is an object in the scene now, so it has a position the gizmo
 	// can drag.
@@ -879,13 +1241,33 @@ private:
 	float m_LightRange = 12.0f;
 	float m_Ambient = 0.10f;
 
-	// 0 = the cube, 1 = the light. Which one the gizmo is attached to.
-	int m_Selected = 0;
+	// The scene, and what is picked in it. m_Selected is what the gizmo and the
+	// inspector act on; m_Hovered is only what the cursor is over this frame.
+	Egss::Scene m_Scene;
+	Egss::EntityId m_Selected = Egss::InvalidEntity;
+	Egss::EntityId m_Hovered = Egss::InvalidEntity;
+	Egss::EntityId m_Spinner = Egss::InvalidEntity;
+
+	// When true the gizmo drags the light rather than the selected entity. The
+	// light is not an entity -- it is a set of shader uniforms -- so it cannot
+	// be picked, and needs a way to be reached.
+	bool m_GizmoOnLight = false;
 	bool m_ShowGizmo = true;
+
+	// Rendered offscreen so the integer attachment has somewhere to go, then
+	// blitted back as one quad.
+	std::shared_ptr<Egss::Framebuffer> m_Framebuffer;
+	std::shared_ptr<Egss::Texture2D> m_ColorAttachment;
+	unsigned int m_ColorHandle = 0;
+	Egss::OrthographicCamera m_BlitCamera{ -1.0f, 1.0f, -1.0f, 1.0f };
+
+	bool m_BackfaceCulling = true;
+	int m_DrawnMeshes = 0;
 
 	glm::vec2 m_PreviousMouse = { 0.0f, 0.0f };
 	float m_MouseLookSensitivity = 0.18f;
 
+	bool m_MouseDownLastFrame = false;
 	int m_HoverAxis = -1;
 	int m_DragAxis = -1;
 	float m_DragStartT = 0.0f;
@@ -893,10 +1275,7 @@ private:
 	float m_GizmoLength = 1.0f;
 	float m_GizmoPickPixels = 12.0f;
 
-	// The cube's transform, which the gizmo and the panel both edit.
-	glm::vec3 m_CubePosition = { 0.0f, 0.0f, 0.0f };
-	glm::vec3 m_CubeRotation = { 0.0f, 0.0f, 0.0f };
-	glm::vec3 m_CubeScale = { 1.0f, 1.0f, 1.0f };
+	// Multiplied into every mesh's own colour, so one slider tints the scene.
 	glm::vec4 m_Tint = { 1.0f, 1.0f, 1.0f, 1.0f };
 
 	float m_FrameTime = 0.0f;

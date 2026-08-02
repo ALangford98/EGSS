@@ -64,6 +64,12 @@ namespace Egss {
 		// it overlaps the first.
 		virtual void SetDepthTest(bool enabled) = 0;
 
+		// Discards triangles wound away from the camera, which for a closed
+		// mesh is every face on its far side -- roughly half the fragments,
+		// for free. Off by default: it is only safe once *all* geometry in the
+		// pass is wound consistently, and one flipped model shows up as holes.
+		virtual void SetBackfaceCulling(bool enabled) = 0;
+
 		inline static API GetAPI() { return s_API; }
 	private:
 		static API s_API;

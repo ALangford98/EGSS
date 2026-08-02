@@ -186,6 +186,15 @@ project "TestEnv"
         "ImGui"
     }
 
+    -- Assets are loaded by relative path at runtime, so they have to sit next
+    -- to the executable. Copying rather than symlinking keeps the output
+    -- directory self-contained.
+    --
+    -- The two platforms need different arguments, because {COPYDIR} expands to
+    -- tools that disagree about what the destination means: `cp -rf src dst`
+    -- puts src *inside* dst when dst exists (so repeated builds would nest
+    -- assets/assets/assets), while xcopy copies the contents. Naming the
+    -- parent on one and the folder on the other gives the same result on both.
     filter "system:windows"
         cppdialect "C++17"
         staticruntime "On"
@@ -196,6 +205,11 @@ project "TestEnv"
         defines
         {
             "EGSS_PLATFORM_WINDOWS",
+        }
+
+        postbuildcommands
+        {
+            ("{COPYDIR} %{wks.location}/TestEnv/assets %{cfg.targetdir}/assets")
         }
 
     filter "system:linux"
@@ -215,6 +229,11 @@ project "TestEnv"
 
         -- Find libEGSS.so next to the executable instead of on the system path.
         linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
+
+        postbuildcommands
+        {
+            ("{COPYDIR} %{wks.location}/TestEnv/assets %{cfg.targetdir}")
+        }
 
     filter "configurations:Debug"
         defines { "EGSS_DEBUG", "EGSS_ENABLE_ASSERTS", "EGSS_PROFILE" }

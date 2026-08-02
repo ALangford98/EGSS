@@ -184,6 +184,9 @@ Renderer2D::DrawCircle(centre, radius, color, segments);   // a fan; same batch
 RenderCommand::SetBlendMode(BlendMode::Additive);   // Alpha, Additive, None
 RenderCommand::SetDepthTest(false);                 // additive overlays must not
                                                     // depth-test against each other
+RenderCommand::SetBackfaceCulling(true);            // 3D meshes only; turn it off
+                                                    // again for open geometry
+                                                    // like debug lines
 
 // Screen
 RenderCommand::SetClearColor({r,g,b,a});
@@ -251,13 +254,42 @@ cam3d.SetPosition({x, y, z});
 cam3d.SetRotation(yawDegrees, pitchDegrees);   // pitch clamped to ±89
 cam3d.GetForward(); cam3d.GetRight();          // for movement
 
-// Meshes — build a vertex array, then submit it with a transform
+// Meshes — a vertex array plus the numbers describing it
+std::shared_ptr<Mesh> mesh(Mesh::CreateCube(1.0f));   // or CreateSphere / CreatePlane
+std::shared_ptr<Mesh> model(Mesh::Load("assets/models/torus.obj"));  // nullptr on failure
+
+mesh->GetVertexCount(); mesh->GetTriangleCount();
+mesh->GetBoundsCentre(); mesh->GetBoundsRadius();     // for framing a camera
+
 Renderer::BeginScene(camera);
 shader->Bind();
-shader->SetFloat3("u_LightDirection", dir);    // your own uniforms first
-Renderer::Submit(shader, vertexArray, transform);  // sets u_ViewProjection + u_Transform
+shader->SetFloat3("u_LightPosition", pos);     // your own uniforms first
+Renderer::Submit(shader, mesh, transform);     // sets u_ViewProjection + u_Transform
 Renderer::EndScene();
 ```
+
+A `Mesh` is geometry and nothing else — no material, no transform, no
+hierarchy. That is what lets one mesh be drawn a thousand times without being
+copied once; the transform belongs to whatever is *using* it.
+
+`Mesh::Load` reads Wavefront `.obj`: `v` / `vt` / `vn` / `f` / `s`, faces of any
+size, negative indices, and files missing texture coordinates or normals.
+
+Normals are generated when absent, honouring the smoothing flag: `s off` (the
+default) gives each face its own normal, `s 1` averages them across shared
+corners. That is why a positions-only cube loads as 24 vertices, not 8 — flat
+shading needs corners *unshared* so each can hold its face's normal. Normals the
+file did supply are never overwritten. Materials and free-form surfaces are
+skipped. It returns `nullptr` and logs on failure rather
+than throwing — a missing model should not take the program with it.
+
+To parse without touching the GPU (or the filesystem), `ObjLoader::Parse` fills
+a `MeshData` — plain vectors of `MeshVertex` and indices. No GL context needed,
+which is what makes geometry testable by looking at numbers.
+
+Assets are loaded by **path relative to the executable**. premake copies
+`TestEnv/assets` next to the binary after every link, so `"assets/models/x.obj"`
+works from the output directory.
 
 `Submit` binds the shader itself, but uniform values belong to the program and
 survive a rebind, so setting your own before the call is fine.
@@ -382,5 +414,9 @@ outlive the framebuffer.
   whatever the previous frame left there.
 - **`ReadPixel` after `EndScene`, before `Unbind`.** The batch has to have
   reached the driver, and the framebuffer has to still be bound.
+- **Every shader used in the pass must write *every* attachment.** With two
+  draw buffers bound, a fragment output a shader never assigns is *undefined*,
+  not left alone — so a shader that only writes colour scribbles noise into the
+  picking buffer. Write `-1` for things that should not be pickable.
 - **Window y counts down, GL y counts up.** Flip with `height - mouseY` before
   reading a pixel, or picking works perfectly, upside down.

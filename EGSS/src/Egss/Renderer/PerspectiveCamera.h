@@ -27,6 +27,14 @@ namespace Egss {
 		const glm::vec3& GetPosition() const { return m_Position; }
 		void SetPosition(const glm::vec3& position) { m_Position = position; RecalculateViewMatrix(); }
 
+		// Vertical field of view in degrees. Framing a camera on an object
+		// needs it: the distance that fits a sphere of radius r is
+		// r / sin(fov / 2).
+		float GetFov() const { return m_Fov; }
+		float GetAspectRatio() const { return m_AspectRatio; }
+		float GetNearClip() const { return m_NearClip; }
+		float GetFarClip() const { return m_FarClip; }
+
 		float GetYaw() const { return m_Yaw; }
 		float GetPitch() const { return m_Pitch; }
 		// Pitch is clamped to just inside straight up/down, where the view
