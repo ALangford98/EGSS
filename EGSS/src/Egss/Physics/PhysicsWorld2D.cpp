@@ -533,6 +533,37 @@ namespace Egss {
 		}
 	}
 
+	glm::vec2 PhysicsWorld2D::ResolveCircle(const glm::vec2& position, float radius,
+		int iterations) const
+	{
+		// A throwaway body, purely so the existing narrowphase can be reused
+		// rather than written a second time.
+		RigidBody2D probe = RigidBody2D::MakeCircle(position, radius, 1.0f);
+
+		for (int pass = 0; pass < iterations; pass++)
+		{
+			bool moved = false;
+
+			for (unsigned int i = 0; i < m_Bodies.size(); i++)
+			{
+				Contact contact;
+				if (!Collide(0, probe, i, const_cast<RigidBody2D&>(m_Bodies[i]), contact))
+					continue;
+
+				// The normal runs from the probe towards the body, so backing
+				// along it is the shortest way out.
+				probe.Position -= contact.Normal * contact.Penetration;
+				moved = true;
+			}
+
+			// Settled: no overlap left to resolve.
+			if (!moved)
+				break;
+		}
+
+		return probe.Position;
+	}
+
 	// --- Raycasting ---------------------------------------------------------
 
 	// Quadratic in t: |origin + dir*t - centre|^2 = r^2. Only the nearer root

@@ -48,9 +48,13 @@ public:
 
 		// Buttons as well as the dropdown: one click instead of two, and it
 		// makes the available demos visible without opening anything.
+		// Wrapped rather than one long row: with four demos a fixed-width
+		// button per column ran off the edge of the panel.
+		const int perRow = 3;
+
 		for (int i = 0; i < s_DemoCount; i++)
 		{
-			if (i > 0)
+			if (i % perRow != 0)
 				ImGui::SameLine();
 
 			bool active = i == g_ActiveDemo;

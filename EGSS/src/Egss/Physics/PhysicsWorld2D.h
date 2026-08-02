@@ -103,6 +103,15 @@ namespace Egss {
 		RaycastHit Raycast(const glm::vec2& origin, const glm::vec2& direction,
 			float maxDistance, unsigned int ignore = ~0u) const;
 
+		// Pushes a circle out of anything it overlaps and returns where it ends
+		// up. Nothing needs to be a rigid body -- this is for things that move
+		// themselves: characters, cameras, a light you can drive around.
+		//
+		// Iterated, because pushing out of one body can push into another; a
+		// couple of passes settles a corner.
+		glm::vec2 ResolveCircle(const glm::vec2& position, float radius,
+			int iterations = 3) const;
+
 		// Contacts from the last Step, for drawing.
 		const std::vector<Contact>& GetContacts() const { return m_Contacts; }
 

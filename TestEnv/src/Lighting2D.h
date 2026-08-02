@@ -212,6 +212,58 @@ public:
 		}
 	}
 
+	// Moves the light by `delta`, stopping at walls and sliding along them.
+	//
+	// Both control modes go through this, which is why the mouse never needs a
+	// special case: "follow the cursor" is just a delta towards it. The light
+	// keeps up in open space and hugs the wall when the cursor crosses one,
+	// rather than teleporting to the far side.
+	//
+	// Two passes: the first travels until it touches something, the second
+	// spends what is left along the surface. Without the second, running into
+	// a wall at an angle stops you dead instead of sliding.
+	glm::vec2 MoveWithCollision(glm::vec2 from, glm::vec2 delta) const
+	{
+		if (!m_LightCollides)
+			return from + delta;
+
+		// A little gap kept between the light and the surface, so the next
+		// frame's ray starts outside the wall rather than exactly on it.
+		const float skin = 0.001f;
+
+		for (int pass = 0; pass < 2; pass++)
+		{
+			float distance = glm::length(delta);
+			if (distance < 0.00001f)
+				break;
+
+			glm::vec2 direction = delta / distance;
+
+			// Cast far enough ahead that the light's own radius is accounted
+			// for -- it is a circle, not a point.
+			Egss::RaycastHit hit = m_World.Raycast(from, direction, distance + m_LightCollisionRadius);
+
+			if (!hit.Hit || hit.Distance > distance + m_LightCollisionRadius)
+			{
+				from += delta;
+				break;
+			}
+
+			// Up to the contact, never past it.
+			float travel = std::max(0.0f, hit.Distance - m_LightCollisionRadius - skin);
+			from += direction * travel;
+
+			// Whatever is left, with the part heading into the surface removed
+			// -- that remainder is the slide.
+			delta = delta - direction * travel;
+			delta -= hit.Normal * glm::dot(delta, hit.Normal);
+		}
+
+		// Anything that still overlaps -- a corner, or a start already inside
+		// geometry -- gets pushed out here, so the light can never get stuck.
+		return m_World.ResolveCircle(from, m_LightCollisionRadius);
+	}
+
 	// ---------------------------------------------------------------------
 	// Input
 	//
@@ -241,7 +293,10 @@ public:
 
 			// Normalise, or moving diagonally is 1.41x faster than straight.
 			if (glm::dot(move, move) > 0.0f)
-				m_Interactive.Position += glm::normalize(move) * m_LightSpeed * (float)ts;
+			{
+				glm::vec2 delta = glm::normalize(move) * m_LightSpeed * (float)ts;
+				m_Interactive.Position = MoveWithCollision(m_Interactive.Position, delta);
+			}
 		}
 		else if (m_Control == LightControl::Mouse)
 		{
@@ -250,7 +305,15 @@ public:
 			// blocks mouse *events* from reaching layers, but Input:: reads
 			// the hardware directly and bypasses that entirely.
 			if (!ImGui::GetIO().WantCaptureMouse)
-				m_Interactive.Position = ScreenToWorld(Egss::Input::GetMousePosition());
+			{
+				// A delta towards the cursor rather than a jump to it, so the
+				// same sweep that blocks the keyboard blocks this too. In open
+				// space it lands exactly on the cursor; against a wall it
+				// stops at the surface instead of appearing on the far side.
+				glm::vec2 target = ScreenToWorld(Egss::Input::GetMousePosition());
+				m_Interactive.Position = MoveWithCollision(m_Interactive.Position,
+					target - m_Interactive.Position);
+			}
 		}
 
 		// Keep it inside the walls whichever way it was moved.
@@ -504,6 +567,15 @@ public:
 			else
 				DrawCircleOutline(position, body.Radius, outline);
 		}
+
+		// The interactive light's collision circle -- it is a body of that
+		// size to the mover, not a point, which is what stops it slipping
+		// through the seam where two boxes meet.
+		if (m_ShowInteractive && m_LightCollides)
+		{
+			DrawCircleOutline(m_Interactive.Position, m_LightCollisionRadius,
+				glm::vec4(1.0f, 0.85f, 0.3f, 0.6f));
+		}
 	}
 
 	// (keeping to draw the light's radius.)
@@ -622,6 +694,8 @@ public:
 			ImGui::SliderFloat("Radius", &m_Interactive.Radius, 0.2f, 3.5f);
 			ImGui::ColorEdit4("Colour", &m_Interactive.Color.x);
 			ImGui::SliderFloat("Move speed", &m_LightSpeed, 0.2f, 5.0f);
+			ImGui::Checkbox("Collides with walls", &m_LightCollides);
+			ImGui::SliderFloat("Light body radius", &m_LightCollisionRadius, 0.01f, 0.2f);
 		}
 
 		ImGui::SeparatorText("Quality");
@@ -648,6 +722,11 @@ private:
 
 	LightControl m_Control = LightControl::Mouse;
 	float m_LightSpeed = 1.6f;
+
+	// The light is a small circle for collision purposes, not a point -- a
+	// point would slip through the seam where two boxes meet.
+	bool m_LightCollides = true;
+	float m_LightCollisionRadius = 0.05f;
 
 	bool m_ShowLight = true;
 	bool m_ShowInteractive = true;
