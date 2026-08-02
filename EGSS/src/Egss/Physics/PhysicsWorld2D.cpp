@@ -19,10 +19,22 @@ namespace Egss {
 	// time is exactly the jitter you see in engines that skip this.
 	static const float s_RestitutionThreshold = 1.0f;
 
+	// Axis-aligned bounds, whatever the shape.
+	static void BodyBounds(const RigidBody2D& body, glm::vec2& outMin, glm::vec2& outMax)
+	{
+		glm::vec2 extent = body.Shape == ColliderShape::Circle
+			? glm::vec2(body.Radius)
+			: body.HalfExtents;
+
+		outMin = body.Position - extent;
+		outMax = body.Position + extent;
+	}
+
 	PhysicsWorld2D::BodyHandle PhysicsWorld2D::AddBody(const RigidBody2D& body)
 	{
 		m_Bodies.push_back(body);
 		m_Bodies.back().PreviousPosition = body.Position;
+		MarkGridDirty();
 		return (BodyHandle)(m_Bodies.size() - 1);
 	}
 
@@ -31,6 +43,70 @@ namespace Egss {
 		m_Bodies.clear();
 		m_Contacts.clear();
 		m_AwakeBodyCount = 0;
+		MarkGridDirty();
+	}
+
+	// Buckets every body into the cells its bounds overlap. Rebuilt whenever
+	// anything has moved, which for a simulated world is every step -- the
+	// cost of that rebuild is the price the queries pay for being cheap.
+	void PhysicsWorld2D::RebuildGrid() const
+	{
+		m_GridDirty = false;
+		m_Cells.clear();
+		m_GridWidth = 0;
+		m_GridHeight = 0;
+
+		if (m_Bodies.empty())
+			return;
+
+		glm::vec2 worldMin(std::numeric_limits<float>::max());
+		glm::vec2 worldMax(-std::numeric_limits<float>::max());
+
+		for (const RigidBody2D& body : m_Bodies)
+		{
+			glm::vec2 boundsMin, boundsMax;
+			BodyBounds(body, boundsMin, boundsMax);
+			worldMin = glm::min(worldMin, boundsMin);
+			worldMax = glm::max(worldMax, boundsMax);
+		}
+
+		m_GridCellSize = std::max(CellSize, 0.01f);
+		m_GridOrigin = worldMin;
+
+		glm::vec2 span = worldMax - worldMin;
+		m_GridWidth = std::max(1, (int)(span.x / m_GridCellSize) + 1);
+		m_GridHeight = std::max(1, (int)(span.y / m_GridCellSize) + 1);
+
+		// A pathological cell size would otherwise allocate unboundedly.
+		const int maxCells = 1 << 20;
+		if ((long long)m_GridWidth * m_GridHeight > maxCells)
+		{
+			m_GridWidth = 0;
+			m_GridHeight = 0;
+			return;
+		}
+
+		m_Cells.assign((size_t)m_GridWidth * m_GridHeight, {});
+
+		for (unsigned int i = 0; i < m_Bodies.size(); i++)
+		{
+			glm::vec2 boundsMin, boundsMax;
+			BodyBounds(m_Bodies[i], boundsMin, boundsMax);
+
+			int x0 = std::max(0, (int)((boundsMin.x - m_GridOrigin.x) / m_GridCellSize));
+			int y0 = std::max(0, (int)((boundsMin.y - m_GridOrigin.y) / m_GridCellSize));
+			int x1 = std::min(m_GridWidth - 1, (int)((boundsMax.x - m_GridOrigin.x) / m_GridCellSize));
+			int y1 = std::min(m_GridHeight - 1, (int)((boundsMax.y - m_GridOrigin.y) / m_GridCellSize));
+
+			// A body large relative to the cell lands in several, which is
+			// what makes the per-query stamp necessary.
+			for (int y = y0; y <= y1; y++)
+				for (int x = x0; x <= x1; x++)
+					m_Cells[(size_t)y * m_GridWidth + x].push_back(i);
+		}
+
+		m_QueryStamp.assign(m_Bodies.size(), 0);
+		m_QueryCounter = 0;
 	}
 
 	// A stable key for a body pair, so a contact can be recognised as the same
@@ -61,6 +137,9 @@ namespace Egss {
 		EGSS_PROFILE_SCOPE("Physics::Step");
 
 		Integrate(dt);
+
+		// Positions changed, so last frame's buckets are stale.
+		MarkGridDirty();
 		GenerateContacts();
 
 		// Replay last step's impulses before solving anything.
@@ -247,49 +326,101 @@ namespace Egss {
 		EGSS_PROFILE_SCOPE("Physics::Broadphase+Narrowphase");
 
 		m_Contacts.clear();
+		m_Candidates = 0;
 
-		// Brute force. Every unordered pair, once. Fine to a few hundred
-		// bodies; a uniform grid or sweep-and-prune replaces exactly this
-		// loop when it stops being fine.
+		if (UseBroadphase)
+		{
+			if (m_GridDirty)
+				RebuildGrid();
+		}
+
+		// Falls back to brute force if the grid could not be built -- an empty
+		// world, or a cell size that would have needed too many cells.
+		bool useGrid = UseBroadphase && m_GridWidth > 0 && m_GridHeight > 0;
+
 		for (unsigned int i = 0; i < m_Bodies.size(); i++)
 		{
-			for (unsigned int j = i + 1; j < m_Bodies.size(); j++)
+			if (useGrid)
 			{
-				RigidBody2D& a = m_Bodies[i];
-				RigidBody2D& b = m_Bodies[j];
+				// Only bodies sharing a cell with this one can touch it.
+				m_QueryCounter++;
 
-				// Two immovable bodies can never resolve anything.
-				if (a.InverseMass == 0.0f && b.InverseMass == 0.0f)
-					continue;
+				glm::vec2 boundsMin, boundsMax;
+				BodyBounds(m_Bodies[i], boundsMin, boundsMax);
 
-				Contact contact;
-				if (!Collide(i, a, j, b, contact))
-					continue;
+				int x0 = std::max(0, (int)((boundsMin.x - m_GridOrigin.x) / m_GridCellSize));
+				int y0 = std::max(0, (int)((boundsMin.y - m_GridOrigin.y) / m_GridCellSize));
+				int x1 = std::min(m_GridWidth - 1, (int)((boundsMax.x - m_GridOrigin.x) / m_GridCellSize));
+				int y1 = std::min(m_GridHeight - 1, (int)((boundsMax.y - m_GridOrigin.y) / m_GridCellSize));
 
-				// Only a moving dynamic body wakes a sleeper. Static geometry
-				// is permanently "awake" -- letting it wake things meant
-				// anything resting on the floor was woken every step and could
-				// never sleep at all.
-				// Pick up where the same pair left off last step.
-				auto previous = m_PreviousImpulses.find(ContactKey(contact.A, contact.B));
-				if (previous != m_PreviousImpulses.end())
+				for (int y = y0; y <= y1; y++)
 				{
-					contact.NormalImpulse = previous->second.x;
-					contact.TangentImpulse = previous->second.y;
+					for (int x = x0; x <= x1; x++)
+					{
+						for (unsigned int j : m_Cells[(size_t)y * m_GridWidth + x])
+						{
+							// j > i keeps each pair once; the stamp keeps a
+							// pair that shares several cells from being
+							// tested several times.
+							if (j <= i)
+								continue;
+							if (m_QueryStamp[j] == m_QueryCounter)
+								continue;
+							m_QueryStamp[j] = m_QueryCounter;
+
+							m_Candidates++;
+							TestPair(i, j);
+						}
+					}
 				}
-
-				// Restitution is measured now, against the speed the bodies
-				// are actually closing at, and held fixed for the whole solve.
-				float approach = glm::dot(b.Velocity - a.Velocity, contact.Normal);
-				float restitution = std::min(a.Restitution, b.Restitution);
-
-				contact.RestitutionBias = approach < -s_RestitutionThreshold
-					? -restitution * approach
-					: 0.0f;
-
-				m_Contacts.push_back(contact);
+			}
+			else
+			{
+				for (unsigned int j = i + 1; j < m_Bodies.size(); j++)
+				{
+					m_Candidates++;
+					TestPair(i, j);
+				}
 			}
 		}
+	}
+
+	// The narrowphase and bookkeeping for one candidate pair, shared by both
+	// the grid path and the brute-force one.
+	// The narrowphase and bookkeeping for one candidate pair, shared by both
+	// the grid path and the brute-force one.
+	void PhysicsWorld2D::TestPair(unsigned int i, unsigned int j)
+	{
+		RigidBody2D& a = m_Bodies[i];
+		RigidBody2D& b = m_Bodies[j];
+
+		// Two immovable bodies can never resolve anything.
+		if (a.InverseMass == 0.0f && b.InverseMass == 0.0f)
+			return;
+
+		Contact contact;
+		if (!Collide(i, a, j, b, contact))
+			return;
+
+		// Pick up where the same pair left off last step -- this is what
+		// warm starting reads.
+		auto previous = m_PreviousImpulses.find(ContactKey(contact.A, contact.B));
+		if (previous != m_PreviousImpulses.end())
+		{
+			contact.NormalImpulse = previous->second.x;
+			contact.TangentImpulse = previous->second.y;
+		}
+
+		// Restitution is measured now, against the speed the bodies are
+		// actually closing at, and held fixed for the whole solve.
+		float approach = glm::dot(b.Velocity - a.Velocity, contact.Normal);
+		float restitution = std::min(a.Restitution, b.Restitution);
+
+		contact.RestitutionBias = approach < -s_RestitutionThreshold
+			? -restitution * approach
+			: 0.0f;
+
+		m_Contacts.push_back(contact);
 	}
 
 	void PhysicsWorld2D::WarmStart()
@@ -509,8 +640,10 @@ namespace Egss {
 	RaycastHit PhysicsWorld2D::Raycast(const glm::vec2& origin, const glm::vec2& direction,
 		float maxDistance, unsigned int ignore) const
 	{
-		EGSS_PROFILE_SCOPE("Physics::Raycast");
-
+		// Deliberately NOT profiled per call. A scope timer costs a few
+		// hundred nanoseconds -- more than a raycast against a small world --
+		// so instrumenting here measures the instrumentation. Time the loop
+		// that issues the rays instead.
 		RaycastHit result;
 
 		float length = glm::length(direction);
@@ -520,10 +653,12 @@ namespace Egss {
 		glm::vec2 unit = direction / length;
 		float nearest = maxDistance;
 
-		for (unsigned int i = 0; i < m_Bodies.size(); i++)
+		// One body, tested against the ray. Kept separate so the grid walk and
+		// the brute-force loop share exactly the same narrowphase.
+		auto test = [&](unsigned int i)
 		{
 			if (i == ignore)
-				continue;
+				return;
 
 			const RigidBody2D& body = m_Bodies[i];
 
@@ -535,7 +670,7 @@ namespace Egss {
 				: RaycastBox(origin, unit, nearest, body, distance, normal);
 
 			if (!hit || distance > nearest)
-				continue;
+				return;
 
 			// Keeping `nearest` tight also prunes later candidates.
 			nearest = distance;
@@ -546,6 +681,92 @@ namespace Egss {
 			result.Fraction = distance / maxDistance;
 			result.Point = origin + unit * distance;
 			result.Normal = normal;
+		};
+
+		if (UseBroadphase && m_GridDirty)
+			RebuildGrid();
+
+		bool useGrid = UseBroadphase && m_GridWidth > 0 && m_GridHeight > 0;
+
+		// The origin has to be inside the grid for the walk to start in the
+		// right cell; outside it, fall back rather than guess.
+		glm::vec2 local = origin - m_GridOrigin;
+		if (useGrid)
+		{
+			useGrid = local.x >= 0.0f && local.y >= 0.0f
+				&& local.x < m_GridWidth * m_GridCellSize
+				&& local.y < m_GridHeight * m_GridCellSize;
+		}
+
+		if (!useGrid)
+		{
+			for (unsigned int i = 0; i < m_Bodies.size(); i++)
+				test(i);
+
+			return result;
+		}
+
+		// --- Grid walk (DDA) ------------------------------------------------
+		// Steps cell by cell along the ray rather than testing everything.
+		// Because cells are visited in order, the first hit found in a cell is
+		// final once the ray has left that cell -- so a short ray in a busy
+		// world touches almost nothing.
+		m_QueryCounter++;
+
+		int x = std::min((int)(local.x / m_GridCellSize), m_GridWidth - 1);
+		int y = std::min((int)(local.y / m_GridCellSize), m_GridHeight - 1);
+
+		int stepX = unit.x > 0.0f ? 1 : (unit.x < 0.0f ? -1 : 0);
+		int stepY = unit.y > 0.0f ? 1 : (unit.y < 0.0f ? -1 : 0);
+
+		const float infinity = std::numeric_limits<float>::max();
+
+		// Distance along the ray to the next cell boundary on each axis, and
+		// how far apart those boundaries are.
+		float tDeltaX = stepX != 0 ? m_GridCellSize / std::abs(unit.x) : infinity;
+		float tDeltaY = stepY != 0 ? m_GridCellSize / std::abs(unit.y) : infinity;
+
+		float nextBoundaryX = m_GridOrigin.x + (x + (stepX > 0 ? 1 : 0)) * m_GridCellSize;
+		float nextBoundaryY = m_GridOrigin.y + (y + (stepY > 0 ? 1 : 0)) * m_GridCellSize;
+
+		float tMaxX = stepX != 0 ? (nextBoundaryX - origin.x) / unit.x : infinity;
+		float tMaxY = stepY != 0 ? (nextBoundaryY - origin.y) / unit.y : infinity;
+
+		float travelled = 0.0f;
+
+		while (travelled <= maxDistance)
+		{
+			for (unsigned int i : m_Cells[(size_t)y * m_GridWidth + x])
+			{
+				// A body spanning several cells would otherwise be tested
+				// once per cell the ray crosses.
+				if (m_QueryStamp[i] == m_QueryCounter)
+					continue;
+				m_QueryStamp[i] = m_QueryCounter;
+
+				m_Candidates++;
+				test(i);
+			}
+
+			// Anything beyond this cell is further away than what we have.
+			if (result.Hit && nearest <= travelled)
+				break;
+
+			if (tMaxX < tMaxY)
+			{
+				x += stepX;
+				travelled = tMaxX;
+				tMaxX += tDeltaX;
+			}
+			else
+			{
+				y += stepY;
+				travelled = tMaxY;
+				tMaxY += tDeltaY;
+			}
+
+			if (x < 0 || y < 0 || x >= m_GridWidth || y >= m_GridHeight)
+				break;
 		}
 
 		return result;

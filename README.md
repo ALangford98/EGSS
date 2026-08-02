@@ -611,11 +611,7 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       notion of a material binding a shader to its parameters
 - [ ] **Physics: rotation.** Bodies translate but never spin. Needs SAT for
       oriented shapes, multi-point manifolds and angular impulses
-- [ ] **Physics: a real broadphase.** Brute-force pair testing is O(n^2) and
-      raycasting is O(rays x bodies). Both measured negligible so far (see the
-      profiler entry below), so this stays unstarted deliberately. The trigger
-      is heavy raycasting — hundreds of rays against hundreds of bodies — not
-      the collision pairs
+
 - [ ] **Early reflections and convolution reverb** — the next steps up from
       zones. See [Audio and acoustics](#audio-and-acoustics) below
 - [ ] **3D physics or a 3D occlusion query.** `Raycast` is 2D, so Cube3D's
@@ -835,6 +831,42 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-02 (uniform-grid broadphase)
+
+- **`PhysicsWorld2D` now buckets bodies into a uniform grid.** Pair generation
+  visits only bodies sharing a cell; raycasts walk the grid cell by cell (DDA)
+  instead of testing everything, and stop as soon as the nearest hit is closer
+  than the next cell.
+- A per-body query stamp does the de-duplication, so a body spanning several
+  cells is tested once per query without allocating a set.
+- `UseBroadphase` and `CellSize` are left switchable, because the only reason
+  to build this was to be able to measure it rather than assume it.
+- Falls back to brute force where the grid cannot help: an empty world, a cell
+  size that would need too many cells, or a ray starting outside the grid.
+
+Correctness first: **2912 rays across the map, grid versus brute force, 0
+mismatches and a worst distance delta of 0.0.** Identical results, not merely
+similar ones.
+
+Then the scaling, Release, 4000 rays per run:
+
+| bodies | brute force | grid | speedup |
+| --- | --- | --- | --- |
+| 16 | 1333 us | 707 us | 1.9x |
+| 64 | 3663 us | 784 us | 4.7x |
+| 256 | 12611 us | 1053 us | 12.0x |
+| 1024 | 46004 us | 2424 us | 19.0x |
+
+Brute force grows with body count as expected; the grid barely moves — 64x the
+bodies costs it 3.4x the time.
+
+**A measurement mistake worth recording.** The first attempt compared the two
+modes live and found *no difference at all* — both 0.4 us per call. That figure
+was the profiler: `Raycast` carried an `EGSS_PROFILE_SCOPE`, and a scope timer
+costs more than a raycast against a small world, so the instrumentation was
+most of what was being timed. Removing the per-call scope revealed a real 1.9x
+that had been invisible. Profile the loop that issues the rays, not the leaf.
 
 ### 2026-08-01 (reverb zones)
 

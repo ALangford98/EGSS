@@ -17,15 +17,15 @@
 
 #include "Demo.h"
 
-class Cube3D : public Egss::Layer
+class Cube3D : public DemoLayer
 {
 public:
 	Cube3D()
-		: Layer("Cube3D"), m_Camera(45.0f, 16.0f / 9.0f, 0.1f, 100.0f)
+		: DemoLayer("Cube3D"), m_Camera(45.0f, 16.0f / 9.0f, 0.1f, 100.0f)
 	{
 	}
 
-	void OnAttach() override
+	void OnDemoAttach() override
 	{
 		m_Camera.SetPosition({ 0.0f, 1.6f, 6.0f });
 		m_Camera.SetRotation(-90.0f, -12.0f);
@@ -40,6 +40,20 @@ public:
 	// fly camera, walking and turning changes what you hear -- which is the
 	// whole point of positional audio and impossible to demonstrate with a
 	// fixed 2D view.
+	// Continuous things belong on the activation edges, not in OnDemoAttach
+	// -- attach runs for every demo whichever one is showing, which is how
+	// these hums ended up playing under the other demos.
+	void OnDemoActivated() override { StartEmitters(); }
+
+	void OnDemoDeactivated() override
+	{
+		for (Egss::VoiceHandle& emitter : m_Emitters)
+		{
+			Egss::AudioEngine::Stop(emitter);
+			emitter = Egss::InvalidVoice;
+		}
+	}
+
 	void BuildAudio()
 	{
 		m_HumClip = MakeHum(196.0f, 2.0f);
@@ -273,23 +287,8 @@ public:
 	// Presentation only -- no OnFixedUpdate. Nothing here is simulated: the
 	// camera is feel, and the spin is decoration, so both want the real frame
 	// time rather than a fixed step. Not everything needs the simulation loop.
-	void OnUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(Egss::Timestep ts) override
 	{
-		if (g_ActiveDemo != Demo::Cube3D)
-		{
-			// Hidden, not unloaded: a looping voice has to be stopped
-			// explicitly or it keeps sounding under another demo.
-			for (Egss::VoiceHandle& emitter : m_Emitters)
-			{
-				Egss::AudioEngine::Stop(emitter);
-				emitter = Egss::InvalidVoice;
-			}
-			return;
-		}
-
-		// Start (or restart) them now this demo is live.
-		if (!Egss::AudioEngine::IsPlaying(m_Emitters[0]))
-			StartEmitters();
 
 		m_FrameTime = ts.GetMilliseconds();
 
@@ -463,7 +462,7 @@ public:
 		m_Camera.SetRotation(yaw, pitch);
 	}
 
-	void OnEvent(Egss::Event& e) override
+	void OnDemoEvent(Egss::Event& e) override
 	{
 		Egss::EventDispatcher dispatcher(e);
 
@@ -484,8 +483,6 @@ public:
 
 			// Switching demos is DemoSelector's job, not this layer's -- it
 			// sits above this one and consumes F1 before it gets here.
-			if (g_ActiveDemo != Demo::Cube3D)
-				return false;
 
 			if (e.GetKeyCode() == EGSS_KEY_SPACE)
 				m_Spinning = !m_Spinning;
@@ -494,10 +491,8 @@ public:
 		});
 	}
 
-	void OnImGuiRender() override
+	void OnDemoImGui() override
 	{
-		if (g_ActiveDemo != Demo::Cube3D)
-			return;
 
 		// Clear of the Demos panel on first run; ImGui remembers it after.
 		ImGui::SetNextWindowPos(ImVec2(20.0f, 180.0f), ImGuiCond_FirstUseEver);

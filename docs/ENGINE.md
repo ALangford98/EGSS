@@ -220,6 +220,8 @@ world.Step(fixedStep);
 const RigidBody2D& body = world.GetBody(handle);   // Position, Velocity, Awake
 
 RaycastHit hit = world.Raycast(origin, direction, maxDistance);  // dir auto-normalised
+world.UseBroadphase = true;   // uniform grid; false for brute force, to compare
+world.CellSize = 0.25f;       // roughly the size of a typical body
 if (hit.Hit) { hit.Point; hit.Normal; hit.Distance; hit.Fraction; }
 
 // Assets

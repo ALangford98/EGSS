@@ -17,15 +17,15 @@
 
 #include "Demo.h"
 
-class Physics2D : public Egss::Layer
+class Physics2D : public DemoLayer
 {
 public:
 	Physics2D()
-		: Layer("Physics2D"), m_Camera(-1.6f, 1.6f, -0.9f, 0.9f)
+		: DemoLayer("Physics2D"), m_Camera(-1.6f, 1.6f, -0.9f, 0.9f)
 	{
 	}
 
-	void OnAttach() override
+	void OnDemoAttach() override
 	{
 		BuildScene();
 		m_ImpactClip = MakeImpactClip();
@@ -88,6 +88,15 @@ public:
 		}
 
 		return Egss::AudioClip::CreateFromSamples(std::move(samples), 1);
+	}
+
+	// Continuous things belong on the activation edges, not in OnDemoAttach.
+	void OnDemoActivated() override { StartEmitter(); }
+
+	void OnDemoDeactivated() override
+	{
+		Egss::AudioEngine::Stop(m_Emitter);
+		m_Emitter = Egss::InvalidVoice;
 	}
 
 	void StartEmitter()
@@ -220,17 +229,8 @@ public:
 
 	// Simulation. The world wants a fixed dt, which is precisely what this
 	// callback provides -- the two were built for each other.
-	void OnFixedUpdate(Egss::Timestep fixedStep) override
+	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
 	{
-		if (g_ActiveDemo != Demo::Physics2D)
-		{
-			// Hidden, not unloaded: a looping voice has to be stopped
-			// explicitly or it keeps playing under another demo.
-			Egss::AudioEngine::Stop(m_Emitter);
-			m_Emitter = Egss::InvalidVoice;
-			return;
-		}
-
 		if (m_Paused)
 			return;
 
@@ -304,10 +304,8 @@ public:
 		m_PreviousContacts.swap(m_CurrentContacts);
 	}
 
-	void OnUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(Egss::Timestep ts) override
 	{
-		if (g_ActiveDemo != Demo::Physics2D)
-			return;
 
 		m_FrameTime = ts.GetMilliseconds();
 
@@ -478,7 +476,7 @@ public:
 		}
 	}
 
-	void OnEvent(Egss::Event& e) override
+	void OnDemoEvent(Egss::Event& e) override
 	{
 		Egss::EventDispatcher dispatcher(e);
 
@@ -494,7 +492,7 @@ public:
 
 		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& e)
 		{
-			if (e.GetRepeatCount() > 0 || g_ActiveDemo != Demo::Physics2D)
+			if (e.GetRepeatCount() > 0)
 				return false;
 
 			if (e.GetKeyCode() == EGSS_KEY_SPACE)
@@ -508,10 +506,8 @@ public:
 		});
 	}
 
-	void OnImGuiRender() override
+	void OnDemoImGui() override
 	{
-		if (g_ActiveDemo != Demo::Physics2D)
-			return;
 
 		auto stats = Egss::Renderer2D::GetStats();
 		Egss::Application& app = Egss::Application::Get();

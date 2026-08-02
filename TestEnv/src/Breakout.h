@@ -60,18 +60,18 @@ static bool Overlaps(const glm::vec2& aCentre, const glm::vec2& aSize,
 		&& std::abs(aCentre.y - bCentre.y) * 2.0f < (aSize.y + bSize.y);
 }
 
-class Breakout : public Egss::Layer
+class Breakout : public DemoLayer
 {
 public:
 	Breakout()
-		: Layer("Breakout"), m_Camera(-1.6f, 1.6f, -s_WorldHalfHeight, s_WorldHalfHeight)
+		: DemoLayer("Breakout"), m_Camera(-1.6f, 1.6f, -s_WorldHalfHeight, s_WorldHalfHeight)
 	{
 	}
 
 	// Called once when the layer is pushed. Load assets and build state here,
 	// never in the constructor -- at construction time there is no GL context
 	// yet, so a Texture2D::Create would fail.
-	void OnAttach() override
+	void OnDemoAttach() override
 	{
 		// A flat colour would not need a texture at all (Renderer2D keeps a
 		// white one for that), so this builds a small vertical gradient to
@@ -179,10 +179,8 @@ public:
 	// Simulation. Runs on a fixed step, so the ball travels the same arc
 	// whatever the frame rate -- and, because the step never varies, it cannot
 	// tunnel through a brick just because one frame ran long.
-	void OnFixedUpdate(Egss::Timestep fixedStep) override
+	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
 	{
-		if (g_ActiveDemo != Demo::Breakout)
-			return;
 
 		// Snapshot before stepping. Rendering blends from here to the new
 		// state, which is what keeps motion smooth when the frame rate and the
@@ -198,10 +196,8 @@ public:
 	}
 
 	// Presentation only. Called once per frame, whatever the simulation did.
-	void OnUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(Egss::Timestep ts) override
 	{
-		if (g_ActiveDemo != Demo::Breakout)
-			return;
 
 		m_FrameTime = ts.GetMilliseconds();
 
@@ -396,7 +392,7 @@ public:
 	}
 
 	// Events, unlike polling, fire once per change -- right for actions.
-	void OnEvent(Egss::Event& e) override
+	void OnDemoEvent(Egss::Event& e) override
 	{
 		Egss::EventDispatcher dispatcher(e);
 
@@ -423,8 +419,6 @@ public:
 
 			// Switching demos is DemoSelector's job, not this layer's -- it
 			// sits above this one and consumes F1 before it gets here.
-			if (g_ActiveDemo != Demo::Breakout)
-				return false;
 
 			if (e.GetKeyCode() == EGSS_KEY_SPACE)
 				m_BallStuck = false;
@@ -439,10 +433,8 @@ public:
 
 	// Debug UI. Runs every frame, after the game has drawn and before the
 	// buffer swap.
-	void OnImGuiRender() override
+	void OnDemoImGui() override
 	{
-		if (g_ActiveDemo != Demo::Breakout)
-			return;
 
 		auto stats = Egss::Renderer2D::GetStats();
 

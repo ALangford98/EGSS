@@ -119,13 +119,38 @@ namespace Egss {
 		// CorrectPositions.
 		unsigned int PositionIterations = 6;
 
+		// --- Broadphase ---------------------------------------------------
+		// A uniform grid: bodies are bucketed by the cells their bounds
+		// overlap, so a query only looks at bodies that could plausibly be
+		// near. Brute force is O(n^2) for pairs and O(rays x bodies) for
+		// raycasts; the grid makes both roughly proportional to how much space
+		// the query actually covers.
+		//
+		// Left switchable so the two can be compared with the profiler rather
+		// than assumed -- which is the only reason to have built it.
+		bool UseBroadphase = true;
+
+		// Cells should be around the size of a typical body. Much smaller and
+		// a body spans many cells; much larger and each cell holds everything,
+		// which is brute force with extra steps.
+		float CellSize = 0.25f;
+
+		unsigned int GetBroadphaseCellCount() const { return (unsigned int)m_Cells.size(); }
+		unsigned int GetBroadphaseCandidates() const { return m_Candidates; }
+
 		// Bodies slower than this for longer than SleepTime stop integrating.
 		float SleepVelocity = 0.08f;
 		float SleepTime = 0.5f;
 		bool AllowSleeping = true;
 	private:
+		// Mutable, because Raycast is const but has to be able to build the
+		// grid on first use -- a world that never steps still needs one.
+		void RebuildGrid() const;
+		void MarkGridDirty() { m_GridDirty = true; }
+
 		void Integrate(float dt);
 		void GenerateContacts();
+		void TestPair(unsigned int i, unsigned int j);
 		void WarmStart();
 		void SolveVelocities();
 		void CorrectPositions();
@@ -139,6 +164,21 @@ namespace Egss {
 		std::unordered_map<unsigned long long, glm::vec2> m_PreviousImpulses;
 
 		unsigned int m_AwakeBodyCount = 0;
+
+		// --- Grid ---
+		mutable std::vector<std::vector<unsigned int>> m_Cells;
+		mutable glm::vec2 m_GridOrigin = { 0.0f, 0.0f };
+		mutable int m_GridWidth = 0;
+		mutable int m_GridHeight = 0;
+		mutable float m_GridCellSize = 0.25f;
+		mutable bool m_GridDirty = true;
+
+		// Per-body stamp, so a query can skip bodies it has already considered
+		// without allocating a set. Cheaper than the alternative and the
+		// reason a pair spanning several cells is only tested once.
+		mutable std::vector<unsigned int> m_QueryStamp;
+		mutable unsigned int m_QueryCounter = 0;
+		mutable unsigned int m_Candidates = 0;
 	};
 
 }

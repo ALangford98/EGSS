@@ -14,7 +14,7 @@
 #include <Egss.h>
 #include <imgui.h>
 
-#include "Demo.h"
+#include "DemoRegistry.h"
 
 class DemoSelector : public Egss::Layer
 {
@@ -33,31 +33,34 @@ public:
 
 		ImGui::Begin("Demos");
 
-		int current = (int)g_ActiveDemo;
+		int current = g_ActiveDemo;
 
 		// Combo writes through the int, and returns true only on the frame the
 		// selection actually changed.
 		ImGui::SetNextItemWidth(-1.0f);
-		if (ImGui::Combo("##demo", &current, s_DemoNames, (int)Demo::Count))
-			SetDemo((Demo)current);
+		// Names come straight from the registry, so a new demo appears here
+		// with no edit at all.
+		if (ImGui::Combo("##demo", &current, [](void*, int i) { return s_Demos[i].Name; },
+			nullptr, s_DemoCount))
+			SetDemo(current);
 
 		ImGui::Spacing();
 
 		// Buttons as well as the dropdown: one click instead of two, and it
 		// makes the available demos visible without opening anything.
-		for (int i = 0; i < (int)Demo::Count; i++)
+		for (int i = 0; i < s_DemoCount; i++)
 		{
 			if (i > 0)
 				ImGui::SameLine();
 
-			bool active = i == (int)g_ActiveDemo;
+			bool active = i == g_ActiveDemo;
 
 			// Highlight the live one so the panel reads at a glance.
 			if (active)
 				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.75f, 1.0f));
 
-			if (ImGui::Button(ShortName(i), ImVec2(90.0f, 0.0f)))
-				SetDemo((Demo)i);
+			if (ImGui::Button(s_Demos[i].ShortName, ImVec2(90.0f, 0.0f)))
+				SetDemo(i);
 
 			if (active)
 				ImGui::PopStyleColor();
@@ -84,29 +87,16 @@ public:
 			if (e.GetKeyCode() != EGSS_KEY_F1)
 				return false;
 
-			g_ActiveDemo = (Demo)(((int)g_ActiveDemo + 1) % (int)Demo::Count);
+			g_ActiveDemo = (g_ActiveDemo + 1) % s_DemoCount;
 
 			// Handled, so it stops here and no demo layer sees it.
 			return true;
 		});
 	}
 private:
-	void SetDemo(Demo demo)
+	void SetDemo(DemoId demo)
 	{
 		g_ActiveDemo = demo;
 	}
 
-	// The dropdown entries carry a description; the buttons need to be short.
-	static const char* ShortName(int index)
-	{
-		switch ((Demo)index)
-		{
-			case Demo::Breakout: return "Breakout";
-			case Demo::Cube3D:   return "Cube3D";
-			case Demo::Physics2D: return "Physics";
-			case Demo::Lighting2D: return "Lighting2D";
-			default: break;
-		}
-		return "?";
-	}
 };

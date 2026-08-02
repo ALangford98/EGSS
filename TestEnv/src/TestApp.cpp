@@ -17,12 +17,8 @@
 
 #include <Egss.h>
 
-#include "Demo.h"
+#include "DemoRegistry.h"
 #include "DemoSelector.h"
-#include "Breakout.h"
-#include "Cube3D.h"
-#include "Physics2D.h"
-#include "Lighting2D.h"
 #include "ProfilerPanel.h"
 
 class TestEnv : public Egss::Application
@@ -30,13 +26,13 @@ class TestEnv : public Egss::Application
 public:
 	TestEnv()
 	{
+		// Every demo in DemoRegistry.h, pushed and numbered. Adding one needs
+		// no change here.
+		PushAllDemos(*this);
+
 		// Order matters only for event handling: layers pushed later sit
-		// higher in the stack and see events first. The selector goes last so
-		// it consumes F1 before either demo does.
-		PushLayer(new Breakout());
-		PushLayer(new Cube3D());
-		PushLayer(new Physics2D());
-		PushLayer(new Lighting2D());
+		// higher in the stack and see events first, so the selector goes
+		// above the demos and consumes F1 before any of them.
 		PushLayer(new DemoSelector());
 		PushLayer(new ProfilerPanel());
 	}

@@ -37,20 +37,21 @@ struct Light
 	float Radius = 1.8f;
 };
 
-class Lighting2D : public Egss::Layer
+class Lighting2D : public DemoLayer
 {
 public:
 	Lighting2D()
-		: Layer("Lighting2D"), m_Camera(-1.6f, 1.6f, -0.9f, 0.9f)
+		: DemoLayer("Lighting2D"), m_Camera(-1.6f, 1.6f, -0.9f, 0.9f)
 	{
 	}
 
-	void OnAttach() override
+	void OnDemoAttach() override
 	{
 		// Two is the default because opposing poles give the clearest picture:
 		// one obstacle, two shadows going opposite ways.
 		SetRingLightCount(2);
 		BuildScene();
+
 	}
 
 
@@ -85,10 +86,8 @@ public:
 		}
 	}
 
-	void OnUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(Egss::Timestep ts) override
 	{
-		if (g_ActiveDemo != Demo::Lighting2D)
-			return;
 
 		m_FrameTime = ts.GetMilliseconds();
 
@@ -155,6 +154,7 @@ public:
 
 			Egss::Renderer2D::BeginScene(m_Camera);
 
+			EGSS_PROFILE_SCOPE("Lighting::LightPass");
 			m_TotalRays = 0;
 
 			for (const Light& light : m_ActiveLights)
@@ -521,7 +521,7 @@ public:
 		}
 	}
 
-	void OnEvent(Egss::Event& e) override
+	void OnDemoEvent(Egss::Event& e) override
 	{
 		Egss::EventDispatcher dispatcher(e);
 
@@ -537,7 +537,7 @@ public:
 
 		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& e)
 		{
-			if (e.GetRepeatCount() > 0 || g_ActiveDemo != Demo::Lighting2D)
+			if (e.GetRepeatCount() > 0)
 				return false;
 
 			if (e.GetKeyCode() == EGSS_KEY_R)
@@ -551,10 +551,8 @@ public:
 		});
 	}
 
-	void OnImGuiRender() override
+	void OnDemoImGui() override
 	{
-		if (g_ActiveDemo != Demo::Lighting2D)
-			return;
 
 		auto stats = Egss::Renderer2D::GetStats();
 		ImGui::SetNextWindowPos(ImVec2(20.0f, 180.0f), ImGuiCond_FirstUseEver);
