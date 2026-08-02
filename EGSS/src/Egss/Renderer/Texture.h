@@ -27,6 +27,16 @@ namespace Egss {
 		// colours and font atlases.
 		static Texture2D* Create(unsigned int width, unsigned int height);
 
+		// Wraps a texture this class did not create -- a framebuffer
+		// attachment, most usefully -- so it can be handed to anything taking
+		// a Texture2D.
+		//
+		// **It does not own the handle.** Whatever created the texture is
+		// still responsible for deleting it, and the wrapper must not outlive
+		// it. That is the trade for not copying the pixels.
+		static Texture2D* CreateFromHandle(unsigned int handle,
+			unsigned int width, unsigned int height);
+
 		virtual void SetData(void* data, unsigned int size) = 0;
 	};
 

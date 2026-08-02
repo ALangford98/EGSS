@@ -167,11 +167,23 @@ Renderer2D::DrawQuad(pos, size, subTexture, tiling, tint); // sprite-sheet regio
 Renderer2D::DrawRotatedQuad(pos, size, degrees, ...);      // same four forms
 Renderer2D::EndScene();
 
-// Debug geometry — same batch, one extra draw call however many segments
+// Lines — their own batch, one extra draw call however many segments
 Renderer2D::DrawLine(from, to, color);              // vec2 or vec3
 Renderer2D::DrawRect(centre, size, color);          // outline, DrawQuad's convention
 Renderer2D::DrawRect(transform, color);             // rotated / scaled
 Renderer2D::SetLineWidth(2.0f);                     // >1 ignored by most drivers
+
+// Filled triangles — a third batch, for generated geometry
+Renderer2D::DrawTriangle(a, b, c, color);
+Renderer2D::DrawTriangle(a, b, c, colA, colB, colC);  // per-corner: free gradients
+Renderer2D::DrawCircle(centre, radius, color, segments);   // a fan; same batch
+
+// Global render state. Blending and depth are NOT per-draw: anything already
+// batched must be flushed (EndScene) before changing them, or it is drawn with
+// whatever is set at flush time rather than what was set when it was submitted.
+RenderCommand::SetBlendMode(BlendMode::Additive);   // Alpha, Additive, None
+RenderCommand::SetDepthTest(false);                 // additive overlays must not
+                                                    // depth-test against each other
 
 // Screen
 RenderCommand::SetClearColor({r,g,b,a});
@@ -220,6 +232,8 @@ world.Step(fixedStep);
 const RigidBody2D& body = world.GetBody(handle);   // Position, Velocity, Awake
 
 RaycastHit hit = world.Raycast(origin, direction, maxDistance);  // dir auto-normalised
+world.ResolveCircle(position, radius);        // push a circle out of geometry --
+                                              // character controllers, cameras
 world.UseBroadphase = true;   // uniform grid; false for brute force, to compare
 world.CellSize = 0.25f;       // roughly the size of a typical body
 if (hit.Hit) { hit.Point; hit.Normal; hit.Distance; hit.Fraction; }
@@ -253,10 +267,97 @@ on screen, so `{0.5f, 0.5f}` is half a unit wide regardless of resolution.
 
 ---
 
+## Entities, if you want them
+
+Nothing above needs a `Scene`. Breakout tracks its bricks in a `std::vector` and
+that is the right call for Breakout. Reach for `Scene` when *several* systems
+need to agree on the same object -- when the renderer, physics and a light all
+have to mean the same brick.
+
+```cpp
+Scene scene;
+
+Entity box = scene.CreateEntity("Box 1");        // Tag + Transform come free
+box.Get<TransformComponent>()->Position = { 0.0f, 2.0f, 0.0f };
+box.Add<SpriteComponent>({ { 1, 0, 0, 1 } });
+box.Add<LightComponent>({ colour, radius, true });
+
+// A component is any struct. There is nothing to register.
+struct Health { int Current = 100; };
+box.Add<Health>();
+```
+
+A "system" is a loop you write. Ask for a store and walk it:
+
+```cpp
+auto& sprites = scene.View<SpriteComponent>();
+for (size_t i = 0; i < sprites.Size(); i++)
+{
+    EntityId owner = sprites.Owner(i);
+    auto* transform = scene.GetComponent<TransformComponent>(owner);
+    Renderer2D::DrawQuad(transform->Position, glm::vec2(transform->Scale),
+        sprites.Components()[i].Color,
+        (int)EntityIds::Index(owner));     // last arg = picking
+}
+```
+
+Note what that loop does *not* need to know: whether the entity also has a
+body, a light, or a `Health`. Adding a component never touches the systems that
+do not care about it -- which is the entire point.
+
+For physics, add a `RigidBody2DComponent` holding the body index and call
+`scene.StepPhysics(fixedStep)` from `OnFixedUpdate`. It pushes transform-driven
+bodies in, steps, and reads physics-driven bodies back out.
+
+**Handles are generational.** `DestroyEntity` bumps the slot's generation, so
+every stored handle to it goes stale rather than quietly pointing at whatever
+entity reuses the slot. Check `IsValid` (or `if (entity)`) after anything that
+could have destroyed it; `GetComponent` on a stale handle returns `nullptr`
+rather than lying.
+
+### Picking
+
+Pass an entity's *slot index* as the last argument to `DrawQuad`, render into a
+framebuffer with a `RED_INTEGER` attachment, and read one pixel back:
+
+```cpp
+framebuffer->Bind();
+RenderCommand::Clear();
+framebuffer->ClearAttachment(1, -1);     // glClear only carries a float colour
+// ... draw the scene ...
+Renderer2D::EndScene();                  // the batch must be flushed first
+
+int slot = framebuffer->ReadPixel(1, mouseX, height - mouseY);   // GL y is up
+EntityId hovered = scene.EntityAtIndex((unsigned int)slot);      // InvalidEntity if empty
+framebuffer->Unbind();
+```
+
+Pixel-exact and free of geometry maths: whatever the renderer drew there is
+what gets picked, including rotated and overlapping shapes a bounding-box test
+would get wrong. Store the **slot**, not the `EntityId` -- the attachment is a
+*signed* integer texture, and a handle whose generation passes 2047 exceeds
+`INT_MAX` and reads back negative.
+
+To show the result, wrap the colour attachment and draw it as one quad:
+
+```cpp
+auto tex = std::shared_ptr<Texture2D>(Texture2D::CreateFromHandle(
+    framebuffer->GetColorAttachmentRendererID(0), width, height));
+```
+
+Rebuild that wrapper whenever the framebuffer resizes -- a resize makes new
+textures and the old handle is gone. It does not own the handle, so it must not
+outlive the framebuffer.
+
+`SceneDemo.h` is all of the above in one file.
+
+---
+
 ## Gotchas that will actually bite you
 
-- **New `.cpp` file? Re-run `./BuildProject.sh`.** premake expands file globs at
-  *generation* time. Your file will compile in the editor and never link.
+- **New `.cpp` file? Re-run `./BuildProject.sh`** (or `./egss.py build`, which
+  always regenerates). premake expands file globs at *generation* time, so
+  your file will compile in the editor and never link.
 - **Depth testing is on, and `z` decides what covers what — not draw order.**
   Higher `z` is nearer. At *equal* `z` the depth test (`GL_LESS`) rejects the
   later fragment, so the **first** thing submitted wins, which is the opposite
@@ -276,3 +377,10 @@ on screen, so `{0.5f, 0.5f}` is half a unit wide regardless of resolution.
 - **ImGui takes some keys before you do.** `Tab` cycles widget focus and turns
   sliders into text fields, which then sets `io.WantCaptureKeyboard` and
   swallows everything. Pick function keys for global shortcuts.
+- **`glClear` will not clear an integer attachment.** It only carries a float
+  colour. Use `Framebuffer::ClearAttachment(index, -1)`, or picking reads
+  whatever the previous frame left there.
+- **`ReadPixel` after `EndScene`, before `Unbind`.** The batch has to have
+  reached the driver, and the framebuffer has to still be bound.
+- **Window y counts down, GL y counts up.** Flip with `height - mouseY` before
+  reading a pixel, or picking works perfectly, upside down.

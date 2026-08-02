@@ -13,6 +13,11 @@ namespace Egss {
 		return new OpenGLTexture2D(path);
 	}
 
+	Texture2D* Texture2D::CreateFromHandle(unsigned int handle, unsigned int width, unsigned int height)
+	{
+		return new OpenGLTexture2D(handle, width, height);
+	}
+
 	Texture2D* Texture2D::Create(unsigned int width, unsigned int height)
 	{
 		return new OpenGLTexture2D(width, height);
@@ -82,9 +87,19 @@ namespace Egss {
 		stbi_image_free(data);
 	}
 
+	// Borrowed: the handle belongs to whoever created it -- a framebuffer,
+	// usually -- so this only records it.
+	OpenGLTexture2D::OpenGLTexture2D(unsigned int handle, unsigned int width, unsigned int height)
+		: m_Width(width), m_Height(height), m_RendererID(handle), m_Borrowed(true)
+	{
+	}
+
 	OpenGLTexture2D::~OpenGLTexture2D()
 	{
-		glDeleteTextures(1, &m_RendererID);
+		// Deleting a handle we do not own would pull the texture out from
+		// under whatever does.
+		if (!m_Borrowed)
+			glDeleteTextures(1, &m_RendererID);
 	}
 
 	void OpenGLTexture2D::SetData(void* data, unsigned int size)

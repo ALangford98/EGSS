@@ -23,6 +23,12 @@
 #include "Egss/Audio/AudioClip.h"
 #include "Egss/Audio/AudioEngine.h"
 
+// SCENE ******************
+
+#include "Egss/Scene/Entity.h"
+#include "Egss/Scene/Components.h"
+#include "Egss/Scene/Scene.h"
+
 // PHYSICS ****************
 
 #include "Egss/Physics/RigidBody2D.h"

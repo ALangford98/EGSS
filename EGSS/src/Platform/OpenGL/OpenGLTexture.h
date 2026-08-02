@@ -9,6 +9,8 @@ namespace Egss {
 	public:
 		OpenGLTexture2D(unsigned int width, unsigned int height);
 		OpenGLTexture2D(const std::string& path);
+		// Borrowed: see Texture2D::CreateFromHandle.
+		OpenGLTexture2D(unsigned int handle, unsigned int width, unsigned int height);
 		virtual ~OpenGLTexture2D();
 
 		unsigned int GetWidth() const override { return m_Width; }
@@ -23,6 +25,10 @@ namespace Egss {
 		// Kept apart because SetData needs to know how many channels the
 		// caller is supplying.
 		unsigned int m_InternalFormat = 0, m_DataFormat = 0;
+
+		// True when the handle came from elsewhere, in which case the
+		// destructor must leave it alone.
+		bool m_Borrowed = false;
 	};
 
 }

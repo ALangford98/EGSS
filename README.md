@@ -6,17 +6,28 @@ A game engine built from scratch, following along with TheCherno's Hazel
 series. `EGSS` is the engine itself, built as a shared library; `TestEnv` is a
 sandbox application that links against it.
 
-**Current state:** a window with an OpenGL 3.3 core context, a working event
-system, a layer stack, polled input, frame timing, a renderer abstraction, a
-**batched 2D quad renderer** with sprite-sheet support, framebuffers with
-integer-attachment mouse picking, perspective and orthographic cameras, and
-ImGui (docking) as a debug overlay. `TestEnv` holds two demos — a playable
-Breakout and a lit 3D cube grid — with **F1** switching between them. See [Roadmap](#roadmap) for what's left.
+**Current state:** an OpenGL 3.3 core context, an event system, a layer stack,
+polled input, and a **fixed-timestep** loop with render interpolation. On top
+of that: a **batched 2D renderer** (quads, lines, triangles, circles) with
+sprite sheets and framebuffers with integer-attachment mouse picking;
+orthographic and perspective cameras; a **2D rigid-body physics** world with
+warm-started impulses, island sleeping, raycasts and a uniform-grid broadphase;
+a lock-free **audio engine** with positional sound, occlusion and reverb; an
+instrumenting **profiler** with Chrome-trace export; and ImGui (docking) as a
+debug overlay.
+
+`TestEnv` holds four demos — Breakout, a 3D scene with transform gizmos,
+a rigid-body sandbox, and a 2D visibility-polygon lighting scene. See
+[Roadmap](#roadmap) for what's left.
 
 > **New to the codebase?** Start with **[docs/ENGINE.md](docs/ENGINE.md)** — the
-> frame's call path, the five decisions that explain the rest, and the whole
-> API you'd use day to day. Then read `TestEnv/src/TestApp.cpp`, which is a
-> commented worked example of building on it.
+> frame's call path, the decisions that explain the rest, and the whole API
+> you'd use day to day. Then read `TestEnv/src/Breakout.h`, a commented worked
+> example of building a game on it.
+>
+> **Want to build something?** **[docs/LIGHTING_EXERCISE.md](docs/LIGHTING_EXERCISE.md)**
+> is a staged walkthrough of writing a 2D lighting system, kept in the order it
+> was actually built — including the wrong turns, which are the useful part.
 
 ## Layout
 
@@ -24,10 +35,15 @@ Breakout and a lit 3D cube grid — with **F1** switching between them. See [Roa
 | --- | --- |
 | `EGSS/src/Egss/` | Engine core — application loop, layers, events, input, logging |
 | `EGSS/src/Egss/Renderer/` | Backend-agnostic renderer interfaces |
+| `EGSS/src/Egss/Physics/` | `PhysicsWorld2D`, `RigidBody2D`, raycasts, broadphase |
+| `EGSS/src/Egss/Audio/` | `AudioEngine`, `AudioClip` — mixer, positional sound, reverb |
+| `EGSS/src/Egss/Debug/` | `Instrumentor` — scope timers and Chrome-trace capture |
 | `EGSS/src/Platform/` | Backends: `Windows/`, `Linux/`, and `OpenGL/` |
 | `EGSS/vendor/` | GLFW, spdlog, glm, imgui (submodules); Glad, stb_image and miniaudio (checked in) |
 | `TestEnv/src/` | Sandbox app that consumes the engine |
 | `premake5.lua` | Build definition — the source of truth for both platforms |
+| `egss.py` | Build/run wrapper; always regenerates, so new files are never missed |
+| `docs/` | `ENGINE.md` (orientation), `LIGHTING_EXERCISE.md` (worked build) |
 | `.vscode/` | Editor tasks, IntelliSense config, and debug launch configs |
 
 Project and solution files are generated from `premake5.lua`. Don't hand-edit
@@ -172,24 +188,35 @@ the folder anywhere and it still runs.
 
 On Windows, `bin\Debug-windows-x86_64\TestEnv\TestEnv.exe`.
 
-You should see a 1280x720 window running one of the two demos, plus:
+You should see a 1280x720 window running one of the demos, plus:
 
 ```
 [22:00:24] EGSS: Creating Window Every Game Starts Somewhere (1280, 720)
 [22:00:24] EGSS: OpenGL 4.6 (Core Profile) Mesa 26.1.5 | Mesa Intel(R) Iris(R) Xe Graphics (RPL-U)
 [22:00:24] EGSS: Renderer2D initialized (10000 quads/batch, 16 texture slots)
+[22:00:24] EGSS: Audio PulseAudio | 48000 Hz, 2 ch, 32 voices
 [22:00:24] EGSS: ImGui 1.92.9b initialized
 ```
 
 The **Demos** panel switches between them; **F1** cycles.
 
-- **Breakout** — Left/Right or A/D to move, Space to launch, P pause, R restart.
-  Its panel shows simulation steps per frame and the interpolation alpha, with
-  a slider for the simulation rate. Drop it to 10 Hz: the physics coarsens but
+- **Breakout** — Left/Right or A/D, Space to launch, P pause, R restart. Its
+  panel shows simulation steps per frame and the interpolation alpha, with a
+  slider for the simulation rate. Drop it to 10 Hz: the physics coarsens but
   the ball keeps moving smoothly, because rendering interpolates between steps.
-- **Cube3D** — WASD to move, Q/E up and down, arrows to look, Space to pause the
-  spin. Its grid slider shows that meshes cost one draw call each, unlike the
-  2D batcher.
+- **Cube3D** — WASD to move, Q/E up and down, arrows or **middle-drag** to
+  look. Drag the **XYZ gizmo** to move the cube or the light; the panel's
+  target combo switches which. Two looping emitters demonstrate positional
+  audio as you move.
+- **Physics2D** — Space spawns bodies, P pauses, R rebuilds. Sliders for
+  gravity, restitution, solver iterations and sleeping; a ray fan and a
+  draggable audio listener with occlusion and a reverb zone.
+- **Lighting2D** — a visibility-polygon light. **M** cycles between slider,
+  keyboard and mouse control; the light collides with the walls. Two more
+  orbit the scene, and surfaces are only visible where light reaches them.
+
+The **Profiler** panel is the only honest timing in the app: VSync pins every
+frame near 16.7ms regardless of what the frame actually cost.
 
 Closing the window exits cleanly.
 
@@ -614,19 +641,29 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       passed around as `shared_ptr`s
 - [ ] **Query `GL_MAX_TEXTURE_IMAGE_UNITS`** at runtime rather than assuming
       the 16-slot floor, and generate the sampler switch to match
-- [ ] **A PCH for `TestEnv`.** Only the engine has one
+- [ ] **A PCH for `TestEnv`.** Only the engine has one. The demo headers now
+      pull in most of the engine, so this would actually pay off
 - [ ] **Vendor a `premake5` binary per platform**, or script fetching it
 - [ ] **Multi-viewport ImGui.** Docking is on; `ImGuiConfigFlags_ViewportsEnable`
       would let panels be dragged out into their own OS windows, but it needs
       the platform-window loop in `ImGuiLayer::End` and a GL context restore
-- [ ] **A scene/entity layer.** Picking returns an integer ID, but nothing owns
-      those IDs yet — the sandbox invents them per draw
 - [ ] **Mesh loading.** 3D geometry is hand-built in the demo; nothing reads an
-      `.obj` or `.gltf` yet. tinyobjloader is the small first step
+      `.obj` or `.gltf` yet. tinyobjloader is the small first step. Now the
+      more visible gap, since the gizmo can move objects that do not exist
 - [ ] **Back-face culling.** The cube is wound consistently for it, but it is
       not switched on — 2D quads would need checking first
 - [ ] **Material handling.** The 3D demo sets uniforms by hand; there is no
       notion of a material binding a shader to its parameters
+- [ ] **Gizmo: rotate and scale handles.** Translate works; rotation rings and
+      scale boxes are the same picking maths applied to different geometry
+- [ ] **Click-to-select in 3D.** The gizmo target is a combo box. 2D picking
+      now works through the framebuffer's integer attachment; the 3D renderer
+      writes no entity ID yet, so the same trick needs the mesh shader
+      extending
+- [ ] **Per-pixel 2D lighting.** Surfaces are shaded per *body*, so a long wall
+      lights uniformly instead of brightest nearest the light. The fix is a
+      shader that samples the light polygon — the biggest visual step left in
+      the 2D renderer
 - [ ] **Physics: rotation.** Bodies translate but never spin. Needs SAT for
       oriented shapes, multi-point manifolds and angular impulses
 
@@ -707,10 +744,10 @@ a replay reproduces exactly; miss either and it won't.
 
 ### What it depends on
 
-Physics wants the **scene/entity layer** that's already outstanding — bodies
-need owners, and the transform has to be shared with the renderer rather than
-duplicated. It also wants **`DrawLine`**, because debugging a solver without
-seeing colliders and contact normals is guesswork.
+Physics wanted the **scene/entity layer** — bodies need owners, and the
+transform has to be shared with the renderer rather than duplicated. Both that
+and **`DrawLine`** are now in; `RigidBody2DComponent` is the join, and
+`Scene::StepPhysics` keeps the two sides in step.
 
 ---
 
@@ -849,6 +886,169 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-02 (scene layer and pixel-exact picking)
+
+- **`Scene`, `Entity`, `ComponentStore`** — the entity layer the physics and
+  audio work kept asking for. A component is any struct; there is nothing to
+  register. Stores are dense arrays plus an owner array and an index map, so a
+  system walking one component type walks contiguous memory, and removal is a
+  swap with the last element.
+- **Generational handles.** An `EntityId` packs a 20-bit slot index and a
+  12-bit generation. Destroying an entity bumps its slot's generation, which
+  is what makes every outstanding handle to it stale -- including ones stored
+  somewhere the scene cannot see. The alternative, a raw index, silently
+  starts referring to whatever entity reuses the slot.
+- **`Scene::StepPhysics`** joins the two directions: transforms that *drive* a
+  body are pushed in before the step, bodies that drive their transform are
+  read back out after. `RigidBody2DComponent` holds only the body index, so
+  `PhysicsWorld2D` still knows nothing about entities and could be swapped for
+  Box2D without the scene noticing.
+- **Pixel-exact picking** through the framebuffer's `RED_INTEGER` attachment.
+  The attachment and `ReadPixel` were built weeks ago and had never returned
+  anything meaningful; the scene layer is what finally gave them something to
+  name. The fragment shader writes colour and entity ID in the same pass, so
+  picking costs one `glReadPixels` of one pixel and no geometry maths -- it is
+  right for rotated, overlapping and irregular shapes that a bounding-box test
+  gets wrong.
+- **The buffer stores the slot index, not the handle.** A full `EntityId` does
+  not survive a round trip through a *signed* 32-bit integer texture: once the
+  generation passes 2047 the handle exceeds `INT_MAX` and reads back negative.
+  `Scene::EntityAtIndex` turns the slot back into a live handle, and returns
+  `InvalidEntity` if that slot is now empty.
+- **`Texture2D::CreateFromHandle`** wraps a GL texture this engine did not
+  create -- a framebuffer attachment -- so the offscreen result can be blitted
+  with the ordinary `DrawQuad` path. It does not own the handle and its
+  destructor leaves it alone; deleting it would pull the texture out from
+  under the framebuffer.
+
+Verified numerically rather than by eye: the demo projected all eleven sprite
+centres to pixels and read the attachment back at each. **11 entities named
+correctly, empty space returned -1, 0 mismatches.** Screenshot comparison was
+tried first and was, as usual here, less reliable than the numbers.
+
+### 2026-08-02 (3D transform gizmos and a point light)
+
+- Cube3D's light became a **point light** with inverse-square falloff and a
+  linear fade to its range. A directional light has no position, so there was
+  nothing for a gizmo to drag.
+- **A translate gizmo** — X red, Y green, Z blue — attached to either the cube
+  or the light, chosen from the panel. It rests on two pieces of maths: a
+  **ray through the cursor** (a mouse position is a line in 3D, not a point),
+  and the **closest point between that ray and the axis line**, which turns
+  "where the cursor is" into "how far along X". Grabbing stores where on the
+  axis you took hold, so the object keeps its offset instead of snapping.
+- **Middle-drag mouse look**, driven by mouse *delta* tracked every frame
+  whether the button is held or not — otherwise the first frame of a drag
+  jumps by however far the cursor moved while nobody was looking. Deliberately
+  not scaled by the timestep: the mouse has already moved a real distance.
+- Transform fields for position, rotation and scale, and a single cube by
+  default rather than a grid.
+
+Verified against a known camera pose rather than by dragging, because the
+window-automation coordinates here do not match what the application reads:
++200px gives t = +1.38, -200px gives -1.38, centre is 0, and world-to-screen
+round-trips to within 0.0004 pixels.
+
+**A hazard introduced by the DemoLayer refactor showed up here.** A bad edit
+deleted `OnDemoUpdate` entirely and it *compiled clean* -- the base class has
+an empty default, so removing an override is silent. The only symptom was a
+black screen and `Layer::OnUpdate` reading 0.001ms in the profiler.
+
+### 2026-08-02 (light collision)
+
+- **`PhysicsWorld2D::ResolveCircle`** pushes a circle out of anything it
+  overlaps, reusing the existing narrowphase via a throwaway probe body rather
+  than a second copy of circle-vs-box. Useful for anything that moves itself:
+  characters, cameras, a light you can drive.
+- The lighting demo's light now sweeps and slides instead of passing through
+  walls. Both control modes share one mover, which is why the mouse needed no
+  special case -- "follow the cursor" is just a delta towards it.
+- Two passes: travel until contact, then spend the remainder along the surface
+  with the into-wall component projected out. Without the second, hitting a
+  wall at an angle stops you dead instead of sliding.
+
+Verified: nine targets, driving the light at every wall and diagonally into
+all four corners with steps far larger than any real frame, 200 steps each.
+**0 escapes, 0 left overlapping.**
+
+Teleport-to-cursor was considered and rejected. Sweeping never gets stuck --
+every move starts from a valid position and `ResolveCircle` handles the rest
+-- and teleporting would let light cross a wall, which breaks the premise of a
+demo about walls blocking light. A "Collides with walls" toggle allows
+comparing the two.
+
+### 2026-08-02 (build wrapper)
+
+- **`egss.py`** — `build`, `run`, `clean`, `gen`, with `all` for every config.
+- It **always regenerates** project files. That costs 0.21s, the same as a
+  no-op build, and in exchange the most confusing failure in the project
+  cannot happen: premake expands its file globs at *generation* time, so a
+  newly added `.cpp` is invisible until they are regenerated, and the symptom
+  is an undefined-symbol error for a function plainly sitting in the file you
+  just wrote. Demonstrated both ways before committing to it.
+- `run` launches from the binary's own directory, because the executable reads
+  and writes `imgui.ini` and `profile.json` relative to the working directory.
+
+### 2026-08-02 (demo scaffolding)
+
+- **`DemoLayer`** — demos override `OnDemo*` hooks; the `Layer` entry points
+  are `final` and hold the is-this-demo-active guard. That guard used to be
+  hand-written four times per demo, and forgetting it was not a compile error
+  but a demo drawing over another, or a looping sound playing under a demo
+  that never started it. Both happened.
+- **`OnDemoActivated` / `OnDemoDeactivated`** for continuous things. `OnAttach`
+  runs for *every* pushed layer whichever demo is showing, which is exactly
+  how those looping sounds escaped.
+- **`DemoRegistry.h`** — one table holding name, short name and factory
+  together. Adding a demo went from five edits across three files to one line.
+
+Self-registration via static initialisers was deliberately not used: these
+demos are header-only, so the initialiser only runs if some translation unit
+includes the header, and forgetting that include would produce no demo, no
+entry and no compile error.
+
+### 2026-08-02 (light blending and lit surfaces)
+
+- **`BlendMode`** (alpha / additive / none) and **`SetDepthTest`** on
+  `RendererAPI`.
+- Multiple lights now blend. The bug was not blending but **depth**: every
+  light polygon sits at the same z, and the depth test rejects fragments at
+  equal depth, so the second light was discarded exactly where it overlapped
+  the first. Additive blending cannot help if the fragments never arrive.
+- Surfaces are lit by raycast rather than drawn flat — one ray per light at
+  each body's centre, asking whether the *first* thing it meets is that body.
+  Aiming at the centre works even for a wall, whose centre is inside itself:
+  the ray hits its near face, which is the face being lit.
+- Light polygons overshoot their hit slightly so the light laps onto the
+  surface it stopped at. Landing exactly on the surface leaves it unlit.
+
+### 2026-08-02 (2D lighting: visibility polygons)
+
+- **`Renderer2D::DrawTriangle`** (flat or per-corner colour) and
+  **`DrawCircle`**, both in one batch — any number costs one draw call. The
+  per-corner overload is what gives a light its falloff for free.
+- **`RigidBody2D::MakeStaticCircle`**, symmetric with `MakeStaticBox`.
+- A **visibility-polygon light**: rays cast at obstacle corners, sorted by
+  angle, with the gaps between neighbouring hits filled by triangles. The
+  ±0.0001 offsets either side of each corner are essential — a ray aimed
+  exactly at a corner stops there, and the nudged pair slip past it to draw
+  the shadow's edge.
+- **Circle silhouettes via tangent rays.** A circle has no corners, so it
+  blocked rays but never attracted one, and its shadow was whatever the ring
+  rays happened to graze. `base = atan2(toCentre)`, `half = asin(r / d)`, then
+  four rays: an outer pair for the shadow and an inner pair so the lit
+  crescent is not clipped by a chord. Guarded against the light being *inside*
+  the circle, where `asin` leaves its domain and a NaN poisons the angle sort.
+- **Ring rays scale with radius.** The rim's sag from a true circle is
+  `R x (1 - cos(pi/N))` — proportional to R — so a fixed count is correct at
+  one size only. That was the "square shadows at a distance" symptom.
+- Three control modes for the light, cycled with **M**, including mouse with
+  a screen-to-world unprojection.
+
+Measured: 32 ring rays with 239 total gave the same shadow quality as 8 with
+206. Fewer, better-aimed rays beat more evenly-spread ones, which is the whole
+argument for a visibility polygon over a fan.
 
 ### 2026-08-02 (uniform-grid broadphase)
 
