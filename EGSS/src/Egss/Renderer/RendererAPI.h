@@ -8,6 +8,17 @@
 
 namespace Egss {
 
+	enum class BlendMode
+	{
+		// Straight alpha: what is drawn later covers what is underneath.
+		// Right for sprites and UI.
+		Alpha = 0,
+		// Colours sum. Right for light: two lights overlapping should be
+		// brighter than either, not one hiding the other.
+		Additive,
+		None
+	};
+
 	// The set of operations any graphics backend must provide. Keeping this
 	// narrow is what makes a second backend possible later.
 	class EGSS_API RendererAPI
@@ -42,6 +53,16 @@ namespace Egss {
 		// Widths above 1.0 are not guaranteed in a core profile and are
 		// ignored by most drivers -- thick lines have to be built from quads.
 		virtual void SetLineWidth(float width) = 0;
+
+		// Global state, so anything already batched must be flushed before
+		// changing it -- see the two-pass draw in the Lighting2D demo.
+		virtual void SetBlendMode(BlendMode mode) = 0;
+
+		// Additive overlays -- lights, glows -- must not depth-test against
+		// each other. At equal depth the test rejects everything after the
+		// first, so the second light would be silently discarded exactly where
+		// it overlaps the first.
+		virtual void SetDepthTest(bool enabled) = 0;
 
 		inline static API GetAPI() { return s_API; }
 	private:

@@ -49,6 +49,16 @@ namespace Egss {
 		{
 			s_RendererAPI->SetLineWidth(width);
 		}
+
+		inline static void SetBlendMode(BlendMode mode)
+		{
+			s_RendererAPI->SetBlendMode(mode);
+		}
+
+		inline static void SetDepthTest(bool enabled)
+		{
+			s_RendererAPI->SetDepthTest(enabled);
+		}
 	private:
 		static RendererAPI* s_RendererAPI;
 	};

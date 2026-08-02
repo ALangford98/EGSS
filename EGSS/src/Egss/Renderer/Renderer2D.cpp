@@ -680,6 +680,32 @@ namespace Egss {
 		DrawTriangle(glm::vec3(a, 0.0f), glm::vec3(b, 0.0f), glm::vec3(c, 0.0f), color);
 	}
 
+	void Renderer2D::DrawCircle(const glm::vec3& centre, float radius,
+		const glm::vec4& color, int segments)
+	{
+		if (segments < 3)
+			segments = 3;
+
+		// A fan: every wedge shares the centre vertex, so the whole circle is
+		// `segments` triangles rather than anything cleverer.
+		glm::vec3 previous = centre + glm::vec3(radius, 0.0f, 0.0f);
+
+		for (int i = 1; i <= segments; i++)
+		{
+			float angle = (float)i / (float)segments * 6.2831853f;
+			glm::vec3 next = centre + glm::vec3(std::cos(angle) * radius, std::sin(angle) * radius, 0.0f);
+
+			DrawTriangle(centre, previous, next, color);
+			previous = next;
+		}
+	}
+
+	void Renderer2D::DrawCircle(const glm::vec2& centre, float radius,
+		const glm::vec4& color, int segments)
+	{
+		DrawCircle(glm::vec3(centre, 0.0f), radius, color, segments);
+	}
+
 	float Renderer2D::GetLineWidth()
 	{
 		return s_Data.LineWidth;

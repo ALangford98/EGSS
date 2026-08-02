@@ -107,6 +107,14 @@ namespace Egss {
 		static void DrawTriangle(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
 			const glm::vec4& colorA, const glm::vec4& colorB, const glm::vec4& colorC);
 
+		// A filled circle, as a fan of triangles. Joins the same triangle
+		// batch as DrawTriangle, so any number of circles still costs one
+		// draw call. More segments is smoother and costs only vertices.
+		static void DrawCircle(const glm::vec2& centre, float radius,
+			const glm::vec4& color = glm::vec4(1.0f), int segments = 24);
+		static void DrawCircle(const glm::vec3& centre, float radius,
+			const glm::vec4& color = glm::vec4(1.0f), int segments = 24);
+
 		// Values above 1.0 are ignored by most core-profile drivers.
 		static float GetLineWidth();
 		static void SetLineWidth(float width);

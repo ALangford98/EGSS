@@ -9,17 +9,24 @@ that works.
 
 ---
 
-## The one thing the engine is missing
+## Where this got to
 
-`Renderer2D` draws **quads** and **lines**. A light cone is a **triangle fan**,
-and there is no triangle primitive yet. So either:
+All of it is built — `TestEnv/src/Lighting2D.h` is a working visibility-polygon
+light with box corners, circle tangents, distance falloff, and three input
+modes. The stages below are kept as the reasoning, in order, because the
+*failures* along the way are the useful part.
 
-- **Stage 3** adds `DrawTriangle` (recommended — it's the real fix, and it's a
-  copy of the line batch you already have), or
-- you approximate the cone with lines and thin quads and never touch the
-  engine.
+The engine gained three things on the way, all in the same shape as what was
+already there:
 
-Start with the approximation, because it gets you a picture in an hour.
+| | where | notes |
+| --- | --- | --- |
+| `Renderer2D::DrawTriangle` | Stage 3 | a copy of the line batch; shares its shader |
+| `Renderer2D::DrawCircle` | Stage 4b | a fan of triangles, so it joins that same batch |
+| `RigidBody2D::MakeStaticCircle` | Stage 4b | symmetric with `MakeStaticBox` |
+
+Everything the light draws — polygon, circles, obstacles — still costs **3 draw
+calls** total, because each primitive type is one batch however much you submit.
 
 ---
 
@@ -204,12 +211,88 @@ glm::vec2 c[4] = {
 };
 ```
 
-Circles have no corners — either skip them, keep everything rectangular, or
-approximate each circle with 8 sample angles.
-
 **Milestone:** crisp shadows with maybe 60 rays instead of 500, and no
 shimmer. Compare the ray count and the `Physics::Raycast` timing against
 Stage 2 — that comparison is the whole point.
+
+---
+
+## Stage 4b — circles, via tangent rays — **DONE, see `Lighting2D.h`**
+
+Circles are worth doing separately because they show what the corner rays are
+actually *for*.
+
+**First, what happens without them.** `Raycast` handles circles perfectly well,
+so rays genuinely stop on them — but the polygon only *aims* rays at box
+corners, and a circle has none. Its shadow ends up decided by whichever ring
+rays happen to graze it, so:
+
+- the shadow edge starts from an arbitrary point on the surface, not the
+  silhouette;
+- between two neighbouring ring rays the boundary is a straight line, so the
+  shadow is a hard wedge rather than a cone;
+- at 8 ring rays the circles barely cast a shadow at all;
+- the shadow snaps between orientations as the light moves, while box shadows
+  glide.
+
+Worth building it this way first and looking at it. The failure is instructive.
+
+**The fix.** A circle's "corners" are the two points where a ray from the light
+just grazes it — its silhouette. Unlike a box's corners, *where they are
+depends on where the light is*, so they have to be recomputed every frame:
+
+```
+       light o- - - - - - - .
+               \  half   . '   tangent
+                \  .  '
+             base \'   ( )  circle
+                   ` .
+                       ` .   tangent
+```
+
+```cpp
+glm::vec2 toCentre = body.Position - m_LightPosition;
+float distance = glm::length(toCentre);
+
+// Out of reach, or the light is *inside* the circle -- in which case there is
+// no silhouette, and asin() would be out of domain. It returns NaN, and a NaN
+// in the angle list poisons the sort: you get a scrambled polygon and no
+// obvious clue why.
+if (distance > m_LightRadius + body.Radius || distance <= body.Radius)
+    continue;
+
+float base = std::atan2(toCentre.y, toCentre.x);   // direction to the centre
+float half = std::asin(body.Radius / distance);    // half the angle it subtends
+
+// Just outside the tangents, so these rays slip past and land on whatever is
+// behind -- same reason box corners are nudged.
+m_Angles.push_back(base - half - nudge);
+m_Angles.push_back(base + half + nudge);
+
+// And just inside, so the lit crescent of the circle itself is sampled.
+// Without these the polygon cuts a straight chord across the circle's front
+// and clips the lit edge off.
+m_Angles.push_back(base - half + nudge);
+m_Angles.push_back(base + half - nudge);
+```
+
+**Four rays per circle, not two.** The outer pair draws the shadow; the inner
+pair keeps the circle's own lit edge from being chopped by a chord.
+
+**How to check it worked.** Drop **Ring rays** to 8. The circle shadows should
+stay sharp, because they no longer depend on the ring at all — only the light's
+outer rim in *open* space gets coarse, and the circle fills go visibly
+octagonal. If the shadows degrade too, the tangent rays aren't being used.
+
+Measured here: 32 ring rays and 239 total gave the same shadow quality as 8
+ring rays and 206 total. Fewer, better-aimed rays beat more evenly-spread ones,
+which is the whole argument for a visibility polygon over a fan. 16 is a good
+resting point — enough for a smooth rim in open space, and shadow quality is
+set entirely by the corner and tangent rays.
+
+One caution on the cost: cutting 14% of the rays only cut `Physics::Raycast` by
+15%, not proportionally more. Every ray still tests every body, and the rays you
+keep are the ones aimed at geometry, which hit early and are no cheaper.
 
 ---
 
@@ -226,6 +309,11 @@ Stage 2 — that comparison is the whole point.
   window coordinates; you need the inverse of the camera's view-projection to
   get world coordinates. Fiddly, and worth doing once.
 - **Make it a game.** Light reveals, shadow hides. That is a whole genre.
+- **Moving obstacles.** Call `m_World.Step()` and give the bodies mass. The
+  light needs no changes at all — it re-reads positions every frame.
+- **A smarter broadphase.** `Raycast` is O(rays x bodies), and this is the
+  workload that finally justifies one. Measure in **Release** first: physics
+  was 21x cheaper there than in Debug.
 - **Sound too.** You already have `SetVoiceOcclusion` and `Raycast` — a source
   in shadow could be muffled by the same rays that darken it.
 

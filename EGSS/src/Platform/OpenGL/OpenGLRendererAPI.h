@@ -17,6 +17,8 @@ namespace Egss {
 		void DrawTriangles(const std::shared_ptr<VertexArray>& vertexArray, unsigned int vertexCount) override;
 
 		void SetLineWidth(float width) override;
+		void SetBlendMode(BlendMode mode) override;
+		void SetDepthTest(bool enabled) override;
 	};
 
 }

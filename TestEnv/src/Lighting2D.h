@@ -28,6 +28,15 @@ enum class LightControl
 
 inline const char* s_LightControlNames[] = { "Fixed (sliders)", "Keyboard (arrows)", "Mouse" };
 
+// One light. Position is worked out from the orbit for ring lights, or driven
+// by input for the interactive one.
+struct Light
+{
+	glm::vec2 Position = { 0.0f, 0.0f };
+	glm::vec4 Color = { 1.0f, 0.92f, 0.70f, 0.85f };
+	float Radius = 1.8f;
+};
+
 class Lighting2D : public Egss::Layer
 {
 public:
@@ -38,6 +47,9 @@ public:
 
 	void OnAttach() override
 	{
+		// Two is the default because opposing poles give the clearest picture:
+		// one obstacle, two shadows going opposite ways.
+		SetRingLightCount(2);
 		BuildScene();
 	}
 
@@ -46,32 +58,31 @@ public:
 	{
 		m_World.Clear();
 
-		// Static geometry: floor and two walls.
-		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ 0.0f, -0.82f }, { 1.5f, 0.06f }));
-		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ -1.45f, 0.0f }, { 0.06f, 0.9f }));
-		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ 1.45f, 0.0f }, { 0.06f, 0.9f }));
+		// Floor, ceiling and two walls -- a closed box, so the orbiting lights
+		// always have a surface to fall on.
+		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ 0.0f, -0.84f }, { 1.5f, 0.05f }));
+		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ 0.0f,  0.84f }, { 1.5f, 0.05f }));
+		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ -1.45f, 0.0f }, { 0.05f, 0.9f }));
+		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({  1.45f, 0.0f }, { 0.05f, 0.9f }));
 
-		// shadows, since the steps cast overlapping ones.
-		for (int i = 0; i < 16; i++)
+		// One circle in the middle. With lights orbiting around it, its shadow
+		// sweeps the room -- the clearest way to watch tangent rays working.
+		m_World.AddBody(Egss::RigidBody2D::MakeStaticCircle({ 0.0f, 0.0f }, 0.22f));
+
+		// Four steps climbing away from the bottom-left corner...
+		for (int i = 0; i < 4; i++)
 		{
 			m_World.AddBody(Egss::RigidBody2D::MakeStaticBox(
-				{ -1.1f + i * 0.16f, -0.72f + i * 0.09f }, { 0.08f, 0.03f }));
+				{ -1.15f + i * 0.20f, -0.70f + i * 0.13f }, { 0.09f, 0.035f }));
 		}
 
-		// Circles, deliberately with no shadow logic of their own.
-		//
-		// Raycast already handles circles, so rays *do* stop on them. But the
-		// polygon only aims rays at box corners, and a circle has none, so its
-		// shadow is decided entirely by whichever ring rays happen to graze
-		// it. Expect coarse edges that jump about as the light moves, and a
-		// shadow that narrows or vanishes as "Ring rays" is lowered.
-		//
-		// The proper fix is to aim two rays at each circle's *tangent* points
-		// -- its silhouette as seen from the light -- which is exactly what
-		// corners do for a box.
-		// m_World.AddBody(Egss::RigidBody2D::MakeStaticCircle({ 0.60f, 0.30f }, 0.18f));
-		// m_World.AddBody(Egss::RigidBody2D::MakeStaticCircle({ -0.70f, 0.35f }, 0.13f));
-		// m_World.AddBody(Egss::RigidBody2D::MakeStaticCircle({ 0.05f, 0.45f }, 0.10f));
+		// ...and four descending from the top-right, so both halves of the
+		// orbit have something to cast against.
+		for (int i = 0; i < 4; i++)
+		{
+			m_World.AddBody(Egss::RigidBody2D::MakeStaticBox(
+				{ 1.15f - i * 0.20f, 0.70f - i * 0.13f }, { 0.09f, 0.035f }));
+		}
 	}
 
 	void OnUpdate(Egss::Timestep ts) override
@@ -82,6 +93,15 @@ public:
 		m_FrameTime = ts.GetMilliseconds();
 
 		UpdateLightControl(ts);
+		UpdateOrbit(ts);
+
+		// One list, used by both the polygon pass and the surface shading, so
+		// the two can never disagree about what is lighting the scene.
+		m_ActiveLights.clear();
+		for (const Light& light : m_RingLights)
+			m_ActiveLights.push_back(light);
+		if (m_ShowInteractive)
+			m_ActiveLights.push_back(m_Interactive);
 
 		Egss::Renderer2D::ResetStats();
 		Egss::RenderCommand::SetClearColor({ 0.06f, 0.06f, 0.08f, 1.0f });
@@ -95,16 +115,10 @@ public:
 			const Egss::RigidBody2D& body = bodies[i];
 			glm::vec2 position = body.Position;
 
-			// never run. One flat colour will do -- and for a lighting demo
-			// the interesting question is how bright a wall is, not what
-			// state its rigid body is in.
-			glm::vec4 color;
-			if (body.Type == Egss::BodyType::Static)
-				color = { 0.30f, 0.32f, 0.38f, 1.0f };
-			else if (!body.Awake)
-				color = { 0.35f, 0.40f, 0.45f, 1.0f };
-			else
-				color = { 0.45f, 0.70f, 0.95f, 1.0f };
+			// Lit by raycast rather than drawn flat. In darkness a surface is
+			// the background colour, so it simply isn't there; a light has to
+			// reach it before it exists.
+			glm::vec4 color = ShadeSurface((unsigned int)i, body);
 
 			if (body.Shape == Egss::ColliderShape::Box)
 			{
@@ -112,21 +126,90 @@ public:
 			}
 			else
 			{
-				// Renderer2D has no circle fill, so a quad stands in. The
-				// debug outline shows the true shape the rays actually hit --
-				// which is worth having on while you look at this.
-				Egss::Renderer2D::DrawQuad(position,
-					{ body.Radius * 2.0f, body.Radius * 2.0f }, color * 0.7f);
+				// A real circle now, not a stand-in quad -- it joins the same
+				// triangle batch as the light, so it costs no extra draw call.
+				Egss::Renderer2D::DrawCircle(position, body.Radius, color, 32);
 			}
 		}
 
 		if (m_ShowColliders)
 			DrawDebug();
 
-		if (m_ShowLight)
-			DrawLight();
-
+		// End the map pass before touching the blend mode: blending is global
+		// state, and anything still batched would be drawn with whatever mode
+		// is set at flush time rather than the one it was submitted under.
 		Egss::Renderer2D::EndScene();
+
+		if (m_ShowLight)
+		{
+			// Additive, so two lights overlapping are brighter than either --
+			// with alpha blending the nearer one would simply hide the other.
+			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Additive);
+
+			// And depth testing OFF, which matters just as much. Every light
+			// polygon sits at the same z, and the depth test rejects anything
+			// at equal depth after the first -- so the second light was being
+			// discarded precisely where it overlapped the first. Additive
+			// blending cannot help if the fragments never reach it.
+			Egss::RenderCommand::SetDepthTest(false);
+
+			Egss::Renderer2D::BeginScene(m_Camera);
+
+			m_TotalRays = 0;
+
+			for (const Light& light : m_ActiveLights)
+				DrawLight(light);
+
+			Egss::Renderer2D::EndScene();
+
+			Egss::RenderCommand::SetDepthTest(true);
+			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
+		}
+	}
+
+	// The ring lights ride a circle around the scene. Their positions are
+	// derived every frame rather than stored, so changing the count or the
+	// orbit radius needs no bookkeeping -- the next frame simply recomputes.
+	void UpdateOrbit(Egss::Timestep ts)
+	{
+		if (!m_Paused)
+			m_OrbitAngle += m_OrbitSpeed * (float)ts;
+
+		// Evenly spaced. Two lights land on opposing poles, which is the
+		// default because it is the clearest way to see two shadow sets from
+		// the same obstacle.
+		for (size_t i = 0; i < m_RingLights.size(); i++)
+		{
+			float angle = m_OrbitAngle + (float)i / (float)m_RingLights.size() * glm::two_pi<float>();
+			m_RingLights[i].Position = m_OrbitCentre + glm::vec2(std::cos(angle), std::sin(angle)) * m_OrbitRadius;
+		}
+	}
+
+	// Keeps the light list the size the GUI asked for, giving new entries a
+	// colour spread around the hue circle so they are told apart at a glance.
+	void SetRingLightCount(int count)
+	{
+		count = std::max(count, 0);
+
+		while ((int)m_RingLights.size() > count)
+			m_RingLights.pop_back();
+
+		while ((int)m_RingLights.size() < count)
+		{
+			Light light;
+			light.Radius = m_DefaultLightRadius;
+
+			// Cheap hue spread: three offset cosines.
+			float t = (float)m_RingLights.size() * 0.37f;
+			light.Color = {
+				0.55f + 0.45f * std::cos(glm::two_pi<float>() * t),
+				0.55f + 0.45f * std::cos(glm::two_pi<float>() * (t + 0.33f)),
+				0.55f + 0.45f * std::cos(glm::two_pi<float>() * (t + 0.66f)),
+				0.85f
+			};
+
+			m_RingLights.push_back(light);
+		}
 	}
 
 	// ---------------------------------------------------------------------
@@ -158,7 +241,7 @@ public:
 
 			// Normalise, or moving diagonally is 1.41x faster than straight.
 			if (glm::dot(move, move) > 0.0f)
-				m_LightPosition += glm::normalize(move) * m_LightSpeed * (float)ts;
+				m_Interactive.Position += glm::normalize(move) * m_LightSpeed * (float)ts;
 		}
 		else if (m_Control == LightControl::Mouse)
 		{
@@ -167,11 +250,11 @@ public:
 			// blocks mouse *events* from reaching layers, but Input:: reads
 			// the hardware directly and bypasses that entirely.
 			if (!ImGui::GetIO().WantCaptureMouse)
-				m_LightPosition = ScreenToWorld(Egss::Input::GetMousePosition());
+				m_Interactive.Position = ScreenToWorld(Egss::Input::GetMousePosition());
 		}
 
 		// Keep it inside the walls whichever way it was moved.
-		m_LightPosition = glm::clamp(m_LightPosition, glm::vec2(-1.35f), glm::vec2(1.35f));
+		m_Interactive.Position = glm::clamp(m_Interactive.Position, glm::vec2(-1.35f), glm::vec2(1.35f));
 	}
 
 	// Window pixels -> world units.
@@ -188,7 +271,7 @@ public:
 		float width = (float)window.GetWidth();
 		float height = (float)window.GetHeight();
 		if (width <= 0.0f || height <= 0.0f)
-			return m_LightPosition;
+			return m_Interactive.Position;
 
 		float x = (mouse.first / width) * 2.0f - 1.0f;
 		float y = 1.0f - (mouse.second / height) * 2.0f;
@@ -197,13 +280,48 @@ public:
 		return glm::vec2(world);
 	}
 
+	// How lit is this body?
+	//
+	// One ray per light, aimed at the body's centre. If the *first* thing that
+	// ray meets is this body, its face is in view of that light; if something
+	// else is in the way, it is in shadow. That is the same query the light
+	// polygon makes, just asked per object instead of per direction.
+	//
+	// Aiming at the centre works even for a wall, whose centre is inside
+	// itself: the ray hits its near face first, which is the face being lit.
+	glm::vec4 ShadeSurface(unsigned int index, const Egss::RigidBody2D& body)
+	{
+		glm::vec3 accumulated(m_SurfaceAmbient);
+
+		for (const Light& light : m_ActiveLights)
+		{
+			glm::vec2 toBody = body.Position - light.Position;
+			float distance = glm::length(toBody);
+
+			if (distance > light.Radius || distance < 0.0001f)
+				continue;
+
+			// A little past the centre, so a ray that only grazes the near
+			// face still registers as reaching it.
+			Egss::RaycastHit hit = m_World.Raycast(light.Position, toBody, distance + 0.05f);
+
+			if (!hit.Hit || hit.Body != index)
+				continue;
+
+			float falloff = 1.0f - hit.Distance / light.Radius;
+			accumulated += glm::vec3(light.Color) * (falloff * light.Color.a * m_SurfaceGain);
+		}
+
+		return glm::vec4(glm::min(accumulated, glm::vec3(1.0f)), 1.0f);
+	}
+
 	// The light, as a visibility polygon.
 	//
 	// A regular fan of rays wastes most of them on empty space and still
 	// misses corners, so edges shimmer. Casting *at the corners* instead is
 	// exact: between any two neighbouring corner-rays the boundary is a
 	// straight line, which is precisely what a triangle can represent.
-	void DrawLight()
+	void DrawLight(const Light& light)
 	{
 		m_Angles.clear();
 
@@ -217,10 +335,50 @@ public:
 
 		for (const Egss::RigidBody2D& body : m_World.GetBodies())
 		{
-			// A circle has no corners, and its HalfExtents is left at the
-			// default -- reading it here would invent four corners in the
-			// wrong place. Skipping is what "no circle-specific logic" means:
-			// circles still block rays, they just never attract one.
+			// A circle has no corners, so its HalfExtents is meaningless --
+			// reading it would invent four corners in the wrong place. What a
+			// circle has instead is a *silhouette*: the two points where a ray
+			// from the light just grazes it. Those are its corners, as far as
+			// shadows are concerned.
+			//
+			//        light o- - - - - - - .
+			//                \  half   . '   tangent
+			//                 \  .  '
+			//              base \'   ( )  circle
+			//                    ` .
+			//                        ` .   tangent
+			//
+			// base is the angle to the centre; half is the angle it subtends,
+			// asin(radius / distance). Add and subtract it for the two edges.
+			if (body.Shape == Egss::ColliderShape::Circle)
+			{
+				glm::vec2 toCentre = body.Position - light.Position;
+				float distance = glm::length(toCentre);
+
+				// Out of reach, or the light is inside it -- in which case
+				// there is no silhouette, and asin would be out of domain.
+				if (distance > light.Radius + body.Radius || distance <= body.Radius)
+					continue;
+
+				float base = std::atan2(toCentre.y, toCentre.x);
+				float half = std::asin(body.Radius / distance);
+
+				// Just *outside* the tangents, for the same reason the box
+				// corners are nudged: a ray exactly on the tangent grazes the
+				// circle and stops, and the shadow edge needs the ray that
+				// slips past it.
+				m_Angles.push_back(base - half - nudge);
+				m_Angles.push_back(base + half + nudge);
+
+				// And just inside, so the lit edge of the circle itself is
+				// sampled rather than being cut off by the chord between the
+				// two outer rays.
+				m_Angles.push_back(base - half + nudge);
+				m_Angles.push_back(base + half - nudge);
+
+				continue;
+			}
+
 			if (body.Shape != Egss::ColliderShape::Box)
 				continue;
 
@@ -233,10 +391,10 @@ public:
 
 			for (const glm::vec2& corner : corners)
 			{
-				glm::vec2 toCorner = corner - m_LightPosition;
+				glm::vec2 toCorner = corner - light.Position;
 
 				// Outside the light's reach, so it cannot cast a shadow.
-				if (glm::dot(toCorner, toCorner) > m_LightRadius * m_LightRadius)
+				if (glm::dot(toCorner, toCorner) > light.Radius * light.Radius)
 					continue;
 
 				float angle = std::atan2(toCorner.y, toCorner.x);
@@ -250,8 +408,15 @@ public:
 		//    a circle, and corner rays alone would cut straight across it --
 		//    the unobstructed part would come out as a polygon with very few,
 		//    very long sides.
-		for (int i = 0; i < m_LightRingRays; i++)
-			m_Angles.push_back((float)i / (float)m_LightRingRays * glm::two_pi<float>() - glm::pi<float>());
+		// Scaled to the light's size, not a fixed count. The rim is a polygon
+		// of straight chords, and how far each one sags from the true circle
+		// is R * (1 - cos(pi / N)) -- proportional to R. A fixed N therefore
+		// looks fine on a small light and visibly square on a big one, which
+		// is exactly the "square shadows at a distance" symptom.
+		int ringRays = std::min(std::max((int)(light.Radius * m_RingDensity), 16), 160);
+
+		for (int i = 0; i < ringRays; i++)
+			m_Angles.push_back((float)i / (float)ringRays * glm::two_pi<float>() - glm::pi<float>());
 
 		// 3. Sorted, so neighbouring entries are neighbouring directions and
 		//    consecutive hits can simply be joined up.
@@ -264,9 +429,15 @@ public:
 		for (float angle : m_Angles)
 		{
 			glm::vec2 direction = { std::cos(angle), std::sin(angle) };
-			Egss::RaycastHit hit = m_World.Raycast(m_LightPosition, direction, m_LightRadius);
+			Egss::RaycastHit hit = m_World.Raycast(light.Position, direction, light.Radius);
 
-			m_Hits.push_back(hit.Hit ? hit.Point : m_LightPosition + direction * m_LightRadius);
+			// Overshoot the hit slightly so the polygon laps onto the surface
+			// it stopped at. Land exactly on the surface and the wall is never
+			// lit -- the light stops at the boundary and the face stays flat
+			// grey, which is what "the walls aren't illuminated" looks like.
+			m_Hits.push_back(hit.Hit
+				? hit.Point + direction * m_SurfaceSpill
+				: light.Position + direction * light.Radius);
 		}
 
 		if (m_Hits.size() < 2)
@@ -279,7 +450,6 @@ public:
 		//    projection, a higher z is *nearer*. At equal z the first thing
 		//    drawn wins, so a light at z = 0 would simply not appear.
 		const float z = 0.5f;
-		glm::vec4 centreColor = m_LightColor;
 
 		for (size_t i = 0; i < m_Hits.size(); i++)
 		{
@@ -289,30 +459,35 @@ public:
 			// Per-corner colour: full brightness at the light, faded at the
 			// rim. The hardware interpolates between them, so the falloff
 			// costs nothing.
-			glm::vec4 colorA = m_LightColor * Falloff(a);
-			glm::vec4 colorB = m_LightColor * Falloff(b);
-			colorA.a = m_LightColor.a * Falloff(a);
-			colorB.a = m_LightColor.a * Falloff(b);
+			float fa = Falloff(light, a);
+			float fb = Falloff(light, b);
+
+			glm::vec4 colorA = light.Color * fa;
+			glm::vec4 colorB = light.Color * fb;
+			colorA.a = light.Color.a * fa;
+			colorB.a = light.Color.a * fb;
 
 			Egss::Renderer2D::DrawTriangle(
-				glm::vec3(m_LightPosition, z), glm::vec3(a, z), glm::vec3(b, z),
-				centreColor, colorA, colorB);
+				glm::vec3(light.Position, z), glm::vec3(a, z), glm::vec3(b, z),
+				light.Color, colorA, colorB);
 		}
+
+		m_TotalRays += (unsigned int)m_Hits.size();
 
 		// The rays themselves, for while you are still working on it.
 		if (m_ShowRays)
 		{
 			for (const glm::vec2& hit : m_Hits)
-				Egss::Renderer2D::DrawLine(glm::vec3(m_LightPosition, z + 0.1f),
+				Egss::Renderer2D::DrawLine(glm::vec3(light.Position, z + 0.1f),
 					glm::vec3(hit, z + 0.1f), glm::vec4(1.0f, 1.0f, 1.0f, 0.25f));
 		}
 	}
 
 	// 1 at the light, 0 at its maximum reach.
-	float Falloff(const glm::vec2& point) const
+	static float Falloff(const Light& light, const glm::vec2& point)
 	{
-		float distance = glm::length(point - m_LightPosition);
-		return std::max(0.0f, 1.0f - distance / m_LightRadius);
+		float distance = glm::length(point - light.Position);
+		return std::max(0.0f, 1.0f - distance / light.Radius);
 	}
 
 	void DrawDebug()
@@ -400,24 +575,68 @@ public:
 		int control = (int)m_Control;
 		if (ImGui::Combo("Control", &control, s_LightControlNames, (int)LightControl::Count))
 			m_Control = (LightControl)control;
-		ImGui::TextDisabled("M cycles. Arrows move, or the cursor.");
+		ImGui::TextDisabled("M cycles. Arrows move, or the cursor. P pauses the orbit.");
 
 		ImGui::Separator();
 		ImGui::Checkbox("Show colliders", &m_ShowColliders);
+		ImGui::SameLine();
 		ImGui::Checkbox("Show rays", &m_ShowRays);
+		ImGui::Checkbox("Draw lights", &m_ShowLight);
+		ImGui::SameLine();
+		ImGui::Checkbox("Interactive light", &m_ShowInteractive);
 
-		// Disabled while something else is driving it, so the sliders cannot
-		// silently fight the input you are actually using.
-		ImGui::BeginDisabled(m_Control != LightControl::Fixed);
-		ImGui::SliderFloat2("Light position", &m_LightPosition.x, -1.35f, 1.35f);
-		ImGui::EndDisabled();
+		// --- The orbiting ring ---
+		ImGui::SeparatorText("Ring");
 
-		ImGui::SliderFloat("Light radius", &m_LightRadius, 0.2f, 3.5f);
-		ImGui::SliderInt("Ring rays", &m_LightRingRays, 4, 128);
-		ImGui::SliderFloat("Move speed", &m_LightSpeed, 0.2f, 5.0f);
-		ImGui::ColorEdit4("Light colour", &m_LightColor.x);
+		int count = (int)m_RingLights.size();
+		if (ImGui::SliderInt("Light count", &count, 0, 8))
+			SetRingLightCount(count);
 
-		ImGui::TextDisabled("%zu rays -> %zu triangles", m_Angles.size(), m_Hits.size());
+		ImGui::SliderFloat("Orbit radius", &m_OrbitRadius, 0.0f, 1.4f);
+		ImGui::SliderFloat("Orbit speed", &m_OrbitSpeed, -3.0f, 3.0f);
+		ImGui::SliderFloat2("Orbit centre", &m_OrbitCentre.x, -1.0f, 1.0f);
+
+		// Per light. Pushing the index as an ID is what stops every row's
+		// widgets sharing state -- ImGui identifies controls by label, and
+		// these labels are all identical.
+		for (size_t i = 0; i < m_RingLights.size(); i++)
+		{
+			ImGui::PushID((int)i);
+
+			ImGui::ColorEdit4("##colour", &m_RingLights[i].Color.x,
+				ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaPreview);
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(-1.0f);
+			ImGui::SliderFloat("##radius", &m_RingLights[i].Radius, 0.2f, 3.5f, "radius %.2f");
+
+			ImGui::PopID();
+		}
+
+		// --- The one you drive ---
+		if (m_ShowInteractive)
+		{
+			ImGui::SeparatorText("Interactive");
+
+			ImGui::BeginDisabled(m_Control != LightControl::Fixed);
+			ImGui::SliderFloat2("Position", &m_Interactive.Position.x, -1.35f, 1.35f);
+			ImGui::EndDisabled();
+
+			ImGui::SliderFloat("Radius", &m_Interactive.Radius, 0.2f, 3.5f);
+			ImGui::ColorEdit4("Colour", &m_Interactive.Color.x);
+			ImGui::SliderFloat("Move speed", &m_LightSpeed, 0.2f, 5.0f);
+		}
+
+		ImGui::SeparatorText("Quality");
+
+		// Rays per unit of light radius, rather than a flat count: the rim's
+		// error grows with radius, so a fixed number looks fine on a small
+		// light and square on a big one.
+		ImGui::SliderFloat("Ring density", &m_RingDensity, 4.0f, 80.0f, "%.0f rays / unit");
+		ImGui::SliderFloat("Surface spill", &m_SurfaceSpill, 0.0f, 0.2f);
+		ImGui::SliderFloat("Surface ambient", &m_SurfaceAmbient, 0.0f, 0.4f);
+		ImGui::SliderFloat("Surface gain", &m_SurfaceGain, 0.0f, 2.0f);
+		ImGui::TextDisabled("%u rays cast last frame, %zu lights",
+			m_TotalRays, m_RingLights.size() + (m_ShowInteractive ? 1 : 0));
 
 		ImGui::End();
 	}
@@ -433,10 +652,39 @@ private:
 	float m_LightSpeed = 1.6f;
 
 	bool m_ShowLight = true;
-	glm::vec2 m_LightPosition = { -0.2f, 0.45f };
-	float m_LightRadius = 1.8f;
-	int m_LightRingRays = 32;
-	glm::vec4 m_LightColor = { 1.0f, 0.92f, 0.70f, 0.85f };
+	bool m_ShowInteractive = true;
+
+	// Freezes the orbit. Was dead when nothing moved; the ring gives P a job.
+	bool m_Paused = false;
+
+	// The light you drive with the mouse or arrows.
+	Light m_Interactive = { { -0.2f, 0.45f }, { 1.0f, 0.92f, 0.70f, 0.85f }, 1.8f };
+
+	// The ring that orbits the scene. Positions are recomputed each frame from
+	// the orbit, so only colour and radius are actually stored per light.
+	std::vector<Light> m_RingLights;
+	glm::vec2 m_OrbitCentre = { 0.0f, 0.0f };
+	float m_OrbitRadius = 1.05f;
+	float m_OrbitSpeed = 0.5f;
+	float m_OrbitAngle = 0.0f;
+	float m_DefaultLightRadius = 1.6f;
+
+	// Rays per world unit of light radius. See DrawLight.
+	float m_RingDensity = 24.0f;
+
+	// How far past a hit the light polygon reaches, in world units, so
+	// surfaces catch the light rather than the light stopping dead at them.
+	float m_SurfaceSpill = 0.05f;
+
+	// What a surface looks like with no light on it at all. Matching the clear
+	// colour makes unlit geometry genuinely invisible rather than a dark
+	// shape -- raise it if you want the room readable in the dark.
+	float m_SurfaceAmbient = 0.06f;
+	float m_SurfaceGain = 0.9f;
+
+	// Rebuilt each frame: the ring plus the interactive light, if enabled.
+	std::vector<Light> m_ActiveLights;
+	unsigned int m_TotalRays = 0;
 
 	// Reused every frame rather than reallocated -- this runs per frame and
 	// the sizes barely change.

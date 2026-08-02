@@ -82,4 +82,34 @@ namespace Egss {
 		glLineWidth(width);
 	}
 
+	void OpenGLRendererAPI::SetDepthTest(bool enabled)
+	{
+		if (enabled)
+			glEnable(GL_DEPTH_TEST);
+		else
+			glDisable(GL_DEPTH_TEST);
+	}
+
+	void OpenGLRendererAPI::SetBlendMode(BlendMode mode)
+	{
+		switch (mode)
+		{
+			case BlendMode::Alpha:
+				glEnable(GL_BLEND);
+				glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+				return;
+
+			case BlendMode::Additive:
+				// Source added straight onto the destination. Overlapping
+				// lights accumulate instead of the nearest one winning.
+				glEnable(GL_BLEND);
+				glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+				return;
+
+			case BlendMode::None:
+				glDisable(GL_BLEND);
+				return;
+		}
+	}
+
 }
