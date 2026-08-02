@@ -83,12 +83,30 @@ file added inside it would be lost on re-clone and would leave the submodule
 permanently dirty. All three are pulled in by `include` directives at the top
 of the root script.
 
-**Linux:**
+**Either platform**, via the wrapper script:
 
 ```sh
-./BuildProject.sh          # generate makefiles
-make config=debug          # or: config=release, config=dist
-make -j$(nproc) config=debug   # parallel build
+./egss.py                  # build debug and run it
+./egss.py build release    # or debug (default), dist, all
+./egss.py run release      # build, then launch from beside the binary
+./egss.py clean all
+```
+
+It regenerates project files every time. That costs 0.2s — the same as a no-op
+build — and in exchange the most confusing failure in the project simply
+cannot happen: premake expands its file globs at *generation* time, so a newly
+added `.cpp` is invisible until they are regenerated, and the symptom is an
+undefined-symbol error for a function plainly sitting in the file you just
+wrote. Pass `--no-gen` to skip it.
+
+`run` launches from the binary's own directory, because the executable reads
+and writes `imgui.ini` and `profile.json` relative to the working directory.
+
+**Linux, by hand:**
+
+```sh
+./BuildProject.sh          # generate makefiles -- after adding/renaming a .cpp
+make -j$(nproc) config=debug   # or: config=release, config=dist
 make clean config=debug
 ```
 
