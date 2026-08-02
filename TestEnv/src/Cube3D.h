@@ -36,11 +36,6 @@ public:
 		BuildAudio();
 	}
 
-	// Two looping emitters parked in the world. With the listener riding the
-	// fly camera, walking and turning changes what you hear -- which is the
-	// whole point of positional audio and impossible to demonstrate with a
-	// fixed 2D view.
-	// Continuous things belong on the activation edges, not in OnDemoAttach
 	// -- attach runs for every demo whichever one is showing, which is how
 	// these hums ended up playing under the other demos.
 	void OnDemoActivated() override { StartEmitters(); }
@@ -231,15 +226,27 @@ public:
 			uniform sampler2D u_Texture;
 			uniform vec4 u_Color;
 
-			uniform vec3 u_LightDirection;   // direction the light travels
+			// A point light, not a directional one. A directional light has no
+			// position, so there would be nothing for a gizmo to drag.
+			uniform vec3 u_LightPosition;
 			uniform vec3 u_LightColor;
+			uniform float u_LightRange;
 			uniform vec3 u_CameraPosition;
 			uniform float u_AmbientStrength;
 
 			void main()
 			{
 				vec3 normal  = normalize(v_Normal);
-				vec3 toLight = normalize(-u_LightDirection);
+
+				vec3 lightVector = u_LightPosition - v_WorldPosition;
+				float lightDistance = length(lightVector);
+				vec3 toLight = lightVector / max(lightDistance, 0.0001);
+
+				// Inverse-square, which is how light actually falls off, times
+				// a linear fade so it reaches zero at the stated range instead
+				// of trailing off forever.
+				float attenuation = 1.0 / (1.0 + 0.08 * lightDistance * lightDistance);
+				attenuation *= clamp(1.0 - lightDistance / u_LightRange, 0.0, 1.0);
 
 				// Lambert: how square-on the surface is to the light. Faces
 				// turned away give a negative dot, hence the clamp.
@@ -253,8 +260,9 @@ public:
 				float specular = pow(max(dot(normal, halfway), 0.0), 48.0);
 
 				vec3 base    = texture(u_Texture, v_TexCoord).rgb * u_Color.rgb;
-				vec3 lit     = base * (u_AmbientStrength + diffuse) * u_LightColor
-				             + specular * u_LightColor * 0.35;
+				vec3 lit     = base * u_AmbientStrength
+				             + base * diffuse * u_LightColor * attenuation
+				             + specular * u_LightColor * attenuation * 0.35;
 
 				color = vec4(lit, 1.0);
 			}
@@ -287,6 +295,10 @@ public:
 	// Presentation only -- no OnFixedUpdate. Nothing here is simulated: the
 	// camera is feel, and the spin is decoration, so both want the real frame
 	// time rather than a fixed step. Not everything needs the simulation loop.
+
+	// Presentation only -- no OnFixedUpdate. Nothing here is simulated: the
+	// camera is feel, and the spin is decoration, so both want the real frame
+	// time rather than a fixed step. Not everything needs the simulation loop.
 	void OnDemoUpdate(Egss::Timestep ts) override
 	{
 
@@ -312,6 +324,8 @@ public:
 		if (m_Spinning)
 			m_Rotation += ts * 35.0f;
 
+		UpdateGizmo();
+
 		Egss::RenderCommand::SetClearColor({ 0.06f, 0.07f, 0.09f, 1.0f });
 		Egss::RenderCommand::Clear();
 
@@ -321,21 +335,22 @@ public:
 		// Submit binds it again and adds u_ViewProjection and u_Transform, but
 		// uniform values belong to the program and survive a rebind.
 		m_Shader->Bind();
-		m_Shader->SetFloat3("u_LightDirection", glm::normalize(m_LightDirection));
+		m_Shader->SetFloat3("u_LightPosition", m_LightPosition);
 		m_Shader->SetFloat3("u_LightColor", m_LightColor);
+		m_Shader->SetFloat("u_LightRange", m_LightRange);
 		m_Shader->SetFloat3("u_CameraPosition", m_Camera.GetPosition());
 		m_Shader->SetFloat("u_AmbientStrength", m_Ambient);
 		m_Shader->SetInt("u_Texture", 0);
 
 		m_Texture->Bind(0);
 
-		// A 3x3x1 grid, to make it obvious these are separate draw calls --
-		// unlike Renderer2D, nothing here is batched.
+		// One cube at the origin by default. The grid is still available, but
+		// a single object is what the gizmo is for.
 		for (int y = 0; y < m_GridSize; y++)
 		{
 			for (int x = 0; x < m_GridSize; x++)
 			{
-				glm::vec3 position = {
+				glm::vec3 offset = {
 					(x - (m_GridSize - 1) * 0.5f) * 1.6f,
 					(y - (m_GridSize - 1) * 0.5f) * 1.6f,
 					0.0f
@@ -344,13 +359,13 @@ public:
 				// Transforms compose right-to-left: scale, then rotate, then
 				// translate. Swapping any two changes the result.
 				glm::mat4 transform =
-					glm::translate(glm::mat4(1.0f), position) *
-					glm::rotate(glm::mat4(1.0f), glm::radians(m_Rotation), glm::vec3(0.4f, 1.0f, 0.2f)) *
-					glm::scale(glm::mat4(1.0f), glm::vec3(m_Scale));
+					glm::translate(glm::mat4(1.0f), m_CubePosition + offset) *
+					glm::rotate(glm::mat4(1.0f), glm::radians(m_CubeRotation.x), glm::vec3(1, 0, 0)) *
+					glm::rotate(glm::mat4(1.0f), glm::radians(m_CubeRotation.y), glm::vec3(0, 1, 0)) *
+					glm::rotate(glm::mat4(1.0f), glm::radians(m_CubeRotation.z + m_Rotation), glm::vec3(0, 0, 1)) *
+					glm::scale(glm::mat4(1.0f), m_CubeScale);
 
 				m_Shader->SetFloat4("u_Color", m_Tint);
-
-				// TRY: give each cube its own tint from x and y.
 				Egss::Renderer::Submit(m_Shader, m_VertexArray, transform);
 			}
 		}
@@ -370,12 +385,33 @@ public:
 			if (m_ShowEmitters)
 				DrawEmitters();
 
+			if (m_ShowGizmo)
+				DrawGizmo();
+
+			// A marker where the light is, so it can be seen and grabbed even
+			// when it sits outside the lit geometry.
+			DrawLightMarker();
+
 			Egss::Renderer2D::EndScene();
 		}
 	}
 
 	// A box round each emitter, brightened by how loud it currently is, so
 	// what you hear and what you see agree.
+	// A small three-axis star at the light's position.
+	void DrawLightMarker()
+	{
+		glm::vec4 color(m_LightColor.x, m_LightColor.y, m_LightColor.z, 1.0f);
+		const float size = 0.18f;
+
+		for (int axis = 0; axis < 3; axis++)
+		{
+			glm::vec3 offset(0.0f);
+			offset[axis] = size;
+			Egss::Renderer2D::DrawLine(m_LightPosition - offset, m_LightPosition + offset, color);
+		}
+	}
+
 	void DrawEmitters()
 	{
 		for (int i = 0; i < 2; i++)
@@ -431,6 +467,215 @@ public:
 		Egss::Renderer2D::DrawLine({ 0, y, 0 }, { 0, y, 2.0f }, { 0.35f, 0.5f, 0.95f, 1.0f });
 	}
 
+
+	// ---------------------------------------------------------------------
+	// The gizmo
+	//
+	// Three axis handles at the selected object's origin -- X red, Y green,
+	// Z blue, the convention every 3D tool uses. Dragging one slides the
+	// object along that axis only.
+	//
+	// The whole thing rests on two bits of maths:
+	//
+	//   * a **ray through the cursor**, because a mouse position is a line in
+	//     3D, not a point;
+	//   * the **closest point between that ray and the axis line**, which is
+	//     what turns "where the mouse is" into "how far along X".
+	//
+	// Grabbing stores where on the axis you took hold, so the object does not
+	// jump to the cursor -- it keeps the offset, exactly like a real tool.
+	// ---------------------------------------------------------------------
+
+	// A mouse position is a line through the scene. This returns its origin
+	// and direction in world space.
+	void ScreenRay(const glm::vec2& mouse, glm::vec3& outOrigin, glm::vec3& outDirection) const
+	{
+		Egss::Window& window = Egss::Application::Get().GetWindow();
+		float width = (float)window.GetWidth();
+		float height = (float)window.GetHeight();
+
+		// Pixels -> clip space, flipping y because window coordinates count
+		// downwards and clip space counts up.
+		float x = (mouse.x / width) * 2.0f - 1.0f;
+		float y = 1.0f - (mouse.y / height) * 2.0f;
+
+		glm::mat4 inverse = glm::inverse(m_Camera.GetViewProjectionMatrix());
+
+		// The near and far plane points that project to this pixel. The
+		// perspective divide is what makes them different.
+		glm::vec4 nearPoint = inverse * glm::vec4(x, y, -1.0f, 1.0f);
+		glm::vec4 farPoint = inverse * glm::vec4(x, y, 1.0f, 1.0f);
+
+		nearPoint /= nearPoint.w;
+		farPoint /= farPoint.w;
+
+		outOrigin = glm::vec3(nearPoint);
+		outDirection = glm::normalize(glm::vec3(farPoint - nearPoint));
+	}
+
+	// World position -> pixels. Returns false behind the camera, where the
+	// projection would happily produce a plausible-looking wrong answer.
+	bool WorldToScreen(const glm::vec3& world, glm::vec2& outScreen) const
+	{
+		Egss::Window& window = Egss::Application::Get().GetWindow();
+
+		glm::vec4 clip = m_Camera.GetViewProjectionMatrix() * glm::vec4(world, 1.0f);
+		if (clip.w <= 0.0001f)
+			return false;
+
+		glm::vec3 ndc = glm::vec3(clip) / clip.w;
+
+		outScreen = {
+			(ndc.x * 0.5f + 0.5f) * (float)window.GetWidth(),
+			(1.0f - (ndc.y * 0.5f + 0.5f)) * (float)window.GetHeight()
+		};
+		return true;
+	}
+
+	// How far along `axis` the point nearest the cursor ray sits. This is the
+	// heart of axis dragging: it collapses a 3D pick down to one number.
+	static bool ClosestPointOnAxis(const glm::vec3& axisOrigin, const glm::vec3& axisDirection,
+		const glm::vec3& rayOrigin, const glm::vec3& rayDirection, float& outT)
+	{
+		glm::vec3 between = axisOrigin - rayOrigin;
+
+		float a = glm::dot(axisDirection, axisDirection);
+		float b = glm::dot(axisDirection, rayDirection);
+		float c = glm::dot(rayDirection, rayDirection);
+		float d = glm::dot(axisDirection, between);
+		float e = glm::dot(rayDirection, between);
+
+		float denominator = a * c - b * b;
+
+		// Looking straight down the axis: every point on it projects to the
+		// same pixel, so there is no meaningful answer.
+		if (std::abs(denominator) < 0.00001f)
+			return false;
+
+		outT = (b * e - c * d) / denominator;
+		return true;
+	}
+
+	glm::vec3& SelectedPosition()
+	{
+		return m_Selected == 0 ? m_CubePosition : m_LightPosition;
+	}
+
+	// Distance in pixels from the cursor to an axis handle, for picking.
+	float AxisScreenDistance(int axis, const glm::vec2& mouse) const
+	{
+		glm::vec3 origin = m_Selected == 0 ? m_CubePosition : m_LightPosition;
+		glm::vec3 direction(0.0f);
+		direction[axis] = 1.0f;
+
+		glm::vec2 a, b;
+		if (!WorldToScreen(origin, a) || !WorldToScreen(origin + direction * m_GizmoLength, b))
+			return std::numeric_limits<float>::max();
+
+        // Distance from the cursor to the line segment a-b.
+		glm::vec2 segment = b - a;
+		float lengthSquared = glm::dot(segment, segment);
+		if (lengthSquared < 0.0001f)
+			return glm::length(mouse - a);
+
+		float t = glm::clamp(glm::dot(mouse - a, segment) / lengthSquared, 0.0f, 1.0f);
+		return glm::length(mouse - (a + segment * t));
+	}
+
+	void UpdateGizmo()
+	{
+		glm::vec2 mouse = { Egss::Input::GetMousePosition().first,
+							Egss::Input::GetMousePosition().second };
+
+		bool pressed = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT)
+			&& !ImGui::GetIO().WantCaptureMouse;
+
+		if (!pressed)
+		{
+			m_DragAxis = -1;
+			m_HoverAxis = -1;
+
+			// Highlight whichever handle the cursor is over, so it is obvious
+			// what a click would grab.
+			for (int axis = 0; axis < 3; axis++)
+			{
+				if (AxisScreenDistance(axis, mouse) < m_GizmoPickPixels)
+				{
+					m_HoverAxis = axis;
+					break;
+				}
+			}
+			return;
+		}
+
+		glm::vec3 rayOrigin, rayDirection;
+		ScreenRay(mouse, rayOrigin, rayDirection);
+
+		// --- Grab ---
+		if (m_DragAxis < 0)
+		{
+			if (m_HoverAxis < 0)
+				return;
+
+			glm::vec3 axisDirection(0.0f);
+			axisDirection[m_HoverAxis] = 1.0f;
+
+			float t;
+			if (!ClosestPointOnAxis(SelectedPosition(), axisDirection, rayOrigin, rayDirection, t))
+				return;
+
+			m_DragAxis = m_HoverAxis;
+			m_DragStartT = t;
+			m_DragStartPosition = SelectedPosition();
+			return;
+		}
+
+		// --- Drag ---
+		glm::vec3 axisDirection(0.0f);
+		axisDirection[m_DragAxis] = 1.0f;
+
+		float t;
+		if (!ClosestPointOnAxis(m_DragStartPosition, axisDirection, rayOrigin, rayDirection, t))
+			return;
+
+		// Relative to where it was grabbed, so the object does not snap its
+		// origin to the cursor.
+		SelectedPosition() = m_DragStartPosition + axisDirection * (t - m_DragStartT);
+	}
+
+	void DrawGizmo()
+	{
+		glm::vec3 origin = m_Selected == 0 ? m_CubePosition : m_LightPosition;
+
+		const glm::vec4 axisColors[3] = {
+			{ 1.0f, 0.25f, 0.25f, 1.0f },   // X red
+			{ 0.30f, 1.0f, 0.35f, 1.0f },   // Y green
+			{ 0.35f, 0.55f, 1.0f, 1.0f }    // Z blue
+		};
+
+		for (int axis = 0; axis < 3; axis++)
+		{
+			glm::vec3 direction(0.0f);
+			direction[axis] = 1.0f;
+
+			glm::vec4 color = axisColors[axis];
+			if (axis == m_DragAxis || (m_DragAxis < 0 && axis == m_HoverAxis))
+				color = glm::vec4(1.0f, 1.0f, 0.5f, 1.0f);   // highlighted
+
+			glm::vec3 tip = origin + direction * m_GizmoLength;
+			Egss::Renderer2D::DrawLine(origin, tip, color);
+
+			// A little cross at the tip, so the end of the handle is visible
+			// even when the line is nearly edge-on to the camera.
+			glm::vec3 a(0.0f), b(0.0f);
+			a[(axis + 1) % 3] = 0.06f;
+			b[(axis + 2) % 3] = 0.06f;
+
+			Egss::Renderer2D::DrawLine(tip - a, tip + a, color);
+			Egss::Renderer2D::DrawLine(tip - b, tip + b, color);
+		}
+	}
+
 	// Fly camera: WASD along the ground, Q/E straight up and down, arrows to
 	// look. Keyboard-only on purpose -- mouse look would need cursor capture,
 	// which the engine doesn't have yet.
@@ -457,6 +702,28 @@ public:
 		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) yaw += look;
 		if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))    pitch += look;
 		if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))  pitch -= look;
+
+		// --- Middle-drag to look ---
+		// Mouse *delta*, not position: how far it moved since last frame, not
+		// where it is. Kept every frame whether or not the button is held, or
+		// the first frame of a drag would jump by however far the cursor had
+		// travelled since it was last looked at.
+		glm::vec2 mouse = { Egss::Input::GetMousePosition().first,
+							Egss::Input::GetMousePosition().second };
+		glm::vec2 delta = mouse - m_PreviousMouse;
+		m_PreviousMouse = mouse;
+
+		bool looking = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_MIDDLE)
+			&& !ImGui::GetIO().WantCaptureMouse;
+
+		if (looking)
+		{
+			// Degrees per pixel, so it feels the same at any frame rate --
+			// deliberately *not* scaled by the timestep, because the mouse has
+			// already moved a real distance.
+			yaw += delta.x * m_MouseLookSensitivity;
+			pitch -= delta.y * m_MouseLookSensitivity;
+		}
 
 		m_Camera.SetPosition(position);
 		m_Camera.SetRotation(yaw, pitch);
@@ -499,7 +766,41 @@ public:
 		ImGui::Begin("Cube3D");
 
 		ImGui::Text("WASD   move      Q/E  up / down");
-		ImGui::Text("Arrows look      Space  pause spin");
+		ImGui::Text("Arrows look      Middle-drag  mouse look");
+		ImGui::Text("Space  pause spin");
+
+		ImGui::SeparatorText("Transform");
+
+		// Which object the gizmo is attached to.
+		const char* targets[] = { "Cube", "Light" };
+		ImGui::Combo("Gizmo target", &m_Selected, targets, 2);
+		ImGui::Checkbox("Show gizmo", &m_ShowGizmo);
+		ImGui::SameLine();
+		ImGui::TextDisabled(m_DragAxis >= 0 ? "dragging %c" : "drag an axis",
+			"XYZ"[m_DragAxis < 0 ? 0 : m_DragAxis]);
+
+		if (m_Selected == 0)
+		{
+			ImGui::DragFloat3("Position", &m_CubePosition.x, 0.01f);
+			ImGui::DragFloat3("Rotation", &m_CubeRotation.x, 0.5f);
+			ImGui::DragFloat3("Scale", &m_CubeScale.x, 0.01f, 0.05f, 5.0f);
+
+			if (ImGui::Button("Reset transform"))
+			{
+				m_CubePosition = glm::vec3(0.0f);
+				m_CubeRotation = glm::vec3(0.0f);
+				m_CubeScale = glm::vec3(1.0f);
+			}
+		}
+		else
+		{
+			ImGui::DragFloat3("Position", &m_LightPosition.x, 0.01f);
+			ImGui::SliderFloat("Range", &m_LightRange, 1.0f, 40.0f);
+			ImGui::ColorEdit3("Colour", &m_LightColor.x);
+		}
+
+		ImGui::SliderFloat("Gizmo length", &m_GizmoLength, 0.3f, 3.0f);
+		ImGui::SliderFloat("Look sensitivity", &m_MouseLookSensitivity, 0.02f, 0.6f);
 
 		ImGui::Separator();
 		glm::vec3 p = m_Camera.GetPosition();
@@ -539,9 +840,7 @@ public:
 
 		ImGui::Separator();
 		ImGui::SliderInt("Grid", &m_GridSize, 1, 8);
-		ImGui::SliderFloat("Scale", &m_Scale, 0.2f, 1.5f);
 		ImGui::SliderFloat("Ambient", &m_Ambient, 0.0f, 1.0f);
-		ImGui::SliderFloat3("Light dir", &m_LightDirection.x, -1.0f, 1.0f);
 		ImGui::ColorEdit3("Light colour", &m_LightColor.x);
 		ImGui::ColorEdit4("Tint", &m_Tint.x);
 
@@ -571,12 +870,33 @@ private:
 	bool m_ShowEmitters = true;
 
 	bool m_ShowGrid = true;
-	int m_GridSize = 3;
-	float m_Scale = 0.8f;
+	int m_GridSize = 1;
 
-	glm::vec3 m_LightDirection = { -0.4f, -0.8f, -0.45f };
+	// The light is an object in the scene now, so it has a position the gizmo
+	// can drag.
+	glm::vec3 m_LightPosition = { 1.6f, 1.6f, 1.8f };
 	glm::vec3 m_LightColor = { 1.0f, 0.96f, 0.9f };
-	float m_Ambient = 0.18f;
+	float m_LightRange = 12.0f;
+	float m_Ambient = 0.10f;
+
+	// 0 = the cube, 1 = the light. Which one the gizmo is attached to.
+	int m_Selected = 0;
+	bool m_ShowGizmo = true;
+
+	glm::vec2 m_PreviousMouse = { 0.0f, 0.0f };
+	float m_MouseLookSensitivity = 0.18f;
+
+	int m_HoverAxis = -1;
+	int m_DragAxis = -1;
+	float m_DragStartT = 0.0f;
+	glm::vec3 m_DragStartPosition = { 0.0f, 0.0f, 0.0f };
+	float m_GizmoLength = 1.0f;
+	float m_GizmoPickPixels = 12.0f;
+
+	// The cube's transform, which the gizmo and the panel both edit.
+	glm::vec3 m_CubePosition = { 0.0f, 0.0f, 0.0f };
+	glm::vec3 m_CubeRotation = { 0.0f, 0.0f, 0.0f };
+	glm::vec3 m_CubeScale = { 1.0f, 1.0f, 1.0f };
 	glm::vec4 m_Tint = { 1.0f, 1.0f, 1.0f, 1.0f };
 
 	float m_FrameTime = 0.0f;

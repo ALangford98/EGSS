@@ -717,10 +717,10 @@ private:
 	Egss::OrthographicCamera m_Camera;
 	Egss::PhysicsWorld2D m_World;
 
-	bool m_ShowColliders = true;
+	bool m_ShowColliders = false;
 	bool m_ShowRays = false;
 
-	LightControl m_Control = LightControl::Mouse;
+	LightControl m_Control = LightControl::Keyboard;
 	float m_LightSpeed = 1.6f;
 
 	// The light is a small circle for collision purposes, not a point -- a
@@ -751,7 +751,7 @@ private:
 
 	// How far past a hit the light polygon reaches, in world units, so
 	// surfaces catch the light rather than the light stopping dead at them.
-	float m_SurfaceSpill = 0.05f;
+	float m_SurfaceSpill = 0.01f;
 
 	// What a surface looks like with no light on it at all. Matching the clear
 	// colour makes unlit geometry genuinely invisible rather than a dark
