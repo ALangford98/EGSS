@@ -43,6 +43,8 @@
 #include "Egss/Renderer/Buffer.h"
 #include "Egss/Renderer/VertexArray.h"
 #include "Egss/Renderer/Shader.h"
+#include "Egss/Renderer/ShaderLibrary.h"
+#include "Egss/Renderer/Material.h"
 #include "Egss/Renderer/Texture.h"
 #include "Egss/Renderer/Framebuffer.h"
 #include "Egss/Renderer/SubTexture2D.h"

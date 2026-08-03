@@ -116,6 +116,41 @@ public:
 		// geometry and roughness doing the same job by different means.
 		wall({ -4.0f, -2.0f }, { 0.8f, 0.8f }, 0.15f, 0.60f);
 		wall({ 8.5f,  1.5f }, { 0.9f, 0.9f }, 0.15f, 0.60f);
+
+		if (!m_Corridor)
+			return;
+
+		// A blocked-off corridor wrapped around the bottom-left of the main
+		// room: in at the top left, down the west wall, east along the south
+		// wall, then north into a dead end against the divider. One mouth, and
+		// no way through -- everything that goes in has to come back out of the
+		// same opening.
+		//
+		// This is the geometry a room-sized mental model gets wrong. Sabine and
+		// Eyring both assume a diffuse field, energy spread evenly through the
+		// space; a long thin dead end fed through one opening is the standard
+		// counterexample, because sound that gets in does not come back out
+		// promptly and the tail stops being a single exponential. It is also
+		// what punishes a small ray budget hardest: few rays find the mouth,
+		// and those that do bounce many more times before they are heard, so
+		// the corridor's contribution is estimated from a thin sample. Raise
+		// the ray count with this on and watch the late tail settle down.
+		//
+		// Bare block -- harder than the plastered shell and rougher with it, so
+		// it rings without ringing specularly.
+		const float ca = 0.08f, cs = 0.12f;
+
+		// Widths follow from the shell: the inner faces are at -13.6 and -6.6,
+		// so a wall centred at -11.4 or -4.4 leaves 1.8 either side.
+		wall({ -11.4f, -1.4f }, { t, 3.4f }, ca, cs);   // west side, up to the mouth at y = 2
+		wall({ -5.4f, -4.4f }, { 6.4f, t }, ca, cs);    // south side, east to the riser
+		wall({ 1.4f, -3.0f }, { t, 1.8f }, ca, cs);     // the riser, turning it north
+		wall({ 2.4f, -1.6f }, { 1.4f, t }, ca, cs);     // the cap: the dead end
+
+		// The cap runs to x = 3.8 and the divider's face is at 3.6, so the two
+		// overlap rather than meeting on a seam. Boxes that merely touch leave a
+		// zero-width crack, and a ray that finds one leaks into the main room --
+		// which shows up as a corridor that is mysteriously not very reverberant.
 	}
 
 	// A tone with a little harmonic content, looping seamlessly: a whole
@@ -567,6 +602,25 @@ public:
 		}
 
 		// --- Controls -----------------------------------------------------
+		ImGui::SeparatorText("The room");
+
+		if (ImGui::Checkbox("Blocked-off corridor", &m_Corridor))
+		{
+			// Not a trace setting: the geometry itself changes, and the body
+			// handles the material tables are indexed by change with it.
+			BuildRoom();
+			m_Dirty = true;
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("A dead-end corridor around the bottom-left of the main room,\n"
+				"open only at the top left. Sabine and Eyring assume energy is\n"
+				"spread evenly through the space, and a long dead end fed by one\n"
+				"opening is the standard case where that stops being true --\n"
+				"watch RT60 and the shape of the echogram's tail.\n"
+				"It also wants more rays than the open room: few of them find\n"
+				"the mouth, so the corridor's share of the tail is estimated\n"
+				"from a thin sample until you raise the count.");
+
 		ImGui::SeparatorText("Tracing");
 
 		m_Dirty |= ImGui::SliderInt("Rays", &m_RayCount, 16, 1024);
@@ -685,6 +739,10 @@ private:
 	Egss::PhysicsWorld2D m_World;
 	std::vector<float> m_Absorptions;
 	std::vector<float> m_Scatterings;
+
+	// Changing this rebuilds the room, so it is not a trace setting -- it has
+	// to go through BuildRoom rather than just marking the trace dirty.
+	bool m_Corridor = true;
 
 	glm::vec2 m_Source = { -6.0f, -3.0f };
 	glm::vec2 m_Listener = { 8.0f, 2.0f };

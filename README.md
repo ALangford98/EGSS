@@ -646,8 +646,6 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 
 ## Still outstanding
 
-- [ ] **A `ShaderLibrary`**, so shaders are looked up by name rather than
-      passed around as `shared_ptr`s
 - [ ] **Query `GL_MAX_TEXTURE_IMAGE_UNITS`** at runtime rather than assuming
       the 16-slot floor, and generate the sampler switch to match
 - [ ] **A PCH for `TestEnv`.** Only the engine has one. The demo headers now
@@ -656,10 +654,9 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [ ] **Multi-viewport ImGui.** Docking is on; `ImGuiConfigFlags_ViewportsEnable`
       would let panels be dragged out into their own OS windows, but it needs
       the platform-window loop in `ImGuiLayer::End` and a GL context restore
-- [ ] **Material handling.** The 3D demo sets uniforms by hand; there is no
-      notion of a material binding a shader to its parameters. The `.obj`
-      loader skips `mtllib` / `usemtl` for exactly this reason — parsing an
-      `.mtl` into nothing would be a lie about what the engine can do
+- [ ] **`.mtl` parsing.** The `.obj` loader skips `mtllib` / `usemtl`. Now that
+      there is a `Material` for one to be parsed *into*, that stops being a lie
+      about what the engine can do and becomes a straightforward piece of work
 - [ ] **`.gltf` loading.** `.obj` carries geometry and nothing else — no
       hierarchy, no skinning, no PBR parameters. glTF is where those live, and
       is the format worth supporting second
@@ -667,8 +664,6 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       scale boxes are the same picking maths applied to different geometry
 - [ ] **Smoothing *groups*, not just the on/off flag.** `s 1` and `s 2` meeting
       at an edge should not share vertices; today both count as "smooth"
-- [ ] **Per-object materials.** Every mesh in the 3D scene shares one shader
-      and one texture. See material handling above
 - [ ] **Physics: rotation.** Bodies translate but never spin. Needs SAT for
       oriented shapes, multi-point manifolds and angular impulses
 
@@ -898,6 +893,160 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-03 (materials, and shaders by name)
+
+The 3D renderer had no word for "how this object looks". `Cube3D` set six
+uniforms by hand against a bound shader and then submitted, which works only
+because the draw happens immediately afterwards — the values lived in the GL
+program, not in anything describing the object. Nothing could be stored on an
+entity, loaded from a file, or shared between meshes.
+
+- **`Material`** — a shader plus the values to give it, and a texture binding
+  that sets the sampler uniform *and* binds the texture, since doing one without
+  the other is the classic way to get a black object with no error anywhere.
+- **`Material::CreateInstance(base)`** is the half that matters. Most uniforms in
+  a scene are not per-object at all — the light, the camera, the ambient level
+  are the same for everything drawn that frame. An instance holds only its
+  overrides and falls back to its base. Binding uploads the base's parameters
+  first and its own after, so overriding is just the later write winning: no
+  merge step, no lookup, and the ordering *is* the mechanism.
+- **`MeshComponent::Material`**, so per-object appearance lives on the entity.
+  It may be null — adding geometry before deciding how it looks is normal — and
+  the renderer supplies an instance the first time it draws one.
+- **`ShaderLibrary`**, with `Renderer::GetShaderLibrary()` owning one. A missing
+  name logs and returns null rather than asserting: a missing shader should show
+  up as an unlit object, not take the program with it.
+- **`Renderer::Submit(material, mesh, transform)`**, which sets
+  `u_ViewProjection` and `u_Transform` *after* the material's own values, so a
+  material cannot shadow the transform it is being drawn with.
+
+Instances store parameters in a `std::vector`, not a map. Materials hold a
+handful of values, walking a contiguous few beats hashing each one every frame,
+and it keeps upload order stable — which makes a frame capture readable.
+
+Verified with **26 checks**, and the split between them is the point. Half test
+the parameter table, and are nearly worthless on their own: a table that
+overrides perfectly and never uploads anything would pass every one. The other
+half render into an off-screen buffer through a shader whose fragment is exactly
+`u_Base * u_Tint`, so a pixel read back is an arithmetic statement about which
+material the value came from. Those establish that:
+
+- an instance that sets **only** `u_Tint` still renders with the base's
+  `u_Base` — inheritance reaches the shader, not just the table
+- two instances differing only in tint render exactly 2:1
+- a material rendered **after** one that overrode `u_Base` gets the correct
+  value back rather than the stale one left in the program
+- changing the base afterwards is seen by its instances
+
+Then the converted demo itself, which the synthetic shader says nothing about:
+run under a debug GL context it logs no missing uniforms and no GL errors, and
+a scan of its own framebuffer reads 854 lit samples across 5 meshes with 1,840
+carrying an entity id — so `u_EntityID` is still reaching the integer attachment
+that picking depends on.
+
+I also gave up on screenshot verification for the second session running.
+`import` hangs against XWayland here and cost two minutes before timing out.
+Reading pixels back through `ReadPixelRGBA` is better anyway — it produces
+numbers to compare rather than a picture to squint at.
+
+### 2026-08-03 (a blocked-off corridor, and the darkening re-measured)
+
+Two things, both about the acoustics demo's room.
+
+**A dead-end corridor**, wrapped around the bottom-left of the main room: in at
+the top left, down the west wall, east along the south wall, then north into a
+dead end against the divider. One mouth, no way through. It is behind a
+checkbox, because flipping it is the point.
+
+```
+.##########################################################################.
+###................................................................####...###
+###......#######################...................................####...###
+###......#######################...................................####...###
+###................................................................####...###
+###.......###......................................................####...###   <- mouth, above the wall
+###.......###.....................................................#######.###
+###.......###.............................................................###
+###.......###.......................######................##########......###
+###.......###..................S....######................###...x..####...###
+###.......###.............................................###......####...###
+###.......###################################################......####...###
+###................................................................####...###
+.##########################################################################.
+```
+
+A corridor is the case a room-sized mental model gets wrong. Sabine and Eyring
+both assume a diffuse field — energy spread evenly through the space — and a
+long dead end fed by a single opening is the standard counterexample.
+
+Verified by **flood fill rather than by eye**, because "it looks enclosed" and
+"it is enclosed" are different claims, and a one-cell crack turns a corridor
+into an alcove. Rasterise the room from the same point-in-body test the physics
+uses, fill from the main room, and count: with the mouth open the fill reaches
+the dead end and covers 30,380 cells; with the mouth artificially plugged it
+reaches 25,663 and does *not* reach the dead end. So the 4,717 cells behind that
+mouth are reachable only through it — exactly one opening, confirmed rather than
+assumed. The cap deliberately laps 0.2 m into the divider: boxes that merely
+touch leave a zero-width seam, and a ray that finds one leaks into the main room.
+
+What it does, traced:
+
+| | open room | with the corridor |
+| --- | --- | --- |
+| RT60 | 2.72 s | 2.38 s |
+| mean free path | 7.99 m | 5.58 m |
+| tail roughness | 8.63 dB | 6.01 dB |
+
+And with the listener *in* the dead end: occlusion 100%, no direct path, RT60
+2.05 s. **It is also a warning about ray budget**, which is the more useful
+finding. Few rays ever find the mouth, so the corridor's share of the tail is
+estimated from a thin sample — the dead-end RT60 reads 1.21 s at 128 rays,
+1.28 s at 512, 1.84 s at 2048 and 1.99 s at 8192. The demo's slider tops out at
+1024. That is not a bug, it is the variance of a stochastic method being visible
+for once, and it is worth being able to see.
+
+---
+
+**The 15.4 dB darkening figure, re-measured.** It predated the band-splitter
+rebuild and had been sitting flagged as stale. The old splitter leaked 33 dB of
+bass into the treble band and the new one leaks 102 dB, and leakage can only
+ever *weaken* a measured darkening — bass bleeding into the treble band props
+the treble tail up long after its own energy has gone.
+
+The end-to-end delta on its own is a weak measurement, because the windows the
+original used were never written down. So this measures the **traced** echogram
+as well, which no mixer has been near: the trace is ground truth, and the
+question worth asking is how much of its darkening survives being rendered.
+
+With the early window at 0.10–0.30 s:
+
+| late window | traced | rendered | share |
+| --- | --- | --- | --- |
+| 0.50–0.90 s | 11.4 dB | 10.1 dB | 88% |
+| 0.90–1.40 s | 19.2 dB | 17.3 dB | 90% |
+| 1.20–1.70 s | 25.7 dB | 22.2 dB | 86% |
+| 1.40–1.90 s | 30.2 dB | 24.9 dB | 83% |
+
+**The chain now delivers 83–90% of the darkening the trace describes**, and that
+ratio is the honest headline rather than the raw dB figure — it holds across
+every window, so it is a property of the chain and not of where the windows were
+put. It also degrades in exactly the direction residual leakage predicts: the
+deeper into the tail you look, the more the remaining floor matters. The
+comparable single number is 17.3 dB against 15.4, but the windows differ, so
+treat that as direction rather than as a delta.
+
+Two mistakes on the way, both mine and both in the measurement:
+
+- **The first run found 0 paths from 600,924 bounces.** The default listener
+  position (8, 2) is *inside* the right-hand pillar, and a listener inside
+  geometry is never visible from any bounce. The demo calls `ResolveCircle` on
+  both source and listener every frame and I had not; the trace was correct and
+  reported an empty echogram, exactly as it should.
+- **The "rendered" figure in that run was 37.3 dB** — a number better than
+  anything real, produced by measuring a bare click decaying into silence with
+  no reverb taps set at all. A result that beats the theoretical ceiling is a
+  broken measurement, not a triumph.
 
 ### 2026-08-03 (per-pixel 2D lighting)
 

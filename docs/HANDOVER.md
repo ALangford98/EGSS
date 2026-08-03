@@ -53,7 +53,7 @@ assume something is still outstanding because a previous message said so.
 | --- | --- | --- |
 | Core loop | `Application`, `Layer`, `LayerStack` | Fixed timestep + render interpolation. `OnFixedUpdate` is simulation, `OnUpdate` is presentation |
 | Renderer 2D | `Renderer2D` | Three batches: quads (indexed), lines, triangles. One draw call each. Blend modes: Alpha, Additive, Multiply |
-| Renderer 3D | `Renderer`, `Mesh`, `ObjLoader` | `Submit` per mesh, no batching. `.obj` loading with smoothing groups |
+| Renderer 3D | `Renderer`, `Mesh`, `Material`, `ObjLoader` | `Submit` per mesh, no batching. `.obj` loading with smoothing groups. Materials with instance overrides; shaders by name via `ShaderLibrary` |
 | Cameras | `Camera` base, `Orthographic`, `Perspective` | `BeginScene` takes any `Camera` |
 | Framebuffers | `Framebuffer` | `RED_INTEGER` attachment drives pixel-exact picking |
 | Scene | `Scene`, `Entity`, `ComponentStore` | ECS-lite: dense arrays, generational handles |
@@ -260,9 +260,10 @@ before, and "a component with no system" was the phrase used to decline it.
 **Renderer debt** — `ShaderLibrary`; query `GL_MAX_TEXTURE_IMAGE_UNITS`; a PCH
 for `TestEnv`; vendor a premake binary; multi-viewport ImGui.
 
-**3D** — material handling (the 3D demo sets uniforms by hand); `.gltf`;
-rotate/scale gizmo handles; `.obj` smoothing *groups* rather than the on/off
-flag.
+**3D** — `.mtl` parsing (now unblocked: there is a `Material` to parse into);
+`.gltf`; rotate/scale gizmo handles; `.obj` smoothing *groups* rather than the
+on/off flag. Material handling itself is done — `Material`, instances,
+`ShaderLibrary`, and `MeshComponent::Material`.
 
 **2D** — per-pixel lighting is done and verified (light map, then
 `BlendMode::Multiply` for surfaces; 27 checks through `ReadPixelRGBA`). Nothing
@@ -297,13 +298,30 @@ a ray carries three energy packets but only one direction.
 - Rendered per-band decays read slower than traced ones. Once a band's tail has
   died, what remains in that band of any analysis is leakage from its
   neighbours, and the bass tail is still ~20 dB louder. The treble/bass ratio
-  is the honest measure — it showed 15.4 dB of darkening end to end.
-  **That figure predates the splitter rebuild and has not been re-measured.**
-  The leak it was fighting went from −33 dB to −102 dB at 100 Hz, so the
-  end-to-end number should now be better; nobody has checked how much. Doing
-  that measurement again is a cheap, worthwhile piece of work.
+  is the honest measure. Re-measured after the splitter rebuild: **the chain
+  delivers 83–90% of the darkening the trace itself describes**, holding across
+  four late windows, and falling off deeper into the tail exactly as residual
+  leakage predicts. Quote that ratio, not a bare dB figure — the old 15.4 dB
+  number was recorded without its windows, which is what made it impossible to
+  compare against.
 - 2D acoustics overstates reverb time: a real room's floor and ceiling are half
   its reflecting area.
+- **A corridor needs far more rays than the demo's slider allows.** With the
+  blocked-off corridor on and the listener in its dead end, RT60 reads 1.21 s at
+  128 rays and 1.99 s at 8192 — few rays ever find the mouth, so its share of
+  the tail comes from a thin sample. The slider stops at 1024. Not a bug; the
+  variance of a stochastic method, visible for once.
+- **Screenshot verification does not work on this machine.** `import` hangs
+  against XWayland (once for two minutes before timing out) and `xdotool`
+  window matching picks up stale windows. Two sessions have now been lost to
+  it. Use `Framebuffer::ReadPixelRGBA` instead — it gives numbers to compare
+  rather than a picture to squint at, and it is how both the lighting and the
+  material work were verified.
+- A listener **inside** a body finds zero paths, however many bounces are
+  traced, and reports an empty echogram rather than an error. The demo runs
+  `ResolveCircle` on the source and listener every frame for this reason; any
+  headless trace has to do the same. The default listener (8, 2) sits inside the
+  right-hand pillar, so this is the *first* thing that bites.
 - **The 2D light's rendered falloff is f², not the linear f the vertex colours
   describe.** `DrawLight` scales colour *and* alpha by the same `f`, and
   additive blending contributes `rgb * alpha`, so they multiply. This has been

@@ -4,6 +4,7 @@
 #include "Egss/Core.h"
 #include "Egss/Renderer/Texture.h"
 #include "Egss/Renderer/Mesh.h"
+#include "Egss/Renderer/Material.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -68,6 +69,19 @@ namespace Egss {
 		// Named Geometry, not Mesh -- a member cannot share its name with the
 		// type it is declared from inside the same struct.
 		std::shared_ptr<Egss::Mesh> Geometry;
+
+		// How this one is drawn, usually a Material::CreateInstance of a shared
+		// base so it carries only what differs. Shared rather than owned, on the
+		// same terms as the geometry: a hundred entities can point at one.
+		//
+		// May be null, which means the renderer supplies its own -- an entity
+		// with geometry and no material is a normal thing to have while a scene
+		// is being built.
+		std::shared_ptr<Egss::Material> Material;
+
+		// Kept alongside the material rather than folded into it. Colour is the
+		// one thing every scene wants per object, and requiring a material for
+		// it would mean building one before anything could be seen at all.
 		glm::vec4 Color = { 1.0f, 1.0f, 1.0f, 1.0f };
 		bool Visible = true;
 	};

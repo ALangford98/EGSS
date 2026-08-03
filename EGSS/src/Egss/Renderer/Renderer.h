@@ -5,6 +5,8 @@
 #include "Egss/Renderer/OrthographicCamera.h"
 #include "Egss/Renderer/PerspectiveCamera.h"
 #include "Egss/Renderer/Shader.h"
+#include "Egss/Renderer/ShaderLibrary.h"
+#include "Egss/Renderer/Material.h"
 #include "Egss/Renderer/Renderer2D.h"
 #include "Egss/Renderer/Mesh.h"
 
@@ -31,6 +33,23 @@ namespace Egss {
 		static void Submit(const std::shared_ptr<Shader>& shader,
 			const std::shared_ptr<Mesh>& mesh,
 			const glm::mat4& transform = glm::mat4(1.0f));
+
+		// The same, with the shader's values carried along rather than left to
+		// the caller to have set beforehand. This is the overload to reach for:
+		// a submission that says *everything* about how the object is drawn can
+		// be reordered, deferred or sorted, and one that depends on uniforms
+		// set earlier at the call site cannot.
+		static void Submit(const std::shared_ptr<Material>& material,
+			const std::shared_ptr<VertexArray>& vertexArray,
+			const glm::mat4& transform = glm::mat4(1.0f));
+
+		static void Submit(const std::shared_ptr<Material>& material,
+			const std::shared_ptr<Mesh>& mesh,
+			const glm::mat4& transform = glm::mat4(1.0f));
+
+		// Shaders by name. One library, owned here, so a demo does not have to
+		// keep its own -- see ShaderLibrary if you want a second.
+		static ShaderLibrary& GetShaderLibrary();
 
 		inline static RendererAPI::API GetAPI() { return RendererAPI::GetAPI(); }
 	private:

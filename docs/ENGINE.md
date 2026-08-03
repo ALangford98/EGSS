@@ -298,11 +298,40 @@ shader->Bind();
 shader->SetFloat3("u_LightPosition", pos);     // your own uniforms first
 Renderer::Submit(shader, mesh, transform);     // sets u_ViewProjection + u_Transform
 Renderer::EndScene();
+
+// Materials — the same thing, with the values carried along
+auto base = Material::Create(shader);          // or Renderer::GetShaderLibrary().Get("Cube3D")
+base->Set("u_LightPosition", pos);             // int, float, vec3, vec4, mat4
+base->SetTexture("u_Texture", texture, 0);     // sets the sampler *and* binds
+
+auto perObject = Material::CreateInstance(base);   // holds only its overrides
+perObject->Set("u_Color", colour);
+
+Renderer::Submit(perObject, mesh, transform);
+
+// Shaders by name
+Renderer::GetShaderLibrary().Add(shader);      // under shader->GetName()
+Renderer::GetShaderLibrary().Load("assets/shaders/Lit.glsl");
+Renderer::GetShaderLibrary().Get("Lit");       // nullptr + a log if absent
 ```
 
 A `Mesh` is geometry and nothing else — no material, no transform, no
 hierarchy. That is what lets one mesh be drawn a thousand times without being
-copied once; the transform belongs to whatever is *using* it.
+copied once; the transform belongs to whatever is *using* it, and so does the
+material.
+
+**Instances are the load-bearing idea in `Material`.** Most uniforms in a scene
+are not per-object: the light, the camera and the ambient level are the same for
+everything drawn that frame. Giving each object a complete material would mean
+setting those N times and getting them wrong once. So an instance holds only its
+overrides and defers to its base for the rest, and `MeshComponent::Material` is
+where one lives on an entity.
+
+Binding an instance uploads the base's parameters first and its own second. That
+ordering is the whole override mechanism — the later write to the uniform wins,
+and there is no merge step or lookup anywhere. It also means a material always
+re-uploads everything it inherits, which is what stops the *previous* material's
+values leaking into it.
 
 `Mesh::Load` reads Wavefront `.obj`: `v` / `vt` / `vn` / `f` / `s`, faces of any
 size, negative indices, and files missing texture coordinates or normals.
@@ -375,6 +404,15 @@ a direction. Binned by arrival time, they are the room's impulse response.
 It costs milliseconds, not microseconds, and geometry changes slowly. Trace when
 something has moved enough to matter, not every frame, and never on the audio
 thread.
+
+Two things that catch people out. A source or listener **inside** a body finds
+no paths at all — it is never visible from any bounce — and the result comes
+back as an empty echogram rather than an error, so run `PhysicsWorld2D::
+ResolveCircle` on both first. And the ray count is not a quality dial you can
+leave alone: an open room settles by a few hundred rays, but a corridor fed
+through one opening needs thousands, because few rays ever find the mouth and
+the space behind it is estimated from whatever did. The demo's blocked-off
+corridor reads RT60 1.21 s at 128 rays and 1.99 s at 8192, in the same room.
 
 The tracer works in three frequency bands, because a room absorbing treble
 faster than bass is most of what makes its tail sound like a room. Each ray

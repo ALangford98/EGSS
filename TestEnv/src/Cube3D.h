@@ -336,6 +336,15 @@ public:
 		)";
 
 		m_Shader.reset(Egss::Shader::Create("Cube3D", vertexSrc, fragmentSrc));
+
+		// Into the library, so anything else that wants this program can ask
+		// for it by name instead of being handed the pointer.
+		Egss::Renderer::GetShaderLibrary().Add(m_Shader);
+
+		// The scene material: everything that is the same for every object
+		// drawn this frame. Its values are refreshed once per frame in
+		// RenderMeshes, not per mesh.
+		m_SceneMaterial = Egss::Material::Create(m_Shader);
 	}
 
 	// A checkerboard, so the cube's faces and their orientation are readable
@@ -458,25 +467,23 @@ public:
 	{
 		Egss::Renderer::BeginScene(m_Camera);
 
-		// Uniforms that aren't per-object are set once, with the shader bound.
-		// Submit binds it again and adds u_ViewProjection and u_Transform, but
-		// uniform values belong to the program and survive a rebind.
-		m_Shader->Bind();
-		m_Shader->SetFloat3("u_LightPosition", m_LightPosition);
-		m_Shader->SetFloat3("u_LightColor", m_LightColor);
-		m_Shader->SetFloat("u_LightRange", m_LightRange);
-		m_Shader->SetFloat3("u_CameraPosition", m_Camera.GetPosition());
-		m_Shader->SetFloat("u_AmbientStrength", m_Ambient);
-		m_Shader->SetInt("u_Texture", 0);
-
-		m_Texture->Bind(0);
+		// Everything that is not per-object, onto the scene material once. These
+		// used to be a run of SetFloat3 calls against a bound shader, which
+		// worked only because the draws happened immediately afterwards -- the
+		// values lived in the program, not in anything describing the object.
+		m_SceneMaterial->Set("u_LightPosition", m_LightPosition);
+		m_SceneMaterial->Set("u_LightColor", m_LightColor);
+		m_SceneMaterial->Set("u_LightRange", m_LightRange);
+		m_SceneMaterial->Set("u_CameraPosition", m_Camera.GetPosition());
+		m_SceneMaterial->Set("u_AmbientStrength", m_Ambient);
+		m_SceneMaterial->SetTexture("u_Texture", m_Texture, 0);
 
 		auto& meshes = m_Scene.View<Egss::MeshComponent>();
 		m_DrawnMeshes = 0;
 
 		for (size_t i = 0; i < meshes.Size(); i++)
 		{
-			const Egss::MeshComponent& mesh = meshes.Components()[i];
+			Egss::MeshComponent& mesh = meshes.Components()[i];
 			if (!mesh.Visible || !mesh.Geometry)
 				continue;
 
@@ -485,15 +492,21 @@ public:
 			if (!transform)
 				continue;
 
-			m_Shader->SetFloat4("u_Color", mesh.Color * m_Tint);
+			// An entity may arrive without one -- it is normal to add geometry
+			// before deciding how it looks -- so give it an instance of the
+			// scene material the first time it is drawn.
+			if (!mesh.Material)
+				mesh.Material = Egss::Material::CreateInstance(m_SceneMaterial);
+
+			mesh.Material->Set("u_Color", mesh.Color * m_Tint);
 			// The slot index, not the handle -- the attachment is a *signed*
 			// integer texture, and a handle whose generation passes 2047
 			// exceeds INT_MAX and reads back negative.
-			m_Shader->SetInt("u_EntityID", (int)Egss::EntityIds::Index(entity));
+			mesh.Material->Set("u_EntityID", (int)Egss::EntityIds::Index(entity));
 
 			// TransformComponent already composes scale, then rotate, then
 			// translate, in that order. Swapping any two changes the result.
-			Egss::Renderer::Submit(m_Shader, mesh.Geometry, transform->GetTransform());
+			Egss::Renderer::Submit(mesh.Material, mesh.Geometry, transform->GetTransform());
 			m_DrawnMeshes++;
 		}
 
@@ -1216,6 +1229,11 @@ private:
 	std::string m_LoadError;
 	std::shared_ptr<Egss::Shader> m_Shader;
 	std::shared_ptr<Egss::Texture2D> m_Texture;
+
+	// The base every mesh's own material instances from. Holds the light, the
+	// camera and the ambient level -- the things that are the same for every
+	// object drawn this frame.
+	std::shared_ptr<Egss::Material> m_SceneMaterial;
 
 	float m_MoveSpeed = 3.0f;
 	float m_LookSpeed = 70.0f;

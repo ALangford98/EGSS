@@ -51,4 +51,40 @@ namespace Egss {
 		Submit(shader, mesh->GetVertexArray(), transform);
 	}
 
+	void Renderer::Submit(const std::shared_ptr<Material>& material,
+		const std::shared_ptr<VertexArray>& vertexArray, const glm::mat4& transform)
+	{
+		if (!material)
+			return;
+
+		// Bind uploads the material's own values; the two below are the
+		// renderer's, and go on afterwards so a material cannot accidentally
+		// shadow the transform it is being drawn with.
+		material->Bind();
+
+		const std::shared_ptr<Shader>& shader = material->GetShader();
+		shader->SetMat4("u_ViewProjection", s_SceneData->ViewProjectionMatrix);
+		shader->SetMat4("u_Transform", transform);
+
+		vertexArray->Bind();
+		RenderCommand::DrawIndexed(vertexArray);
+	}
+
+	void Renderer::Submit(const std::shared_ptr<Material>& material,
+		const std::shared_ptr<Mesh>& mesh, const glm::mat4& transform)
+	{
+		if (!mesh)
+			return;
+
+		Submit(material, mesh->GetVertexArray(), transform);
+	}
+
+	ShaderLibrary& Renderer::GetShaderLibrary()
+	{
+		// Function-local, so it is constructed on first use rather than in
+		// whatever order the translation units happen to initialise in.
+		static ShaderLibrary library;
+		return library;
+	}
+
 }
