@@ -58,6 +58,27 @@ namespace Egss {
 		constexpr unsigned int s_MaxReverbTaps = 512;
 		constexpr float s_MaxImpulseSeconds = 2.0f;
 
+		// Three convolution paths, one per band. The crossovers are fixed:
+		// materials are measured in octave bands, but the audible gap between
+		// three bands and eight is far smaller than between three and one.
+		constexpr unsigned int s_ReverbBands = 3;
+		constexpr float s_BandCrossoverLowHz = 500.0f;
+		constexpr float s_BandCrossoverHighHz = 4000.0f;
+
+		// Each crossover is three one-poles in series -- 18 dB per octave
+		// rather than 6. A single pole leaks far too much to be useful here:
+		// at 8 kHz a one-pole split at 4 kHz still puts nearly as much signal
+		// in the mid band as the high one, so the two tails average together
+		// and the treble never audibly dies first.
+		//
+		// Complementary subtraction keeps the three bands summing back to the
+		// input exactly whatever the slope, which is what makes a broadband
+		// response transparent.
+		constexpr unsigned int s_BandPoles = 3;
+		// Cascading N one-poles moves the -3 dB point down to fc * sqrt(2^(1/N) - 1);
+		// this puts it back where the constants above say it is.
+		constexpr float s_BandPoleCompensation = 1.9614f;
+
 		// Seconds to crossfade between reverb settings, so stepping through a
 		// doorway is a change of room rather than a click.
 		constexpr float s_ReverbSmoothing = 0.35f;
@@ -285,11 +306,11 @@ namespace Egss {
 		{
 			AudioState()
 			{
-				// The mixer must never allocate, so the one buffer the
-				// convolution needs is sized here -- during the first touch of
-				// State(), which is always on the main thread.
-				ImpulseHistory.assign(
-					(size_t)(s_MaxImpulseSeconds * (float)s_SampleRate), 0.0f);
+				// The mixer must never allocate, so the buffers the convolution
+				// needs are sized here -- during the first touch of State(),
+				// which is always on the main thread.
+				for (std::vector<float>& history : ImpulseHistory)
+					history.assign((size_t)(s_MaxImpulseSeconds * (float)s_SampleRate), 0.0f);
 			}
 
 			ma_device Device;
@@ -312,12 +333,20 @@ namespace Egss {
 			std::atomic<float> ReverbWidth{ 1.0f };
 
 			// --- Convolution reverb ---
-			// What the mix sounded like recently, so a tap can read it back.
+			// What the mix sounded like recently, so a tap can read it back --
+			// one history per band, holding that band's share of the signal.
 			// Audio thread only; sized once, below.
-			std::vector<float> ImpulseHistory;
+			std::vector<float> ImpulseHistory[s_ReverbBands];
 			unsigned int ImpulseWrite = 0;
 
-			ImpulseSet ImpulseSets[4];
+			// The band splitter's state. Two one-pole lowpasses, and the three
+			// bands are read off as low, (mid - low) and (input - mid) -- which
+			// sums back to the input exactly, so a broadband response behaves
+			// as if the splitter were not there at all.
+			float BandLowpass1[s_BandPoles] = {};
+			float BandLowpass2[s_BandPoles] = {};
+
+			ImpulseSet ImpulseSets[4][s_ReverbBands];
 			std::atomic<unsigned int> ActiveImpulseSet{ 0 };
 			unsigned int NextImpulseSet = 0;
 			// Read by the mixer to decide which reverb to run at all.
@@ -609,11 +638,18 @@ namespace Egss {
 				// resemble one.
 				if (convolving && state.SmoothedWet > 0.0005f)
 				{
-					const ImpulseSet& impulse =
+					const ImpulseSet* impulse =
 						state.ImpulseSets[state.ActiveImpulseSet.load(std::memory_order_acquire)];
 
-					const size_t historySize = state.ImpulseHistory.size();
+					const size_t historySize = state.ImpulseHistory[0].size();
 					float wet = std::min(std::max(state.SmoothedWet, 0.0f), 1.0f);
+
+					// One-pole coefficients for the two crossover points, with
+					// the cascade compensated for.
+					float lowCoefficient = 1.0f - std::exp(-6.2831853f
+						* s_BandCrossoverLowHz * s_BandPoleCompensation / (float)s_SampleRate);
+					float highCoefficient = 1.0f - std::exp(-6.2831853f
+						* s_BandCrossoverHighHz * s_BandPoleCompensation / (float)s_SampleRate);
 
 					for (unsigned int frame = 0; frame < frameCount; frame++)
 					{
@@ -622,17 +658,43 @@ namespace Egss {
 
 						// One shared input, as with the comb reverb: the
 						// stereo image comes from the taps' panning.
-						state.ImpulseHistory[state.ImpulseWrite] = (dryL + dryR) * 0.5f;
+						float input = (dryL + dryR) * 0.5f;
+
+						// Split three ways. The bands sum back to the input
+						// exactly, which is what makes a broadband response
+						// come out identical to running no splitter at all.
+						float low = input, high = input;
+						for (unsigned int pole = 0; pole < s_BandPoles; pole++)
+						{
+							state.BandLowpass1[pole] += (low - state.BandLowpass1[pole]) * lowCoefficient;
+							low = state.BandLowpass1[pole];
+
+							state.BandLowpass2[pole] += (high - state.BandLowpass2[pole]) * highCoefficient;
+							high = state.BandLowpass2[pole];
+						}
+
+						float bands[s_ReverbBands];
+						bands[0] = low;            // below 500 Hz
+						bands[1] = high - low;     // 500 Hz to 4 kHz
+						bands[2] = input - high;   // above 4 kHz
 
 						float wetL = 0.0f, wetR = 0.0f;
-						for (unsigned int t = 0; t < impulse.Count; t++)
-						{
-							size_t read = (state.ImpulseWrite + historySize
-								- impulse.DelaySamples[t]) % historySize;
 
-							float sample = state.ImpulseHistory[read];
-							wetL += sample * impulse.GainL[t];
-							wetR += sample * impulse.GainR[t];
+						for (unsigned int band = 0; band < s_ReverbBands; band++)
+						{
+							std::vector<float>& history = state.ImpulseHistory[band];
+							history[state.ImpulseWrite] = bands[band];
+
+							const ImpulseSet& set = impulse[band];
+							for (unsigned int t = 0; t < set.Count; t++)
+							{
+								size_t read = (state.ImpulseWrite + historySize
+									- set.DelaySamples[t]) % historySize;
+
+								float sample = history[read];
+								wetL += sample * set.GainL[t];
+								wetR += sample * set.GainR[t];
+							}
 						}
 
 						output[(size_t)frame * s_Channels + 0] = dryL * (1.0f - wet) + wetL * wet;
@@ -1059,9 +1121,12 @@ namespace Egss {
 			count = 0;
 
 		unsigned int slot = state.NextImpulseSet;
-		ImpulseSet& set = state.ImpulseSets[slot];
+		ImpulseSet* sets = state.ImpulseSets[slot];
 
-		const size_t historySize = state.ImpulseHistory.size();
+		for (unsigned int band = 0; band < s_ReverbBands; band++)
+			sets[band].Count = 0;
+
+		const size_t historySize = state.ImpulseHistory[0].size();
 		unsigned int written = 0;
 
 		for (unsigned int i = 0; i < count && written < s_MaxReverbTaps; i++)
@@ -1080,13 +1145,25 @@ namespace Egss {
 			float left, right;
 			PanGains(std::min(std::max(tap.Pan, -1.0f), 1.0f), left, right);
 
-			set.DelaySamples[written] = delay;
-			set.GainL[written] = left * tap.Gain;
-			set.GainR[written] = right * tap.Gain;
+			// A tap with no band goes in all three. Since the bands sum back
+			// to the input, that reproduces a broadband response exactly.
+			unsigned int first = (tap.Band < s_ReverbBands) ? tap.Band : 0;
+			unsigned int last = (tap.Band < s_ReverbBands) ? tap.Band : s_ReverbBands - 1;
+
+			for (unsigned int band = first; band <= last; band++)
+			{
+				ImpulseSet& set = sets[band];
+				if (set.Count >= s_MaxReverbTaps)
+					continue;
+
+				set.DelaySamples[set.Count] = delay;
+				set.GainL[set.Count] = left * tap.Gain;
+				set.GainR[set.Count] = right * tap.Gain;
+				set.Count++;
+			}
+
 			written++;
 		}
-
-		set.Count = written;
 
 		state.ActiveImpulseSet.store(slot, std::memory_order_release);
 		state.NextImpulseSet = (slot + 1) % 4;
@@ -1103,7 +1180,10 @@ namespace Egss {
 		// Switched off before anything else, so the mixer stops reading the
 		// taps before they go.
 		state.ImpulseActive.store(false, std::memory_order_release);
-		state.ImpulseSets[state.ActiveImpulseSet.load(std::memory_order_relaxed)].Count = 0;
+
+		ImpulseSet* sets = state.ImpulseSets[state.ActiveImpulseSet.load(std::memory_order_relaxed)];
+		for (unsigned int band = 0; band < s_ReverbBands; band++)
+			sets[band].Count = 0;
 	}
 
 	void AudioEngine::SetMasterVolume(float volume)

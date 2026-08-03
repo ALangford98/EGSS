@@ -17,6 +17,18 @@ namespace Egss {
 			return (value < 0.0f) ? settings.Absorption : value;
 		}
 
+		// The same surface, per band. Clamped below 1 because a surface that
+		// absorbs everything ends the ray, and clamped above 0 because a
+		// perfect mirror never lets the trace terminate.
+		void BandAbsorptionFor(const AcousticsSettings& settings, unsigned int body,
+			float out[AcousticBandCount])
+		{
+			float base = AbsorptionFor(settings, body);
+
+			for (int band = 0; band < AcousticBandCount; band++)
+				out[band] = glm::clamp(base * settings.BandAbsorptionScale[band], 0.0001f, 0.9999f);
+		}
+
 		// Mirror about the surface normal. The tangential part of the
 		// direction survives, the normal part flips.
 		glm::vec2 Reflect(const glm::vec2& direction, const glm::vec2& normal)
@@ -120,29 +132,8 @@ namespace Egss {
 	{
 		std::vector<ReverbTap> taps;
 
-		if (result.Echogram.empty() || binSeconds <= 0.0f)
+		if (binSeconds <= 0.0f)
 			return taps;
-
-		// The tail runs from the cutoff to the last bin that actually holds
-		// anything -- not to the end of the array, which is mostly zeros.
-		size_t firstBin = (size_t)glm::max(0.0f, std::floor(settings.StartSeconds / binSeconds));
-		size_t lastBin = 0;
-		for (size_t i = result.Echogram.size(); i-- > 0; )
-		{
-			if (result.Echogram[i] > 0.0f) { lastBin = i; break; }
-		}
-
-		if (lastBin <= firstBin)
-			return taps;
-
-		float start = (float)firstBin * binSeconds;
-		float end = (float)(lastBin + 1) * binSeconds;
-		float span = end - start;
-
-		int count = (int)(span * (float)settings.Density);
-		count = glm::clamp(count, 1, glm::min(settings.MaxTaps, (int)AudioEngine::GetMaxReverbTaps()));
-
-		float interval = span / (float)count;
 
 		// A fixed generator rather than std::rand: the same room must give the
 		// same tail every time it is rebuilt, or a stationary listener hears
@@ -155,42 +146,125 @@ namespace Egss {
 		};
 		auto unit = [&next]() { return (float)(next() >> 8) / (float)(1 << 24); };
 
-		taps.reserve(count);
+		// Where each band's tail actually stops. The treble runs out long
+		// before the bass, which is the entire point -- and it means the
+		// treble needs proportionally fewer impulses to cover it.
+		size_t firstBin = (size_t)glm::max(0.0f, std::floor(settings.StartSeconds / binSeconds));
 
-		for (int i = 0; i < count; i++)
+		bool haveBands = false;
+		for (int band = 0; band < AcousticBandCount; band++)
+			haveBands |= !result.BandEchogram[band].empty();
+
+		size_t lastBin[AcousticBandCount] = {};
+		size_t totalSpan = 0;
+
+		for (int band = 0; band < AcousticBandCount; band++)
 		{
-			// One per interval, jittered inside it.
-			float time = start + ((float)i + unit()) * interval;
+			// Falls back to the broadband echogram, so a hand-built result
+			// with only Echogram filled still works.
+			const std::vector<float>& echogram = haveBands
+				? result.BandEchogram[band] : result.Echogram;
 
-			size_t bin = (size_t)(time / binSeconds);
-			if (bin >= result.Echogram.size())
-				continue;
+			// Where the band stops being worth hearing, not where its energy
+			// happens to underflow. Bass and treble reach zero at nearly the
+			// same bin -- the difference is entirely in *when they got quiet*
+			// -- so ending at "non-zero" would give every band the same span
+			// and the same share of the impulse budget.
+			float peak = 0.0f;
+			for (float value : echogram)
+				peak = glm::max(peak, value);
 
-			float energy = result.Echogram[bin];
-			if (energy <= 0.0f)
-				continue;
+			float floor = peak * 1e-6f;   // 60 dB down
+			for (size_t i = echogram.size(); i-- > 0; )
+			{
+				if (echogram[i] > floor) { lastBin[band] = i; break; }
+			}
 
-			// Each impulse stands for its own interval, and carries the energy
-			// the echogram says that interval holds: the bin's energy scaled by
-			// how much of a bin the interval covers.
-			//
-			// Counting impulses per bin instead -- energy / n -- looks
-			// equivalent and is not. At low density an interval is about one
-			// bin wide, jitter pushes taps into neighbouring bins, and bins
-			// left empty lose their energy entirely. That is exactly what a
-			// sparse tail measured 7.5% quiet than a dense one.
-			float amplitude = std::sqrt(energy * interval / binSeconds) * settings.Gain;
+			// Nothing past the mixer's buffer, or the taps are built and then
+			// silently discarded -- which quietly halves the density of the
+			// part that does fit.
+			size_t maxBin = (size_t)(AudioEngine::GetMaxImpulseLength() / binSeconds);
+			lastBin[band] = glm::min(lastBin[band], maxBin > 0 ? maxBin - 1 : 0);
 
-			ReverbTap tap;
-			tap.Delay = time;
-			tap.Gain = (next() & 1u) ? amplitude : -amplitude;
-			// Spread across the field. Correlated pans would collapse the
-			// tail towards the middle, which is the one thing a diffuse tail
-			// should never sound like.
-			tap.Pan = unit() * 2.0f - 1.0f;
-
-			taps.push_back(tap);
+			if (lastBin[band] > firstBin)
+				totalSpan += lastBin[band] + 1 - firstBin;
 		}
+
+		if (totalSpan == 0)
+			return taps;
+
+		int budget = glm::min(settings.MaxTaps, (int)AudioEngine::GetMaxReverbTaps());
+
+		for (int band = 0; band < AcousticBandCount; band++)
+		{
+			const std::vector<float>& echogram = haveBands
+				? result.BandEchogram[band] : result.Echogram;
+
+			if (lastBin[band] <= firstBin)
+				continue;
+
+			float start = (float)firstBin * binSeconds;
+			float end = (float)(lastBin[band] + 1) * binSeconds;
+			float span = end - start;
+
+			int count = (int)(span * (float)settings.Density);
+
+			// The budget is shared out by how much tail each band has to
+			// cover, so a short treble tail does not spend impulses a long
+			// bass tail needs.
+			size_t bandSpan = lastBin[band] + 1 - firstBin;
+			int share = glm::max(1, (int)((double)budget * (double)bandSpan / (double)totalSpan));
+			count = glm::clamp(count, 1, share);
+
+			float interval = span / (float)count;
+
+			for (int i = 0; i < count; i++)
+			{
+				// One per interval, jittered inside it.
+				float time = start + ((float)i + unit()) * interval;
+
+				size_t bin = (size_t)(time / binSeconds);
+				if (bin >= echogram.size())
+					continue;
+
+				float energy = echogram[bin];
+				if (energy <= 0.0f)
+					continue;
+
+				// Each impulse stands for its own interval, and carries the
+				// energy the echogram says that interval holds: the bin's
+				// energy scaled by how much of a bin the interval covers.
+				//
+				// Counting impulses per bin instead -- energy / n -- looks
+				// equivalent and is not. At low density an interval is about
+				// one bin wide, jitter pushes taps into neighbouring bins, and
+				// bins left empty lose their energy entirely. That is exactly
+				// what made a sparse tail measure 7.5% quiet against a dense
+				// one.
+				float amplitude = std::sqrt(energy * interval / binSeconds) * settings.Gain;
+
+				ReverbTap tap;
+				tap.Delay = time;
+				tap.Gain = (next() & 1u) ? amplitude : -amplitude;
+				// Spread across the field. Correlated pans would collapse the
+				// tail towards the middle, which is the one thing a diffuse
+				// tail should never sound like.
+				tap.Pan = unit() * 2.0f - 1.0f;
+				tap.Band = haveBands ? (unsigned int)band : ReverbTap::AllBands;
+
+				taps.push_back(tap);
+			}
+
+			// Without per-band data there is one tail, not three, and running
+			// the loop again would triple it.
+			if (!haveBands)
+				break;
+		}
+
+		// Time order across the bands, which is how a delay line reads them
+		// and how a debug panel wants to show them.
+		std::sort(taps.begin(), taps.end(),
+			[](const ReverbTap& a, const ReverbTap& b) { return a.Delay < b.Delay; });
 
 		return taps;
 	}
@@ -254,6 +328,8 @@ namespace Egss {
 		const size_t binCount = (size_t)glm::max(4.0f, std::ceil(maxTime / binSeconds)) + 1;
 
 		result.Echogram.assign(binCount, 0.0f);
+		for (int band = 0; band < AcousticBandCount; band++)
+			result.BandEchogram[band].assign(binCount, 0.0f);
 
 		// Direction of arrival, accumulated per bin weighted by energy, so a
 		// bin holding several paths points where most of its sound came from.
@@ -265,7 +341,13 @@ namespace Egss {
 		// wall is in the way.
 		float directGain = SpreadingGain(result.DirectDistance, settings.MinDistance);
 		float unoccludedEnergy = directGain * directGain;
-		result.Echogram[0] += unoccludedEnergy * (1.0f - result.Occlusion);
+		float directArriving = unoccludedEnergy * (1.0f - result.Occlusion);
+
+		result.Echogram[0] += directArriving;
+		// The direct sound has not bounced off anything, so it is unfiltered:
+		// every band gets its full share.
+		for (int band = 0; band < AcousticBandCount; band++)
+			result.BandEchogram[band][0] += directArriving;
 
 		// The *reference* for the late/direct ratio is the unoccluded figure.
 		// Measuring against what got through would divide by zero the moment
@@ -283,6 +365,8 @@ namespace Egss {
 		// the average of the two unless the average is weighted by how much
 		// energy meets each.
 		double absorptionWeighted = 0.0, absorptionWeight = 0.0;
+		double bandAbsorptionWeighted[AcousticBandCount] = {};
+		double bandAbsorptionWeight[AcousticBandCount] = {};
 
 		// How far the echogram is genuinely filled, as opposed to zero because
 		// tracing stopped. The decay fit needs to know the difference.
@@ -303,7 +387,14 @@ namespace Egss {
 			glm::vec2 direction(std::cos(angle), std::sin(angle));
 
 			glm::vec2 origin = source;
-			float energy = energyPerRay;
+			// One packet per band. They start equal and diverge as they bounce,
+			// which is the whole point: after a dozen surfaces the treble
+			// packet is a fraction of the bass one.
+			float bandEnergy[AcousticBandCount];
+			for (int band = 0; band < AcousticBandCount; band++)
+				bandEnergy[band] = energyPerRay;
+
+			float energy = energyPerRay;   // broadband, for the summary figures
 			float travelled = 0.0f;
 
 			TracedRay debug;
@@ -356,6 +447,16 @@ namespace Egss {
 				absorptionWeight += (double)energy;
 				energy *= (1.0f - absorption);
 
+				float bandAbsorption[AcousticBandCount];
+				BandAbsorptionFor(settings, hit.Body, bandAbsorption);
+
+				for (int band = 0; band < AcousticBandCount; band++)
+				{
+					bandAbsorptionWeighted[band] += (double)bandAbsorption[band] * (double)bandEnergy[band];
+					bandAbsorptionWeight[band] += (double)bandEnergy[band];
+					bandEnergy[band] *= (1.0f - bandAbsorption[band]);
+				}
+
 				// Off the surface before doing anything else, or the next cast
 				// starts inside the wall it just hit.
 				glm::vec2 surfacePoint = hit.Point + hit.Normal * epsilon;
@@ -390,9 +491,13 @@ namespace Egss {
 							// every measured RT60 come out roughly half of
 							// what the room's absorption says it should be.
 							float spreading = SpreadingGain(listenerDistance, settings.MinDistance);
-							float arriving = energy * spreading * spreading;
+							float attenuation = spreading * spreading;
+							float arriving = energy * attenuation;
 
 							deepestBin = glm::max(deepestBin, bin);
+
+							for (int band = 0; band < AcousticBandCount; band++)
+								result.BandEchogram[band][bin] += bandEnergy[band] * attenuation;
 
 							result.Echogram[bin] += arriving;
 							// Arriving *at* the listener, so pan points back
@@ -417,7 +522,14 @@ namespace Egss {
 				if (carriedAmplitude > settings.AudibleThreshold)
 					effectiveRadius = glm::max(effectiveRadius, glm::length(hit.Point - source));
 
-				if (energy < settings.MinEnergy)
+				// Only give up when *every* band is spent. The bass outlasts
+				// the treble by a long way, and stopping on the broadband
+				// figure would cut the low tail short.
+				bool anyLeft = energy >= settings.MinEnergy;
+				for (int band = 0; band < AcousticBandCount; band++)
+					anyLeft |= bandEnergy[band] >= settings.MinEnergy;
+
+				if (!anyLeft)
 					break;
 
 				direction = Reflect(direction, hit.Normal);
@@ -445,6 +557,18 @@ namespace Egss {
 		// already measured, and is what a game should use when the tail
 		// outlasts what it can afford to trace.
 		result.SabineTime = SabineReverbTime(result.MeanFreePath, result.MeanAbsorption, speed);
+
+		for (int band = 0; band < AcousticBandCount; band++)
+		{
+			result.BandMeanAbsorption[band] = bandAbsorptionWeight[band] > 0.0
+				? (float)(bandAbsorptionWeighted[band] / bandAbsorptionWeight[band])
+				: glm::clamp(settings.Absorption * settings.BandAbsorptionScale[band], 0.0001f, 0.9999f);
+
+			float traced = ReverbTimeFromEchogram(result.BandEchogram[band], binSeconds, deepestBin + 1);
+			result.BandReverbTime[band] = traced > 0.0f
+				? traced
+				: SabineReverbTime(result.MeanFreePath, result.BandMeanAbsorption[band], speed);
+		}
 
 		result.ReverbTimeMeasured = (result.ReverbTime > 0.0f);
 		if (!result.ReverbTimeMeasured)

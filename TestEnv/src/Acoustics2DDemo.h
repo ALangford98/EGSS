@@ -161,6 +161,10 @@ public:
 		// echoes come out systematically too loud or too quiet.
 		settings.MinDistance = s_SourceMinDistance;
 
+		for (int band = 0; band < Egss::AcousticBandCount; band++)
+			settings.BandAbsorptionScale[band] = m_FrequencyDependent
+				? m_BandScale[band] : 1.0f;
+
 		// Measuring the decay needs the trace to run past 25 dB down; the
 		// default budget stops well before that in a live room, which is why
 		// the panel usually says "Sabine fallback".
@@ -469,6 +473,14 @@ public:
 
 		ImGui::Text("Sabine estimate: %.2f s     mean absorption %.2f",
 			m_Result.SabineTime, m_Result.MeanAbsorption);
+
+		ImGui::Text("Per band RT60: %.2f / %.2f / %.2f s   (low / mid / high)",
+			m_Result.BandReverbTime[0], m_Result.BandReverbTime[1], m_Result.BandReverbTime[2]);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Almost everything absorbs treble faster than bass, so the\n"
+				"tail grows duller as it decays rather than just quieter.\n"
+				"That difference is most of what separates a room from a\n"
+				"reverb preset.");
 		ImGui::Text("Mean free path: %.2f m      traced to %.2f s",
 			m_Result.MeanFreePath, m_Result.TracedSeconds);
 		ImGui::Text("Effective radius: %.1f m", m_Result.EffectiveRadius);
@@ -528,6 +540,24 @@ public:
 		m_Dirty |= ImGui::SliderFloat("Absorption", &m_Absorption, 0.01f, 0.95f);
 		m_Dirty |= ImGui::Checkbox("Per-surface absorption", &m_UsePerBodyAbsorption);
 		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("The bright walls are hard, the dark block is soft.\n"
+				"Turn this off to make every surface the same.");
+
+		m_Dirty |= ImGui::Checkbox("Frequency-dependent", &m_FrequencyDependent);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Off: one absorption figure for the whole spectrum, so the\n"
+				"     tail stays the same colour all the way down.\n"
+				"On:  each band absorbed at its own rate. Watch the three\n"
+				"     RT60s above separate.");
+
+		if (m_FrequencyDependent)
+		{
+			m_Dirty |= ImGui::DragFloat3("Band scale", m_BandScale, 0.01f, 0.05f, 4.0f);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Absorption per band as a multiple of the figure above:\n"
+					"low, mid, high. Set all three to 1 for one flat band.");
+		}
+		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("The bright walls are hard, the dark block is soft.\\n"
 				"Turn this off to make every surface the same.");
 		m_Dirty |= ImGui::SliderInt("Max taps", &m_MaxTaps, 1,
@@ -563,8 +593,14 @@ public:
 			m_Dirty |= ImGui::SliderInt("Tail density", &m_TailDensity, 40, 800);
 			m_Dirty |= ImGui::SliderFloat("Tail gain", &m_TailGain, 0.1f, 10.0f);
 
+			int perBand[4] = {};
+			for (const Egss::ReverbTap& tap : m_ImpulseTaps)
+				perBand[glm::min(tap.Band, 3u)]++;
+
 			ImGui::TextDisabled("%zu impulses over %.2f s of traced tail",
 				m_ImpulseTaps.size(), m_Result.TracedSeconds);
+			ImGui::TextDisabled("  %d low, %d mid, %d high  (budget follows tail length)",
+				perBand[0], perBand[1], perBand[2]);
 
 			// The convolution can only be as long as the trace: past that
 			// there is no echogram to turn into impulses.
@@ -630,6 +666,9 @@ private:
 	bool m_UsePerBodyAbsorption = true;
 	int m_MaxTaps = 8;
 	bool m_TraceFullTail = false;
+
+	bool m_FrequencyDependent = true;
+	float m_BandScale[Egss::AcousticBandCount] = { 0.55f, 1.0f, 1.9f };
 
 	bool m_UseConvolution = true;
 	int m_TailDensity = 260;

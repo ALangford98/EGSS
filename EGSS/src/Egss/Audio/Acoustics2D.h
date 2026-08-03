@@ -9,6 +9,13 @@
 
 namespace Egss {
 
+	// Three bands is the fewest that can express the thing that matters: bass
+	// outlasting treble. Real materials are measured in octave bands, but the
+	// audible difference between three and eight is far smaller than the
+	// difference between three and one.
+	enum class AcousticBand { Low = 0, Mid = 1, High = 2 };
+	constexpr int AcousticBandCount = 3;
+
 	// One path from source to listener: a delayed, quietened, directional copy
 	// of the sound.
 	struct EGSS_API ReflectionPath
@@ -30,12 +37,21 @@ namespace Egss {
 		// long before this. It is a safety net, not a quality knob.
 		int MaxBounces = 12;
 
-		// Fraction of *energy* absorbed per bounce. 0 is a mirror, 1 is a
-		// pillow. Real rooms: bare concrete about 0.02, carpet and drapes 0.4.
+		// Fraction of *energy* absorbed per bounce, in the mid band. 0 is a
+		// mirror, 1 is a pillow. Real rooms: bare concrete about 0.02, carpet
+		// and drapes 0.4.
 		float Absorption = 0.25f;
 		// Per-body override, indexed by body handle. Anything past the end, or
 		// negative, falls back to Absorption.
 		const std::vector<float>* PerBodyAbsorption = nullptr;
+
+		// What each band's absorption is, as a multiple of the figure above.
+		//
+		// Almost everything absorbs treble faster than bass -- porous
+		// materials by a lot, hard ones by less -- which is why a real tail
+		// grows duller as it decays rather than just quieter. Setting all
+		// three to 1 gives the old single-band behaviour back.
+		float BandAbsorptionScale[AcousticBandCount] = { 0.55f, 1.0f, 1.9f };
 
 		float SpeedOfSound = 343.0f;
 		// Paths longer than this are dropped: at 343 m/s this is the tail
@@ -96,6 +112,11 @@ namespace Egss {
 		// Sabine needs -- not the average of the materials present.
 		float MeanAbsorption = 0.0f;
 
+		// Per band. High should come out well under Low in any normal room,
+		// and that difference is most of what makes a tail sound real.
+		float BandReverbTime[AcousticBandCount] = {};
+		float BandMeanAbsorption[AcousticBandCount] = {};
+
 		// How far into the echogram anything was actually recorded. Past this
 		// the bins are zero because tracing stopped, not because the room went
 		// quiet, and reading them as decay is how you measure a confidently
@@ -120,8 +141,12 @@ namespace Egss {
 
 		// Energy per BinSeconds, index 0 starting at the direct sound. Kept so
 		// a demo can draw the echogram, which is the only way to see what the
-		// numbers above are summarising.
+		// numbers above are summarising. This is the sum of the three bands.
 		std::vector<float> Echogram;
+
+		// The same, split by band. The reverb needs these separately: one tail
+		// per band is what lets the treble die away first.
+		std::vector<float> BandEchogram[AcousticBandCount];
 	};
 
 	struct EGSS_API ImpulseSettings

@@ -243,12 +243,14 @@ AcousticsSettings settings;
 settings.RayCount = 192;
 settings.Absorption = 0.15f;                    // energy lost per bounce
 settings.PerBodyAbsorption = &absorptionByBody; // optional, indexed by handle
+settings.BandAbsorptionScale[2] = 1.9f;         // treble absorbed ~2x mid
 
 AcousticsResult r = Acoustics2D::Trace(world, sourcePos, listenerPos, settings);
 
 r.Occlusion;          // graded, from five probes across the listener
 r.Reflections;        // delay, gain, arrival direction, bounce count
 r.ReverbTime;         // RT60 -- check ReverbTimeMeasured before trusting it
+r.BandReverbTime[3];  // per band: treble should come out well under bass
 r.EffectiveRadius;    // how far the sound actually carries
 r.Echogram;           // energy per 5 ms bin -- a coarse impulse response,
                       // which is what BuildImpulseTaps convolves with
@@ -332,6 +334,12 @@ a direction. Binned by arrival time, they are the room's impulse response.
 It costs milliseconds, not microseconds, and geometry changes slowly. Trace when
 something has moved enough to matter, not every frame, and never on the audio
 thread.
+
+The tracer works in three frequency bands, because a room absorbing treble
+faster than bass is most of what makes its tail sound like a room. Each ray
+carries three energy packets that start equal and diverge as they bounce, and
+the reverb gets one impulse tail per band. Set every `BandAbsorptionScale` to 1
+for a single flat band.
 
 Two things are worth knowing before you trust a number it gives you:
 

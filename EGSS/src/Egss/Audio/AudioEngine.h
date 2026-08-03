@@ -105,6 +105,15 @@ namespace Egss {
 		float Delay = 0.0f;   // seconds
 		float Gain = 0.0f;    // linear, may be negative
 		float Pan = 0.0f;     // -1 left, +1 right
+
+		// Which frequency band this impulse belongs to: 0 low, 1 mid, 2 high.
+		// AllBands puts it in every one, which is what a broadband response
+		// wants and is the default.
+		//
+		// Giving each band its own tail is what lets treble die away before
+		// bass, which is most of what separates a room from a reverb preset.
+		static constexpr unsigned int AllBands = 3u;
+		unsigned int Band = AllBands;
 	};
 
 	// Refers to a playing voice. Carries a generation counter, so a handle to

@@ -28,6 +28,10 @@ where everything you hear is computed by bouncing rays off walls. See
 > you'd use day to day. Then read `TestEnv/src/Breakout.h`, a commented worked
 > example of building a game on it.
 >
+> **Picking this up after a break?** **[docs/HANDOVER.md](docs/HANDOVER.md)**
+> has the working context: what is in flight, how things get verified here, and
+> the traps that have cost time more than once.
+>
 > **Want to build something?** **[docs/LIGHTING_EXERCISE.md](docs/LIGHTING_EXERCISE.md)**
 > is a staged walkthrough of writing a 2D lighting system, kept in the order it
 > was actually built — including the wrong turns, which are the useful part.
@@ -48,7 +52,7 @@ where everything you hear is computed by bouncing rays off walls. See
 | `TestEnv/assets/` | Sample models; copied next to the executable on build |
 | `premake5.lua` | Build definition — the source of truth for both platforms |
 | `egss.py` | Build/run wrapper; always regenerates, so new files are never missed |
-| `docs/` | `ENGINE.md` (orientation), `LIGHTING_EXERCISE.md` (worked build) |
+| `docs/` | `ENGINE.md` (orientation), `HANDOVER.md` (picking the project up cold), `LIGHTING_EXERCISE.md` (worked build) |
 | `.vscode/` | Editor tasks, IntelliSense config, and debug launch configs |
 
 Project and solution files are generated from `premake5.lua`. Don't hand-edit
@@ -675,9 +679,12 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [ ] **Partitioned FFT convolution.** The convolution reverb takes a *sparse*
       response, which is what the ray tracer produces. A dense recorded impulse
       is 96,000 taps a sample and needs overlap-save with an FFT
-- [ ] **Frequency-dependent absorption.** One absorption figure per surface,
-      not one per band — so a traced room cannot get duller as it decays, which
-      is most of what makes a real tail sound real
+- [ ] **More than three bands, and per-material band curves.** Three is enough
+      to hear bass outlast treble; real materials are measured in octave bands
+      and a soft surface's curve is nothing like a hard one's
+- [ ] **Steeper crossovers.** The band split is complementary one-poles at
+      18 dB/octave, which still leaks enough that a dead treble tail is partly
+      masked by a live bass one
 - [ ] **Scattering coefficients.** Reflections are purely specular, so a smooth
       room leaves gaps in the tail that a real diffusing surface would fill
 - [ ] **3D acoustics.** `Acoustics2D` is 2D because `Raycast` is. A room's floor
@@ -900,6 +907,56 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-03 (frequency-dependent absorption)
+
+Almost everything absorbs treble faster than bass, which is why a real tail
+grows *duller* as it decays rather than just quieter. Until now the tracer
+carried one energy figure per ray and the tail stayed the same colour all the
+way down.
+
+- **Three bands** — low under 500 Hz, mid, high over 4 kHz. Each ray carries
+  three energy packets that start equal and diverge as they bounce; after a
+  dozen surfaces the treble packet is a fraction of the bass one.
+  `BandAbsorptionScale` defaults to `{0.55, 1.0, 1.9}` as multiples of a
+  surface's figure, so the existing single knob still means something. Setting
+  all three to 1 gives the old behaviour back exactly.
+- **`BandReverbTime[3]`**, and an impulse tail per band. The budget is shared
+  by how much tail each band has to cover, so a short treble tail does not
+  spend impulses a long bass tail needs.
+- **A complementary band splitter in the mixer**: two cascaded lowpasses, with
+  the bands read off as `low`, `high - low` and `input - high`. That sums back
+  to the input *exactly* whatever the slope, which is what makes a broadband
+  response transparent — a tap with no band set still comes out at precisely
+  the gain it would have without any splitter.
+
+Two things measurement caught:
+
+- **One-pole crossovers were far too gentle.** At 8 kHz a 6 dB/octave split at
+  4 kHz still puts nearly as much signal in the mid band as the high one, so
+  the two tails averaged together and the treble never audibly died first.
+  Three poles per crossover took the rendered treble decay from 2.28 s to
+  1.78 s against a traced 0.97 s.
+- **A band's tail was being measured to where its energy underflowed**, not to
+  where it stopped being audible. Bass and treble reach zero at nearly the same
+  bin — the difference is entirely in *when they got quiet* — so every band was
+  claiming an equal share of the impulse budget (169/169/168). Ending each tail
+  60 dB below its own peak gives 197/196/107. Taps past the mixer's two-second
+  buffer were also being built and then silently dropped, quietly halving the
+  density of the part that did fit.
+
+Verified with 18 checks. Per-band absorption is exact, and each band's RT60
+matches Eyring fed that band's own figure to within 10% — the same ~10% bias
+the broadband tracer has, for the same reason. The splitter reconstructs its
+input to 6e-8. End to end, in a room traced and rendered through the whole
+chain: **the tail measures 15.4 dB darker late than early.**
+
+The rendered per-band decays are only checked to an order of magnitude, and
+deliberately. Once a band's own tail has died, what remains in that band of any
+analysis is leakage from its neighbours — and the bass tail is still 20 dB
+louder at that point, so it drags the measured figure towards its own. The
+treble/bass energy ratio is the honest test: contamination can only weaken it,
+so seeing 15 dB survive is evidence the effect is really there.
 
 ### 2026-08-02 (convolution reverb)
 
