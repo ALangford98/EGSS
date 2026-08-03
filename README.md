@@ -669,10 +669,6 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       at an edge should not share vertices; today both count as "smooth"
 - [ ] **Per-object materials.** Every mesh in the 3D scene shares one shader
       and one texture. See material handling above
-- [ ] **Per-pixel 2D lighting.** Surfaces are shaded per *body*, so a long wall
-      lights uniformly instead of brightest nearest the light. The fix is a
-      shader that samples the light polygon — the biggest visual step left in
-      the 2D renderer
 - [ ] **Physics: rotation.** Bodies translate but never spin. Needs SAT for
       oriented shapes, multi-point manifolds and angular impulses
 
@@ -682,9 +678,6 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [ ] **More than three bands, and per-material band curves.** Three is enough
       to hear bass outlast treble; real materials are measured in octave bands
       and a soft surface's curve is nothing like a hard one's
-- [ ] **Steeper crossovers.** The band split is complementary one-poles at
-      18 dB/octave, which still leaks enough that a dead treble tail is partly
-      masked by a live bass one
 - [ ] **3D acoustics.** `Acoustics2D` is 2D because `Raycast` is. A room's floor
       and ceiling are half its reflecting area, so a traced RT60 is longer than
       the same room in 3D
@@ -905,6 +898,146 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-03 (per-pixel 2D lighting)
+
+Surfaces were shaded per *body*: one raycast from each light to each body's
+centre, one colour for the whole body. A wall is as bright at its far end as
+under the lamp, and no amount of care in that calculation fixes it — the
+question has one answer per object.
+
+The fix is an order swap, not a better calculation. The light polygons go down
+**first**, onto a buffer cleared to ambient, which makes that buffer a light
+map: every pixel holds how much light reaches it, and the visibility polygon
+has already done the shadow test per direction. The surfaces are then drawn
+over it with **`BlendMode::Multiply`**, giving `albedo * light` per pixel.
+
+- **`BlendMode::Multiply`** (`GL_DST_COLOR, GL_ZERO`) is the one new engine
+  primitive. Additive can only ever brighten; it cannot tint, so a red wall
+  under a white lamp came out white.
+- **Surfaces have an albedo** now, from a small palette. With everything white
+  the difference between multiplying and adding is invisible, which is exactly
+  the case that hides the bug.
+- **The old path is kept behind a toggle.** Flipping between them on a long
+  wall is the entire point, and is far more convincing than a description.
+
+Ambient is now the clear colour rather than a term added per body, so a pixel
+no light reaches holds exactly the ambient value — which is what would make the
+unlit case checkable by reading one pixel back.
+
+One thing found while setting up to measure it, which is a correction to a
+comment rather than a bug: **the rendered falloff is quadratic, not linear.**
+`Falloff` returns a linear `1 - d/r`, and `DrawLight` scales both the vertex
+colour *and* its alpha by it — then additive blending (`GL_SRC_ALPHA, GL_ONE`)
+contributes `rgb * alpha`, multiplying the two together. So what lands in the
+buffer falls off as f², and has since the light polygon was first written. It
+looks more natural than the law it is computed from, which is presumably why it
+was never questioned. It also means the hardware interpolation is not exact
+along a fan triangle: f is interpolated and then squared per fragment, which is
+not the same as interpolating f².
+
+**Verified numerically — 27 checks, all passing.** `Framebuffer::ReadPixel`
+only reads the integer attachment, so this needed one new engine call:
+**`Framebuffer::ReadPixelRGBA`**, which reads a colour attachment back as 0..1
+floats. With it, a throwaway test rendered into a 256×256 off-screen buffer and
+compared individual pixels against arithmetic worked out by hand. RGBA8
+quantises to 1/255, so the tolerance was one to three of those steps depending
+on how many blends deep the value was; nothing needed more than 2.4.
+
+What it established:
+
+- `Multiply` really is `dst * src`, and **ignores the source alpha** — worth
+  pinning down, since every other blend mode in the engine uses it.
+- Additive contributes exactly `rgb * alpha` (0.8 at alpha 0.5 reads 0.4000).
+- **The falloff exponent, fitted rather than asserted: 2.0093.** Two samples on
+  a fan triangle's median, `p = log(c₁/c₂) / log(f₁/f₂)`. Linear falloff would
+  have given 1.0. That is the f² finding above, measured rather than reasoned
+  about.
+- The composite holds per channel: `albedo × light`, agreeing to within half a
+  step, and the channel *ratios* stay the albedo's — the red surface is still
+  red under the white lamp, which was the whole reason for the multiply.
+- An unlit pixel reads `albedo × ambient`, confirming ambient really is only
+  the clear colour.
+
+And a number that was worth having: **the fan's chord sag is 1.8%.** The
+interpolated falloff runs out along the chord between two rim vertices, which is
+shorter than the radius by `cos θ`, so the light dims slightly too fast in the
+middle of a triangle. At a deliberately extreme 45° the reading is 38.1% below
+ideal — but the demo's ring is clamped to at least 16 rays, and at that floor
+the error is 1.8%. Real, quantified, and not worth fixing. Measuring the worst
+case the code can actually reach, rather than the worst case that can be
+constructed, is what turned this from a defect into a footnote.
+
+### 2026-08-03 (the band splitter, rebuilt)
+
+The roadmap asked for *steeper* crossovers. Measuring first showed steeper
+crossovers could not have worked, and that the slope was never the problem.
+
+The old splitter took a cascade of one-pole lowpasses and read the three bands
+off by subtraction — `low`, `mid − low`, `input − mid`. That guarantees the
+bands sum back to the input exactly, whatever the filters are, which is a real
+and useful property. But **a subtracted band rejects the other side at
+6 dB/octave no matter how steep the filter is**: `1 − Hᴺ` has a single
+first-order zero however large `N` gets. Measured, the treble band's bass
+rejection came out at 6.02 dB/octave with one pole per crossover, with three,
+with six and with twelve. Going from one pole to three had visibly improved
+things earlier, which made "add more poles" look like the obvious next step —
+it improved the *lowpass skirts*, and did nothing at all for the leak that
+mattered.
+
+At 100 Hz the treble band sat only **33 dB** down. The bass tail is still
+around 20 dB louder than the treble one at the point where treble has died, so
+that leak was most of why a dead treble tail stayed audibly masked.
+
+- **4th-order Butterworth per band**, two biquad sections each, in transposed
+  direct form II. Low is a lowpass, high a highpass, mid a highpass into a
+  lowpass. 24 dB/octave on every skirt.
+- **Amplitude-complementary is replaced by power-complementary.** Butterworth
+  gives `|LP|² + |HP|² = 1` exactly at every order, and power is the right
+  thing to conserve here: a diffuse tail is incoherent taps, so it is energy
+  that has to survive the split, not amplitude.
+- **A fourth, unfiltered convolution path** for taps belonging to no band.
+  Exact broadband response was the one thing the old topology bought, so it is
+  kept — by not filtering broadband taps at all rather than by reassembling
+  them from three filtered copies. It is now bit-exact instead of 6e-8, and
+  costs **one** convolution instead of three.
+
+Measured through `RenderForTest`, against the transfer functions worked out
+independently:
+
+| | 100 Hz | 500 Hz | 1 kHz | 4 kHz | 8 kHz |
+| --- | --- | --- | --- | --- | --- |
+| low | −0.0 | −3.0 | −24.1 | −73.0 | −85.2 |
+| mid | −55.9 | −3.0 | −0.0 | −3.0 | −26.7 |
+| high | −101.9 | −72.9 | −48.9 | −3.0 | −0.0 |
+| *predicted* | *−129.0* | *−73.0* | *−48.9* | *−3.0* | *−0.0* |
+
+Every band matches prediction to within 0.1 dB wherever the prediction is above
+−70 dB, the three bands' powers sum to unity to within 0.5 dB at every
+frequency tested, and the rejection slope measures **24.2 dB/octave** against
+the old 6.0. Treble band at 100 Hz: **−101.9 dB, from −33.2 dB.**
+
+Three things measurement caught:
+
+- **Everything read exactly zero at first.** `StopAll` only *requests* a stop;
+  the mixer notices the flag on its next block, deactivates every voice and
+  returns silence for that block. The test called it and then immediately
+  started the voice it wanted to measure, so the first render killed it. The
+  flag has to be flushed through before setting up.
+- **Then everything read exactly 6.0 dB low** — a constant offset, which is the
+  signature of a term the *measurement* forgot rather than a filter that is
+  wrong. A centred mono voice puts √½ in each channel and a centred tap does it
+  again, so two constant-power pans multiply to exactly ½.
+- **The filter is better than float32 can show.** The prediction at 100 Hz is
+  −129 dB; the measurement bottoms out around −102. The mix, the biquad states
+  and the convolution accumulator all carry about seven decimal digits, so a
+  response 100 dB down is within two decades of the epsilon and what comes back
+  is arithmetic noise. Measuring the rejection *slope* down there gave
+  6.5 dB/octave — two points in the same noise floor, which looks exactly like
+  a filter that does not roll off. The slope is measured at 1–2 kHz instead,
+  where the response is real.
+
+Verified with 21 checks.
 
 ### 2026-08-03 (scattering coefficients)
 

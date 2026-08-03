@@ -3,6 +3,8 @@
 #include "egsspch.h"
 #include "Egss/Core.h"
 
+#include <glm/glm.hpp>
+
 namespace Egss {
 
 	enum class FramebufferTextureFormat
@@ -57,6 +59,13 @@ namespace Egss {
 		// stalls the pipeline -- fine once per frame under the cursor, not
 		// something to do in a loop. Requires the framebuffer to be bound.
 		virtual int ReadPixel(unsigned int attachmentIndex, int x, int y) = 0;
+
+		// The same, for a colour attachment: one pixel back as 0..1 floats.
+		// This is what makes a *shaded* result checkable rather than merely
+		// visible -- render a frame, read a pixel, compare it to arithmetic
+		// worked out by hand. RGBA8 quantises to 1/255, so expect agreement to
+		// about 0.004 and no better.
+		virtual glm::vec4 ReadPixelRGBA(unsigned int attachmentIndex, int x, int y) = 0;
 
 		// Integer attachments cannot be cleared by glClear, which only carries
 		// a float colour, so they need clearing separately.

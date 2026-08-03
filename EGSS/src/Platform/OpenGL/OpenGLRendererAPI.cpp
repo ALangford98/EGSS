@@ -122,6 +122,14 @@ namespace Egss {
 				glBlendFunc(GL_SRC_ALPHA, GL_ONE);
 				return;
 
+			case BlendMode::Multiply:
+				// dst * src, with the destination contributing nothing of its
+				// own beyond that. GL_ZERO for the source factor is what makes
+				// it a pure product rather than a sum of one.
+				glEnable(GL_BLEND);
+				glBlendFunc(GL_DST_COLOR, GL_ZERO);
+				return;
+
 			case BlendMode::None:
 				glDisable(GL_BLEND);
 				return;

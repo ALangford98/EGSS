@@ -31,12 +31,17 @@ Reading order for a newcomer:
 ## Current state
 
 **Check `git log` and `git status` first — this section goes stale quickly.**
-At the time of writing, `HEAD` was `6266d8e` "added convolution reverb driven
-by the ray-traced room acoustics", with two pieces of work verified, building
-in all three configs, and uncommitted: **frequency-dependent absorption**
-(three bands through the tracer and the reverb) and **scattering coefficients**
-(diffuse reflection, which took the traced RT60's bias over the diffuse-field
-formula from +9.9% to +2.1%).
+At the time of writing, `HEAD` was `37f8e41` "Added Scattering and
+PerBodyScattering in AcousticsSettings" — the acoustics work (frequency-
+dependent absorption, then scattering coefficients) is committed. Uncommitted,
+building in all three configs:
+
+- a **rebuilt band splitter** — 4th-order Butterworth per band plus a fourth
+  unfiltered path for broadband taps, which took the treble band's bass
+  rejection from −33 dB to −102 dB at 100 Hz. Verified, 21 checks.
+- **per-pixel 2D lighting** — a light map plus a new `BlendMode::Multiply`,
+  and `Framebuffer::ReadPixelRGBA` so the result could be checked. Verified,
+  27 checks.
 
 The owner commits their own work, often between sessions and sometimes while
 a reply is being written. **Do not commit or push unless asked**, and do not
@@ -47,13 +52,13 @@ assume something is still outstanding because a previous message said so.
 | Area | Where | Notes |
 | --- | --- | --- |
 | Core loop | `Application`, `Layer`, `LayerStack` | Fixed timestep + render interpolation. `OnFixedUpdate` is simulation, `OnUpdate` is presentation |
-| Renderer 2D | `Renderer2D` | Three batches: quads (indexed), lines, triangles. One draw call each |
+| Renderer 2D | `Renderer2D` | Three batches: quads (indexed), lines, triangles. One draw call each. Blend modes: Alpha, Additive, Multiply |
 | Renderer 3D | `Renderer`, `Mesh`, `ObjLoader` | `Submit` per mesh, no batching. `.obj` loading with smoothing groups |
 | Cameras | `Camera` base, `Orthographic`, `Perspective` | `BeginScene` takes any `Camera` |
 | Framebuffers | `Framebuffer` | `RED_INTEGER` attachment drives pixel-exact picking |
 | Scene | `Scene`, `Entity`, `ComponentStore` | ECS-lite: dense arrays, generational handles |
 | Physics | `PhysicsWorld2D`, `RigidBody2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. **No rotation** |
-| Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb |
+| Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb behind a 4th-order Butterworth splitter |
 | Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
 | Profiling | `Instrumentor` | `EGSS_PROFILE_SCOPE`, live panel, Chrome trace |
 
@@ -200,6 +205,20 @@ numbers say it *is* right.
 - **Picking stores the slot index, not the `EntityId`.** A handle whose
   generation passes 2047 exceeds `INT_MAX` and reads back negative from a
   signed integer texture.
+- **`AudioEngine::StopAll` only *requests* a stop.** The mixer notices the flag
+  on its next block, deactivates every voice and returns silence for that
+  block. Call it and then immediately start the voice you meant to measure and
+  the first render kills it — every reading comes back as exactly zero. Flush
+  a throwaway block through before setting up.
+- **A constant dB offset across every measurement is the measurement's fault.**
+  A centred mono voice puts √½ in each channel and a centred tap does it again,
+  so anything read back through the reverb carries an extra factor of ½ that
+  has nothing to do with what is being measured.
+- **float32 bottoms out around −100 dB in the audio path.** The mix, the filter
+  states and the convolution accumulator all carry about seven decimal digits.
+  A filter designed to reject by 129 dB measures about 102, and *slopes* taken
+  between two points down there are pure noise — which reads exactly like a
+  filter that does not roll off.
 - **The audio thread must never allocate, lock, or block.** Buffers are sized
   when the voice or state is constructed. Parameter updates publish whole
   structs by rotating through a ring and releasing an index.
@@ -245,18 +264,18 @@ for `TestEnv`; vendor a premake binary; multi-viewport ImGui.
 rotate/scale gizmo handles; `.obj` smoothing *groups* rather than the on/off
 flag.
 
-**2D** — per-pixel lighting (surfaces shade per *body*, so a long wall lights
-uniformly — the biggest visual step left in the 2D renderer).
+**2D** — per-pixel lighting is done and verified (light map, then
+`BlendMode::Multiply` for surfaces; 27 checks through `ReadPixelRGBA`). Nothing
+outstanding in this cluster, which makes it the thinnest one on the list.
 
 **Physics** — rotation. Bodies translate but never spin; needs SAT, multi-point
 manifolds and angular impulses. The hardest item on the list.
 
 **Acoustics**, the most recently active area — 3D acoustics (`Acoustics2D` is
 2D because `Raycast` is); partitioned FFT convolution (for dense recorded
-impulses); more bands with per-material curves; steeper crossovers.
-**Per-band scattering** is the natural follow-on now that scattering exists:
-it needs one ray per band, since a ray carries three energy packets but only
-one direction.
+impulses); more bands with per-material curves. **Per-band scattering** is the
+natural follow-on now that scattering exists: it needs one ray per band, since
+a ray carries three energy packets but only one direction.
 
 ### Known approximations, stated so they are not mistaken for bugs
 
@@ -278,9 +297,24 @@ one direction.
 - Rendered per-band decays read slower than traced ones. Once a band's tail has
   died, what remains in that band of any analysis is leakage from its
   neighbours, and the bass tail is still ~20 dB louder. The treble/bass ratio
-  is the honest measure — it shows 15.4 dB of darkening end to end.
+  is the honest measure — it showed 15.4 dB of darkening end to end.
+  **That figure predates the splitter rebuild and has not been re-measured.**
+  The leak it was fighting went from −33 dB to −102 dB at 100 Hz, so the
+  end-to-end number should now be better; nobody has checked how much. Doing
+  that measurement again is a cheap, worthwhile piece of work.
 - 2D acoustics overstates reverb time: a real room's floor and ceiling are half
   its reflecting area.
+- **The 2D light's rendered falloff is f², not the linear f the vertex colours
+  describe.** `DrawLight` scales colour *and* alpha by the same `f`, and
+  additive blending contributes `rgb * alpha`, so they multiply. This has been
+  true since the light polygon was written; a comment in `Lighting2D.h` claimed
+  otherwise until it was corrected. Measured exponent: 2.0093. It is arguably
+  the better look — closer to inverse-square — so it was left alone rather
+  than "fixed".
+- The light fan's interpolated falloff follows the **chord**, not the radius, so
+  it dims slightly too fast mid-triangle. Measured at the ring's floor of 16
+  rays it is 1.8%, and at a contrived 45° it is 38%. Known, quantified,
+  deliberately not fixed.
 
 ---
 

@@ -65,19 +65,39 @@ namespace Egss {
 		constexpr float s_BandCrossoverLowHz = 500.0f;
 		constexpr float s_BandCrossoverHighHz = 4000.0f;
 
-		// Each crossover is three one-poles in series -- 18 dB per octave
-		// rather than 6. A single pole leaks far too much to be useful here:
-		// at 8 kHz a one-pole split at 4 kHz still puts nearly as much signal
-		// in the mid band as the high one, so the two tails average together
-		// and the treble never audibly dies first.
+		// A fourth convolution path for taps that belong to no band. It reads
+		// the *unfiltered* mix, so a broadband response is bit-exact rather
+		// than merely close, and it costs one convolution instead of the three
+		// the old splitter needed to reassemble one.
+		constexpr unsigned int s_ReverbBroadband = s_ReverbBands;
+		constexpr unsigned int s_ReverbPaths = s_ReverbBands + 1;
+
+		// Each band is a 4th-order Butterworth filter: 24 dB per octave, built
+		// as two biquad sections.
 		//
-		// Complementary subtraction keeps the three bands summing back to the
-		// input exactly whatever the slope, which is what makes a broadband
-		// response transparent.
-		constexpr unsigned int s_BandPoles = 3;
-		// Cascading N one-poles moves the -3 dB point down to fc * sqrt(2^(1/N) - 1);
-		// this puts it back where the constants above say it is.
-		constexpr float s_BandPoleCompensation = 1.9614f;
+		// This replaced a cascade of one-poles read off by complementary
+		// subtraction -- low, (mid - low), (input - mid). That topology has one
+		// attractive property, that the bands sum back to the input exactly
+		// whatever the filters are, and one fatal one: **a subtracted band
+		// rejects the other side at 6 dB per octave no matter how steep the
+		// filter is.** 1 - H^N has a single first-order zero however large N
+		// gets, so the high band's bass rejection measured 6.02 dB/octave at
+		// one pole, at three, and at twelve. Adding poles could never have
+		// fixed it. At 100 Hz the high band sat only 33 dB down, which is
+		// nothing next to a bass tail that is still 20 dB louder -- so a dead
+		// treble tail stayed audibly masked by a live bass one.
+		//
+		// Proper Butterworth bands reject at 24 dB/octave and put that same
+		// 100 Hz leak at -129 dB. They do not sum to unity in amplitude, but
+		// they do in *power* (|LP|^2 + |HP|^2 = 1 is exact for Butterworth at
+		// every order), which is the right property here: a diffuse tail is
+		// incoherent taps, so its energy is what has to be preserved.
+		//
+		// Exact broadband transparency is kept by not filtering broadband taps
+		// at all -- see s_ReverbBroadband.
+		constexpr unsigned int s_BiquadSections = 2;
+		// Section Qs for a 4th-order Butterworth, from the pole angles.
+		constexpr float s_ButterworthQ[s_BiquadSections] = { 0.54119610f, 1.30656296f };
 
 		// Seconds to crossfade between reverb settings, so stepping through a
 		// doorway is a change of room rather than a click.
@@ -292,6 +312,106 @@ namespace Egss {
 			std::atomic<float> DebugOcclusion{ 0.0f };
 		};
 
+		// One second-order section, in transposed direct form II: two state
+		// words rather than four, and the accumulation happens before the
+		// state update, which keeps the rounding better behaved than the
+		// textbook form at the low cutoffs used here.
+		struct Biquad
+		{
+			float B0 = 1.0f, B1 = 0.0f, B2 = 0.0f;
+			float A1 = 0.0f, A2 = 0.0f;
+			float S1 = 0.0f, S2 = 0.0f;
+
+			float Process(float x)
+			{
+				float y = B0 * x + S1;
+				S1 = B1 * x - A1 * y + S2;
+				S2 = B2 * x - A2 * y;
+				return y;
+			}
+
+			void Reset() { S1 = 0.0f; S2 = 0.0f; }
+
+			// RBJ cookbook, normalised by a0. `highpass` picks which numerator
+			// to use; the denominator is the same either way, which is what
+			// makes a matched pair power-complementary.
+			void Design(float cutoffHz, float q, bool highpass)
+			{
+				float w0 = 6.2831853f * cutoffHz / (float)s_SampleRate;
+				float cosW0 = std::cos(w0);
+				float alpha = std::sin(w0) / (2.0f * q);
+
+				float a0 = 1.0f + alpha;
+				A1 = (-2.0f * cosW0) / a0;
+				A2 = (1.0f - alpha) / a0;
+
+				if (highpass)
+				{
+					B0 = ((1.0f + cosW0) * 0.5f) / a0;
+					B1 = (-(1.0f + cosW0)) / a0;
+					B2 = B0;
+				}
+				else
+				{
+					B0 = ((1.0f - cosW0) * 0.5f) / a0;
+					B1 = ((1.0f - cosW0)) / a0;
+					B2 = B0;
+				}
+			}
+		};
+
+		// The three band filters. Low is a lowpass, high a highpass, and mid a
+		// highpass into a lowpass -- so mid runs twice the sections of the
+		// other two, which is simply what a bandpass costs.
+		struct BandSplitter
+		{
+			Biquad Low[s_BiquadSections];
+			Biquad MidHigh[s_BiquadSections];    // removes everything below 500
+			Biquad MidLow[s_BiquadSections];     // then everything above 4k
+			Biquad High[s_BiquadSections];
+
+			void Design()
+			{
+				for (unsigned int i = 0; i < s_BiquadSections; i++)
+				{
+					Low[i].Design(s_BandCrossoverLowHz, s_ButterworthQ[i], false);
+					MidHigh[i].Design(s_BandCrossoverLowHz, s_ButterworthQ[i], true);
+					MidLow[i].Design(s_BandCrossoverHighHz, s_ButterworthQ[i], false);
+					High[i].Design(s_BandCrossoverHighHz, s_ButterworthQ[i], true);
+				}
+			}
+
+			void Reset()
+			{
+				for (unsigned int i = 0; i < s_BiquadSections; i++)
+				{
+					Low[i].Reset(); MidHigh[i].Reset();
+					MidLow[i].Reset(); High[i].Reset();
+				}
+			}
+
+			// Splits one sample three ways. The broadband path does not come
+			// through here at all -- it reads the input directly.
+			void Split(float input, float out[s_ReverbBands])
+			{
+				float low = input, mid = input, high = input;
+
+				for (unsigned int i = 0; i < s_BiquadSections; i++)
+				{
+					low = Low[i].Process(low);
+					mid = MidHigh[i].Process(mid);
+					high = High[i].Process(high);
+				}
+
+				for (unsigned int i = 0; i < s_BiquadSections; i++)
+					mid = MidLow[i].Process(mid);
+
+				out[0] = low;
+				out[1] = mid;
+				out[2] = high;
+			}
+		};
+
 		// The room's response, published whole. Same rotation trick as the
 		// per-voice reflection taps.
 		struct ImpulseSet
@@ -311,6 +431,10 @@ namespace Egss {
 				// which is always on the main thread.
 				for (std::vector<float>& history : ImpulseHistory)
 					history.assign((size_t)(s_MaxImpulseSeconds * (float)s_SampleRate), 0.0f);
+
+				// Cutoffs and sample rate are fixed, so the coefficients are
+				// worked out once here rather than per callback.
+				Splitter.Design();
 			}
 
 			ma_device Device;
@@ -336,17 +460,13 @@ namespace Egss {
 			// What the mix sounded like recently, so a tap can read it back --
 			// one history per band, holding that band's share of the signal.
 			// Audio thread only; sized once, below.
-			std::vector<float> ImpulseHistory[s_ReverbBands];
+			// Four now: three bands plus the unfiltered broadband path.
+			std::vector<float> ImpulseHistory[s_ReverbPaths];
 			unsigned int ImpulseWrite = 0;
 
-			// The band splitter's state. Two one-pole lowpasses, and the three
-			// bands are read off as low, (mid - low) and (input - mid) -- which
-			// sums back to the input exactly, so a broadband response behaves
-			// as if the splitter were not there at all.
-			float BandLowpass1[s_BandPoles] = {};
-			float BandLowpass2[s_BandPoles] = {};
+			BandSplitter Splitter;
 
-			ImpulseSet ImpulseSets[4][s_ReverbBands];
+			ImpulseSet ImpulseSets[4][s_ReverbPaths];
 			std::atomic<unsigned int> ActiveImpulseSet{ 0 };
 			unsigned int NextImpulseSet = 0;
 			// Read by the mixer to decide which reverb to run at all.
@@ -644,13 +764,6 @@ namespace Egss {
 					const size_t historySize = state.ImpulseHistory[0].size();
 					float wet = std::min(std::max(state.SmoothedWet, 0.0f), 1.0f);
 
-					// One-pole coefficients for the two crossover points, with
-					// the cascade compensated for.
-					float lowCoefficient = 1.0f - std::exp(-6.2831853f
-						* s_BandCrossoverLowHz * s_BandPoleCompensation / (float)s_SampleRate);
-					float highCoefficient = 1.0f - std::exp(-6.2831853f
-						* s_BandCrossoverHighHz * s_BandPoleCompensation / (float)s_SampleRate);
-
 					for (unsigned int frame = 0; frame < frameCount; frame++)
 					{
 						float dryL = output[(size_t)frame * s_Channels + 0];
@@ -660,32 +773,20 @@ namespace Egss {
 						// stereo image comes from the taps' panning.
 						float input = (dryL + dryR) * 0.5f;
 
-						// Split three ways. The bands sum back to the input
-						// exactly, which is what makes a broadband response
-						// come out identical to running no splitter at all.
-						float low = input, high = input;
-						for (unsigned int pole = 0; pole < s_BandPoles; pole++)
-						{
-							state.BandLowpass1[pole] += (low - state.BandLowpass1[pole]) * lowCoefficient;
-							low = state.BandLowpass1[pole];
-
-							state.BandLowpass2[pole] += (high - state.BandLowpass2[pole]) * highCoefficient;
-							high = state.BandLowpass2[pole];
-						}
-
-						float bands[s_ReverbBands];
-						bands[0] = low;            // below 500 Hz
-						bands[1] = high - low;     // 500 Hz to 4 kHz
-						bands[2] = input - high;   // above 4 kHz
+						// Three filtered bands, plus the input untouched for
+						// taps that belong to no band.
+						float paths[s_ReverbPaths];
+						state.Splitter.Split(input, paths);
+						paths[s_ReverbBroadband] = input;
 
 						float wetL = 0.0f, wetR = 0.0f;
 
-						for (unsigned int band = 0; band < s_ReverbBands; band++)
+						for (unsigned int band = 0; band < s_ReverbPaths; band++)
 						{
-							std::vector<float>& history = state.ImpulseHistory[band];
-							history[state.ImpulseWrite] = bands[band];
-
 							const ImpulseSet& set = impulse[band];
+
+							std::vector<float>& history = state.ImpulseHistory[band];
+							history[state.ImpulseWrite] = paths[band];
 							for (unsigned int t = 0; t < set.Count; t++)
 							{
 								size_t read = (state.ImpulseWrite + historySize
@@ -844,6 +945,11 @@ namespace Egss {
 		// Allocated once, here, so the audio thread never allocates.
 		state.ReverbLeft.Resize(0);
 		state.ReverbRight.Resize(s_StereoSpread);
+
+		// A fresh engine must filter identically to any other fresh engine, or
+		// a test that shuts the device down and renders offline picks up
+		// whatever the last session left in the biquads.
+		state.Splitter.Reset();
 
 		ma_device_config config = ma_device_config_init(ma_device_type_playback);
 		config.playback.format = ma_format_f32;
@@ -1123,7 +1229,7 @@ namespace Egss {
 		unsigned int slot = state.NextImpulseSet;
 		ImpulseSet* sets = state.ImpulseSets[slot];
 
-		for (unsigned int band = 0; band < s_ReverbBands; band++)
+		for (unsigned int band = 0; band < s_ReverbPaths; band++)
 			sets[band].Count = 0;
 
 		const size_t historySize = state.ImpulseHistory[0].size();
@@ -1145,22 +1251,20 @@ namespace Egss {
 			float left, right;
 			PanGains(std::min(std::max(tap.Pan, -1.0f), 1.0f), left, right);
 
-			// A tap with no band goes in all three. Since the bands sum back
-			// to the input, that reproduces a broadband response exactly.
-			unsigned int first = (tap.Band < s_ReverbBands) ? tap.Band : 0;
-			unsigned int last = (tap.Band < s_ReverbBands) ? tap.Band : s_ReverbBands - 1;
+			// A tap with no band goes down the unfiltered path, which is one
+			// convolution rather than the three the old splitter needed to
+			// reassemble a broadband response -- and exact rather than close,
+			// since nothing filters it on the way.
+			unsigned int path = (tap.Band < s_ReverbBands) ? tap.Band : s_ReverbBroadband;
 
-			for (unsigned int band = first; band <= last; band++)
-			{
-				ImpulseSet& set = sets[band];
-				if (set.Count >= s_MaxReverbTaps)
-					continue;
+			ImpulseSet& set = sets[path];
+			if (set.Count >= s_MaxReverbTaps)
+				continue;
 
-				set.DelaySamples[set.Count] = delay;
-				set.GainL[set.Count] = left * tap.Gain;
-				set.GainR[set.Count] = right * tap.Gain;
-				set.Count++;
-			}
+			set.DelaySamples[set.Count] = delay;
+			set.GainL[set.Count] = left * tap.Gain;
+			set.GainR[set.Count] = right * tap.Gain;
+			set.Count++;
 
 			written++;
 		}
@@ -1182,7 +1286,7 @@ namespace Egss {
 		state.ImpulseActive.store(false, std::memory_order_release);
 
 		ImpulseSet* sets = state.ImpulseSets[state.ActiveImpulseSet.load(std::memory_order_relaxed)];
-		for (unsigned int band = 0; band < s_ReverbBands; band++)
+		for (unsigned int band = 0; band < s_ReverbPaths; band++)
 			sets[band].Count = 0;
 	}
 

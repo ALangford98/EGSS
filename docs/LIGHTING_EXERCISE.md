@@ -24,6 +24,7 @@ already there:
 | `Renderer2D::DrawTriangle` | Stage 3 | a copy of the line batch; shares its shader |
 | `Renderer2D::DrawCircle` | Stage 4b | a fan of triangles, so it joins that same batch |
 | `RigidBody2D::MakeStaticCircle` | Stage 4b | symmetric with `MakeStaticBox` |
+| `BlendMode::Multiply` | Stage 5 | what turns the light polygons into a light *map* |
 
 Everything the light draws — polygon, circles, obstacles — still costs **3 draw
 calls** total, because each primitive type is one batch however much you submit.
@@ -300,7 +301,11 @@ keep are the ones aimed at geometry, which hit early and are no cheaper.
 
 - **Falloff.** Fade the triangle colour with distance from the light. Per-vertex
   colour already exists, so give the outer two vertices a dimmer colour than
-  the centre.
+  the centre. Watch what the blend mode does to it: scaling *both* the colour
+  and the alpha by the same factor gives you f², not f, because additive
+  blending contributes `rgb * alpha`. That is what `DrawLight` actually does,
+  and it went unnoticed for a long time — until the exponent was fitted from
+  pixels read back off-screen and came out at 2.0093 rather than 1.
 - **Several lights.** Different colours, additive blending. Now you want the
   blend-mode change from Stage 3.
 - **Soft edges.** Cast three rays a degree or two apart and average — the same
@@ -316,6 +321,13 @@ keep are the ones aimed at geometry, which hit early and are no cheaper.
   was 21x cheaper there than in Debug.
 - **Sound too.** You already have `SetVoiceOcclusion` and `Raycast` — a source
   in shadow could be muffled by the same rays that darken it.
+- **Light the surfaces per pixel.** *(Done — it's the default in the demo now.)*
+  Shading each body by the light reaching its centre is wrong the moment a body
+  is bigger than a light. Instead: clear to ambient, draw the light polygons
+  additively so the framebuffer *becomes* a light map, then draw the surfaces
+  over it with `BlendMode::Multiply` in their own colours. Every fragment ends
+  up `albedo × light`. The order is the whole trick — multiply reads what is
+  already there, so the light has to be drawn first.
 
 ---
 

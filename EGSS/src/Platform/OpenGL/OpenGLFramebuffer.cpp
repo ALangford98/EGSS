@@ -183,6 +183,21 @@ namespace Egss {
 		return pixel;
 	}
 
+	glm::vec4 OpenGLFramebuffer::ReadPixelRGBA(unsigned int attachmentIndex, int x, int y)
+	{
+		EGSS_CORE_ASSERT(attachmentIndex < m_ColorAttachments.size(), "Colour attachment index out of range");
+
+		glReadBuffer(GL_COLOR_ATTACHMENT0 + attachmentIndex);
+
+		// Read as bytes rather than floats: the attachment *is* RGBA8, so
+		// asking for GL_FLOAT only makes the driver convert the same eight bits
+		// per channel and hides the quantisation from the caller.
+		unsigned char pixel[4] = { 0, 0, 0, 0 };
+		glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+
+		return { pixel[0] / 255.0f, pixel[1] / 255.0f, pixel[2] / 255.0f, pixel[3] / 255.0f };
+	}
+
 	void OpenGLFramebuffer::ClearAttachment(unsigned int attachmentIndex, int value)
 	{
 		EGSS_CORE_ASSERT(attachmentIndex < m_ColorAttachments.size(), "Colour attachment index out of range");

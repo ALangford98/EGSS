@@ -17,6 +17,7 @@ namespace Egss {
 		void Resize(unsigned int width, unsigned int height) override;
 
 		int ReadPixel(unsigned int attachmentIndex, int x, int y) override;
+		glm::vec4 ReadPixelRGBA(unsigned int attachmentIndex, int x, int y) override;
 		void ClearAttachment(unsigned int attachmentIndex, int value) override;
 
 		unsigned int GetColorAttachmentRendererID(unsigned int index = 0) const override

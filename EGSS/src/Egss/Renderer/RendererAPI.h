@@ -16,6 +16,12 @@ namespace Egss {
 		// Colours sum. Right for light: two lights overlapping should be
 		// brighter than either, not one hiding the other.
 		Additive,
+		// Source times destination. Right for a surface being *lit*: draw the
+		// light into the buffer first, then multiply the surface's own colour
+		// through it, and a red wall under a white light stays red instead of
+		// turning white. Additive cannot express that -- it can only ever make
+		// things brighter, never tint them.
+		Multiply,
 		None
 	};
 

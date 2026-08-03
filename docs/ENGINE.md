@@ -181,7 +181,7 @@ Renderer2D::DrawCircle(centre, radius, color, segments);   // a fan; same batch
 // Global render state. Blending and depth are NOT per-draw: anything already
 // batched must be flushed (EndScene) before changing them, or it is drawn with
 // whatever is set at flush time rather than what was set when it was submitted.
-RenderCommand::SetBlendMode(BlendMode::Additive);   // Alpha, Additive, None
+RenderCommand::SetBlendMode(BlendMode::Additive);   // Alpha, Additive, Multiply, None
 RenderCommand::SetDepthTest(false);                 // additive overlays must not
                                                     // depth-test against each other
 RenderCommand::SetBackfaceCulling(true);            // 3D meshes only; turn it off
@@ -326,6 +326,44 @@ works from the output directory.
 `Submit` binds the shader itself, but uniform values belong to the program and
 survive a rebind, so setting your own before the call is fine.
 
+### Lighting, briefly
+
+A light is a visibility polygon: cast a ray at every obstacle corner (plus a
+hair either side of it, which is what makes shadow edges land *on* the corner
+rather than near it), sort the hits by angle, and fan triangles from the light
+to consecutive pairs. What the light can see is what gets drawn.
+
+How those polygons become *lit surfaces* is a choice of blend mode, and the
+demo has both paths behind a toggle:
+
+- **Per body** (the original). Each body asks how much light reaches its
+  centre, and the answer shades the whole body. Cheap, and wrong at any size —
+  a wall longer than the light's radius is uniformly lit end to end.
+- **Per pixel** (the default). Clear to the ambient level, draw every light
+  polygon **additively** — that buffer is now a light map — then draw the
+  surfaces over it with `BlendMode::Multiply`, each in its own albedo. The
+  result is `albedo × light` per fragment, which is the thing "lighting"
+  normally means.
+
+The order is the load-bearing part. Multiply reads what is already in the
+buffer, so the light has to be there first; draw the surfaces first and they
+multiply against the clear colour instead. And ambient is the *clear colour*,
+not a term added per surface — an unlit surface is one that only ever
+multiplies by the ambient level.
+
+Note that the rendered falloff is **f², not f**. `DrawLight` scales both the
+vertex colour and its alpha by the same falloff `f`, and additive blending
+contributes `rgb * alpha` — so the two multiply. It reads well, and it is
+closer to physical inverse-square than the linear ramp the code appears to
+describe, but it is not what the vertex colours alone would suggest. Fitted
+from pixels read back off-screen, the exponent measures **2.0093**.
+
+One more thing that measurement turned up: `f` is a cone, not a plane, so
+interpolating it across a fan triangle is not exact. The interpolated value runs
+out along the *chord* between two rim vertices, which is shorter than the radius
+by `cos θ`, and the light dims slightly too fast mid-triangle. At the demo's
+floor of 16 ring rays that is **1.8%** — real, and not worth fixing.
+
 ### Acoustics, briefly
 
 `Acoustics2D::Trace` is stochastic ray tracing: rays leave the source, bounce
@@ -343,6 +381,14 @@ faster than bass is most of what makes its tail sound like a room. Each ray
 carries three energy packets that start equal and diverge as they bounce, and
 the reverb gets one impulse tail per band. Set every `BandAbsorptionScale` to 1
 for a single flat band.
+
+The mixer splits its input with 4th-order Butterworth filters at 500 Hz and
+4 kHz — 24 dB/octave, and power-complementary, so the three bands' energies sum
+back to the input even though their amplitudes do not. That is the right
+property for a tail made of incoherent taps. A `ReverbTap` left at `AllBands`
+does not go through the splitter at all; it reads the unfiltered mix down a
+fourth path, so a broadband response is bit-exact and costs one convolution
+rather than three.
 
 `Scattering` decides how a bounce leaves. At 0 it mirrors; otherwise that
 fraction of bounces leave in a diffuse direction drawn from Lambert's cosine
@@ -454,6 +500,20 @@ would get wrong. Store the **slot**, not the `EntityId` -- the attachment is a
 *signed* integer texture, and a handle whose generation passes 2047 exceeds
 `INT_MAX` and reads back negative.
 
+The colour side has the same trick, and it is what makes shading *testable*
+rather than merely visible:
+
+```cpp
+glm::vec4 c = framebuffer->ReadPixelRGBA(0, x, y);   // 0..1, from an RGBA8 attachment
+```
+
+Render a frame off-screen, read a pixel, and compare it to a value worked out by
+hand. That is how the per-pixel lighting was checked -- including fitting the
+falloff exponent from two samples rather than assuming it, which is what caught
+that the rendered falloff is f² and not the f the code appears to compute.
+RGBA8 quantises to 1/255, so agreement to about 0.004 per blend in the chain is
+the best that can be expected.
+
 To show the result, wrap the colour attachment and draw it as one quad:
 
 ```cpp
@@ -497,7 +557,13 @@ outlive the framebuffer.
   colour. Use `Framebuffer::ClearAttachment(index, -1)`, or picking reads
   whatever the previous frame left there.
 - **`ReadPixel` after `EndScene`, before `Unbind`.** The batch has to have
-  reached the driver, and the framebuffer has to still be bound.
+  reached the driver, and the framebuffer has to still be bound. Same for
+  `ReadPixelRGBA`.
+- **`Framebuffer::Bind` changes the viewport; `Unbind` does not change it
+  back.** The viewport is global state and the framebuffer is almost never the
+  window's size, so binding one has to set it — but restoring it is the
+  caller's job. Skip that and everything afterwards renders into a small corner
+  of the window.
 - **Every shader used in the pass must write *every* attachment.** With two
   draw buffers bound, a fragment output a shader never assigns is *undefined*,
   not left alone — so a shader that only writes colour scribbles noise into the

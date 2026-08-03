@@ -103,6 +103,118 @@ public:
 			m_ActiveLights.push_back(m_Interactive);
 
 		Egss::Renderer2D::ResetStats();
+
+		if (m_PerPixel)
+			RenderPerPixel();
+		else
+			RenderPerBody();
+	}
+
+	// --- Per-pixel: light first, surfaces multiplied through it -------------
+	//
+	// The order is the whole idea, and it is the reverse of the obvious one.
+	//
+	// Shading a surface per *body* asks "how lit is this wall?" and gets one
+	// answer for the whole wall, so a wall twenty units long is as bright at
+	// its far end as under the lamp. There is no amount of care in that
+	// calculation that fixes it -- the question itself has one answer per
+	// object.
+	//
+	// So the light polygons go down *first*, onto a buffer cleared to ambient.
+	// That buffer is then a light map: every pixel holds how much light
+	// reaches it, and the visibility polygon has already done the shadow test
+	// per direction. Drawing the surfaces over it with Multiply blending gives
+	// albedo * light per pixel, which is the actual shading equation.
+	//
+	// What actually reaches the buffer is *not* the linear falloff `Falloff`
+	// returns, and it is worth knowing why before trusting a brightness read
+	// off the screen. Additive blending here is `GL_SRC_ALPHA, GL_ONE`, so a
+	// fragment contributes `rgb * alpha` -- and DrawLight scales both the
+	// colour and the alpha by the same f. The two multiply at blend time, so
+	// the rendered falloff is **f squared**, quadratic in distance.
+	//
+	// That is closer to how light actually behaves than the linear law it is
+	// computed from, so it looks right and has never been questioned. It does
+	// mean the interpolation is no longer exact along a ray: the hardware
+	// interpolates f linearly and then squares it per fragment, which is not
+	// the same as interpolating f squared. The error is largest halfway along
+	// a long fan triangle, and is why more rays look smoother than they should
+	// need to.
+	void RenderPerPixel()
+	{
+		// Ambient is the clear colour now, not a term added per body. A pixel
+		// no light reaches keeps exactly this value, which is what makes the
+		// unlit case checkable by reading one pixel.
+		Egss::RenderCommand::SetClearColor(glm::vec4(glm::vec3(m_SurfaceAmbient), 1.0f));
+		Egss::RenderCommand::Clear();
+
+		// --- The light map ---
+		{
+			EGSS_PROFILE_SCOPE("Lighting::LightPass");
+
+			// Additive, so two lights overlapping are brighter than either --
+			// with alpha blending the nearer one would simply hide the other.
+			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Additive);
+
+			// And depth testing OFF, which matters just as much. Every light
+			// polygon sits at the same z, and the depth test rejects anything
+			// at equal depth after the first -- so the second light was being
+			// discarded precisely where it overlapped the first. Additive
+			// blending cannot help if the fragments never reach it.
+			Egss::RenderCommand::SetDepthTest(false);
+
+			Egss::Renderer2D::BeginScene(m_Camera);
+
+			m_TotalRays = 0;
+			for (const Light& light : m_ActiveLights)
+				DrawLight(light);
+
+			Egss::Renderer2D::EndScene();
+		}
+
+		// --- The surfaces, multiplied through it ---
+		{
+			EGSS_PROFILE_SCOPE("Lighting::SurfacePass");
+
+			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Multiply);
+
+			Egss::Renderer2D::BeginScene(m_Camera);
+
+			const auto& bodies = m_World.GetBodies();
+			for (size_t i = 0; i < bodies.size(); i++)
+			{
+				const Egss::RigidBody2D& body = bodies[i];
+
+				// Its own colour, with no lighting in it at all. Everything
+				// that varies across the surface came from the pass before.
+				glm::vec4 albedo = Albedo((unsigned int)i);
+
+				if (body.Shape == Egss::ColliderShape::Box)
+					Egss::Renderer2D::DrawQuad(body.Position, body.HalfExtents * 2.0f, albedo);
+				else
+					Egss::Renderer2D::DrawCircle(body.Position, body.Radius, albedo, 32);
+			}
+
+			Egss::Renderer2D::EndScene();
+		}
+
+		Egss::RenderCommand::SetDepthTest(true);
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
+
+		if (m_ShowColliders)
+		{
+			Egss::Renderer2D::BeginScene(m_Camera);
+			DrawDebug();
+			Egss::Renderer2D::EndScene();
+		}
+	}
+
+	// --- The original, kept for comparison ----------------------------------
+	// Worth being able to flip between: the difference on a long wall is the
+	// entire point of the exercise, and it is far more convincing seen
+	// switching back and forth than described.
+	void RenderPerBody()
+	{
 		Egss::RenderCommand::SetClearColor({ 0.06f, 0.06f, 0.08f, 1.0f });
 		Egss::RenderCommand::Clear();
 
@@ -141,15 +253,7 @@ public:
 
 		if (m_ShowLight)
 		{
-			// Additive, so two lights overlapping are brighter than either --
-			// with alpha blending the nearer one would simply hide the other.
 			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Additive);
-
-			// And depth testing OFF, which matters just as much. Every light
-			// polygon sits at the same z, and the depth test rejects anything
-			// at equal depth after the first -- so the second light was being
-			// discarded precisely where it overlapped the first. Additive
-			// blending cannot help if the fragments never reach it.
 			Egss::RenderCommand::SetDepthTest(false);
 
 			Egss::Renderer2D::BeginScene(m_Camera);
@@ -165,6 +269,23 @@ public:
 			Egss::RenderCommand::SetDepthTest(true);
 			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
 		}
+	}
+
+	// A surface's own colour, before any light touches it. Deliberately not
+	// all white: a red wall lit by a white lamp is the case that tells
+	// multiplying apart from adding, and with white albedo everywhere the two
+	// look identical.
+	glm::vec4 Albedo(unsigned int index) const
+	{
+		static const glm::vec4 palette[] = {
+			{ 0.85f, 0.85f, 0.90f, 1.0f },
+			{ 0.90f, 0.45f, 0.35f, 1.0f },
+			{ 0.45f, 0.80f, 0.55f, 1.0f },
+			{ 0.55f, 0.60f, 0.95f, 1.0f },
+			{ 0.90f, 0.80f, 0.40f, 1.0f },
+		};
+
+		return palette[index % (sizeof(palette) / sizeof(palette[0]))];
 	}
 
 	// The ring lights ride a circle around the scene. Their positions are
@@ -651,6 +772,14 @@ public:
 		ImGui::Checkbox("Show colliders", &m_ShowColliders);
 		ImGui::SameLine();
 		ImGui::Checkbox("Show rays", &m_ShowRays);
+		ImGui::Checkbox("Per-pixel lighting", &m_PerPixel);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("On:  the light polygons are drawn first, and the surfaces are\n"
+				"     multiplied through them. Brightness varies across a wall.\n"
+				"Off: one raycast per body decides one colour for the whole\n"
+				"     body, so a long wall lights uniformly however far its\n"
+				"     far end is from the lamp. Watch the long walls.");
+
 		ImGui::Checkbox("Draw lights", &m_ShowLight);
 		ImGui::SameLine();
 		ImGui::Checkbox("Interactive light", &m_ShowInteractive);
@@ -728,6 +857,7 @@ private:
 	bool m_LightCollides = true;
 	float m_LightCollisionRadius = 0.05f;
 
+	bool m_PerPixel = true;
 	bool m_ShowLight = true;
 	bool m_ShowInteractive = true;
 
