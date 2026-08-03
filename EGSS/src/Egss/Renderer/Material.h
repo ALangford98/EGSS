@@ -4,6 +4,7 @@
 #include "Egss/Core.h"
 #include "Egss/Renderer/Shader.h"
 #include "Egss/Renderer/Texture.h"
+#include "Egss/Renderer/MtlLoader.h"
 
 #include <glm/glm.hpp>
 
@@ -35,6 +36,27 @@ namespace Egss {
 		unsigned int Slot = 0;
 	};
 
+	// Which uniform each .mtl quantity is written to. An .mtl says "the diffuse
+	// colour is this"; a shader has a uniform with some name of its own, and
+	// nothing in either file agrees on what that name is. This is where the two
+	// are introduced, in one place, rather than assumed at every call site.
+	struct EGSS_API ObjMaterialUniforms
+	{
+		std::string Diffuse = "u_Color";
+		std::string Ambient = "u_AmbientColor";
+		std::string Specular = "u_SpecularColor";
+		std::string Emissive = "u_EmissiveColor";
+		std::string SpecularExponent = "u_Shininess";
+		std::string Opacity = "u_Opacity";
+
+		std::string DiffuseMap = "u_Texture";
+		unsigned int DiffuseSlot = 0;
+
+		// A shader will not have all of these, and setting a uniform it does
+		// not declare only logs. Leave a name empty to skip that quantity
+		// entirely and keep the log quiet.
+	};
+
 	// A shader plus the values to give it -- which is the thing the 3D renderer
 	// had no word for. Without it, "how this object looks" lives as a run of
 	// `SetFloat3` calls at the call site, which means it cannot be stored on an
@@ -58,6 +80,19 @@ namespace Egss {
 	public:
 		static std::shared_ptr<Material> Create(const std::shared_ptr<Shader>& shader);
 		static std::shared_ptr<Material> CreateInstance(const std::shared_ptr<Material>& base);
+
+		// An instance of `base` carrying what an .mtl said. `directory` is
+		// where the .mtl was read from, since its texture paths are relative to
+		// it -- MtlLoader::DirectoryOf turns a path into one.
+		//
+		// `cache` is optional and strongly recommended: a model whose materials
+		// share a texture would otherwise upload it once per material. Pass the
+		// same map across a whole load.
+		static std::shared_ptr<Material> FromObj(const ObjMaterial& source,
+			const std::shared_ptr<Material>& base,
+			const std::string& directory = std::string(),
+			const ObjMaterialUniforms& names = ObjMaterialUniforms(),
+			std::unordered_map<std::string, std::shared_ptr<Texture2D>>* cache = nullptr);
 
 		// Setting a name that is already present replaces it rather than
 		// appending, so a value set every frame does not grow the list.

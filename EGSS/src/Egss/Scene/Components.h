@@ -70,18 +70,26 @@ namespace Egss {
 		// type it is declared from inside the same struct.
 		std::shared_ptr<Egss::Mesh> Geometry;
 
-		// How this one is drawn, usually a Material::CreateInstance of a shared
-		// base so it carries only what differs. Shared rather than owned, on the
-		// same terms as the geometry: a hundred entities can point at one.
+		// One material per submesh, in the same order as Geometry's. A model
+		// whose file switched material partway through needs one each, so this
+		// is a vector rather than the single material it started as -- a mesh
+		// with one submesh simply has one entry.
 		//
-		// May be null, which means the renderer supplies its own -- an entity
-		// with geometry and no material is a normal thing to have while a scene
-		// is being built.
-		std::shared_ptr<Egss::Material> Material;
+		// May be shorter than the submesh count, or empty: the renderer fills
+		// the gap. An entity with geometry and no material yet is a normal
+		// thing to have while a scene is being built.
+		std::vector<std::shared_ptr<Egss::Material>> Materials;
 
-		// Kept alongside the material rather than folded into it. Colour is the
-		// one thing every scene wants per object, and requiring a material for
-		// it would mean building one before anything could be seen at all.
+		// Whether the materials above came from the model's own .mtl. When they
+		// did, the renderer must leave their colour alone -- overwriting it
+		// with Color would throw away the thing the file was loaded for. When
+		// they did not, Color drives them, which is what lets the panel recolour
+		// a primitive.
+		bool MaterialsFromFile = false;
+
+		// Kept alongside the materials rather than folded into them. Colour is
+		// the one thing every scene wants per object, and requiring a material
+		// for it would mean building one before anything could be seen at all.
 		glm::vec4 Color = { 1.0f, 1.0f, 1.0f, 1.0f };
 		bool Visible = true;
 	};

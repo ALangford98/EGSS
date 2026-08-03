@@ -173,9 +173,15 @@ namespace Egss {
 		for (RigidBody2D& body : m_Bodies)
 		{
 			body.PreviousPosition = body.Position;
+			body.PreviousRotation = body.Rotation;
 
 			if (body.Type == BodyType::Static || !body.Awake)
+			{
+				// Torque applied to something that cannot spin is discarded
+				// rather than accumulating until the body wakes and lurches.
+				body.Torque = 0.0f;
 				continue;
+			}
 
 			m_AwakeBodyCount++;
 
@@ -185,7 +191,74 @@ namespace Egss {
 			// throws bodies through the floor.
 			body.Velocity += Gravity * body.GravityScale * dt;
 			body.Position += body.Velocity * dt;
+
+			// The same scheme for the angular half, with torque where gravity
+			// was. Nothing generates torque yet -- contacts are still
+			// frictionless about the centre -- so this only moves a body that
+			// was given AngularVelocity or Torque directly.
+			body.AngularVelocity += body.Torque * body.InverseInertia * dt;
+
+			// Exponential damping rather than a subtraction, so it cannot push
+			// the velocity through zero and reverse the spin at large dt. Also
+			// the reason a body given no damping keeps spinning forever, which
+			// is correct: there is no air in here.
+			if (body.AngularDamping > 0.0f)
+				body.AngularVelocity *= 1.0f / (1.0f + body.AngularDamping * dt);
+
+			body.Rotation += body.AngularVelocity * dt;
+			body.Torque = 0.0f;
 		}
+	}
+
+	void PhysicsWorld2D::ApplyImpulse(unsigned int handle, const glm::vec2& impulse)
+	{
+		if (handle >= m_Bodies.size())
+			return;
+
+		RigidBody2D& body = m_Bodies[handle];
+		if (body.Type == BodyType::Static)
+			return;
+
+		body.Velocity += impulse * body.InverseMass;
+		body.Awake = true;
+		body.SleepTimer = 0.0f;
+	}
+
+	void PhysicsWorld2D::ApplyImpulseAt(unsigned int handle, const glm::vec2& impulse,
+		const glm::vec2& point)
+	{
+		if (handle >= m_Bodies.size())
+			return;
+
+		RigidBody2D& body = m_Bodies[handle];
+		if (body.Type == BodyType::Static)
+			return;
+
+		body.Velocity += impulse * body.InverseMass;
+
+		// The 2D cross product: a scalar, because there is only one axis to
+		// turn about. An impulse aimed straight at the centre gives r parallel
+		// to j, whose cross is zero -- which is exactly why a central hit does
+		// not spin anything, and falls out rather than being special-cased.
+		glm::vec2 r = point - body.Position;
+		body.AngularVelocity += (r.x * impulse.y - r.y * impulse.x) * body.InverseInertia;
+
+		body.Awake = true;
+		body.SleepTimer = 0.0f;
+	}
+
+	void PhysicsWorld2D::ApplyTorque(unsigned int handle, float torque)
+	{
+		if (handle >= m_Bodies.size())
+			return;
+
+		RigidBody2D& body = m_Bodies[handle];
+		if (body.Type == BodyType::Static)
+			return;
+
+		body.Torque += torque;
+		body.Awake = true;
+		body.SleepTimer = 0.0f;
 	}
 
 	// --- Narrowphase --------------------------------------------------------
@@ -834,7 +907,13 @@ namespace Egss {
 			if (body.Type == BodyType::Static)
 				continue;
 
-			if (glm::dot(body.Velocity, body.Velocity) > threshold)
+			// Spinning counts as moving. Without the angular term a body that
+			// had stopped travelling would fall asleep mid-rotation and freeze
+			// at whatever angle it happened to be at.
+			bool moving = glm::dot(body.Velocity, body.Velocity) > threshold
+				|| std::fabs(body.AngularVelocity) > SleepAngularVelocity;
+
+			if (moving)
 				body.SleepTimer = 0.0f;
 			else
 				body.SleepTimer += dt;

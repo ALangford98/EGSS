@@ -34,6 +34,8 @@
 
 #include "Egss/Physics/RigidBody2D.h"
 #include "Egss/Physics/PhysicsWorld2D.h"
+#include "Egss/Physics/Raycast3D.h"
+#include "Egss/Physics/Sat2D.h"
 
 // RENDERER ***************
 
@@ -50,6 +52,7 @@
 #include "Egss/Renderer/SubTexture2D.h"
 #include "Egss/Renderer/Mesh.h"
 #include "Egss/Renderer/ObjLoader.h"
+#include "Egss/Renderer/MtlLoader.h"
 #include "Egss/Renderer/Camera.h"
 #include "Egss/Renderer/OrthographicCamera.h"
 #include "Egss/Renderer/PerspectiveCamera.h"

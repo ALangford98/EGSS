@@ -31,17 +31,22 @@ Reading order for a newcomer:
 ## Current state
 
 **Check `git log` and `git status` first — this section goes stale quickly.**
-At the time of writing, `HEAD` was `37f8e41` "Added Scattering and
-PerBodyScattering in AcousticsSettings" — the acoustics work (frequency-
-dependent absorption, then scattering coefficients) is committed. Uncommitted,
-building in all three configs:
+At the time of writing, `HEAD` was `7d2b884` "Added material handling for the
+3D renderer". Uncommitted, verified, and building in all three configs:
 
-- a **rebuilt band splitter** — 4th-order Butterworth per band plus a fourth
-  unfiltered path for broadband taps, which took the treble band's bass
-  rejection from −33 dB to −102 dB at 100 Hz. Verified, 21 checks.
-- **per-pixel 2D lighting** — a light map plus a new `BlendMode::Multiply`,
-  and `Framebuffer::ReadPixelRGBA` so the result could be checked. Verified,
-  27 checks.
+- **`.mtl` parsing** (`MtlLoader`) plus submesh ranges from `usemtl`, a
+  `firstIndex` on `DrawIndexed`, and `Renderer::SubmitSubmesh`. 52 checks.
+- **`beacon.obj` / `beacon.mtl`** in the demo, so a real multi-material model
+  exercises all of that. `MeshComponent::Material` became `Materials`, one per
+  submesh, with `MaterialsFromFile` to stop the component's `Color` overwriting
+  what the file said.
+- **Smoothing groups** in `ObjLoader` — the sharing key's `FlatFace` became
+  `Share`. 24 checks.
+- **`Raycast3D`** — slab test against mesh bounds in each object's local space,
+  plus graded `Occlusion`, wired to Cube3D's emitters. 30 checks.
+
+New untracked files worth not losing: `Raycast3D.{h,cpp}`, `MtlLoader.{h,cpp}`,
+and the two `beacon.*` assets.
 
 The owner commits their own work, often between sessions and sometimes while
 a reply is being written. **Do not commit or push unless asked**, and do not
@@ -57,7 +62,8 @@ assume something is still outstanding because a previous message said so.
 | Cameras | `Camera` base, `Orthographic`, `Perspective` | `BeginScene` takes any `Camera` |
 | Framebuffers | `Framebuffer` | `RED_INTEGER` attachment drives pixel-exact picking |
 | Scene | `Scene`, `Entity`, `ComponentStore` | ECS-lite: dense arrays, generational handles |
-| Physics | `PhysicsWorld2D`, `RigidBody2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. **No rotation** |
+| Physics | `PhysicsWorld2D`, `RigidBody2D`, `Sat2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. Angular state integrates and `Sat2D` gives oriented-box manifolds, but **collisions are still axis-aligned** — the two are not joined up yet |
+| Rays 3D | `Raycast3D` | Slab test against mesh bounds in local space, plus graded occlusion. No 3D rigid bodies |
 | Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb behind a 4th-order Butterworth splitter |
 | Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
 | Profiling | `Instrumentor` | `EGSS_PROFILE_SCOPE`, live panel, Chrome trace |
@@ -260,17 +266,26 @@ before, and "a component with no system" was the phrase used to decline it.
 **Renderer debt** — `ShaderLibrary`; query `GL_MAX_TEXTURE_IMAGE_UNITS`; a PCH
 for `TestEnv`; vendor a premake binary; multi-viewport ImGui.
 
-**3D** — `.mtl` parsing (now unblocked: there is a `Material` to parse into);
-`.gltf`; rotate/scale gizmo handles; `.obj` smoothing *groups* rather than the
-on/off flag. Material handling itself is done — `Material`, instances,
-`ShaderLibrary`, and `MeshComponent::Material`.
+**3D** — `.gltf`; rotate/scale gizmo handles. Everything else in this cluster
+is done: materials with instance overrides, `ShaderLibrary`, `.mtl` parsing,
+submesh ranges, smoothing groups, and `assets/models/beacon.obj` in the demo
+actually exercising them. `Raycast3D` answers "what is in the way" in 3D, which
+is what Cube3D's emitter occlusion now runs on — and what unblocks 3D acoustics
+whenever that is wanted.
 
 **2D** — per-pixel lighting is done and verified (light map, then
 `BlendMode::Multiply` for surfaces; 27 checks through `ReadPixelRGBA`). Nothing
 outstanding in this cluster, which makes it the thinnest one on the list.
 
-**Physics** — rotation. Bodies translate but never spin; needs SAT, multi-point
-manifolds and angular impulses. The hardest item on the list.
+**Physics** — rotation, and it is now **half built**. Angular state integrates
+(`Rotation`, `AngularVelocity`, `Torque`, `InverseInertia`, `ApplyImpulseAt`)
+and `Sat2D` produces oriented-box manifolds with up to two points. Both are
+verified in isolation and **neither is wired into collision**: the narrowphase
+still runs the AABB tests, no contact generates torque, and nothing renders
+rotated — drawing a spin the collider does not have would be a lie. What remains
+is the join: narrowphase calling `Sat2D`, contacts carrying a lever arm, and
+angular terms in the impulse solver. Doing it in this order was deliberate, and
+worth keeping to.
 
 **Acoustics**, the most recently active area — 3D acoustics (`Acoustics2D` is
 2D because `Raycast` is); partitioned FFT convolution (for dense recorded
@@ -311,6 +326,12 @@ a ray carries three energy packets but only one direction.
   128 rays and 1.99 s at 8192 — few rays ever find the mouth, so its share of
   the tail comes from a thin sample. The slider stops at 1024. Not a bug; the
   variance of a stochastic method, visible for once.
+- **`Tr` and `d` in an .mtl are inverses.** `d` is dissolve (1 opaque), `Tr` is
+  transparency (0 opaque). The parser follows the spec; plenty of exporters do
+  not, so a model that loads fully transparent is worth suspecting here first.
+- **`glDrawElements` takes a byte offset, not an index.** `DrawIndexed`'s
+  `firstIndex` counts indices and the backend multiplies. Getting that wrong
+  draws from the wrong place while every submesh number stays correct.
 - **Screenshot verification does not work on this machine.** `import` hangs
   against XWayland (once for two minutes before timing out) and `xdotool`
   window matching picks up stale windows. Two sessions have now been lost to

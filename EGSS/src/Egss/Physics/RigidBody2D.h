@@ -40,6 +40,32 @@ namespace Egss {
 		// Application::GetInterpolationAlpha.
 		glm::vec2 PreviousPosition = { 0.0f, 0.0f };
 
+		// --- Angular state ---------------------------------------------------
+		//
+		// Integrated, but **not yet produced by collisions**: nothing in the
+		// solver generates torque, so a body spins only if something sets
+		// AngularVelocity directly. That is deliberate -- the state and its
+		// integration are separable from the contact maths, and shipping them
+		// apart means each can be checked on its own.
+		//
+		// Radians. Degrees are for the UI and for .obj files; every trig
+		// function here takes radians and converting at the boundary is how you
+		// end up converting twice.
+		float Rotation = 0.0f;
+		float AngularVelocity = 0.0f;
+		float Torque = 0.0f;
+		float PreviousRotation = 0.0f;
+
+		// The *inverse* moment of inertia, on the same terms as InverseMass: 0
+		// means "cannot be spun", which is what a static body wants and what
+		// keeps it out of the solver's divisions.
+		//
+		// In 2D this is a scalar, not a tensor -- there is only one axis to
+		// rotate about, so the whole 3x3 collapses to one number.
+		float InverseInertia = 0.0f;
+
+		float AngularDamping = 0.05f;
+
 		// Circle uses Radius; Box uses HalfExtents. Kept as plain fields
 		// rather than a union so a body can be reshaped at runtime.
 		float Radius = 0.5f;
@@ -66,6 +92,35 @@ namespace Egss {
 		void SetMass(float mass) { InverseMass = mass > 0.0f ? 1.0f / mass : 0.0f; }
 		float GetMass() const { return InverseMass > 0.0f ? 1.0f / InverseMass : 0.0f; }
 
+		float GetInertia() const { return InverseInertia > 0.0f ? 1.0f / InverseInertia : 0.0f; }
+
+		// The moment of inertia this body's shape and mass imply, about its
+		// centre. A mass of 0 gives 0, so a static body stays unspinnable
+		// without a special case.
+		//
+		//   solid box     m (w^2 + h^2) / 12
+		//   solid disc    m r^2 / 2
+		//
+		// Called by the Make* helpers, and worth calling again by hand if you
+		// change a body's size or mass after creating it -- inertia depends on
+		// both and nothing here watches for that.
+		void RecalculateInertia()
+		{
+			float mass = GetMass();
+			if (mass <= 0.0f)
+			{
+				InverseInertia = 0.0f;
+				return;
+			}
+
+			float inertia = (Shape == ColliderShape::Box)
+				? mass * (4.0f * HalfExtents.x * HalfExtents.x
+					+ 4.0f * HalfExtents.y * HalfExtents.y) / 12.0f
+				: mass * Radius * Radius * 0.5f;
+
+			InverseInertia = (inertia > 0.0f) ? 1.0f / inertia : 0.0f;
+		}
+
 		static RigidBody2D MakeCircle(const glm::vec2& position, float radius, float mass = 1.0f)
 		{
 			RigidBody2D body;
@@ -74,6 +129,7 @@ namespace Egss {
 			body.PreviousPosition = position;
 			body.Radius = radius;
 			body.SetMass(mass);
+			body.RecalculateInertia();
 			return body;
 		}
 
@@ -85,6 +141,7 @@ namespace Egss {
 			body.PreviousPosition = position;
 			body.HalfExtents = halfExtents;
 			body.SetMass(mass);
+			body.RecalculateInertia();
 			return body;
 		}
 

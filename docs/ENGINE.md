@@ -188,6 +188,10 @@ RenderCommand::SetBackfaceCulling(true);            // 3D meshes only; turn it o
                                                     // again for open geometry
                                                     // like debug lines
 
+// Rays in 3D — what PhysicsWorld2D::Raycast is, a dimension up
+RaycastHit3D hit = Raycast3D::Against(scene, origin, direction, 40.0f);
+float blocked = Raycast3D::Occlusion(scene, emitter, listener);   // 0..1, graded
+
 // Screen
 RenderCommand::SetClearColor({r,g,b,a});
 RenderCommand::Clear();
@@ -333,14 +337,46 @@ and there is no merge step or lookup anywhere. It also means a material always
 re-uploads everything it inherits, which is what stops the *previous* material's
 values leaking into it.
 
-`Mesh::Load` reads Wavefront `.obj`: `v` / `vt` / `vn` / `f` / `s`, faces of any
-size, negative indices, and files missing texture coordinates or normals.
+`Mesh::Load` reads Wavefront `.obj`: `v` / `vt` / `vn` / `f` / `s` / `usemtl` /
+`mtllib`, faces of any size, negative indices, and files missing texture
+coordinates or normals.
+
+`s` names a smoothing **group**, not just on or off. Corners are shared only
+within one group, so two groups meeting at an edge keep their crease instead of
+averaging across it. `s off` and `s 0` share nothing at all; a file with no `s`
+line is flat, which is the .obj default.
+
+`usemtl` becomes a **submesh**: a range of indices drawn with one material. A
+file with three materials is one vertex buffer and three ranges, not three
+meshes. There is always at least one — a file naming no materials gets a single
+unnamed range covering everything — so a caller can loop without a special case.
+
+```cpp
+std::vector<ObjMaterial> materials;
+std::string error;
+MtlLoader::Load("assets/models/x.mtl", materials, error);
+
+std::unordered_map<std::string, std::shared_ptr<Texture2D>> textures;
+for (unsigned int i = 0; i < mesh->GetSubmeshes().size(); i++)
+{
+    // ...find the ObjMaterial whose Name matches GetSubmeshes()[i].Material...
+    auto material = Material::FromObj(found, base,
+        MtlLoader::DirectoryOf(path), ObjMaterialUniforms(), &textures);
+    Renderer::SubmitSubmesh(material, mesh, i, transform);
+}
+```
+
+`ObjMaterial` is deliberately not a `Material`. An `.mtl` says "the diffuse
+colour is this"; a shader has a uniform with a name of its own, and nothing in
+either file agrees on what that name is. `ObjMaterialUniforms` is where the two
+are introduced. Blank a name in it to skip that quantity — a shader that has no
+`u_Shininess` would otherwise be set one and log about it every frame.
 
 Normals are generated when absent, honouring the smoothing flag: `s off` (the
 default) gives each face its own normal, `s 1` averages them across shared
 corners. That is why a positions-only cube loads as 24 vertices, not 8 — flat
 shading needs corners *unshared* so each can hold its face's normal. Normals the
-file did supply are never overwritten. Materials and free-form surfaces are
+file did supply are never overwritten. Curves and free-form surfaces are
 skipped. It returns `nullptr` and logs on failure rather
 than throwing — a missing model should not take the program with it.
 

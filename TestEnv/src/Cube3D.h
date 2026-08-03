@@ -32,9 +32,11 @@ public:
 		m_Camera.SetRotation(-90.0f, -12.0f);
 
 		BuildMeshes();
-		BuildScene();
+		// Before the scene: an entity that brings its own materials needs the
+		// scene material to instance them from, and that is made here.
 		BuildShader();
 		BuildTexture();
+		BuildScene();
 		BuildAudio();
 		BuildTarget();
 	}
@@ -130,6 +132,64 @@ public:
 		// Loaded at startup so the scene has something that came off disk. A
 		// failure is not fatal -- the entity just gets a primitive instead.
 		m_Loaded.reset(Egss::Mesh::Load("assets/models/icosahedron.obj"));
+
+		// And one model that brings its own materials, which is a different
+		// thing from bringing its own geometry.
+		m_Beacon.reset(Egss::Mesh::Load("assets/models/beacon.obj"));
+	}
+
+	// Turns a mesh's `mtllib` references into one material per submesh.
+	//
+	// The mesh names its materials and the .mtl defines them; matching the two
+	// up by name is all this does. A submesh naming a material the file does
+	// not define keeps the scene material, which reads as "wrong colour"
+	// rather than "missing object".
+	std::vector<std::shared_ptr<Egss::Material>> LoadMaterialsFor(
+		const std::shared_ptr<Egss::Mesh>& mesh, const std::string& modelPath)
+	{
+		std::vector<std::shared_ptr<Egss::Material>> materials;
+		if (!mesh)
+			return materials;
+
+		std::string directory = Egss::MtlLoader::DirectoryOf(modelPath);
+
+		std::vector<Egss::ObjMaterial> defined;
+		for (const std::string& library : mesh->GetMaterialLibraries())
+		{
+			std::vector<Egss::ObjMaterial> batch;
+			std::string error;
+			if (Egss::MtlLoader::Load(directory + library, batch, error))
+				defined.insert(defined.end(), batch.begin(), batch.end());
+			else
+				EGSS_WARN("Cube3D: {0}", error);
+		}
+
+		// One cache across the whole model: two materials sharing a texture
+		// would otherwise upload it twice.
+		std::unordered_map<std::string, std::shared_ptr<Egss::Texture2D>> textures;
+
+		// This shader has no uniform for most of what an .mtl carries. Naming
+		// only what exists keeps FromObj from setting uniforms that are not
+		// there and logging about each one, every frame.
+		Egss::ObjMaterialUniforms names;
+		names.Ambient.clear();
+		names.Specular.clear();
+		names.Emissive.clear();
+		names.SpecularExponent.clear();
+		names.Opacity.clear();
+		names.DiffuseMap.clear();   // the demo's checkerboard stays on the base
+
+		for (const Egss::Submesh& submesh : mesh->GetSubmeshes())
+		{
+			auto it = std::find_if(defined.begin(), defined.end(),
+				[&](const Egss::ObjMaterial& m) { return m.Name == submesh.Material; });
+
+			materials.push_back(it != defined.end()
+				? Egss::Material::FromObj(*it, m_SceneMaterial, directory, names, &textures)
+				: Egss::Material::CreateInstance(m_SceneMaterial));
+		}
+
+		return materials;
 	}
 
 	// ---------------------------------------------------------------------
@@ -172,6 +232,20 @@ public:
 
 		m_Spinner = add("Icosahedron", m_Loaded ? m_Loaded : m_Primitives[1],
 			{ 2.2f, 0.4f, 1.2f }, { 0.90f, 0.60f, 1.00f, 1.0f }, 0.8f).GetId();
+
+		// The one object in the scene whose colours it does not choose. Three
+		// submeshes, three materials, all of them out of beacon.mtl -- so the
+		// slate base, the brass post and the pale head are the file's decision
+		// and the Color below is never applied to them.
+		if (m_Beacon)
+		{
+			Egss::Entity beacon = add("Beacon", m_Beacon, { -2.2f, -1.1f, 1.6f },
+				{ 1.0f, 1.0f, 1.0f, 1.0f });
+
+			auto* component = beacon.Get<Egss::MeshComponent>();
+			component->Materials = LoadMaterialsFor(m_Beacon, "assets/models/beacon.obj");
+			component->MaterialsFromFile = true;
+		}
 
 		m_Selected = m_Spinner;
 	}
@@ -290,6 +364,10 @@ public:
 
 			uniform sampler2D u_Texture;
 			uniform vec4 u_Color;
+			// Scene-wide, and separate from u_Color on purpose: a material
+			// loaded from an .mtl owns its colour, so a global tint cannot be
+			// folded into the same uniform without overwriting the file's.
+			uniform vec4 u_Tint;
 
 			// A point light, not a directional one. A directional light has no
 			// position, so there would be nothing for a gizmo to drag.
@@ -325,7 +403,7 @@ public:
 				vec3 halfway  = normalize(toLight + toEye);
 				float specular = pow(max(dot(normal, halfway), 0.0), 48.0);
 
-				vec3 base    = texture(u_Texture, v_TexCoord).rgb * u_Color.rgb;
+				vec3 base    = texture(u_Texture, v_TexCoord).rgb * u_Color.rgb * u_Tint.rgb;
 				vec3 lit     = base * u_AmbientStrength
 				             + base * diffuse * u_LightColor * attenuation
 				             + specular * u_LightColor * attenuation * 0.35;
@@ -396,6 +474,40 @@ public:
 			: glm::vec3(0.0f);
 
 		Egss::AudioEngine::SetListener(listener);
+
+		// Occlusion, which until now the 3D demo simply could not do: Raycast
+		// was 2D, so a hum behind a cube sounded exactly like a hum in front of
+		// one. The rays go emitter-to-listener through the scene's own meshes.
+		//
+		// Cheap enough per frame at two emitters and a handful of objects, and
+		// deliberately not cached: the whole point is that it changes as you
+		// walk around. A scene with hundreds of emitters would want it spread
+		// across frames instead.
+		if (m_ApplyOcclusion)
+		{
+			EGSS_PROFILE_SCOPE("Cube3D::Occlusion");
+
+			for (int i = 0; i < 2; i++)
+			{
+				if (!Egss::AudioEngine::IsPlaying(m_Emitters[i]))
+					continue;
+
+				m_EmitterOcclusion[i] = Egss::Raycast3D::Occlusion(m_Scene,
+					m_EmitterPositions[i], listener.Position, m_OcclusionSpread,
+					m_OcclusionRays);
+
+				Egss::AudioEngine::SetVoiceOcclusion(m_Emitters[i], m_EmitterOcclusion[i]);
+			}
+		}
+		else
+		{
+			for (int i = 0; i < 2; i++)
+			{
+				m_EmitterOcclusion[i] = 0.0f;
+				if (Egss::AudioEngine::IsPlaying(m_Emitters[i]))
+					Egss::AudioEngine::SetVoiceOcclusion(m_Emitters[i], 0.0f);
+			}
+		}
 
 		if (m_Spinning)
 			m_Rotation += ts * 35.0f;
@@ -476,10 +588,12 @@ public:
 		m_SceneMaterial->Set("u_LightRange", m_LightRange);
 		m_SceneMaterial->Set("u_CameraPosition", m_Camera.GetPosition());
 		m_SceneMaterial->Set("u_AmbientStrength", m_Ambient);
+		m_SceneMaterial->Set("u_Tint", m_Tint);
 		m_SceneMaterial->SetTexture("u_Texture", m_Texture, 0);
 
 		auto& meshes = m_Scene.View<Egss::MeshComponent>();
 		m_DrawnMeshes = 0;
+		m_DrawnSubmeshes = 0;
 
 		for (size_t i = 0; i < meshes.Size(); i++)
 		{
@@ -492,22 +606,37 @@ public:
 			if (!transform)
 				continue;
 
-			// An entity may arrive without one -- it is normal to add geometry
-			// before deciding how it looks -- so give it an instance of the
-			// scene material the first time it is drawn.
-			if (!mesh.Material)
-				mesh.Material = Egss::Material::CreateInstance(m_SceneMaterial);
+			const std::vector<Egss::Submesh>& submeshes = mesh.Geometry->GetSubmeshes();
 
-			mesh.Material->Set("u_Color", mesh.Color * m_Tint);
-			// The slot index, not the handle -- the attachment is a *signed*
-			// integer texture, and a handle whose generation passes 2047
-			// exceeds INT_MAX and reads back negative.
-			mesh.Material->Set("u_EntityID", (int)Egss::EntityIds::Index(entity));
+			// An entity may arrive without materials -- it is normal to add
+			// geometry before deciding how it looks -- so give each submesh an
+			// instance of the scene material the first time it is drawn.
+			if (mesh.Materials.size() < submeshes.size())
+				mesh.Materials.resize(submeshes.size());
 
-			// TransformComponent already composes scale, then rotate, then
-			// translate, in that order. Swapping any two changes the result.
-			Egss::Renderer::Submit(mesh.Material, mesh.Geometry, transform->GetTransform());
+			for (size_t s = 0; s < submeshes.size(); s++)
+			{
+				if (!mesh.Materials[s])
+					mesh.Materials[s] = Egss::Material::CreateInstance(m_SceneMaterial);
+
+				// A material that came out of an .mtl already has its colour,
+				// and it is the whole reason the file was loaded.
+				if (!mesh.MaterialsFromFile)
+					mesh.Materials[s]->Set("u_Color", mesh.Color);
+
+				// The slot index, not the handle -- the attachment is a *signed*
+				// integer texture, and a handle whose generation passes 2047
+				// exceeds INT_MAX and reads back negative.
+				mesh.Materials[s]->Set("u_EntityID", (int)Egss::EntityIds::Index(entity));
+
+				// TransformComponent already composes scale, then rotate, then
+				// translate, in that order. Swapping any two changes the result.
+				Egss::Renderer::SubmitSubmesh(mesh.Materials[s], mesh.Geometry,
+					(unsigned int)s, transform->GetTransform());
+			}
+
 			m_DrawnMeshes++;
+			m_DrawnSubmeshes += (unsigned int)submeshes.size();
 		}
 
 		Egss::Renderer::EndScene();
@@ -1177,8 +1306,14 @@ public:
 		ImGui::Text("Yaw %.0f  Pitch %.0f", m_Camera.GetYaw(), m_Camera.GetPitch());
 		ImGui::Text("Frame: %.2f ms (%.0f fps)", m_FrameTime,
 			m_FrameTime > 0.0f ? 1000.0f / m_FrameTime : 0.0f);
-		ImGui::Text("Draw calls: %d meshes + 1 line batch + 1 blit",
-			m_DrawnMeshes);
+		// Meshes and draws stopped being the same number once a model could
+		// carry several materials: the beacon is one mesh and three draws.
+		ImGui::Text("Draw calls: %u submeshes across %d meshes + 1 line batch + 1 blit",
+			m_DrawnSubmeshes, m_DrawnMeshes);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("A submesh is one range of indices drawn with one material.\n"
+				"beacon.obj has three, from its three `usemtl` lines -- one\n"
+				"vertex buffer, three draws. Everything else here has one.");
 		ImGui::Checkbox("Back-face culling", &m_BackfaceCulling);
 		ImGui::Checkbox("Show grid", &m_ShowGrid);
 
@@ -1192,13 +1327,30 @@ public:
 			Egss::VoiceDebug debug;
 			if (Egss::AudioEngine::GetVoiceDebug(m_Emitters[i], debug))
 			{
-				ImGui::Text("emitter %d: %.2fm  gain %.2f  pan %+.2f  doppler %.3f",
-					i, debug.Distance, debug.Gain, debug.Pan, debug.PitchScale);
+				ImGui::Text("emitter %d: %.2fm  gain %.2f  pan %+.2f  doppler %.3f  occl %.0f%%",
+					i, debug.Distance, debug.Gain, debug.Pan, debug.PitchScale,
+					m_EmitterOcclusion[i] * 100.0f);
 			}
 			else
 			{
 				ImGui::TextDisabled("emitter %d: not playing", i);
 			}
+		}
+
+		ImGui::Checkbox("Occlusion", &m_ApplyOcclusion);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Rays from each emitter to the camera, through the scene's\n"
+				"own meshes. Walk a cube between yourself and an emitter and\n"
+				"watch the figure climb -- it grades rather than switching,\n"
+				"because several rays are cast in a ring around the line and\n"
+				"the count of blocked ones is the answer.\n"
+				"This is what the 3D demo could not do until Raycast stopped\n"
+				"being 2D-only.");
+
+		if (m_ApplyOcclusion)
+		{
+			ImGui::SliderFloat("Ray spread", &m_OcclusionSpread, 0.0f, 1.5f);
+			ImGui::SliderInt("Occlusion rays", &m_OcclusionRays, 1, 17);
 		}
 
 		if (ImGui::SliderFloat("Emitter range", &m_EmitterMaxDistance, 1.0f, 40.0f))
@@ -1224,6 +1376,7 @@ private:
 	// nothing.
 	std::shared_ptr<Egss::Mesh> m_Primitives[3];   // cube, sphere, plane
 	std::shared_ptr<Egss::Mesh> m_Loaded;
+	std::shared_ptr<Egss::Mesh> m_Beacon;
 
 	char m_LoadPath[256] = { 0 };
 	std::string m_LoadError;
@@ -1245,6 +1398,12 @@ private:
 	std::shared_ptr<Egss::AudioClip> m_ChimeClip;
 	Egss::VoiceHandle m_Emitters[2] = { Egss::InvalidVoice, Egss::InvalidVoice };
 	glm::vec3 m_EmitterPositions[2];
+	float m_EmitterOcclusion[2] = { 0.0f, 0.0f };
+	bool m_ApplyOcclusion = true;
+	// Half a metre either side of the line. Wider grades more gently, because
+	// more of the ring clears an edge before the centre does.
+	float m_OcclusionSpread = 0.35f;
+	int m_OcclusionRays = 5;
 	float m_EmitterMinDistance = 1.0f;
 	float m_EmitterMaxDistance = 12.0f;
 	float m_DopplerFactor = 2.0f;
@@ -1281,6 +1440,10 @@ private:
 
 	bool m_BackfaceCulling = true;
 	int m_DrawnMeshes = 0;
+	// Meshes and submeshes are no longer the same count: one multi-material
+	// model is one mesh and several draws, and seeing both makes that visible
+	// rather than a thing you have to remember.
+	unsigned int m_DrawnSubmeshes = 0;
 
 	glm::vec2 m_PreviousMouse = { 0.0f, 0.0f };
 	float m_MouseLookSensitivity = 0.18f;

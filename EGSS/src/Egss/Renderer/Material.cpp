@@ -28,6 +28,59 @@ namespace Egss {
 		return material;
 	}
 
+	std::shared_ptr<Material> Material::FromObj(const ObjMaterial& source,
+		const std::shared_ptr<Material>& base, const std::string& directory,
+		const ObjMaterialUniforms& names,
+		std::unordered_map<std::string, std::shared_ptr<Texture2D>>* cache)
+	{
+		auto material = CreateInstance(base);
+
+		// The diffuse colour goes in as a vec4 with the dissolve as its alpha,
+		// because that is the shape a shader's colour uniform almost always
+		// has. Everything else stays the type the file gave it.
+		if (!names.Diffuse.empty())
+			material->Set(names.Diffuse, glm::vec4(source.Diffuse, source.Opacity));
+		if (!names.Ambient.empty())
+			material->Set(names.Ambient, source.Ambient);
+		if (!names.Specular.empty())
+			material->Set(names.Specular, source.Specular);
+		if (!names.Emissive.empty())
+			material->Set(names.Emissive, source.Emissive);
+		if (!names.SpecularExponent.empty())
+			material->Set(names.SpecularExponent, source.SpecularExponent);
+		if (!names.Opacity.empty())
+			material->Set(names.Opacity, source.Opacity);
+
+		if (!names.DiffuseMap.empty() && !source.DiffuseMap.empty())
+		{
+			std::string path = directory + source.DiffuseMap;
+
+			std::shared_ptr<Texture2D> texture;
+			if (cache)
+			{
+				auto it = cache->find(path);
+				if (it != cache->end())
+					texture = it->second;
+			}
+
+			if (!texture)
+			{
+				texture.reset(Texture2D::Create(path));
+				if (cache)
+					(*cache)[path] = texture;
+			}
+
+			// A texture that failed to load is left unset rather than bound as
+			// nothing: the base's texture then shows through, which reads as
+			// "wrong texture" instead of "black object" and is far easier to
+			// diagnose.
+			if (texture)
+				material->SetTexture(names.DiffuseMap, texture, names.DiffuseSlot);
+		}
+
+		return material;
+	}
+
 	MaterialParameter& Material::Slot(const std::string& name)
 	{
 		for (MaterialParameter& parameter : m_Parameters)

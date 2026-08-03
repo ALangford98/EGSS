@@ -79,6 +79,28 @@ namespace Egss {
 		Submit(material, mesh->GetVertexArray(), transform);
 	}
 
+	void Renderer::SubmitSubmesh(const std::shared_ptr<Material>& material,
+		const std::shared_ptr<Mesh>& mesh, unsigned int submesh, const glm::mat4& transform)
+	{
+		if (!material || !mesh)
+			return;
+
+		const std::vector<Submesh>& submeshes = mesh->GetSubmeshes();
+		if (submesh >= submeshes.size())
+			return;
+
+		material->Bind();
+
+		const std::shared_ptr<Shader>& shader = material->GetShader();
+		shader->SetMat4("u_ViewProjection", s_SceneData->ViewProjectionMatrix);
+		shader->SetMat4("u_Transform", transform);
+
+		const std::shared_ptr<VertexArray>& vertexArray = mesh->GetVertexArray();
+		vertexArray->Bind();
+		RenderCommand::DrawIndexed(vertexArray, submeshes[submesh].IndexCount,
+			submeshes[submesh].FirstIndex);
+	}
+
 	ShaderLibrary& Renderer::GetShaderLibrary()
 	{
 		// Function-local, so it is constructed on first use rather than in

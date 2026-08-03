@@ -654,18 +654,22 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [ ] **Multi-viewport ImGui.** Docking is on; `ImGuiConfigFlags_ViewportsEnable`
       would let panels be dragged out into their own OS windows, but it needs
       the platform-window loop in `ImGuiLayer::End` and a GL context restore
-- [ ] **`.mtl` parsing.** The `.obj` loader skips `mtllib` / `usemtl`. Now that
-      there is a `Material` for one to be parsed *into*, that stops being a lie
-      about what the engine can do and becomes a straightforward piece of work
 - [ ] **`.gltf` loading.** `.obj` carries geometry and nothing else — no
       hierarchy, no skinning, no PBR parameters. glTF is where those live, and
       is the format worth supporting second
 - [ ] **Gizmo: rotate and scale handles.** Translate works; rotation rings and
       scale boxes are the same picking maths applied to different geometry
-- [ ] **Smoothing *groups*, not just the on/off flag.** `s 1` and `s 2` meeting
-      at an edge should not share vertices; today both count as "smooth"
-- [ ] **Physics: rotation.** Bodies translate but never spin. Needs SAT for
-      oriented shapes, multi-point manifolds and angular impulses
+- [ ] **Physics: rotation — the solver half.** Both prerequisites are in and
+      verified: angular state integrates, and `Sat2D` produces oriented-box
+      manifolds. What remains is the join — the narrowphase calling `Sat2D`
+      instead of the AABB tests, contacts carrying a lever arm `r`, and the
+      impulse solver gaining its angular terms. **Until that lands, bodies
+      still collide as axis-aligned boxes and nothing generates torque**, which
+      is why nothing renders rotated yet: drawing a spin the collider does not
+      have would be a lie
+- [ ] **3D rigid bodies.** `Raycast3D` answers "what is in the way"; nothing in
+      3D falls, collides or rests. A genuinely large item, and only worth
+      starting once 2D rotation has settled the ideas
 
 - [ ] **Partitioned FFT convolution.** The convolution reverb takes a *sparse*
       response, which is what the ray tracer produces. A dense recorded impulse
@@ -676,8 +680,6 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [ ] **3D acoustics.** `Acoustics2D` is 2D because `Raycast` is. A room's floor
       and ceiling are half its reflecting area, so a traced RT60 is longer than
       the same room in 3D
-- [ ] **3D physics or a 3D occlusion query.** `Raycast` is 2D, so Cube3D's
-      emitters cannot be occluded — only the 2D demo can
 
 ---
 
@@ -893,6 +895,173 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-03 (rotation, the two halves that can be checked alone)
+
+Rotation is the largest item on the roadmap and the one most likely to be left
+half-finished, so it is being built in pieces that can each be verified without
+the others. **Neither piece changes how anything collides yet** — that is the
+point of doing them first.
+
+**Angular state.** `RigidBody2D` gained `Rotation`, `AngularVelocity`, `Torque`,
+`PreviousRotation`, `InverseInertia` and `AngularDamping`, integrated by the
+same semi-implicit Euler the linear half uses. Inertia is a *scalar* in 2D —
+there is one axis to turn about, so the whole tensor collapses to a number.
+`PhysicsWorld2D` gained `ApplyImpulseAt`, `ApplyImpulse` and `ApplyTorque`.
+
+Checked against the textbook, 25 checks: a 2×3 box of mass 6 has inertia
+`m(w²+h²)/12 = 6.5`; a disc of radius 2 mass 5 has `mr²/2 = 10`; inertia scales
+with the *square* of size, so doubling an equal-mass box's extents quadruples it
+to 26. An off-centre impulse spins by `(r × j) / I` — 4 units applied one above
+the centre of a 2×2 box of mass 4 gives exactly −1.5 rad/s — while the same
+impulse through the centre gives none at all, which falls out of `r × j` being
+zero rather than being special-cased. Two opposite impulses on opposite sides
+spin it and move it nowhere.
+
+Two decisions worth naming. Damping is **exponential**, `w /= 1 + d·dt`, not
+subtractive: a subtraction overshoots zero at a large step and spins the body
+*backwards*, and the test drives it with damping 50 over a 1-second step to
+prove it cannot. And the sleep test now includes angular velocity — without it a
+body that had stopped travelling would fall asleep mid-rotation and freeze at
+whatever angle it reached, which looks like dropped frames rather than physics.
+
+**`Sat2D`.** The separating-axis test for oriented boxes, with manifolds of up
+to two points. Deliberately not built on `RigidBody2D`: it is geometry with no
+mass, no velocity and no solver, which is what lets it be checked against
+hand-worked answers and what will let the solver be checked separately against
+*it*.
+
+44 checks. Beyond the obvious ones, two properties matter more than any
+individual number:
+
+- **Pushing B along the normal by the depth separates them.** That checks the
+  normal and the depth together, and it is the property the solver will actually
+  rely on. Verified for two boxes at 30° and −20°, and for a tilted crate on a
+  floor.
+- **Face contacts give two points, corner contacts give one.** A single point
+  cannot resist rotation about itself, so a resting crate held by one point
+  rocks forever. The two points for a flat rest come back at exactly the crate's
+  two bottom corners, and a crate overhanging a short platform has its contacts
+  clipped to the platform's width — a point out past the edge is resting on
+  nothing, and solving it would hold the crate up in mid-air.
+
+Both failures on the way were arithmetic in the tests, not in the code: the
+angular test's expected fall distance and, in the SAT test, an expected
+half-diagonal written as a nonsense product that came to 0.5 where a 1×1 square
+turned 45° plainly reaches `0.5√2 = 0.7071`.
+
+### 2026-08-03 (a multi-material model, smoothing groups, and a 3D ray)
+
+Three roadmap items, each closing a gap the previous session opened or named.
+
+**A model that brings its own materials.** `assets/models/beacon.obj` is a base,
+a post and a lamp head with three `usemtl` lines — one vertex buffer, three
+submeshes, three draws. The `.mtl` machinery had 52 checks against it but
+nothing in `TestEnv` exercised it, which is a different thing from working.
+
+- `MeshComponent::Material` became **`Materials`**, one per submesh. A mesh with
+  one submesh has one entry; the renderer fills any the caller left null.
+- `MeshComponent::MaterialsFromFile` tells the renderer to leave the colour
+  alone. Overwriting it with the component's `Color` would throw away the thing
+  the file was loaded for, and the demo's global tint moved to its own `u_Tint`
+  uniform rather than being folded into `u_Color` as it was.
+
+Verified by reading each submesh's material back: `Slate → (0.280, 0.300,
+0.340)`, `Brass → (0.780, 0.600, 0.220)`, `Lamp → (0.950, 0.850, 0.450)`,
+exactly the file's `Kd` values in the file's order. That mapping is the whole
+risk — assign them in the wrong order and the base comes out brass with nothing
+else noticing. Six meshes now produce eight submesh draws, and the panel says
+so.
+
+**Smoothing groups.** `s 1` and `s 2` both counted as "smooth", so two groups
+meeting at an edge shared vertices and averaged their normals across the seam —
+destroying the exact crease the file asked for. The fix is in the vertex-sharing
+key: `FlatFace` became `Share`, holding `-1` for a supplied normal, `-2 - face`
+for flat, and the group number for smooth. The negative encoding for faces is
+what stops face 1 and group 1 comparing equal.
+
+Tested on a strip of four quads round a bend, where sharing is visible as a
+vertex count: **10** with one group throughout, **12** with a seam at one column,
+**16** with `s off`. A loader ignoring the group number gives 10 for the middle
+case. All three existing models load byte-identically.
+
+**`Raycast3D`.** `PhysicsWorld2D::Raycast` is 2D, and two things that wanted it
+are not — 3D emitters could not be occluded, and `Acoustics2D` is 2D purely
+because the ray it stands on is. This is the cheap half of that roadmap item: a
+slab test against mesh bounds, plus a graded `Occlusion` that casts a ring of
+rays so a source clipping a corner reads as partly blocked rather than flipping.
+
+The ray is transformed into each object's **local space** rather than its box
+into world space. That is what makes rotation work: a rotated box is not an AABB
+in world space, but a ray is still a ray in any space you put it in. A thin plate
+turned 45° is hit inside its turned footprint and missed outside it, in the same
+position where the unrotated plate is hit — which a world-space AABB cannot tell
+apart. 30 checks.
+
+Two failures on the way, both mine and both in the test rather than the code:
+
+- The smoothing test's expected face normal was **upside down**. The winding
+  gives `(-dz, 0, dx)` and I wrote its negative, so both normal checks failed
+  while every count passed. Counts right, expectation inverted.
+- The raycast test fired its "should miss" probe at `x = 2.5`, which is exactly
+  the *near cube's* face — so it hit, correctly, something I had not thought
+  about. The plate now gets a clear lane at `y = 3` where nothing else can
+  answer for it.
+
+### 2026-08-03 (.mtl parsing, and submeshes)
+
+The `.obj` loader's comment said materials were "deliberately left for whenever
+a material system exists to receive them". One does now, so:
+
+- **`MtlLoader`** — `newmtl`, `Ka` / `Kd` / `Ks` / `Ke`, `Ns`, `d`, `Tr`, `Ni`,
+  `illum`, and the `map_*` lines. Parses text, produces `ObjMaterial` structs,
+  and touches no GL at all — the same property that makes `ObjLoader::Parse`
+  testable.
+- **`MeshData::Submeshes`** — `usemtl` now produces something usable instead of
+  more skipped text. A file with three materials is one vertex buffer and three
+  index ranges, not three meshes, and `mtllib` references are recorded in order.
+- **`RenderCommand::DrawIndexed` gained a `firstIndex`**, and
+  `Renderer::SubmitSubmesh` draws one range with its own material.
+- **`Material::FromObj`** bridges the two. An `.mtl` says "the diffuse colour is
+  this"; a shader has a uniform with a name of its own, and nothing in either
+  file agrees on what that is. `ObjMaterialUniforms` is where the two are
+  introduced — once, rather than assumed at every call site.
+
+`ObjMaterial` is deliberately **not** an `Egss::Material`. Keeping the parsed
+form separate is what lets one file feed two different shaders, and what keeps
+the parser free of any GPU dependency.
+
+Verified with **52 checks**, most of which need no GPU. The ones worth naming
+are the disagreements between the spec and what exporters actually write:
+
+- **`Tr` is the inverse of `d`.** `d` is dissolve (1 is opaque), `Tr` is
+  transparency (0 is opaque). Getting it backwards makes solid objects vanish,
+  which looks like a renderer fault rather than a parser one.
+- **`map_Kd` must not be read as `Kd`.** Prefix matching without a delimiter
+  check is exactly how that happens, so `Keyword` requires whitespace after.
+- **`Kd xyz 0.9 0.2 0.1` is a CIEXYZ colour, not RGB.** Reading the first number
+  as red would silently produce a wrong colour — worse than ignoring the line.
+- **Map paths keep their spaces.** `map_Kd -s 1 1 1 -bm 0.2 my textures/brick
+  wall.png` has to skip options of varying arity and then take the *rest of the
+  line*, not the next token.
+- A value before any `newmtl` is an error rather than silent data loss.
+
+Then the part the arithmetic could not settle: `glDrawElements` takes a **byte**
+offset, so an index offset passed straight through would draw from the wrong
+place while every integer above stayed correct. Two quads side by side, each its
+own submesh, rendered off-screen: submesh 0 lights the left half and nothing on
+the right, submesh 1 the reverse.
+
+One measurement mistake, with a familiar shape. The end-to-end colour check read
+**exactly half** the expected value on every channel — because `d 0.5` becomes
+the colour's alpha and the default blend mode is `GL_SRC_ALPHA`. A constant
+factor across every channel is the measurement's fault, and this project has
+that written down from the last time it happened. The fix made it a better test:
+it now draws twice, unblended for the colour and blended for the dissolve, and
+the second is what proves `d` arrives as alpha rather than merely being stored.
+
+Also checked that all three existing models still load as one unnamed submesh
+each — the regression this change could most easily have caused.
 
 ### 2026-08-03 (materials, and shaders by name)
 

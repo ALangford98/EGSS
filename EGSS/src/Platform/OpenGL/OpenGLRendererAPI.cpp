@@ -53,10 +53,17 @@ namespace Egss {
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	}
 
-	void OpenGLRendererAPI::DrawIndexed(const std::shared_ptr<VertexArray>& vertexArray, unsigned int indexCount)
+	void OpenGLRendererAPI::DrawIndexed(const std::shared_ptr<VertexArray>& vertexArray,
+		unsigned int indexCount, unsigned int firstIndex)
 	{
 		unsigned int count = indexCount ? indexCount : vertexArray->GetIndexBuffer()->GetCount();
-		glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_INT, nullptr);
+
+		// The last argument is a *byte* offset into the bound index buffer,
+		// cast to a pointer for historical reasons -- it has not been an actual
+		// pointer since buffer objects arrived. Indices here are 32-bit, hence
+		// the multiply.
+		const void* offset = (const void*)(uintptr_t)(firstIndex * sizeof(unsigned int));
+		glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_INT, offset);
 
 		// Deliberately does not unbind the texture. It used to, which was
 		// invisible for Renderer2D because every flush rebinds its slots, but

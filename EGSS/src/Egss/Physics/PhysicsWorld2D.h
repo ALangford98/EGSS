@@ -103,6 +103,30 @@ namespace Egss {
 		RaycastHit Raycast(const glm::vec2& origin, const glm::vec2& direction,
 			float maxDistance, unsigned int ignore = ~0u) const;
 
+		// --- Applying things to a body -----------------------------------------
+		//
+		// An impulse at the centre of mass changes only where a body is going.
+		// The *same* impulse off-centre also spins it, and how much is the
+		// cross product of the offset with the impulse -- which in 2D is one
+		// scalar, r.x*j.y - r.y*j.x.
+		//
+		// This is the whole of "why does hitting a box in the corner make it
+		// turn", and it is worth being able to do before contacts generate it
+		// on their own.
+		//
+		// `point` is in world space. Wakes the body: an impulse applied to
+		// something asleep would otherwise be integrated away to nothing.
+		void ApplyImpulseAt(unsigned int body, const glm::vec2& impulse,
+			const glm::vec2& point);
+
+		// Straight to the centre of mass: no rotation, whatever the geometry.
+		void ApplyImpulse(unsigned int body, const glm::vec2& impulse);
+
+		// Accumulated and applied on the next Step, then cleared -- unlike an
+		// impulse, which takes effect at once. Torque is to angular velocity
+		// what force is to velocity.
+		void ApplyTorque(unsigned int body, float torque);
+
 		// Pushes a circle out of anything it overlaps and returns where it ends
 		// up. Nothing needs to be a rigid body -- this is for things that move
 		// themselves: characters, cameras, a light you can drive around.
@@ -149,6 +173,9 @@ namespace Egss {
 
 		// Bodies slower than this for longer than SleepTime stop integrating.
 		float SleepVelocity = 0.08f;
+		// And turning slower than this, in radians per second. A body still
+		// spinning is still moving, even if it has stopped travelling.
+		float SleepAngularVelocity = 0.05f;
 		float SleepTime = 0.5f;
 		bool AllowSleeping = true;
 	private:

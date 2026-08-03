@@ -27,10 +27,33 @@ namespace Egss {
 	// The loaders produce this and nothing else, so parsing a file involves no
 	// GL calls, needs no context, and can be tested by looking at numbers. That
 	// separation is the reason a mesh can be verified without a window.
+	// A run of indices drawn with one material. An .obj switches material with
+	// `usemtl` partway through its faces, so a file with three materials is one
+	// vertex buffer and three ranges into it -- not three meshes.
+	struct Submesh
+	{
+		// The `usemtl` name, to be looked up in whatever the `mtllib` loaded.
+		// Empty for faces declared before any `usemtl`, which is also what a
+		// file with no materials at all produces.
+		std::string Material;
+
+		unsigned int FirstIndex = 0;
+		unsigned int IndexCount = 0;
+	};
+
 	struct MeshData
 	{
 		std::vector<MeshVertex> Vertices;
 		std::vector<unsigned int> Indices;
+
+		// Always at least one, covering everything, so a caller never has to
+		// special-case a file that named no materials.
+		std::vector<Submesh> Submeshes;
+
+		// `mtllib` references, in the order the file gave them and exactly as
+		// written -- they are relative to the .obj, and only whoever opened it
+		// knows where that was.
+		std::vector<std::string> MaterialLibraries;
 
 		// Filled by RecalculateBounds. Useful for framing a camera on a model
 		// whose size you do not know in advance -- which is every loaded file.
@@ -88,6 +111,12 @@ namespace Egss {
 
 		const std::shared_ptr<VertexArray>& GetVertexArray() const { return m_VertexArray; }
 
+		// One entry per material the file switched to, in draw order. Always at
+		// least one: a mesh with no materials has a single unnamed submesh
+		// covering everything, so a caller can loop unconditionally.
+		const std::vector<Submesh>& GetSubmeshes() const { return m_Submeshes; }
+		const std::vector<std::string>& GetMaterialLibraries() const { return m_MaterialLibraries; }
+
 		const std::string& GetName() const { return m_Name; }
 
 		size_t GetVertexCount() const { return m_VertexCount; }
@@ -101,6 +130,9 @@ namespace Egss {
 	private:
 		std::shared_ptr<VertexArray> m_VertexArray;
 		std::string m_Name;
+
+		std::vector<Submesh> m_Submeshes;
+		std::vector<std::string> m_MaterialLibraries;
 
 		size_t m_VertexCount = 0;
 		size_t m_TriangleCount = 0;

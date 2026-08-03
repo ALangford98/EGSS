@@ -47,6 +47,13 @@ namespace Egss {
 			const std::shared_ptr<Mesh>& mesh,
 			const glm::mat4& transform = glm::mat4(1.0f));
 
+		// One submesh out of a mesh's shared buffers, so a model whose file
+		// switched material partway through can be drawn a range at a time
+		// with a different material each. `submesh` indexes GetSubmeshes().
+		static void SubmitSubmesh(const std::shared_ptr<Material>& material,
+			const std::shared_ptr<Mesh>& mesh, unsigned int submesh,
+			const glm::mat4& transform = glm::mat4(1.0f));
+
 		// Shaders by name. One library, owned here, so a demo does not have to
 		// keep its own -- see ShaderLibrary if you want a second.
 		static ShaderLibrary& GetShaderLibrary();

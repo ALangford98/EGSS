@@ -69,11 +69,20 @@ namespace Egss {
 
 	Mesh::Mesh(const MeshData& data, const std::string& name)
 		: m_Name(name),
+		  m_Submeshes(data.Submeshes),
+		  m_MaterialLibraries(data.MaterialLibraries),
 		  m_VertexCount(data.Vertices.size()),
 		  m_TriangleCount(data.TriangleCount()),
 		  m_BoundsMin(data.BoundsMin),
 		  m_BoundsMax(data.BoundsMax)
 	{
+		// A built primitive names no materials, and neither does an .obj that
+		// never says `usemtl`. Giving those one range covering everything is
+		// what lets a caller loop over submeshes without asking whether there
+		// are any.
+		if (m_Submeshes.empty() && !data.Indices.empty())
+			m_Submeshes.push_back({ std::string(), 0u, (unsigned int)data.Indices.size() });
+
 		m_VertexArray.reset(VertexArray::Create());
 
 		std::shared_ptr<VertexBuffer> vertexBuffer;

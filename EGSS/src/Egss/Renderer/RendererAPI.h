@@ -43,7 +43,11 @@ namespace Egss {
 		virtual void SetClearColor(const glm::vec4& color) = 0;
 		virtual void Clear() = 0;
 
-		virtual void DrawIndexed(const std::shared_ptr<VertexArray>& vertexArray, unsigned int indexCount = 0) = 0;
+		// `firstIndex` is an offset into the index buffer, which is what lets one
+		// buffer hold several submeshes and be drawn a range at a time. It
+		// counts indices, not bytes -- the multiply is the backend's business.
+		virtual void DrawIndexed(const std::shared_ptr<VertexArray>& vertexArray,
+			unsigned int indexCount = 0, unsigned int firstIndex = 0) = 0;
 
 		// Lines are drawn unindexed: consecutive vertex pairs, one segment
 		// each. Sharing an index buffer would only pay off if segments shared

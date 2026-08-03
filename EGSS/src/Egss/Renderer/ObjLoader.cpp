@@ -19,19 +19,27 @@ namespace Egss {
 			int Position;
 			int TexCoord;
 			int Normal;
-			// Which face this corner belongs to, when the file carries no
-			// normal and smoothing is off. Including it in the key is what
-			// makes flat shading work: two faces meeting at a position get
-			// separate vertices, so each can hold its own face normal. It is
-			// -1 whenever the corner may be shared.
-			int FlatFace;
+			// How far this corner may be shared, when the file carries no
+			// normal of its own. Including it in the key is what makes shading
+			// groups work at all, and it encodes both cases in one field:
+			//
+			//   -1        the file gave a normal, so sharing is unrestricted
+			//   -2 - face flat: only with corners of the *same face*, so each
+			//             face keeps its own normal
+			//   group     smooth: only with corners in the same smoothing
+			//             group, so a crease between two groups survives
+			//
+			// The negative encoding for faces is what keeps a face index and a
+			// group number from colliding -- face 1 and group 1 are different
+			// things and must not compare equal.
+			int Share;
 
 			bool operator==(const IndexTriplet& other) const
 			{
 				return Position == other.Position
 					&& TexCoord == other.TexCoord
 					&& Normal == other.Normal
-					&& FlatFace == other.FlatFace;
+					&& Share == other.Share;
 			}
 		};
 
@@ -44,7 +52,7 @@ namespace Egss {
 				size_t h = (size_t)(key.Position + 1) * 73856093u;
 				h ^= (size_t)(key.TexCoord + 1) * 19349663u;
 				h ^= (size_t)(key.Normal + 1) * 83492791u;
-				h ^= (size_t)(key.FlatFace + 1) * 50331653u;
+				h ^= (size_t)(key.Share + 2) * 50331653u;
 				return h;
 			}
 		};
@@ -125,11 +133,27 @@ namespace Egss {
 		// would throw away better information than anything derivable here.
 		std::vector<bool> hasNormal;
 
-		// `s off` is the .obj default, and it means flat: a face's corners are
-		// not shared with its neighbours, so each face keeps its own normal.
-		// Ignoring this made every low-poly model look like a balloon.
-		bool smoothing = false;
+		// 0 is `s off`, the .obj default, and it means flat: a face's corners
+		// are not shared with its neighbours, so each face keeps its own
+		// normal. Ignoring this made every low-poly model look like a balloon.
+		// Any other value names a smoothing group, and corners are shared only
+		// within one.
+		int smoothGroup = 0;
 		size_t faceIndex = 0;
+
+		// The material the faces being read now belong to, and where its run of
+		// indices started. A `usemtl` closes the open run and opens another.
+		std::string currentMaterial;
+		unsigned int submeshStart = 0;
+
+		auto closeSubmesh = [&]()
+		{
+			unsigned int count = (unsigned int)result.Indices.size() - submeshStart;
+			if (count > 0)
+				result.Submeshes.push_back({ currentMaterial, submeshStart, count });
+
+			submeshStart = (unsigned int)result.Indices.size();
+		};
 
 		size_t line = 0;
 
@@ -215,14 +239,31 @@ namespace Egss {
 				cursor++;
 				SkipSpaces(cursor, lineEnd);
 
-				// "off" and "0" both mean flat; any group number means smooth.
-				// Which group is deliberately not tracked: two smooth groups
-				// meeting at an edge should not share vertices, and that is
-				// worth doing when a file that cares turns up.
+				// "off" and "0" both mean flat; any other number names a
+				// smoothing *group*, and which one matters. Two groups meeting
+				// at an edge must not share vertices there: sharing would
+				// average their normals across the seam, which is precisely the
+				// crease the file is asking to keep.
 				size_t remaining = (size_t)(lineEnd - cursor);
-				smoothing = !(remaining >= 3 && std::strncmp(cursor, "off", 3) == 0)
-					&& !(remaining >= 1 && cursor[0] == '0'
+				bool off = (remaining >= 3 && std::strncmp(cursor, "off", 3) == 0)
+					|| (remaining >= 1 && cursor[0] == '0'
 						&& (remaining == 1 || IsSpace(cursor[1])));
+
+				if (off)
+				{
+					smoothGroup = 0;
+				}
+				else
+				{
+					char* after = nullptr;
+					long group = std::strtol(cursor, &after, 10);
+					// A group that is not a number at all is treated as smooth
+					// under group 1 rather than rejected -- exporters write
+					// odder things than the spec allows, and refusing the file
+					// over it would help nobody.
+					smoothGroup = (after != cursor && group > 0) ? (int)group : 1;
+				}
+
 				continue;
 			}
 
@@ -269,9 +310,11 @@ namespace Egss {
 					triplet.Position = Resolve(raw[0], positions.size());
 					triplet.TexCoord = (raw[1] != 0) ? Resolve(raw[1], texCoords.size()) : -1;
 					triplet.Normal = (raw[2] != 0) ? Resolve(raw[2], normals.size()) : -1;
-					// Only unshared when the normal has to be invented *and*
-					// the file asked for flat shading.
-					triplet.FlatFace = (triplet.Normal < 0 && !smoothing) ? (int)faceIndex : -1;
+					// A supplied normal needs no restriction at all. Without
+					// one, the corner may be shared as far as its smoothing
+					// group allows -- and `s off` allows only its own face.
+					triplet.Share = (triplet.Normal >= 0) ? -1
+						: (smoothGroup == 0 ? -2 - (int)faceIndex : smoothGroup);
 
 					if (triplet.Position < 0)
 					{
@@ -335,10 +378,46 @@ namespace Egss {
 				continue;
 			}
 
-			// Everything else -- o, g, s, usemtl, mtllib -- is skipped. An
+			// --- usemtl / mtllib --------------------------------------
+			// Both take the rest of the line as a name: material names and
+			// filenames may contain spaces, so the next *token* is not enough.
+			auto restOfLine = [&](const char* from) -> std::string
+			{
+				SkipSpaces(from, lineEnd);
+				const char* stop = lineEnd;
+				while (stop > from && IsSpace(stop[-1]))
+					stop--;
+				return (stop > from) ? std::string(from, (size_t)(stop - from)) : std::string();
+			};
+
+			if ((size_t)(lineEnd - cursor) > 6 && std::strncmp(cursor, "usemtl", 6) == 0
+				&& IsSpace(cursor[6]))
+			{
+				// Close whatever was open *before* switching, so the run that
+				// just ended keeps the material it was drawn with.
+				closeSubmesh();
+				currentMaterial = restOfLine(cursor + 6);
+				continue;
+			}
+
+			if ((size_t)(lineEnd - cursor) > 6 && std::strncmp(cursor, "mtllib", 6) == 0
+				&& IsSpace(cursor[6]))
+			{
+				// A file may name several, and may name the same one twice.
+				std::string library = restOfLine(cursor + 6);
+				if (!library.empty() && std::find(result.MaterialLibraries.begin(),
+					result.MaterialLibraries.end(), library) == result.MaterialLibraries.end())
+					result.MaterialLibraries.push_back(library);
+				continue;
+			}
+
+			// Everything else -- o, g, and vendor extensions -- is skipped. An
 			// unknown line is not an error: .obj has extensions this does not
 			// need, and refusing to load a file over one would be unhelpful.
 		}
+
+		// The run still open when the file ended.
+		closeSubmesh();
 
 		if (result.Vertices.empty() || result.Indices.empty())
 		{

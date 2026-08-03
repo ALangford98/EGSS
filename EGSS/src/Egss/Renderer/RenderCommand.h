@@ -29,10 +29,12 @@ namespace Egss {
 			s_RendererAPI->Clear();
 		}
 
-		// indexCount of 0 means "the whole index buffer".
-		inline static void DrawIndexed(const std::shared_ptr<VertexArray>& vertexArray, unsigned int indexCount = 0)
+		// indexCount of 0 means "the whole index buffer". firstIndex offsets
+		// into it, for drawing one submesh out of a shared buffer.
+		inline static void DrawIndexed(const std::shared_ptr<VertexArray>& vertexArray,
+			unsigned int indexCount = 0, unsigned int firstIndex = 0)
 		{
-			s_RendererAPI->DrawIndexed(vertexArray, indexCount);
+			s_RendererAPI->DrawIndexed(vertexArray, indexCount, firstIndex);
 		}
 
 		inline static void DrawLines(const std::shared_ptr<VertexArray>& vertexArray, unsigned int vertexCount)
