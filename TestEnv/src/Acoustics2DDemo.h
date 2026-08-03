@@ -67,39 +67,55 @@ public:
 		m_World.Gravity = { 0.0f, 0.0f };
 		m_World.Clear();
 
-		auto wall = [this](glm::vec2 centre, glm::vec2 halfExtents, float absorption)
+		// Absorption is how much a surface swallows; scattering is how much of
+		// what it sends back has forgotten which way the sound arrived. They
+		// are independent: polished marble absorbs almost nothing and
+		// scatters almost nothing, a bookcase absorbs little and scatters a
+		// lot, a curtain does both.
+		auto wall = [this](glm::vec2 centre, glm::vec2 halfExtents,
+			float absorption, float scattering)
 		{
 			unsigned int body = m_World.AddBody(
 				Egss::RigidBody2D::MakeStaticBox(centre, halfExtents));
 
 			if (m_Absorptions.size() <= body)
+			{
 				m_Absorptions.resize(body + 1, -1.0f);
+				m_Scatterings.resize(body + 1, -1.0f);
+			}
+
 			m_Absorptions[body] = absorption;
+			m_Scatterings[body] = scattering;
 		};
 
 		m_Absorptions.clear();
+		m_Scatterings.clear();
 
 		const float t = 0.4f;
 
-		// Outer shell. The hard walls are the ones that make the tail.
-		wall({ 0.0f, -7.0f }, { 14.0f, t }, 0.06f);   // floor
-		wall({ 0.0f,  7.0f }, { 14.0f, t }, 0.06f);   // ceiling
-		wall({ -14.0f, 0.0f }, { t, 7.0f }, 0.06f);   // left
-		wall({ 14.0f, 0.0f }, { t, 7.0f }, 0.06f);    // right
+		// Outer shell. The hard walls are the ones that make the tail. Flat
+		// plaster, so they barely scatter -- which is what leaves a specular
+		// trace with a comb for a tail.
+		wall({ 0.0f, -7.0f }, { 14.0f, t }, 0.06f, 0.05f);   // floor
+		wall({ 0.0f,  7.0f }, { 14.0f, t }, 0.06f, 0.05f);   // ceiling
+		wall({ -14.0f, 0.0f }, { t, 7.0f }, 0.06f, 0.05f);   // left
+		wall({ 14.0f, 0.0f }, { t, 7.0f }, 0.06f, 0.05f);    // right
 
 		// A dividing wall with a doorway in it, so there is somewhere to be
 		// out of sight without being out of earshot.
-		wall({ 4.0f, -4.6f }, { t, 2.8f }, 0.10f);
-		wall({ 4.0f,  4.6f }, { t, 2.8f }, 0.10f);
+		wall({ 4.0f, -4.6f }, { t, 2.8f }, 0.10f, 0.15f);
+		wall({ 4.0f,  4.6f }, { t, 2.8f }, 0.10f, 0.15f);
 
 		// Soft furnishing: absorbs most of what reaches it, and kills the tail
-		// far more than its size suggests.
-		wall({ -9.0f, 4.0f }, { 3.0f, 1.2f }, 0.85f);
+		// far more than its size suggests. What little comes back off a porous
+		// surface comes back diffusely.
+		wall({ -9.0f, 4.0f }, { 3.0f, 1.2f }, 0.85f, 0.70f);
 
 		// A couple of pillars to break up the specular orbits a bare rectangle
-		// would otherwise fall into.
-		wall({ -4.0f, -2.0f }, { 0.8f, 0.8f }, 0.15f);
-		wall({ 8.5f,  1.5f }, { 0.9f, 0.9f }, 0.15f);
+		// would otherwise fall into. Rough stone, so they scatter heavily --
+		// geometry and roughness doing the same job by different means.
+		wall({ -4.0f, -2.0f }, { 0.8f, 0.8f }, 0.15f, 0.60f);
+		wall({ 8.5f,  1.5f }, { 0.9f, 0.9f }, 0.15f, 0.60f);
 	}
 
 	// A tone with a little harmonic content, looping seamlessly: a whole
@@ -155,6 +171,8 @@ public:
 		settings.MaxBounces = m_MaxBounces;
 		settings.Absorption = m_Absorption;
 		settings.PerBodyAbsorption = m_UsePerBodyAbsorption ? &m_Absorptions : nullptr;
+		settings.Scattering = m_Scattering;
+		settings.PerBodyScattering = m_UsePerBodyAbsorption ? &m_Scatterings : nullptr;
 		settings.MaxReflections = m_MaxTaps;
 		// Must match the voice's MinDistance, or reflection gains and the
 		// direct sound's attenuation are on two different scales and the
@@ -343,10 +361,17 @@ public:
 			// rather than something you have to remember.
 			float absorption = (m_UsePerBodyAbsorption && i < m_Absorptions.size()
 				&& m_Absorptions[i] >= 0.0f) ? m_Absorptions[i] : m_Absorption;
+			float scattering = (m_UsePerBodyAbsorption && i < m_Scatterings.size()
+				&& m_Scatterings[i] >= 0.0f) ? m_Scatterings[i] : m_Scattering;
 
 			// Hard walls bright, soft ones dark: a mirror looks like a mirror.
 			float shade = 0.22f + (1.0f - absorption) * 0.45f;
-			glm::vec4 color(shade, shade * 0.98f, shade * 1.1f, 1.0f);
+
+			// Scattering warms the surface, because it is not the same thing
+			// as absorption and should not read as the same thing: the rough
+			// pillars are as hard as the walls and look it, just warmer.
+			glm::vec4 color(shade * (1.0f + scattering * 0.5f),
+				shade * 0.98f, shade * (1.1f - scattering * 0.7f), 1.0f);
 
 			Egss::Renderer2D::DrawQuad(glm::vec3(body.Position, -0.1f),
 				body.HalfExtents * 2.0f, color);
@@ -467,8 +492,8 @@ public:
 		ImGui::Text("RT60: %.2f s  (%s)", m_Result.ReverbTime,
 			m_Result.ReverbTimeMeasured ? "measured from the decay" : "Sabine fallback");
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Measuring needs the trace to run until the tail is 25 dB down.\\n"
-				"When it does not get that far it says so and falls back to the\\n"
+			ImGui::SetTooltip("Measuring needs the trace to run until the tail is 25 dB down.\n"
+				"When it does not get that far it says so and falls back to the\n"
 				"formula, rather than reporting where the trace stopped as decay.");
 
 		ImGui::Text("Sabine estimate: %.2f s     mean absorption %.2f",
@@ -485,13 +510,22 @@ public:
 			m_Result.MeanFreePath, m_Result.TracedSeconds);
 		ImGui::Text("Effective radius: %.1f m", m_Result.EffectiveRadius);
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("How far the sound actually carries, which a single falloff\\n"
-				"distance cannot express: much further along a corridor than\\n"
+			ImGui::SetTooltip("How far the sound actually carries, which a single falloff\n"
+				"distance cannot express: much further along a corridor than\n"
 				"across a padded room of the same size.");
 
 		ImGui::Text("Late/direct energy: %.3f", m_Result.LateEnergyRatio);
-		ImGui::TextDisabled("%d paths, %d bounces, %d rays escaped",
-			m_Result.PathsFound, m_Result.BouncesTraced, m_Result.RaysEscaped);
+
+		ImGui::Text("Tail roughness: %.2f dB", m_Result.TailRoughness);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("How far the late echogram's bins sit from their own local\n"
+				"average. A specular room's tail is a comb of spikes with gaps\n"
+				"between them and reads around 3-4 dB; a diffuse tail is noise\n"
+				"and reads under 1. Drag Scattering below and watch it fall.");
+
+		ImGui::TextDisabled("%d paths, %d bounces (%d scattered), %d rays escaped",
+			m_Result.PathsFound, m_Result.BouncesTraced,
+			m_Result.BouncesScattered, m_Result.RaysEscaped);
 
 		// --- The echogram ------------------------------------------------
 		ImGui::SeparatorText("Echogram");
@@ -538,10 +572,21 @@ public:
 		m_Dirty |= ImGui::SliderInt("Rays", &m_RayCount, 16, 1024);
 		m_Dirty |= ImGui::SliderInt("Max bounces", &m_MaxBounces, 1, 40);
 		m_Dirty |= ImGui::SliderFloat("Absorption", &m_Absorption, 0.01f, 0.95f);
-		m_Dirty |= ImGui::Checkbox("Per-surface absorption", &m_UsePerBodyAbsorption);
+
+		m_Dirty |= ImGui::SliderFloat("Scattering", &m_Scattering, 0.0f, 1.0f);
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("The bright walls are hard, the dark block is soft.\n"
-				"Turn this off to make every surface the same.");
+			ImGui::SetTooltip("How much of a bounce leaves diffusely rather than in the\n"
+				"mirror direction. At 0 a ray in a rectangular room only ever\n"
+				"takes four directions, so the tail arrives as a comb of\n"
+				"spikes and the decay comes out about 10%% long. Watch the\n"
+				"roughness figure and the echogram as you raise it.");
+
+		m_Dirty |= ImGui::Checkbox("Per-surface materials", &m_UsePerBodyAbsorption);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Per-surface absorption *and* scattering: the bright walls are\n"
+				"hard and flat, the dark block is soft, the pillars are rough\n"
+				"stone. Turn this off to make every surface the same, and the\n"
+				"two sliders above take over.");
 
 		m_Dirty |= ImGui::Checkbox("Frequency-dependent", &m_FrequencyDependent);
 		if (ImGui::IsItemHovered())
@@ -557,9 +602,7 @@ public:
 				ImGui::SetTooltip("Absorption per band as a multiple of the figure above:\n"
 					"low, mid, high. Set all three to 1 for one flat band.");
 		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("The bright walls are hard, the dark block is soft.\\n"
-				"Turn this off to make every surface the same.");
+
 		m_Dirty |= ImGui::SliderInt("Max taps", &m_MaxTaps, 1,
 			(int)Egss::AudioEngine::GetMaxReflections());
 
@@ -641,6 +684,7 @@ private:
 
 	Egss::PhysicsWorld2D m_World;
 	std::vector<float> m_Absorptions;
+	std::vector<float> m_Scatterings;
 
 	glm::vec2 m_Source = { -6.0f, -3.0f };
 	glm::vec2 m_Listener = { 8.0f, 2.0f };
@@ -663,6 +707,9 @@ private:
 	int m_RayCount = 192;
 	int m_MaxBounces = 16;
 	float m_Absorption = 0.15f;
+	// Non-zero by default: a specular room is the special case, not the
+	// normal one, and the default should be the room that behaves.
+	float m_Scattering = 0.3f;
 	bool m_UsePerBodyAbsorption = true;
 	int m_MaxTaps = 8;
 	bool m_TraceFullTail = false;

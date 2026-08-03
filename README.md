@@ -685,8 +685,6 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [ ] **Steeper crossovers.** The band split is complementary one-poles at
       18 dB/octave, which still leaks enough that a dead treble tail is partly
       masked by a live bass one
-- [ ] **Scattering coefficients.** Reflections are purely specular, so a smooth
-      room leaves gaps in the tail that a real diffusing surface would fill
 - [ ] **3D acoustics.** `Acoustics2D` is 2D because `Raycast` is. A room's floor
       and ceiling are half its reflecting area, so a traced RT60 is longer than
       the same room in 3D
@@ -907,6 +905,78 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-03 (scattering coefficients)
+
+Every surface was a mirror. That is a worse assumption than it sounds: in a
+rectangular room a specularly bouncing ray's direction only ever takes **four
+values**, so the field never becomes diffuse however many rays you throw at it.
+The tail arrives as a comb of spikes with gaps between them, and the decay
+comes out long — the ~10% bias over the diffuse-field formula that has been
+sitting in the known-approximations list since the tracer was written.
+
+- **`AcousticsSettings::Scattering`**, 0 for a mirror and 1 for a surface that
+  has forgotten which way the sound arrived, with `PerBodyScattering` for
+  per-material figures on the same terms as absorption. Decided per bounce
+  rather than by splitting the ray, so tracing costs the same whatever the
+  room is made of.
+- **Lambert's cosine law, sampled by inverting its CDF.** In 2D the law is
+  `pdf(θ) = cos(θ)/2` over the half-circle, whose CDF inverts to
+  `θ = asin(2u − 1)` — one call, no rejection loop, and every sample lands in
+  the correct half-circle by construction. Sampling *uniformly* over the
+  half-circle is the obvious thing and is wrong: it sends too much energy along
+  the wall and lengthens the decay.
+- **`TailRoughness`**, in dB RMS: how far each late echogram bin sits from its
+  own local average. This is what "gaps in the tail" actually means.
+- Deliberately **not per band**. A ray carries three energy packets but only
+  one direction, so it can only scatter or mirror as a whole; a surface that
+  mirrors bass and diffuses treble needs one ray per band.
+
+Measured in a bare 20 × 12 m rectangle — no pillars, because pillars would hide
+exactly the effect being measured. Against Eyring fed π·A/P:
+
+| scattering | RT60 | vs Eyring | tail roughness |
+| --- | --- | --- | --- |
+| 0.0 (mirror) | 2.337 s | **+9.9%** | 3.66 dB |
+| 0.1 | 2.281 s | +7.3% | 2.10 dB |
+| 0.3 | 2.205 s | +3.7% | 1.22 dB |
+| 1.0 (diffuse) | 2.170 s | +2.1% | 0.98 dB |
+
+Repeating the sweep at half the absorption reproduces it: +10.1% down to
++2.1%, with roughness 2.99 dB down to 0.76 dB. The comb becomes noise.
+
+Three things measurement caught:
+
+- **Counting empty echogram bins was useless.** It was the obvious way to
+  measure "gaps in the tail" and it read **100% for a mirror room and 100% for
+  a diffuse one** — at a few hundred rays and 5 ms bins, every bin gets
+  *something* either way. What differs is the spread, not the occupancy, which
+  is why the shipped metric compares each bin to its neighbours instead.
+- **A hand-derived mean free path disagreed with the trace, and the formula was
+  the thing that was wrong.** Unfolding the rectangle gives a mean chord of
+  `1/n(θ)` per direction, which averages to 12.14 m — but rays here run out of
+  *path length* before they run out of bounces, so a direction that bounces
+  twice as often contributes twice as many samples. The path-weighted answer is
+  `1/⟨n⟩ = π/2 · WH/(W+H) = π·A/P` exactly: 11.78 m, and the trace says 11.74.
+  So the specular rectangle lands on the *diffuse* figure too, and mean free
+  path cannot detect this problem at all — which is why a purely specular
+  tracer passed that check all along.
+- **The sweep's shape is mostly fit noise.** It does not fall monotonically
+  (+3.7% at s=0.3 against +2.1% at s=1.0), but re-running one setting with four
+  different scattering seeds spreads the answer over 3.1 points. Only the two
+  ends are outside that; the curve between them is not. The first version of
+  this check said the dip was real, and it was reporting a spread of 0.7 points
+  measured under a slightly different trace budget.
+
+Verified with 29 checks: `s = 0` still traces **bit-identically** to the old
+specular path, a room that has not moved traces identically twice, a different
+seed lands within 10% of the same RT60, and the reported roughness matches an
+independent implementation of it at every scattering value.
+
+Also fixed while in the demo: three tooltips containing `\\n` rendered a
+literal backslash-n, and a fourth was a stray duplicate left dangling after the
+band-scale block, so it attached itself to whatever widget happened to precede
+it.
 
 ### 2026-08-03 (frequency-dependent absorption)
 

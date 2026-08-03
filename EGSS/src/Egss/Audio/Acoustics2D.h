@@ -53,6 +53,34 @@ namespace Egss {
 		// three to 1 gives the old single-band behaviour back.
 		float BandAbsorptionScale[AcousticBandCount] = { 0.55f, 1.0f, 1.9f };
 
+		// Probability that a bounce leaves in a diffuse direction rather than
+		// the mirror one. 0 is a mirror; 1 is a surface that has forgotten
+		// which way the sound arrived.
+		//
+		// This is the assumption a specular tracer gets most visibly wrong.
+		// In a rectangle with mirror walls a ray's direction only ever takes
+		// four values, so the field never becomes diffuse: the late echogram
+		// arrives as a comb of spikes with empty bins between them, and the
+		// traced decay sits above the diffuse-field formula it gets compared
+		// with. Scattering is what fills those gaps in.
+		//
+		// Real surfaces: flat plaster about 0.05, brickwork 0.1-0.2, a
+		// bookcase or a coffered ceiling 0.4 and up.
+		float Scattering = 0.0f;
+		// Per-body override, indexed by body handle, on the same terms as
+		// PerBodyAbsorption: past the end, or negative, falls back.
+		const std::vector<float>* PerBodyScattering = nullptr;
+
+		// Deliberately *not* per band, unlike absorption. A ray carries three
+		// energy packets but only one direction, so it can only scatter or
+		// mirror as a whole. A surface that mirrors bass and diffuses treble
+		// -- which is what roughness comparable to a wavelength actually does
+		// -- needs one ray per band, and three times the tracing cost.
+
+		// Fixed, so a room that has not moved traces the same way every time
+		// rather than shimmering as each retrace draws fresh noise.
+		unsigned int ScatterSeed = 0x2545F491u;
+
 		float SpeedOfSound = 343.0f;
 		// Paths longer than this are dropped: at 343 m/s this is the tail
 		// length in metres, and tracing past audibility is wasted work.
@@ -138,6 +166,24 @@ namespace Egss {
 		int RaysEscaped = 0;
 		int PathsFound = 0;
 		int BouncesTraced = 0;
+		// Of those, how many left diffusely. At Scattering 0 this is 0 and the
+		// trace is the old specular one exactly, which is worth being able to
+		// confirm rather than assume.
+		int BouncesScattered = 0;
+
+		// How bumpy the late echogram is around its own decay, in dB RMS: for
+		// each late bin, how far it sits from the average of the bins either
+		// side. This is the number that says whether the tail is noise or a
+		// comb. Mirror walls send every ray back through the same few
+		// directions, so arrivals pile into spikes with near-empty bins
+		// between them; scattering fills the gaps in and the figure falls.
+		//
+		// Counting *empty* bins was the obvious measure and is useless: at a
+		// few hundred rays and 5 ms bins every bin gets something either way,
+		// so it read 100% for a mirror room and 100% for a diffuse one. The
+		// spread is what differs -- about 3.7 dB specular against 0.8 dB
+		// fully scattering, in a bare rectangle.
+		float TailRoughness = 0.0f;
 
 		// Energy per BinSeconds, index 0 starting at the direct sound. Kept so
 		// a demo can draw the echogram, which is the only way to see what the
@@ -195,12 +241,14 @@ namespace Egss {
 	// or listener has moved enough to matter, and feed the answer to the mixer.
 	//
 	// Approximations worth knowing about:
-	//  - Specular only. Real surfaces scatter, which fills in the tail; here a
-	//    smooth room can leave gaps between reflections.
-	//  - One absorption figure per surface, not per frequency. Real rooms
-	//    absorb treble far faster than bass, which is why the tail gets duller
-	//    as it decays. The lowpass in the mixer's occlusion path is the
-	//    nearest thing to it.
+	//  - Scattering is decided per bounce, not per band, and it only steers
+	//    the ray onward: a bounce is still detected at the listener with no
+	//    regard for which way it was heading. That detection was always a
+	//    diffuse-rain approximation -- a truly specular reflection reaches the
+	//    listener only from the mirror direction -- and it stays one.
+	//  - Three absorption bands, not a curve. Real materials are measured in
+	//    octave bands and a soft surface's curve is nothing like a hard one's;
+	//    three is only enough to hear bass outlast treble.
 	//  - 2D. A room's floor and ceiling are half its reflecting area, so a
 	//    traced RT60 here is longer than the same room in 3D.
 	class EGSS_API Acoustics2D

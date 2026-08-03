@@ -32,9 +32,11 @@ Reading order for a newcomer:
 
 **Check `git log` and `git status` first — this section goes stale quickly.**
 At the time of writing, `HEAD` was `6266d8e` "added convolution reverb driven
-by the ray-traced room acoustics", with **frequency-dependent absorption**
-(three bands through the tracer and the reverb) verified, building, and
-uncommitted.
+by the ray-traced room acoustics", with two pieces of work verified, building
+in all three configs, and uncommitted: **frequency-dependent absorption**
+(three bands through the tracer and the reverb) and **scattering coefficients**
+(diffuse reflection, which took the traced RT60's bias over the diffuse-field
+formula from +9.9% to +2.1%).
 
 The owner commits their own work, often between sessions and sometimes while
 a reply is being written. **Do not commit or push unless asked**, and do not
@@ -52,7 +54,7 @@ assume something is still outstanding because a previous message said so.
 | Scene | `Scene`, `Entity`, `ComponentStore` | ECS-lite: dense arrays, generational handles |
 | Physics | `PhysicsWorld2D`, `RigidBody2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. **No rotation** |
 | Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb |
-| Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above |
+| Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
 | Profiling | `Instrumentor` | `EGSS_PROFILE_SCOPE`, live panel, Chrome trace |
 
 ---
@@ -249,19 +251,30 @@ uniformly — the biggest visual step left in the 2D renderer).
 **Physics** — rotation. Bodies translate but never spin; needs SAT, multi-point
 manifolds and angular impulses. The hardest item on the list.
 
-**Acoustics**, the most recently active area — scattering coefficients
-(reflections are purely specular, so a smooth room leaves gaps in the tail);
-3D acoustics (`Acoustics2D` is 2D because `Raycast` is); partitioned FFT
-convolution (for dense recorded impulses); more bands with per-material curves;
-steeper crossovers.
+**Acoustics**, the most recently active area — 3D acoustics (`Acoustics2D` is
+2D because `Raycast` is); partitioned FFT convolution (for dense recorded
+impulses); more bands with per-material curves; steeper crossovers.
+**Per-band scattering** is the natural follow-on now that scattering exists:
+it needs one ray per band, since a ray carries three energy packets but only
+one direction.
 
 ### Known approximations, stated so they are not mistaken for bugs
 
-- The traced RT60 sits **~10% above** the diffuse-field formula. Sabine and
-  Eyring assume a diffuse field; a rectangle with mirror walls never becomes
-  one, since a ray's direction only takes four values. Adding scatterers moves
-  the bias from +9.6% to +7.5%, the direction that explanation predicts. The
-  residual is chord-length variance.
+- The traced RT60 sits **~10% above** the diffuse-field formula *when every
+  surface is a mirror*. Sabine and Eyring assume a diffuse field; a rectangle
+  with mirror walls never becomes one, since a ray's direction only takes four
+  values. `Scattering` is the fix and it works — +9.9% falls to +2.1% at full
+  scattering, reproduced at two absorptions — so a room set up with sensible
+  scattering figures should now agree with the formula to a couple of percent.
+  A room left at `Scattering = 0` still shows the old bias, by construction.
+- **The decay fit resolves about 3 percentage points.** Re-running one trace
+  with four different scattering seeds spreads the measured RT60 that far. Any
+  difference smaller than that is noise, and a sweep that looks like it has a
+  shape probably does not. Widen the trace budget before believing one.
+- **Mean free path cannot detect a non-diffuse field.** A specular rectangle
+  and a fully diffuse one both land on π·A/P — the specular case by a
+  path-weighted average that works out to the same thing. Use `TailRoughness`
+  or the RT60 bias instead.
 - Rendered per-band decays read slower than traced ones. Once a band's tail has
   died, what remains in that band of any analysis is leakage from its
   neighbours, and the bass tail is still ~20 dB louder. The treble/bass ratio

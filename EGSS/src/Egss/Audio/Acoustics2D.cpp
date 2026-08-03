@@ -29,11 +29,45 @@ namespace Egss {
 				out[band] = glm::clamp(base * settings.BandAbsorptionScale[band], 0.0001f, 0.9999f);
 		}
 
+		float ScatteringFor(const AcousticsSettings& settings, unsigned int body)
+		{
+			float base = glm::clamp(settings.Scattering, 0.0f, 1.0f);
+
+			if (!settings.PerBodyScattering || body >= settings.PerBodyScattering->size())
+				return base;
+
+			float value = (*settings.PerBodyScattering)[body];
+			return (value < 0.0f) ? base : glm::clamp(value, 0.0f, 1.0f);
+		}
+
 		// Mirror about the surface normal. The tangential part of the
 		// direction survives, the normal part flips.
 		glm::vec2 Reflect(const glm::vec2& direction, const glm::vec2& normal)
 		{
 			return direction - 2.0f * glm::dot(direction, normal) * normal;
+		}
+
+		// A direction drawn from Lambert's cosine law about the normal, which
+		// is what a surface rough compared with the wavelength sends back
+		// regardless of which way the sound arrived.
+		//
+		// In 2D the law is pdf(theta) = cos(theta)/2 over the half-circle
+		// either side of the normal. Its CDF is (sin(theta) + 1)/2, so
+		// inverting it is just theta = asin(2u - 1) -- one call, no rejection
+		// loop, and every sample lands in the correct half-circle by
+		// construction rather than by being retried until it does.
+		//
+		// Drawing uniformly over the half-circle instead is the obvious thing
+		// and is wrong: it sends far too much energy along the wall, which
+		// lengthens the mean free path and with it the decay.
+		glm::vec2 CosineDirection(const glm::vec2& normal, float u)
+		{
+			float theta = std::asin(glm::clamp(2.0f * u - 1.0f, -1.0f, 1.0f));
+
+			// Rotate the normal by theta. The normal already points back out
+			// of the surface, so this cannot aim into it.
+			float c = std::cos(theta), s = std::sin(theta);
+			return { normal.x * c - normal.y * s, normal.x * s + normal.y * c };
 		}
 
 		// How much of what leaves a point reaches the listener, from distance
@@ -291,6 +325,16 @@ namespace Egss {
 		const float speed = glm::max(settings.SpeedOfSound, 1.0f);
 		const int rayCount = glm::max(settings.RayCount, 1);
 
+		// Scattering is the one stochastic part of the trace, so it gets its
+		// own fixed stream rather than std::rand: the same room must trace the
+		// same way twice, or a listener who has not moved hears the tail
+		// change under them every time it is rebuilt.
+		unsigned int rng = settings.ScatterSeed ? settings.ScatterSeed : 1u;
+		auto unit = [&rng]() {
+			rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;   // xorshift32
+			return (float)(rng >> 8) / (float)(1 << 24);
+		};
+
 		// --- The direct sound ---------------------------------------------
 		glm::vec2 toListener = listener - source;
 		result.DirectDistance = glm::length(toListener);
@@ -532,7 +576,23 @@ namespace Egss {
 				if (!anyLeft)
 					break;
 
-				direction = Reflect(direction, hit.Normal);
+				// Scatter or mirror, decided per bounce rather than by
+				// splitting the ray in two. One ray that goes diffuse a
+				// fraction s of the time carries the same energy in each
+				// direction as two rays weighted s and 1-s, and it keeps the
+				// cost of a trace independent of how rough the room is.
+				float scattering = ScatteringFor(settings, hit.Body);
+
+				if (scattering > 0.0f && unit() < scattering)
+				{
+					direction = CosineDirection(hit.Normal, unit());
+					result.BouncesScattered++;
+				}
+				else
+				{
+					direction = Reflect(direction, hit.Normal);
+				}
+
 				origin = surfacePoint;
 			}
 
@@ -583,6 +643,51 @@ namespace Egss {
 
 		result.LateEnergyRatio = unoccludedEnergy > 1e-12f
 			? lateEnergy / unoccludedEnergy : 0.0f;
+
+		// How rough the late tail is. Each bin is compared with the local
+		// average around it rather than with the whole tail, so the decay
+		// itself does not register as roughness -- what is left is how much
+		// the arrivals clump.
+		//
+		// Only bins the trace reached count. Past deepestBin they are empty
+		// because tracing stopped, which says nothing about the room.
+		{
+			const int half = 4;   // +/- 20 ms, well inside the ear's fusion window
+			const size_t last = glm::min(deepestBin, binCount - 1);
+
+			double total = 0.0;
+			int counted = 0;
+
+			for (size_t i = earlyCutoff; i <= last; i++)
+			{
+				double sum = 0.0;
+				int window = 0;
+
+				for (int k = -half; k <= half; k++)
+				{
+					// Unsigned, so a negative offset wraps to something huge --
+					// which the upper bound catches.
+					size_t j = i + (size_t)k;
+					if (j < earlyCutoff || j > last)
+						continue;
+
+					sum += result.Echogram[j];
+					window++;
+				}
+
+				if (window == 0 || sum <= 0.0)
+					continue;
+
+				double local = sum / window;
+				// Floored, or a genuinely empty bin contributes -infinity.
+				double db = 10.0 * std::log10(glm::max(result.Echogram[i] / (float)local, 1e-4f));
+
+				total += db * db;
+				counted++;
+			}
+
+			result.TailRoughness = counted > 0 ? (float)std::sqrt(total / counted) : 0.0f;
+		}
 
 		// --- Early reflections as discrete taps ---------------------------
 		// Bin 0 is the direct sound, which the mixer already plays.

@@ -244,6 +244,8 @@ settings.RayCount = 192;
 settings.Absorption = 0.15f;                    // energy lost per bounce
 settings.PerBodyAbsorption = &absorptionByBody; // optional, indexed by handle
 settings.BandAbsorptionScale[2] = 1.9f;         // treble absorbed ~2x mid
+settings.Scattering = 0.3f;                     // diffuse, not mirror, per bounce
+settings.PerBodyScattering = &scatterByBody;    // optional, same rules
 
 AcousticsResult r = Acoustics2D::Trace(world, sourcePos, listenerPos, settings);
 
@@ -251,6 +253,7 @@ r.Occlusion;          // graded, from five probes across the listener
 r.Reflections;        // delay, gain, arrival direction, bounce count
 r.ReverbTime;         // RT60 -- check ReverbTimeMeasured before trusting it
 r.BandReverbTime[3];  // per band: treble should come out well under bass
+r.TailRoughness;      // dB RMS -- is the tail noise, or a comb with gaps?
 r.EffectiveRadius;    // how far the sound actually carries
 r.Echogram;           // energy per 5 ms bin -- a coarse impulse response,
                       // which is what BuildImpulseTaps convolves with
@@ -325,9 +328,9 @@ survive a rebind, so setting your own before the call is fine.
 
 ### Acoustics, briefly
 
-`Acoustics2D::Trace` is stochastic ray tracing: rays leave the source, reflect
-specularly, lose a fraction of their energy at every surface, and at each bounce
-ask whether the listener is visible from there. Every yes is one path sound
+`Acoustics2D::Trace` is stochastic ray tracing: rays leave the source, bounce
+off surfaces losing a fraction of their energy, and at each bounce ask whether
+the listener is visible from there. Every yes is one path sound
 could take — its length gives a delay, its surviving energy a gain, its last leg
 a direction. Binned by arrival time, they are the room's impulse response.
 
@@ -341,7 +344,21 @@ carries three energy packets that start equal and diverge as they bounce, and
 the reverb gets one impulse tail per band. Set every `BandAbsorptionScale` to 1
 for a single flat band.
 
-Two things are worth knowing before you trust a number it gives you:
+`Scattering` decides how a bounce leaves. At 0 it mirrors; otherwise that
+fraction of bounces leave in a diffuse direction drawn from Lambert's cosine
+law instead. It matters more than it sounds like: with mirror walls a ray in a
+rectangular room only ever travels in four directions, so the field never
+becomes diffuse, the tail arrives as a comb of spikes with gaps between them,
+and the measured RT60 comes out about 10% above the diffuse-field formula.
+Raising it to 0.3 takes that to a couple of percent. `TailRoughness` is the
+number to watch — roughly 3.7 dB specular against 0.9 dB scattering, in a bare
+rectangle.
+
+Scattering is deliberately *not* per band, unlike absorption: a ray carries
+three energy packets but only one direction, so it can only scatter or mirror
+as a whole. Frequency-dependent scattering needs one ray per band.
+
+Three things are worth knowing before you trust a number it gives you:
 
 - **`ReverbTime` is only measured if the trace ran long enough.** Fitting a
   decay needs the tail to reach 25 dB down inside the traced span; past that
@@ -354,6 +371,12 @@ Two things are worth knowing before you trust a number it gives you:
   surface re-radiates the listener catches, which depends only on how far away
   that surface is. Applying `1/d²` over the total path counts distance twice
   and halves every RT60 you measure.
+- **Every bounce is detected at the listener, whichever way it was heading.**
+  A truly specular reflection reaches you only from the mirror direction, so
+  this over-collects paths — but a tracer that waited for rays to land on a
+  listener of finite size would need orders of magnitude more of them.
+  `Scattering` steers where a ray goes *next*; it does not change how bounces
+  are detected.
 
 Positions are **world units**, not pixels. The camera decides how many units fit
 on screen, so `{0.5f, 0.5f}` is half a unit wide regardless of resolution.
