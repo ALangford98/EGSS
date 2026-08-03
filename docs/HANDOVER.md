@@ -326,6 +326,15 @@ a ray carries three energy packets but only one direction.
   128 rays and 1.99 s at 8192 — few rays ever find the mouth, so its share of
   the tail comes from a thin sample. The slider stops at 1024. Not a bug; the
   variance of a stochastic method, visible for once.
+- **Triangle winding is counter-clockwise seen from outside**, and it is worth
+  checking rather than assuming: `CreateSphere` and three of the four models
+  were inside-out for a long time, behind a comment claiming they agreed. The
+  symptom is seeing an object's *interior* once back-face culling is on, and it
+  is subtle on a smooth lit shape because the normals can be right while the
+  winding is not. Audit with `cross(p1-p0, p2-p0)` against the outward
+  direction — but a **non-convex** mesh (the torus) cannot be judged that way,
+  and a mesh whose normals were *generated* cannot be judged against them at
+  all, since the loader derived them from the winding in the first place.
 - **`Tr` and `d` in an .mtl are inverses.** `d` is dissolve (1 opaque), `Tr` is
   transparency (0 opaque). The parser follows the spec; plenty of exporters do
   not, so a model that loads fully transparent is worth suspecting here first.

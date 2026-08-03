@@ -896,6 +896,60 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-03 (inside-out geometry, found by looking)
+
+Reported from the demo: the beacon and the sphere were showing their **inner
+faces**. With back-face culling on that means the near surface is being culled
+and you are looking at the far one's interior — the winding is backwards.
+
+It turned out to be four things, only one of which was new:
+
+| | wound | |
+| --- | --- | --- |
+| `Mesh::CreateSphere` | **inside-out** | pre-existing, in the engine |
+| `pyramid.obj` | **inside-out** | pre-existing asset |
+| `torus.obj` | **inside-out** | pre-existing asset |
+| `beacon.obj` | **inside-out** | added the same day, by me |
+| `Mesh::CreateCube`, `CreatePlane`, `icosahedron.obj` | correct | |
+
+The comment in `OpenGLRendererAPI` had asserted for a long time that "Mesh's
+primitives and the .obj convention both agree" with `GL_CCW`. It was simply
+untrue, and nothing had ever checked it.
+
+**Establishing which side was wrong mattered more than the fix.** When most of
+the project disagrees with your test, the test is the likelier culprit — so the
+convention was confirmed from three independent directions before anything was
+touched:
+
+- `CreateCube` carries **explicit face normals in code**, written next to the
+  corners. Its winding agrees with them.
+- `icosahedron.obj` agrees too, and is hand-authored.
+- `torus.obj` supplies its own `vn` lines. Its winding disagreed with them on
+  **2304 of 2304** triangles — so one of the two was wrong, and that alone does
+  not say which. A torus settles it: the outward direction at a point is away
+  from the nearest point on the tube's centre circle, and the file's normals
+  point that way on **1225 of 1225** vertices. The normals were right; the
+  winding was not.
+
+The audit is per triangle: winding normal `cross(p1-p0, p2-p0)` against the
+outward direction, which for a convex mesh about its centre is just the
+centroid. Two traps in the measurement itself, both of which produced confident
+wrong answers first:
+
+- **A torus is not convex**, so that heuristic is meaningless for it — its inner
+  third genuinely faces inward, and it duly reported 768 "inward" triangles both
+  before *and* after the fix. Its `vn` are what can judge it.
+- **The audit rebuilt the sphere from its own copy of the recipe**, so after
+  fixing `Mesh.cpp` it kept reporting the old winding. The test's own comment
+  had warned about exactly that drift.
+
+Checking winding against generated normals is worthless, incidentally: with no
+`vn` in the file the loader derives them *from* the winding, so they agree by
+construction whichever way round it is. Only a file that states its normals can
+be tested that way.
+
+Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
 ### 2026-08-03 (rotation, the two halves that can be checked alone)
 
 Rotation is the largest item on the roadmap and the one most likely to be left

@@ -231,10 +231,20 @@ namespace Egss {
 				// The polar rings are triangles, not quads -- every vertex in
 				// the top row is the same point. Emitting the degenerate half
 				// would cost draw work for zero pixels.
+				//
+				// Wound counter-clockwise seen from *outside*, like the cube.
+				// It was the other way round until it was measured: `a` to `b`
+				// runs down the sphere and `a` to `a+1` runs around it, and
+				// crossing those in that order gives the inward normal. With
+				// back-face culling on, that culls the near hemisphere and
+				// leaves you looking at the inside of the far one -- which on a
+				// smooth, correctly-lit sphere is subtle enough to survive a
+				// long time unnoticed, because the *normals* here were right
+				// all along.
 				if (ring != 0)
-					data.Indices.insert(data.Indices.end(), { a, b, a + 1 });
+					data.Indices.insert(data.Indices.end(), { a, a + 1, b });
 				if (ring != rings - 1)
-					data.Indices.insert(data.Indices.end(), { a + 1, b, b + 1 });
+					data.Indices.insert(data.Indices.end(), { a + 1, b + 1, b });
 			}
 		}
 

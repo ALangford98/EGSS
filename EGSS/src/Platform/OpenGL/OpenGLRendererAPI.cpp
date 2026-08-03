@@ -102,9 +102,14 @@ namespace Egss {
 		if (enabled)
 		{
 			glEnable(GL_CULL_FACE);
-			// GL's default: counter-clockwise is the front. Mesh's primitives
-			// and the .obj convention both agree with it, so nothing needs
-			// glFrontFace.
+			// GL's default: counter-clockwise is the front. Every primitive and
+			// every asset agrees with it, so nothing needs glFrontFace.
+			//
+			// That claim used to be here untested, and was false: CreateSphere
+			// and three of the four models were wound inside-out. Culling then
+			// removes the near surface and shows you the far one's interior.
+			// It has since been checked per triangle, which is the only way
+			// this is worth asserting -- see the changelog entry for how.
 			glCullFace(GL_BACK);
 		}
 		else
