@@ -269,6 +269,23 @@ auto handle = world.AddBody(RigidBody2D::MakeCircle(pos, radius, mass));
 world.AddBody(RigidBody2D::MakeStaticBox(pos, halfExtents));
 world.Step(fixedStep);
 const RigidBody2D& body = world.GetBody(handle);   // Position, Velocity, Awake
+                                                   // Rotation, AngularVelocity
+
+// Bodies rotate. Set Rotation (radians) before adding, and RecalculateInertia
+// if you change a body's size or mass afterwards -- inertia depends on both
+// and nothing watches for it. Renderer2D::DrawRotatedQuad wants degrees.
+body2.Rotation = glm::radians(-22.0f);             // a static ramp
+world.ApplyImpulseAt(handle, impulse, worldPoint); // off-centre: spins it too
+
+// Frame capture — a PNG of the frame being drawn, written just before the swap
+Application::Get().CaptureFrame("shots/a.png");   // safe to call from anywhere
+Application::Get().GetFrameCount();               // frames drawn
+Application::Get().GetStepCount();                // fixed steps run -- the sim's clock
+
+// Unattended, and bit-reproducible with all three flags:
+//   ./TestEnv --demo Physics --lockstep --hide-ui --capture a.png --capture-step 240
+// --demo takes an index or short name; --capture-step beats --capture-frame,
+// because frames are skipped while the window maps and steps are not.
 
 RaycastHit hit = world.Raycast(origin, direction, maxDistance);  // dir auto-normalised
 world.ResolveCircle(position, radius);        // push a circle out of geometry --

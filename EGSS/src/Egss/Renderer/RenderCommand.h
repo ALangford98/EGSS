@@ -66,6 +66,13 @@ namespace Egss {
 		{
 			s_RendererAPI->SetBackfaceCulling(enabled);
 		}
+
+		// Bottom-up RGBA8 rows from the bound framebuffer. See RendererAPI.
+		inline static void ReadPixels(unsigned int x, unsigned int y, unsigned int width,
+			unsigned int height, unsigned char* out)
+		{
+			s_RendererAPI->ReadPixels(x, y, width, height, out);
+		}
 	private:
 		static RendererAPI* s_RendererAPI;
 	};

@@ -184,13 +184,24 @@ public:
 		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ -1.45f, 0.0f }, { 0.06f, 0.9f }));
 		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ 1.45f, 0.0f }, { 0.06f, 0.9f }));
 
-		// A ramp would need rotation, which this solver doesn't have -- so a
-		// staircase of static boxes instead.
-		for (int i = 0; i < 4; i++)
-		{
-			m_World.AddBody(Egss::RigidBody2D::MakeStaticBox(
-				{ -1.1f + i * 0.16f, -0.72f + i * 0.09f }, { 0.08f, 0.03f }));
-		}
+		// A ramp. This used to be a staircase of axis-aligned boxes, because
+		// the solver had no rotation and a slope was not expressible -- it is
+		// the single best thing to point a new collider at, since a body on a
+		// slope exercises the contact normal, friction and the angular terms
+		// all at once and disagrees visibly when any of them is wrong.
+		Egss::RigidBody2D ramp = Egss::RigidBody2D::MakeStaticBox(
+			{ -0.70f, -0.45f }, { 0.58f, 0.035f });
+		ramp.Rotation = glm::radians(-22.0f);   // descending to the right
+		ramp.Friction = 0.55f;
+		m_World.AddBody(ramp);
+
+		// A second, shallower one below it, so something that leaves the first
+		// has somewhere to go.
+		Egss::RigidBody2D lower = Egss::RigidBody2D::MakeStaticBox(
+			{ 0.35f, -0.66f }, { 0.45f, 0.035f });
+		lower.Rotation = glm::radians(9.0f);
+		lower.Friction = 0.55f;
+		m_World.AddBody(lower);
 
 		m_StaticCount = (unsigned int)m_World.GetBodyCount();
 
@@ -218,10 +229,35 @@ public:
 		// which is a much easier case than a messy pile.
 		float x = -0.9f + 0.37f * std::sin(m_SpawnCounter * 2.4f);
 
+		// Every third body is a crate, dropped already tilted so it lands on a
+		// corner. That is the case the whole rotation exercise was for: it
+		// tips, tumbles down the ramp and settles flush against it, and none
+		// of those three steps is possible without the angular terms.
+		if (m_SpawnCrates && m_SpawnCounter % 3 == 2)
+		{
+			float half = 0.05f + 0.015f * std::abs(std::cos(m_SpawnCounter * 1.7f));
+
+			Egss::RigidBody2D crate = Egss::RigidBody2D::MakeBox(
+				{ x, 0.75f }, { half, half }, 1.0f);
+			crate.Rotation = 0.6f * std::sin(m_SpawnCounter * 3.1f);
+			// A little spin on the way in, so it is obvious the rotation is
+			// integrated and not just drawn.
+			crate.AngularVelocity = 2.5f * std::cos(m_SpawnCounter * 2.2f);
+			crate.Restitution = m_Bounciness * 0.4f;
+			crate.Friction = 0.5f;
+
+			m_World.AddBody(crate);
+			m_SpawnCounter++;
+			return;
+		}
+
 		Egss::RigidBody2D circle = Egss::RigidBody2D::MakeCircle(
 			{ x, 0.75f }, 0.045f + 0.02f * std::abs(std::cos(m_SpawnCounter)), 1.0f);
 		circle.Restitution = m_Bounciness;
 		circle.Friction = 0.3f;
+		// Discs roll on the ramp rather than sliding, which needs the friction
+		// impulse to reach the contact point rather than the centre.
+		circle.AngularDamping = 0.02f;
 
 		m_World.AddBody(circle);
 		m_SpawnCounter++;
@@ -280,7 +316,11 @@ public:
 			if (m_PreviousContacts.find(key) != m_PreviousContacts.end())
 				continue;
 
-			if (contact.NormalImpulse < m_ImpactThreshold)
+			// Summed over the contact's points. A box landing flat produces two
+			// of them sharing one total, so reading a single point's impulse
+			// would report a face-on landing as half as hard as it was.
+			float impulse = contact.TotalNormalImpulse();
+			if (impulse < m_ImpactThreshold)
 				continue;
 
 			// Positioned in the world rather than panned by hand: the engine
@@ -289,7 +329,7 @@ public:
 			// knowing anything about it.
 			Egss::Audio3DParams params;
 			params.Position = { contact.Point.x, contact.Point.y, 0.0f };
-			params.Volume = std::min(contact.NormalImpulse * 1.6f, 1.0f) * m_ImpactVolume;
+			params.Volume = std::min(impulse * 1.6f, 1.0f) * m_ImpactVolume;
 			// Vary the pitch so repeated hits don't sound mechanical.
 			params.Pitch = 0.85f + 0.3f * std::abs(std::sin((float)m_SpawnCounter * 12.9898f));
 			params.MinDistance = m_ListenerMinDistance;
@@ -326,6 +366,11 @@ public:
 			const Egss::RigidBody2D& body = bodies[i];
 			glm::vec2 position = glm::mix(body.PreviousPosition, body.Position, alpha);
 
+			// Rotation interpolates exactly as position does. Both are stored
+			// per step for this, and a body drawn at its newest angle while
+			// its position lags reads as jitter.
+			float rotation = glm::mix(body.PreviousRotation, body.Rotation, alpha);
+
 			glm::vec4 color;
 			if (body.Type == Egss::BodyType::Static)
 				color = { 0.30f, 0.32f, 0.38f, 1.0f };
@@ -338,14 +383,22 @@ public:
 
 			if (body.Shape == Egss::ColliderShape::Box)
 			{
-				Egss::Renderer2D::DrawQuad(position, body.HalfExtents * 2.0f, color);
+				// Degrees, not radians: DrawRotatedQuad converts, and the
+				// physics works in radians throughout. Passing radians here
+				// draws a box turned about a seventh of the way it should be,
+				// which looks like a solver bug rather than a units mistake.
+				Egss::Renderer2D::DrawRotatedQuad(position, body.HalfExtents * 2.0f,
+					glm::degrees(rotation), color);
 			}
 			else
 			{
-				// No circle primitive -- a quad stands in for the fill, and
-				// the debug outline below shows the true shape.
-				Egss::Renderer2D::DrawQuad(position,
-					{ body.Radius * 2.0f, body.Radius * 2.0f }, color);
+				// An actual circle. This drew a quad standing in for one until
+				// rotation arrived, behind a comment saying there was no
+				// circle primitive -- there is, and once discs started turning
+				// the stand-in became a lie: a square spinning on a slope
+				// reads as a tumbling crate, not a rolling ball. The debug
+				// spoke is what shows the spin now that the fill is round.
+				Egss::Renderer2D::DrawCircle(position, body.Radius, color);
 			}
 		}
 
@@ -435,13 +488,26 @@ public:
 		for (const Egss::RigidBody2D& body : bodies)
 		{
 			glm::vec2 position = glm::mix(body.PreviousPosition, body.Position, alpha);
+			float rotation = glm::mix(body.PreviousRotation, body.Rotation, alpha);
+
 			glm::vec4 outline = body.Awake ? glm::vec4(0.2f, 0.9f, 0.5f, 1.0f)
 			                               : glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
 
 			if (body.Shape == Egss::ColliderShape::Box)
-				Egss::Renderer2D::DrawRect(position, body.HalfExtents * 2.0f, outline);
+			{
+				DrawBoxOutline(position, body.HalfExtents, rotation, outline);
+			}
 			else
+			{
 				DrawCircleOutline(position, body.Radius, outline);
+
+				// A spoke, because a circle's outline gives no way to see it
+				// turning. Watching this line roll is the quickest check that
+				// a disc on the ramp is rolling and not sliding.
+				Egss::Renderer2D::DrawLine(position,
+					position + glm::vec2(std::cos(rotation), std::sin(rotation)) * body.Radius,
+					outline);
+			}
 
 			// Velocity, so a body behaving oddly shows why.
 			if (body.Type != Egss::BodyType::Static && body.Awake)
@@ -453,11 +519,45 @@ public:
 
 		// Contact normals. When a stack misbehaves this is the first place to
 		// look -- a normal pointing the wrong way is instantly visible.
+		//
+		// Every point, not just the representative one: a face contact has two
+		// and the difference between one and two is exactly what stops a crate
+		// rocking, so seeing which one you got is worth the extra lines.
 		for (const Egss::Contact& contact : m_World.GetContacts())
 		{
-			Egss::Renderer2D::DrawLine(contact.Point, contact.Point + contact.Normal * 0.08f,
-				glm::vec4(1.0f, 0.9f, 0.3f, 1.0f));
+			for (int p = 0; p < contact.PointCount; p++)
+			{
+				const glm::vec2& point = contact.Points[p].Position;
+
+				Egss::Renderer2D::DrawLine(point, point + contact.Normal * 0.08f,
+					glm::vec4(1.0f, 0.9f, 0.3f, 1.0f));
+
+				// A tick across the normal, so a single point is
+				// distinguishable from two that nearly coincide.
+				glm::vec2 tangent = { -contact.Normal.y, contact.Normal.x };
+				Egss::Renderer2D::DrawLine(point - tangent * 0.012f, point + tangent * 0.012f,
+					glm::vec4(1.0f, 0.6f, 0.2f, 1.0f));
+			}
 		}
+	}
+
+	// Renderer2D::DrawRect is axis-aligned, so an oriented collider has to be
+	// walked out of its own corners. The same order Sat2D uses.
+	void DrawBoxOutline(const glm::vec2& centre, const glm::vec2& halfExtents,
+		float rotation, const glm::vec4& color)
+	{
+		glm::vec2 axisX = { std::cos(rotation), std::sin(rotation) };
+		glm::vec2 axisY = { -std::sin(rotation), std::cos(rotation) };
+
+		glm::vec2 x = axisX * halfExtents.x;
+		glm::vec2 y = axisY * halfExtents.y;
+
+		glm::vec2 corners[4] = {
+			centre - x - y, centre + x - y, centre + x + y, centre - x + y
+		};
+
+		for (int i = 0; i < 4; i++)
+			Egss::Renderer2D::DrawLine(corners[i], corners[(i + 1) % 4], color);
 	}
 
 	// Renderer2D has no circle primitive, so this walks one out of line
@@ -573,6 +673,10 @@ public:
 				m_RayCount, m_World.GetBodyCount());
 		}
 		ImGui::Checkbox("Allow sleeping", &m_World.AllowSleeping);
+		// TRY: off, for a pile of discs only -- they roll down the ramp and
+		// come to rest against the wall. On, and every third body is a crate
+		// that lands on a corner and tips flush against the slope.
+		ImGui::Checkbox("Spawn crates", &m_SpawnCrates);
 
 		ImGui::SliderFloat("Gravity", &m_Gravity, -30.0f, 5.0f);
 		ImGui::SliderFloat("Bounciness", &m_Bounciness, 0.0f, 0.95f);
@@ -604,6 +708,7 @@ private:
 
 	bool m_Paused = false;
 	bool m_ShowColliders = true;
+	bool m_SpawnCrates = true;
 
 	bool m_ShowRays = true;
 	int m_RayCount = 96;

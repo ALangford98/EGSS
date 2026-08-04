@@ -7,11 +7,16 @@
 
 #include "Egss/Renderer/Renderer.h"
 #include "Egss/Debug/Instrumentor.h"
+#include "Egss/Debug/ScreenCapture.h"
 #include "Egss/Audio/AudioEngine.h"
 
 namespace Egss {
 
 	Application* Application::s_Instance = nullptr;
+
+	// Stashed by EntryPoint, read by the constructor. A free static rather than
+	// a member because it has to exist before any Application does.
+	static std::vector<std::string> s_CommandLine;
 
 	// Monotonic seconds since process start, used to derive the timestep.
 	static float GetTime()
@@ -36,6 +41,96 @@ namespace Egss {
 		// the per-layer ImGui rendering.
 		m_ImGuiLayer = new ImGuiLayer();
 		PushOverlay(m_ImGuiLayer);
+
+		ParseCommandLine();
+	}
+
+	void Application::SetCommandLine(int argc, char** argv)
+	{
+		s_CommandLine.assign(argv, argv + argc);
+	}
+
+	const std::vector<std::string>& Application::GetCommandLine()
+	{
+		return s_CommandLine;
+	}
+
+	void Application::ParseCommandLine()
+	{
+		// A flag taking a value, or an empty string if it is absent or was
+		// given with nothing after it.
+		auto valueOf = [](const std::string& flag) -> std::string
+		{
+			for (size_t i = 1; i + 1 < s_CommandLine.size(); i++)
+			{
+				if (s_CommandLine[i] == flag)
+					return s_CommandLine[i + 1];
+			}
+			return {};
+		};
+
+		m_CapturePath = valueOf("--capture");
+
+		std::string frame = valueOf("--capture-frame");
+		if (!frame.empty())
+			m_CaptureFrame = std::strtoull(frame.c_str(), nullptr, 10);
+
+		std::string step = valueOf("--capture-step");
+		if (!step.empty())
+			m_CaptureStep = std::strtoull(step.c_str(), nullptr, 10);
+
+		std::string exitAfter = valueOf("--exit-after");
+		if (!exitAfter.empty())
+		{
+			m_ExitAfterFrame = std::strtoull(exitAfter.c_str(), nullptr, 10);
+			m_ExitAfterExplicit = true;
+		}
+
+		for (const std::string& argument : s_CommandLine)
+		{
+			m_Lockstep = m_Lockstep || argument == "--lockstep";
+			m_HideUI = m_HideUI || argument == "--hide-ui";
+		}
+
+		if (m_Lockstep)
+		{
+			// The swap would otherwise pace the run to the display, and a
+			// lockstep run is not being watched -- there is nothing to pace
+			// it for. This is most of why a 240-frame capture takes about a
+			// second instead of four.
+			m_Window->SetVSync(false);
+			EGSS_CORE_INFO("Lockstep: one fixed step per frame, VSync off");
+		}
+
+		if (!m_CapturePath.empty())
+		{
+			// Frame 60 by default: the first frames are still loading assets
+			// and settling the layout, and a shot of a half-built scene looks
+			// exactly like a rendering bug.
+			if (m_CaptureFrame == 0 && m_CaptureStep == 0)
+				m_CaptureFrame = 60;
+
+			// An unattended capture that leaves the window open forever is a
+			// hung script. --exit-after overrides this; a step-scheduled shot
+			// gets a generous frame budget instead, since how many frames a
+			// given number of steps takes is exactly what is not fixed.
+			if (m_ExitAfterFrame == 0)
+			{
+				m_ExitAfterFrame = m_CaptureStep != 0
+					? m_CaptureStep + 600
+					: m_CaptureFrame + 1;
+			}
+
+			if (m_CaptureStep != 0)
+				EGSS_CORE_INFO("Capture scheduled: '{0}' at step {1}", m_CapturePath, m_CaptureStep);
+			else
+				EGSS_CORE_INFO("Capture scheduled: '{0}' at frame {1}", m_CapturePath, m_CaptureFrame);
+		}
+	}
+
+	void Application::CaptureFrame(const std::string& path)
+	{
+		m_PendingCapturePath = path;
 	}
 
 	Application::~Application()
@@ -105,12 +200,30 @@ namespace Egss {
 			Instrumentor::NextFrame();
 			EGSS_PROFILE_SCOPE("Frame");
 
-			float time = GetTime();
-			float frameTime = time - m_LastFrameTime;
-			m_LastFrameTime = time;
+			float frameTime;
 
-			if (frameTime > s_MaxFrameTime)
-				frameTime = s_MaxFrameTime;
+			if (m_Lockstep)
+			{
+				// Simulation time, not wall-clock: exactly one fixed step per
+				// frame, so frame N *is* step N.
+				//
+				// Normally the accumulator is fed real elapsed time, which is
+				// right for an interactive app and fatal for a reproducible
+				// one -- how many steps have run by frame 240 then depends on
+				// how fast the machine happened to be, and two identical runs
+				// captured at the same frame come back different. Measured:
+				// they did.
+				frameTime = m_FixedTimestep;
+			}
+			else
+			{
+				float time = GetTime();
+				frameTime = time - m_LastFrameTime;
+				m_LastFrameTime = time;
+
+				if (frameTime > s_MaxFrameTime)
+					frameTime = s_MaxFrameTime;
+			}
 
 			if (!m_Minimized)
 			{
@@ -129,6 +242,7 @@ namespace Egss {
 
 					m_Accumulator -= m_FixedTimestep;
 					m_FixedStepsLastFrame++;
+					m_StepCount++;
 				}
 
 				// Whatever is left over, as a fraction of one step. Layers use
@@ -147,9 +261,20 @@ namespace Egss {
 				{
 					EGSS_PROFILE_SCOPE("ImGui");
 
+					// The frame is still begun and ended when the UI is hidden,
+					// so ImGui's own state stays consistent -- only the panels
+					// are skipped. They print frame times in milliseconds,
+					// which makes an otherwise reproducible capture differ
+					// every run for reasons that have nothing to do with what
+					// is being tested.
 					m_ImGuiLayer->Begin();
-					for (Layer* layer : m_LayerStack)
-						layer->OnImGuiRender();
+
+					if (!m_HideUI)
+					{
+						for (Layer* layer : m_LayerStack)
+							layer->OnImGuiRender();
+					}
+
 					m_ImGuiLayer->End();
 				}
 			}
@@ -160,11 +285,56 @@ namespace Egss {
 				m_Accumulator = 0.0f;
 			}
 
+			// The scheduled shot. By simulation step where one was asked for,
+			// by frame otherwise -- and >= rather than == because several
+			// steps can run in one frame, so the exact number may be stepped
+			// straight over.
+			if (!m_CapturePath.empty() && !m_Captured)
+			{
+				bool due = m_CaptureStep != 0
+					? m_StepCount >= m_CaptureStep
+					: m_FrameCount >= m_CaptureFrame;
+
+				if (due)
+				{
+					CaptureFrame(m_CapturePath);
+					m_Captured = true;
+				}
+			}
+
+			// The only moment a finished frame exists. After the swap the back
+			// buffer's contents are undefined, so a capture taken there reads
+			// whatever the driver left behind -- which is the "two probes came
+			// back byte-identical" failure wearing a different hat.
+			if (!m_PendingCapturePath.empty() && !m_Minimized)
+			{
+				EGSS_PROFILE_SCOPE("ScreenCapture");
+
+				EGSS_CORE_INFO("Capturing at frame {0}, step {1}", m_FrameCount, m_StepCount);
+
+				ScreenCapture::SaveFrame(m_PendingCapturePath,
+					m_Window->GetWidth(), m_Window->GetHeight());
+
+				m_PendingCapturePath.clear();
+
+				// The shot was the whole errand unless told otherwise.
+				if (!m_ExitAfterExplicit)
+					m_ExitAfterFrame = m_FrameCount + 1;
+			}
+
 			{
 				// Mostly the VSync wait: the swap blocks until the display is
 				// ready. A large number here is the GPU idling, not work.
 				EGSS_PROFILE_SCOPE("Window::OnUpdate (swap + poll)");
 				m_Window->OnUpdate();
+			}
+
+			m_FrameCount++;
+
+			if (m_ExitAfterFrame != 0 && m_FrameCount >= m_ExitAfterFrame)
+			{
+				EGSS_CORE_INFO("Exiting after {0} frames as requested", m_FrameCount);
+				m_Running = false;
 			}
 		}
 		EGSS_CORE_INFO("Application run loop exiting");

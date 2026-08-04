@@ -80,6 +80,16 @@ namespace Egss {
 		// pass is wound consistently, and one flipped model shows up as holes.
 		virtual void SetBackfaceCulling(bool enabled) = 0;
 
+		// Reads a rectangle of whatever framebuffer is currently bound back
+		// into CPU memory, as tightly packed RGBA8. `out` needs room for
+		// width * height * 4 bytes.
+		//
+		// Rows come back **bottom-up**, because that is the order the GL keeps
+		// them in. Every image format worth writing is top-down, so anything
+		// saving this has to flip.
+		virtual void ReadPixels(unsigned int x, unsigned int y, unsigned int width,
+			unsigned int height, unsigned char* out) = 0;
+
 		inline static API GetAPI() { return s_API; }
 	private:
 		static API s_API;

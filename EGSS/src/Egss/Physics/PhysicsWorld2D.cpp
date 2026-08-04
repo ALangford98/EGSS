@@ -1,5 +1,6 @@
 #include "egsspch.h"
 #include "Egss/Physics/PhysicsWorld2D.h"
+#include "Egss/Physics/Sat2D.h"
 #include "Egss/Debug/Instrumentor.h"
 
 namespace Egss {
@@ -19,15 +20,83 @@ namespace Egss {
 	// time is exactly the jitter you see in engines that skip this.
 	static const float s_RestitutionThreshold = 1.0f;
 
+	// The furthest a contact point may move between steps and still be treated
+	// as the same point for warm starting. Deliberately tight: the case warm
+	// starting exists for is a settled stack, whose points barely move at all,
+	// and a fast-moving body gains little from it anyway. Too loose and two
+	// distinct corners of a tipping crate get matched to each other.
+	static const float s_WarmStartRadius = 0.02f;
+
+	// The most overlap the position solver will try to undo in one pass.
+	// A deeply interpenetrating pair -- a body spawned inside another, or one
+	// that tunnelled -- would otherwise be flung apart, and with the angular
+	// term in play it would be flung apart *spinning*.
+	static const float s_MaxCorrection = 0.2f;
+
+	// The 2D cross products. With only one axis to turn about, the cross of
+	// two vectors is a scalar and the cross of a scalar with a vector is a
+	// vector; both fall out of writing the 3D versions with z as the only
+	// component that survives.
+	static float Cross(const glm::vec2& a, const glm::vec2& b)
+	{
+		return a.x * b.y - a.y * b.x;
+	}
+
+	static glm::vec2 Cross(float angular, const glm::vec2& r)
+	{
+		return { -angular * r.y, angular * r.x };
+	}
+
 	// Axis-aligned bounds, whatever the shape.
 	static void BodyBounds(const RigidBody2D& body, glm::vec2& outMin, glm::vec2& outMax)
 	{
-		glm::vec2 extent = body.Shape == ColliderShape::Circle
-			? glm::vec2(body.Radius)
-			: body.HalfExtents;
+		glm::vec2 extent;
+
+		if (body.Shape == ColliderShape::Circle)
+		{
+			extent = glm::vec2(body.Radius);
+		}
+		else
+		{
+			// A turned box reaches further than its half extents -- a square
+			// at 45 degrees puts its corner 1.41x its half width from the
+			// centre. Bounds that ignore that quietly drop pairs the
+			// narrowphase would have caught, and a missed collision leaves
+			// nothing behind to notice: no contact, no warning, just a body
+			// passing through a corner it should have clipped.
+			float c = std::fabs(std::cos(body.Rotation));
+			float s = std::fabs(std::sin(body.Rotation));
+
+			extent = { body.HalfExtents.x * c + body.HalfExtents.y * s,
+					   body.HalfExtents.x * s + body.HalfExtents.y * c };
+		}
 
 		outMin = body.Position - extent;
 		outMax = body.Position + extent;
+	}
+
+	// A body's collider as the geometry Sat2D speaks. Boxes only -- circles
+	// have their own test.
+	static ObbBox2D ObbOf(const RigidBody2D& body)
+	{
+		ObbBox2D box;
+		box.Centre = body.Position;
+		box.HalfExtents = body.HalfExtents;
+		box.Rotation = body.Rotation;
+		return box;
+	}
+
+	// Rotating a vector into a body's frame and back out again. The pair is
+	// what lets every oriented test be written once, against a box that is
+	// axis-aligned in its own frame.
+	static glm::vec2 ToLocal(const glm::vec2& v, float cosine, float sine)
+	{
+		return { v.x * cosine + v.y * sine, -v.x * sine + v.y * cosine };
+	}
+
+	static glm::vec2 ToWorld(const glm::vec2& v, float cosine, float sine)
+	{
+		return { v.x * cosine - v.y * sine, v.x * sine + v.y * cosine };
 	}
 
 	PhysicsWorld2D::BodyHandle PhysicsWorld2D::AddBody(const RigidBody2D& body)
@@ -132,15 +201,65 @@ namespace Egss {
 		return (body.Type == BodyType::Static || !body.Awake) ? 0.0f : body.InverseMass;
 	}
 
+	// The same rule for the angular half. A static body has no inverse inertia
+	// to begin with, but a sleeping dynamic one does, and letting the solver
+	// spin it would bank angular velocity it releases the moment it wakes.
+	static float SolverInverseInertia(const RigidBody2D& body)
+	{
+		return (body.Type == BodyType::Static || !body.Awake) ? 0.0f : body.InverseInertia;
+	}
+
+	// How fast the material point at `lever` is actually moving: the body's own
+	// velocity plus whatever its spin adds out there. This is the quantity the
+	// whole angular solver is written against -- using the centre's velocity
+	// instead is exactly the bug that leaves a spinning box's contacts
+	// unsolved while its centre looks stationary.
+	static glm::vec2 PointVelocity(const RigidBody2D& body, const glm::vec2& lever)
+	{
+		return body.Velocity + Cross(body.AngularVelocity, lever);
+	}
+
+	// One impulse applied to both bodies at a contact point: equal and opposite
+	// on the linear half, and turning each about its own centre by its own
+	// lever arm. Every impulse in the solver goes through here, so there is one
+	// place where the sign convention (normal points A -> B) has to be right.
+	static void ApplyContactImpulse(RigidBody2D& a, RigidBody2D& b,
+		const ContactPoint& point, const glm::vec2& impulse)
+	{
+		a.Velocity -= impulse * SolverInverseMass(a);
+		a.AngularVelocity -= Cross(point.LeverA, impulse) * SolverInverseInertia(a);
+
+		b.Velocity += impulse * SolverInverseMass(b);
+		b.AngularVelocity += Cross(point.LeverB, impulse) * SolverInverseInertia(b);
+	}
+
 	void PhysicsWorld2D::Step(float dt)
 	{
 		EGSS_PROFILE_SCOPE("Physics::Step");
 
-		Integrate(dt);
+		// The order here is load-bearing, and it used to be wrong.
+		//
+		// Velocities are integrated, then contacts are solved, and only then
+		// are positions moved. Doing it the obvious way -- integrating both at
+		// once, up front -- lets every body take one free-fall sub-step of
+		// g*dt^2 *before* the solver ever sees it. Position correction pushes
+		// the normal part of that back out, so on flat ground it is invisible;
+		// the part along the surface is never undone, and a block sitting on a
+		// 20-degree slope slid downhill at g sin(t) dt = 5.6 cm/s with
+		// friction to spare and the contact perfectly healthy. Nothing was
+		// wrong with the friction: the body had already moved by the time it
+		// was applied.
+		//
+		// It went unnoticed because until rotation there were no slopes.
+		IntegrateVelocities(dt);
 
-		// Positions changed, so last frame's buckets are stale.
+		// Against the positions the bodies ended the last step at, which is
+		// also where the solve will run.
 		MarkGridDirty();
 		GenerateContacts();
+
+		// Lever arms and effective masses, once.
+		PrepareContacts();
 
 		// Replay last step's impulses before solving anything.
 		WarmStart();
@@ -154,24 +273,45 @@ namespace Egss {
 		for (unsigned int i = 0; i < VelocityIterations; i++)
 			SolveVelocities();
 
+		// Now that the velocities are ones the contacts agree with.
+		IntegratePositions(dt);
+
 		CorrectPositions();
 
-		// Hand this step's impulses to the next one.
+		// Hand this step's impulses to the next one, with the points they were
+		// applied at so the next step can match them up.
 		m_PreviousImpulses.clear();
 		for (const Contact& contact : m_Contacts)
-			m_PreviousImpulses[ContactKey(contact.A, contact.B)] = { contact.NormalImpulse, contact.TangentImpulse };
+		{
+			PreviousContact& stored = m_PreviousImpulses[ContactKey(contact.A, contact.B)];
+			stored.PointCount = contact.PointCount;
+
+			for (int p = 0; p < contact.PointCount; p++)
+			{
+				stored.Points[p] = contact.Points[p].Position;
+				stored.NormalImpulse[p] = contact.Points[p].NormalImpulse;
+				stored.TangentImpulse[p] = contact.Points[p].TangentImpulse;
+			}
+		}
 
 		UpdateSleeping(dt);
 	}
 
-	void PhysicsWorld2D::Integrate(float dt)
+	// Semi-implicit Euler, in two halves so the contact solver can run between
+	// them: velocity first, then position from the velocity the solver agreed
+	// to. One line different from explicit Euler, and stable at step sizes
+	// where explicit Euler gains energy and throws bodies through the floor.
+	void PhysicsWorld2D::IntegrateVelocities(float dt)
 	{
-		EGSS_PROFILE_SCOPE("Physics::Integrate");
+		EGSS_PROFILE_SCOPE("Physics::IntegrateVelocities");
 
 		m_AwakeBodyCount = 0;
 
 		for (RigidBody2D& body : m_Bodies)
 		{
+			// Captured here rather than in the position half, so a body that
+			// falls asleep mid-step still has a sensible pair to interpolate
+			// between.
 			body.PreviousPosition = body.Position;
 			body.PreviousRotation = body.Rotation;
 
@@ -185,17 +325,12 @@ namespace Egss {
 
 			m_AwakeBodyCount++;
 
-			// Semi-implicit Euler: velocity first, then position from the
-			// *new* velocity. One line different from explicit Euler, and
-			// stable at step sizes where explicit Euler gains energy and
-			// throws bodies through the floor.
 			body.Velocity += Gravity * body.GravityScale * dt;
-			body.Position += body.Velocity * dt;
 
 			// The same scheme for the angular half, with torque where gravity
-			// was. Nothing generates torque yet -- contacts are still
-			// frictionless about the centre -- so this only moves a body that
-			// was given AngularVelocity or Torque directly.
+			// was. Contacts feed this now: an off-centre impulse from the
+			// solver lands in AngularVelocity directly rather than as a
+			// torque, since an impulse is already an integral over time.
 			body.AngularVelocity += body.Torque * body.InverseInertia * dt;
 
 			// Exponential damping rather than a subtraction, so it cannot push
@@ -205,8 +340,21 @@ namespace Egss {
 			if (body.AngularDamping > 0.0f)
 				body.AngularVelocity *= 1.0f / (1.0f + body.AngularDamping * dt);
 
-			body.Rotation += body.AngularVelocity * dt;
 			body.Torque = 0.0f;
+		}
+	}
+
+	void PhysicsWorld2D::IntegratePositions(float dt)
+	{
+		EGSS_PROFILE_SCOPE("Physics::IntegratePositions");
+
+		for (RigidBody2D& body : m_Bodies)
+		{
+			if (body.Type == BodyType::Static || !body.Awake)
+				continue;
+
+			body.Position += body.Velocity * dt;
+			body.Rotation += body.AngularVelocity * dt;
 		}
 	}
 
@@ -263,7 +411,22 @@ namespace Egss {
 
 	// --- Narrowphase --------------------------------------------------------
 	// Each returns true and fills the contact, or returns false. The normal
-	// always points from A towards B.
+	// always points from A towards B, so pushing B along it separates them.
+	//
+	// Every test here is oriented. The box ones work by moving the *query* into
+	// the box's own frame rather than the box into the world's -- a rotated box
+	// is not an AABB in world space, but a point is still a point and a ray is
+	// still a ray in any frame you put them in. Raycast3D established the trick
+	// in 3D; this is the same idea two dimensions down.
+
+	// Fills a contact's single point from the summary fields, for the tests
+	// that can only ever produce one.
+	static void SetSinglePoint(Contact& out)
+	{
+		out.PointCount = 1;
+		out.Points[0].Position = out.Point;
+		out.Points[0].Penetration = out.Penetration;
+	}
 
 	static bool CollideCircleCircle(unsigned int ia, const RigidBody2D& a,
 		unsigned int ib, const RigidBody2D& b, Contact& out)
@@ -283,41 +446,46 @@ namespace Egss {
 		// still separate instead of sitting inside each other forever.
 		out.Normal = distance > 0.0001f ? delta / distance : glm::vec2(1.0f, 0.0f);
 		out.Penetration = radiusSum - distance;
-		out.Point = a.Position + out.Normal * a.Radius;
+
+		// Halfway into the overlap rather than on A's surface. That keeps the
+		// lever arm a full radius long for both bodies, which is what lets
+		// friction spin a ball instead of only dragging it.
+		out.Point = a.Position + out.Normal * (a.Radius - out.Penetration * 0.5f);
+
+		SetSinglePoint(out);
 		return true;
 	}
 
 	static bool CollideBoxBox(unsigned int ia, const RigidBody2D& a,
 		unsigned int ib, const RigidBody2D& b, Contact& out)
 	{
-		glm::vec2 delta = b.Position - a.Position;
-
-		float overlapX = a.HalfExtents.x + b.HalfExtents.x - std::abs(delta.x);
-		if (overlapX <= 0.0f)
-			return false;
-
-		float overlapY = a.HalfExtents.y + b.HalfExtents.y - std::abs(delta.y);
-		if (overlapY <= 0.0f)
+		// The separating-axis test, with its clipped manifold. This replaced a
+		// min-overlap AABB test, and the difference is not only that boxes can
+		// now be turned: a flat rest used to produce one contact point, and one
+		// point cannot hold a crate level.
+		Manifold2D manifold = Sat2D::BoxBox(ObbOf(a), ObbOf(b));
+		if (!manifold.Touching)
 			return false;
 
 		out.A = ia;
 		out.B = ib;
+		out.Normal = manifold.Normal;
+		out.PointCount = manifold.PointCount;
 
-		// Separate along whichever axis is overlapped least -- the shortest
-		// way out. This is what makes a box land on a floor rather than being
-		// shoved sideways off it.
-		if (overlapX < overlapY)
+		float deepest = -std::numeric_limits<float>::max();
+		for (int i = 0; i < manifold.PointCount; i++)
 		{
-			out.Normal = { delta.x < 0.0f ? -1.0f : 1.0f, 0.0f };
-			out.Penetration = overlapX;
-		}
-		else
-		{
-			out.Normal = { 0.0f, delta.y < 0.0f ? -1.0f : 1.0f };
-			out.Penetration = overlapY;
+			out.Points[i].Position = manifold.Points[i];
+			out.Points[i].Penetration = manifold.Depths[i];
+
+			if (manifold.Depths[i] > deepest)
+			{
+				deepest = manifold.Depths[i];
+				out.Point = manifold.Points[i];
+			}
 		}
 
-		out.Point = a.Position + out.Normal * a.HalfExtents;
+		out.Penetration = std::max(deepest, 0.0f);
 		return true;
 	}
 
@@ -325,16 +493,19 @@ namespace Egss {
 	static bool CollideCircleBox(unsigned int ia, const RigidBody2D& a,
 		unsigned int ib, const RigidBody2D& b, Contact& out)
 	{
-		glm::vec2 boxMin = b.Position - b.HalfExtents;
-		glm::vec2 boxMax = b.Position + b.HalfExtents;
+		float cosine = std::cos(b.Rotation);
+		float sine = std::sin(b.Rotation);
 
-		// Nearest point on the box to the circle's centre.
-		glm::vec2 closest = glm::clamp(a.Position, boxMin, boxMax);
-		glm::vec2 toCircle = a.Position - closest;
+		// Into the box's frame, where it is axis-aligned and the old clamp
+		// still works unchanged.
+		glm::vec2 local = ToLocal(a.Position - b.Position, cosine, sine);
+
+		glm::vec2 closest = glm::clamp(local, -b.HalfExtents, b.HalfExtents);
+		glm::vec2 toCircle = local - closest;
 		float distanceSquared = glm::dot(toCircle, toCircle);
 
-		out.A = ia;
-		out.B = ib;
+		glm::vec2 localNormal;   // A towards B, still in the box's frame
+		glm::vec2 localPoint;
 
 		if (distanceSquared > 0.0001f)
 		{
@@ -342,31 +513,38 @@ namespace Egss {
 				return false;
 
 			float distance = std::sqrt(distanceSquared);
-			out.Normal = -toCircle / distance;   // A towards B
+			localNormal = -toCircle / distance;
+			localPoint = closest;
 			out.Penetration = a.Radius - distance;
-			out.Point = closest;
-			return true;
-		}
-
-		// Centre is inside the box: clamping gave back the centre itself, so
-		// there is no direction to work from. Push out through the nearest
-		// face instead.
-		glm::vec2 delta = a.Position - b.Position;
-		float overlapX = b.HalfExtents.x - std::abs(delta.x);
-		float overlapY = b.HalfExtents.y - std::abs(delta.y);
-
-		if (overlapX < overlapY)
-		{
-			out.Normal = { delta.x < 0.0f ? 1.0f : -1.0f, 0.0f };
-			out.Penetration = overlapX + a.Radius;
 		}
 		else
 		{
-			out.Normal = { 0.0f, delta.y < 0.0f ? 1.0f : -1.0f };
-			out.Penetration = overlapY + a.Radius;
+			// Centre is inside the box: clamping gave back the centre itself,
+			// so there is no direction to work from. Push out through the
+			// nearest face instead.
+			float overlapX = b.HalfExtents.x - std::abs(local.x);
+			float overlapY = b.HalfExtents.y - std::abs(local.y);
+
+			if (overlapX < overlapY)
+			{
+				localNormal = { local.x < 0.0f ? 1.0f : -1.0f, 0.0f };
+				out.Penetration = overlapX + a.Radius;
+			}
+			else
+			{
+				localNormal = { 0.0f, local.y < 0.0f ? 1.0f : -1.0f };
+				out.Penetration = overlapY + a.Radius;
+			}
+
+			localPoint = local;
 		}
 
-		out.Point = a.Position;
+		out.A = ia;
+		out.B = ib;
+		out.Normal = ToWorld(localNormal, cosine, sine);
+		out.Point = b.Position + ToWorld(localPoint, cosine, sine);
+
+		SetSinglePoint(out);
 		return true;
 	}
 
@@ -476,24 +654,103 @@ namespace Egss {
 			return;
 
 		// Pick up where the same pair left off last step -- this is what
-		// warm starting reads.
+		// warm starting reads. Matched point by point, and by position rather
+		// than by index: the clip has no notion of which corner is which, so
+		// index 0 this step need not be index 0 last step.
 		auto previous = m_PreviousImpulses.find(ContactKey(contact.A, contact.B));
 		if (previous != m_PreviousImpulses.end())
 		{
-			contact.NormalImpulse = previous->second.x;
-			contact.TangentImpulse = previous->second.y;
+			const PreviousContact& old = previous->second;
+
+			for (int p = 0; p < contact.PointCount; p++)
+			{
+				int best = -1;
+				float bestDistance = s_WarmStartRadius * s_WarmStartRadius;
+
+				for (int q = 0; q < old.PointCount; q++)
+				{
+					glm::vec2 offset = contact.Points[p].Position - old.Points[q];
+					float distanceSquared = glm::dot(offset, offset);
+
+					if (distanceSquared < bestDistance)
+					{
+						bestDistance = distanceSquared;
+						best = q;
+					}
+				}
+
+				// No match means a genuinely new point, which starts from
+				// zero. Guessing an impulse for it would be worse than the
+				// extra iteration it costs to find one.
+				if (best < 0)
+					continue;
+
+				contact.Points[p].NormalImpulse = old.NormalImpulse[best];
+				contact.Points[p].TangentImpulse = old.TangentImpulse[best];
+			}
 		}
 
-		// Restitution is measured now, against the speed the bodies are
-		// actually closing at, and held fixed for the whole solve.
-		float approach = glm::dot(b.Velocity - a.Velocity, contact.Normal);
-		float restitution = std::min(a.Restitution, b.Restitution);
-
-		contact.RestitutionBias = approach < -s_RestitutionThreshold
-			? -restitution * approach
-			: 0.0f;
-
 		m_Contacts.push_back(contact);
+	}
+
+	void PhysicsWorld2D::PrepareContacts()
+	{
+		for (Contact& contact : m_Contacts)
+		{
+			RigidBody2D& a = m_Bodies[contact.A];
+			RigidBody2D& b = m_Bodies[contact.B];
+
+			float inverseMassA = SolverInverseMass(a);
+			float inverseMassB = SolverInverseMass(b);
+			float inverseInertiaA = SolverInverseInertia(a);
+			float inverseInertiaB = SolverInverseInertia(b);
+
+			glm::vec2 tangent = TangentOf(contact.Normal);
+			float restitution = std::min(a.Restitution, b.Restitution);
+
+			for (int p = 0; p < contact.PointCount; p++)
+			{
+				ContactPoint& point = contact.Points[p];
+
+				point.LeverA = point.Position - a.Position;
+				point.LeverB = point.Position - b.Position;
+
+				// The effective mass along an axis: the linear part, plus what
+				// each body's resistance to turning contributes. A point far
+				// from a centre of mass is *heavier* to push along the normal,
+				// because some of the impulse goes into spin instead of
+				// travel, and the (r x n)^2 term is exactly how much. With no
+				// rotation both angular terms vanish and this collapses back
+				// to the sum of inverse masses the old solver divided by.
+				float leverNormalA = Cross(point.LeverA, contact.Normal);
+				float leverNormalB = Cross(point.LeverB, contact.Normal);
+
+				float normalMass = inverseMassA + inverseMassB
+					+ inverseInertiaA * leverNormalA * leverNormalA
+					+ inverseInertiaB * leverNormalB * leverNormalB;
+
+				point.NormalMass = normalMass > 0.0f ? 1.0f / normalMass : 0.0f;
+
+				float leverTangentA = Cross(point.LeverA, tangent);
+				float leverTangentB = Cross(point.LeverB, tangent);
+
+				float tangentMass = inverseMassA + inverseMassB
+					+ inverseInertiaA * leverTangentA * leverTangentA
+					+ inverseInertiaB * leverTangentB * leverTangentB;
+
+				point.TangentMass = tangentMass > 0.0f ? 1.0f / tangentMass : 0.0f;
+
+				// Restitution against the approach speed at *this* point. A
+				// tumbling box's two corners close at different speeds, and
+				// measuring both from the centre bounces the wrong one.
+				float approach = glm::dot(PointVelocity(b, point.LeverB)
+					- PointVelocity(a, point.LeverA), contact.Normal);
+
+				point.RestitutionBias = approach < -s_RestitutionThreshold
+					? -restitution * approach
+					: 0.0f;
+			}
+		}
 	}
 
 	void PhysicsWorld2D::WarmStart()
@@ -503,11 +760,17 @@ namespace Egss {
 			RigidBody2D& a = m_Bodies[contact.A];
 			RigidBody2D& b = m_Bodies[contact.B];
 
-			glm::vec2 impulse = contact.NormalImpulse * contact.Normal
-				+ contact.TangentImpulse * TangentOf(contact.Normal);
+			glm::vec2 tangent = TangentOf(contact.Normal);
 
-			a.Velocity -= impulse * SolverInverseMass(a);
-			b.Velocity += impulse * SolverInverseMass(b);
+			for (int p = 0; p < contact.PointCount; p++)
+			{
+				const ContactPoint& point = contact.Points[p];
+
+				glm::vec2 impulse = point.NormalImpulse * contact.Normal
+					+ point.TangentImpulse * tangent;
+
+				ApplyContactImpulse(a, b, point, impulse);
+			}
 		}
 	}
 
@@ -518,50 +781,55 @@ namespace Egss {
 			RigidBody2D& a = m_Bodies[contact.A];
 			RigidBody2D& b = m_Bodies[contact.B];
 
-			float inverseMassA = SolverInverseMass(a);
-			float inverseMassB = SolverInverseMass(b);
-			float inverseMassSum = inverseMassA + inverseMassB;
-			if (inverseMassSum <= 0.0f)
-				continue;
-
-			// --- Normal ---------------------------------------------------
-			glm::vec2 relativeVelocity = b.Velocity - a.Velocity;
-			float alongNormal = glm::dot(relativeVelocity, contact.Normal);
-
-			float deltaImpulse = (-alongNormal + contact.RestitutionBias) / inverseMassSum;
-
-			// Clamp the *total*, not this iteration's increment: a contact may
-			// only ever push, and warm starting means the running total is the
-			// thing that has to stay valid.
-			float previousImpulse = contact.NormalImpulse;
-			contact.NormalImpulse = std::max(previousImpulse + deltaImpulse, 0.0f);
-			deltaImpulse = contact.NormalImpulse - previousImpulse;
-
-			glm::vec2 impulse = deltaImpulse * contact.Normal;
-			a.Velocity -= impulse * inverseMassA;
-			b.Velocity += impulse * inverseMassB;
-
-			// --- Friction -------------------------------------------------
 			glm::vec2 tangent = TangentOf(contact.Normal);
-
-			relativeVelocity = b.Velocity - a.Velocity;
-			float alongTangent = glm::dot(relativeVelocity, tangent);
-
-			float deltaFriction = -alongTangent / inverseMassSum;
 			float mu = std::sqrt(a.Friction * b.Friction);
 
-			// Coulomb: total friction can never exceed mu times the total
-			// normal impulse. Past that the surfaces slide.
-			float maxFriction = mu * contact.NormalImpulse;
-			float previousFriction = contact.TangentImpulse;
+			// Each point solved in turn, and the relative velocity re-read
+			// between them: solving one point moves both bodies, so a second
+			// point computed against the velocities the first one saw is
+			// solving a state that no longer exists.
+			for (int p = 0; p < contact.PointCount; p++)
+			{
+				ContactPoint& point = contact.Points[p];
+				if (point.NormalMass <= 0.0f)
+					continue;
 
-			contact.TangentImpulse = std::max(-maxFriction,
-				std::min(previousFriction + deltaFriction, maxFriction));
-			deltaFriction = contact.TangentImpulse - previousFriction;
+				// --- Normal ---------------------------------------------------
+				glm::vec2 relativeVelocity = PointVelocity(b, point.LeverB)
+					- PointVelocity(a, point.LeverA);
 
-			glm::vec2 frictionImpulse = deltaFriction * tangent;
-			a.Velocity -= frictionImpulse * inverseMassA;
-			b.Velocity += frictionImpulse * inverseMassB;
+				float alongNormal = glm::dot(relativeVelocity, contact.Normal);
+
+				float deltaImpulse = (-alongNormal + point.RestitutionBias) * point.NormalMass;
+
+				// Clamp the *total*, not this iteration's increment: a contact
+				// may only ever push, and warm starting means the running
+				// total is the thing that has to stay valid.
+				float previousImpulse = point.NormalImpulse;
+				point.NormalImpulse = std::max(previousImpulse + deltaImpulse, 0.0f);
+				deltaImpulse = point.NormalImpulse - previousImpulse;
+
+				ApplyContactImpulse(a, b, point, deltaImpulse * contact.Normal);
+
+				// --- Friction -------------------------------------------------
+				relativeVelocity = PointVelocity(b, point.LeverB)
+					- PointVelocity(a, point.LeverA);
+
+				float alongTangent = glm::dot(relativeVelocity, tangent);
+
+				float deltaFriction = -alongTangent * point.TangentMass;
+
+				// Coulomb: total friction can never exceed mu times the total
+				// normal impulse. Past that the surfaces slide.
+				float maxFriction = mu * point.NormalImpulse;
+				float previousFriction = point.TangentImpulse;
+
+				point.TangentImpulse = std::max(-maxFriction,
+					std::min(previousFriction + deltaFriction, maxFriction));
+				deltaFriction = point.TangentImpulse - previousFriction;
+
+				ApplyContactImpulse(a, b, point, deltaFriction * tangent);
+			}
 		}
 	}
 
@@ -586,22 +854,57 @@ namespace Egss {
 
 				float inverseMassA = SolverInverseMass(a);
 				float inverseMassB = SolverInverseMass(b);
-				float inverseMassSum = inverseMassA + inverseMassB;
-				if (inverseMassSum <= 0.0f)
+				float inverseInertiaA = SolverInverseInertia(a);
+				float inverseInertiaB = SolverInverseInertia(b);
+
+				if (inverseMassA + inverseMassB <= 0.0f)
 					continue;
 
 				Contact current;
 				if (!Collide(stale.A, a, stale.B, b, current))
 					continue;
 
-				float depth = std::max(current.Penetration - s_PenetrationSlop, 0.0f);
-				if (depth <= 0.0f)
-					continue;
+				// Per point, and turning the bodies as well as moving them.
+				// The angular half is what lets a crate that landed on one
+				// corner settle flat: correcting both of its contact points
+				// along the normal by different amounts *is* a rotation, and
+				// a translation-only solver can only ever average the two and
+				// leave the crate tilted.
+				for (int p = 0; p < current.PointCount; p++)
+				{
+					const ContactPoint& point = current.Points[p];
 
-				glm::vec2 correction = (depth / inverseMassSum) * s_CorrectionPercent * current.Normal;
+					float depth = std::max(point.Penetration - s_PenetrationSlop, 0.0f);
+					if (depth <= 0.0f)
+						continue;
 
-				a.Position -= correction * inverseMassA;
-				b.Position += correction * inverseMassB;
+					depth = std::min(depth, s_MaxCorrection);
+
+					glm::vec2 leverA = point.Position - a.Position;
+					glm::vec2 leverB = point.Position - b.Position;
+
+					float leverNormalA = Cross(leverA, current.Normal);
+					float leverNormalB = Cross(leverB, current.Normal);
+
+					// The same effective mass the velocity solver uses. A
+					// corner far from the centre of mass is easier to rotate
+					// out of an overlap than to push out of one, and using the
+					// linear mass alone over-corrects it.
+					float normalMass = inverseMassA + inverseMassB
+						+ inverseInertiaA * leverNormalA * leverNormalA
+						+ inverseInertiaB * leverNormalB * leverNormalB;
+
+					if (normalMass <= 0.0f)
+						continue;
+
+					float correction = depth * s_CorrectionPercent / normalMass;
+
+					a.Position -= current.Normal * correction * inverseMassA;
+					a.Rotation -= leverNormalA * correction * inverseInertiaA;
+
+					b.Position += current.Normal * correction * inverseMassB;
+					b.Rotation += leverNormalB * correction * inverseInertiaB;
+				}
 			}
 		}
 	}
@@ -677,11 +980,25 @@ namespace Egss {
 
 	// Slab method: clip the ray against each axis' pair of planes and keep the
 	// overlap. If the overlap ever empties, the ray misses.
+	//
+	// Run in the box's own frame, where the slabs are the coordinate axes. The
+	// alternative -- turning the box into a world-space AABB -- cannot tell a
+	// plate turned 45 degrees from the square footprint that contains it, and
+	// reports hits in the corners it does not occupy.
 	static bool RaycastBox(const glm::vec2& origin, const glm::vec2& direction,
 		float maxDistance, const RigidBody2D& body, float& outDistance, glm::vec2& outNormal)
 	{
-		glm::vec2 boxMin = body.Position - body.HalfExtents;
-		glm::vec2 boxMax = body.Position + body.HalfExtents;
+		float cosine = std::cos(body.Rotation);
+		float sine = std::sin(body.Rotation);
+
+		glm::vec2 localOrigin = ToLocal(origin - body.Position, cosine, sine);
+		glm::vec2 localDirection = ToLocal(direction, cosine, sine);
+
+		// A rotation preserves length, so a distance along the local ray is the
+		// same distance along the world one -- t needs no conversion back, and
+		// only the normal does.
+		glm::vec2 boxMin = -body.HalfExtents;
+		glm::vec2 boxMax = body.HalfExtents;
 
 		float tMin = 0.0f;
 		float tMax = maxDistance;
@@ -691,19 +1008,19 @@ namespace Egss {
 
 		for (int axis = 0; axis < 2; axis++)
 		{
-			if (std::abs(direction[axis]) < 0.00001f)
+			if (std::abs(localDirection[axis]) < 0.00001f)
 			{
 				// Parallel to this pair of planes: either always inside the
 				// slab or never.
-				if (origin[axis] < boxMin[axis] || origin[axis] > boxMax[axis])
+				if (localOrigin[axis] < boxMin[axis] || localOrigin[axis] > boxMax[axis])
 					return false;
 
 				continue;
 			}
 
-			float inverse = 1.0f / direction[axis];
-			float t1 = (boxMin[axis] - origin[axis]) * inverse;
-			float t2 = (boxMax[axis] - origin[axis]) * inverse;
+			float inverse = 1.0f / localDirection[axis];
+			float t1 = (boxMin[axis] - localOrigin[axis]) * inverse;
+			float t2 = (boxMax[axis] - localOrigin[axis]) * inverse;
 
 			float sign = -1.0f;
 			if (t1 > t2)
@@ -729,13 +1046,15 @@ namespace Egss {
 
 		if (hitAxis < 0)
 		{
-			// Started inside: no face was crossed on the way in.
+			// Started inside: no face was crossed on the way in. Already a
+			// world-space direction, so it needs no rotating.
 			outNormal = -direction;
 		}
 		else
 		{
-			outNormal = { 0.0f, 0.0f };
-			outNormal[hitAxis] = hitSign;
+			glm::vec2 localNormal(0.0f);
+			localNormal[hitAxis] = hitSign;
+			outNormal = ToWorld(localNormal, cosine, sine);
 		}
 
 		return true;

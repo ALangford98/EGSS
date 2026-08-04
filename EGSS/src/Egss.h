@@ -7,6 +7,7 @@
 #include "Egss/Layer.h"
 #include "Egss/Timestep.h"
 #include "Egss/Debug/Instrumentor.h"
+#include "Egss/Debug/ScreenCapture.h"
 #include "Egss/ImGui/ImGuiLayer.h"
 
 #include "Egss/Input.h"

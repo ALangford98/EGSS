@@ -41,10 +41,71 @@ inline const DemoEntry s_Demos[] =
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));
 
+// `--demo <index|shortname>`, so a run can be pointed at one demo without
+// editing g_ActiveDemo and rebuilding.
+//
+// That dance -- change the default, rebuild, look, revert -- was the standing
+// advice for exercising a non-default path, and it is a poor one: the revert
+// is easy to forget and the rebuild makes "capture each demo in turn" a chore
+// rather than a loop. Pairs with --capture.
+inline void SelectDemoFromCommandLine()
+{
+	const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
+
+	for (size_t i = 1; i + 1 < arguments.size(); i++)
+	{
+		if (arguments[i] != "--demo")
+			continue;
+
+		const std::string& wanted = arguments[i + 1];
+
+		// A bare number is an index.
+		if (!wanted.empty() && std::isdigit((unsigned char)wanted[0]))
+		{
+			int index = std::atoi(wanted.c_str());
+			if (index >= 0 && index < s_DemoCount)
+				g_ActiveDemo = index;
+			else
+				EGSS_WARN("--demo {0} is out of range; {1} demos exist", wanted, s_DemoCount);
+
+			return;
+		}
+
+		// Otherwise a short name, case-insensitively -- "physics" should work
+		// as well as "Physics".
+		auto equalsIgnoringCase = [](const std::string& a, const std::string& b)
+		{
+			if (a.size() != b.size())
+				return false;
+
+			for (size_t c = 0; c < a.size(); c++)
+			{
+				if (std::tolower((unsigned char)a[c]) != std::tolower((unsigned char)b[c]))
+					return false;
+			}
+			return true;
+		};
+
+		for (int d = 0; d < s_DemoCount; d++)
+		{
+			if (equalsIgnoringCase(wanted, s_Demos[d].ShortName))
+			{
+				g_ActiveDemo = d;
+				return;
+			}
+		}
+
+		EGSS_WARN("--demo '{0}' matches no demo", wanted);
+		return;
+	}
+}
+
 // Creates every demo, hands each its index, and pushes it. Called once from
 // TestApp -- so adding a demo needs no change there either.
 inline void PushAllDemos(Egss::Application& app)
 {
+	SelectDemoFromCommandLine();
+
 	for (int i = 0; i < s_DemoCount; i++)
 	{
 		DemoLayer* demo = s_Demos[i].Create();

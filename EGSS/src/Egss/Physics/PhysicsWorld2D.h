@@ -8,20 +8,26 @@
 
 namespace Egss {
 
-	// One overlap between two bodies, produced by detection and consumed by
-	// the solver. Kept around after the step so it can be drawn.
-	struct EGSS_API Contact
+	// One point of an overlap, solved independently of the others.
+	//
+	// A box-box contact can have two, and the difference is the whole reason
+	// rotation is worth having: a single point can only resist rotation about
+	// itself, so a crate resting on one rocks forever.
+	struct EGSS_API ContactPoint
 	{
-		unsigned int A = 0;
-		unsigned int B = 0;
+		// World space, on the surface the two bodies are sharing.
+		glm::vec2 Position = { 0.0f, 0.0f };
 
-		// Points from A towards B, unit length.
-		glm::vec2 Normal = { 0.0f, 0.0f };
-		// How far the two have interpenetrated along the normal.
+		// From each body's centre of mass out to the point. The lever arm --
+		// what turns a contact impulse into a spin, and the reason a crate
+		// caught on one corner tips instead of being shoved flat.
+		glm::vec2 LeverA = { 0.0f, 0.0f };
+		glm::vec2 LeverB = { 0.0f, 0.0f };
+
+		// How far the two have interpenetrated at this point. Clipping can
+		// leave one corner deeper than the other on a box resting at a slight
+		// angle, so this is per point and not per contact.
 		float Penetration = 0.0f;
-		// Representative point, for debug drawing only -- the solver doesn't
-		// use it, because without rotation there is no torque to apply.
-		glm::vec2 Point = { 0.0f, 0.0f };
 
 		// Total impulse applied along the normal and tangent so far. These are
 		// carried into the next step ("warm starting"), so the solver resumes
@@ -31,10 +37,52 @@ namespace Egss {
 		float NormalImpulse = 0.0f;
 		float TangentImpulse = 0.0f;
 
+		// The *inverse* effective mass along each axis, worked out once per
+		// step in PrepareContacts rather than inside every iteration. Zero
+		// means nothing here can move, and the solver skips the point.
+		float NormalMass = 0.0f;
+		float TangentMass = 0.0f;
+
 		// Target separation speed, captured before solving. Restitution has to
 		// be measured against the approach speed on the step the bodies first
-		// touched, not against whatever the solver has left mid-iteration.
+		// touched, not against whatever the solver has left mid-iteration --
+		// and against the speed *at this point*, since a turning body's two
+		// contact points close at different speeds.
 		float RestitutionBias = 0.0f;
+	};
+
+	// One overlap between two bodies, produced by detection and consumed by
+	// the solver. Kept around after the step so it can be drawn.
+	struct EGSS_API Contact
+	{
+		unsigned int A = 0;
+		unsigned int B = 0;
+
+		// Points from A towards B, unit length. Shared by every point of the
+		// contact: the separating axis is a property of the pair, not of the
+		// individual corners resting on it.
+		glm::vec2 Normal = { 0.0f, 0.0f };
+
+		// The deepest point and its penetration. The solver works per point,
+		// but ResolveCircle and the debug draw both want one answer, and the
+		// deepest is the one that decides whether they are apart.
+		float Penetration = 0.0f;
+		glm::vec2 Point = { 0.0f, 0.0f };
+
+		int PointCount = 0;
+		ContactPoint Points[2] = {};
+
+		// How hard the two hit, over the whole contact. A face contact splits
+		// one total between two points, so reading a single point's impulse
+		// as "the impact" reports roughly half of it.
+		float TotalNormalImpulse() const
+		{
+			float total = 0.0f;
+			for (int i = 0; i < PointCount; i++)
+				total += Points[i].NormalImpulse;
+
+			return total;
+		}
 	};
 
 	// What a ray found, if anything.
@@ -57,14 +105,19 @@ namespace Egss {
 	// its bodies and knows nothing about the renderer, the scene, or entities.
 	// Whatever ends up owning game objects later just holds handles into this.
 	//
-	// Deliberately limited, and worth being explicit about:
+	// Bodies rotate. Box-box overlap goes through Sat2D, contacts carry a
+	// lever arm, and the solver has its angular terms -- so an off-centre hit
+	// spins a crate and friction rolls a ball rather than dragging it. The
+	// three pieces landed separately and each was checked on its own before
+	// being joined up; the changelog entries are worth reading in that order
+	// if any of it needs revisiting.
 	//
-	//   * **No rotation.** Bodies translate but never spin. Adding it means
-	//     SAT for oriented shapes, multi-point manifolds and angular impulses
-	//     -- a much larger job, and not needed for platformers or Breakout.
-	//   * **Circles and axis-aligned boxes only.**
-	//   * **Brute-force broadphase.** Every pair is tested, which is O(n^2) and
-	//     genuinely fine into the hundreds. Replace it when a profile says to.
+	// Still worth being explicit about:
+	//
+	//   * **Boxes and circles only.** No general convex hulls, and no
+	//     compound shapes -- one body carries exactly one collider.
+	//   * **No joints.** Nothing constrains two bodies except contact.
+	//   * The broadphase is a uniform grid, switchable back to brute force.
 	//
 	// Step expects a fixed dt. Feed it from Layer::OnFixedUpdate.
 	class EGSS_API PhysicsWorld2D
@@ -111,8 +164,9 @@ namespace Egss {
 		// scalar, r.x*j.y - r.y*j.x.
 		//
 		// This is the whole of "why does hitting a box in the corner make it
-		// turn", and it is worth being able to do before contacts generate it
-		// on their own.
+		// turn". Contacts now generate the same thing on their own, through
+		// the same cross product -- this is the manual version of what the
+		// solver does per contact point.
 		//
 		// `point` is in world space. Wakes the body: an impulse applied to
 		// something asleep would otherwise be integrated away to nothing.
@@ -184,9 +238,17 @@ namespace Egss {
 		void RebuildGrid() const;
 		void MarkGridDirty() { m_GridDirty = true; }
 
-		void Integrate(float dt);
+		// Two halves, with the contact solve between them. See the note in
+		// Step: integrating position before the solver runs lets gravity move
+		// a body a step's worth before friction can object, which reads as a
+		// resting block creeping down a slope.
+		void IntegrateVelocities(float dt);
+		void IntegratePositions(float dt);
 		void GenerateContacts();
 		void TestPair(unsigned int i, unsigned int j);
+		// Lever arms, effective masses and restitution targets: everything the
+		// iterations need that does not change between them.
+		void PrepareContacts();
 		void WarmStart();
 		void SolveVelocities();
 		void CorrectPositions();
@@ -195,9 +257,23 @@ namespace Egss {
 		std::vector<RigidBody2D> m_Bodies;
 		std::vector<Contact> m_Contacts;
 
-		// Last step's impulses, keyed by body pair, so a contact that persists
-		// can pick up where it left off.
-		std::unordered_map<unsigned long long, glm::vec2> m_PreviousImpulses;
+		// Last step's impulses for one pair, and where they were applied.
+		//
+		// The points are stored because warm starting matches by *position*
+		// rather than by index. Clipping can hand the two corners back in
+		// either order, and can drop one entirely as a crate tips -- feeding a
+		// point the other point's impulse is worse than not warm starting it.
+		struct PreviousContact
+		{
+			int PointCount = 0;
+			glm::vec2 Points[2] = {};
+			float NormalImpulse[2] = { 0.0f, 0.0f };
+			float TangentImpulse[2] = { 0.0f, 0.0f };
+		};
+
+		// Keyed by body pair, so a contact that persists picks up where it
+		// left off.
+		std::unordered_map<unsigned long long, PreviousContact> m_PreviousImpulses;
 
 		unsigned int m_AwakeBodyCount = 0;
 

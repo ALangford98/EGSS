@@ -3,6 +3,12 @@
 bin/
 bin-int/
 
+# Claude Code worktrees. These are real git worktrees living inside the tree,
+# so each has a .git file of its own and `git add .` reports them as embedded
+# repositories and stages them as gitlinks. Ignoring the directory rather than
+# all of .claude/, so settings there stay trackable.
+.claude/worktrees/
+
 # files
 *.user
 

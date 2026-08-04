@@ -60,10 +60,11 @@ namespace Egss {
 	// the shortest way out.
 	//
 	// Nothing here is specific to rigid bodies, and nothing here moves
-	// anything. Turning a manifold into an impulse is the solver's job, and is
-	// deliberately not yet written: this half can be wrong in ways that are
-	// obvious against arithmetic and invisible once a solver is smearing them
-	// across sixteen iterations.
+	// anything. Turning a manifold into an impulse is the solver's job, and
+	// keeping the two apart is what let this half be checked against
+	// hand-worked answers -- it can be wrong in ways that are obvious against
+	// arithmetic and invisible once a solver is smearing them across sixteen
+	// iterations. PhysicsWorld2D's narrowphase is the only caller.
 	class EGSS_API Sat2D
 	{
 	public:

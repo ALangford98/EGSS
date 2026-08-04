@@ -31,22 +31,20 @@ Reading order for a newcomer:
 ## Current state
 
 **Check `git log` and `git status` first — this section goes stale quickly.**
-At the time of writing, `HEAD` was `7d2b884` "Added material handling for the
-3D renderer". Uncommitted, verified, and building in all three configs:
+At the time of writing, `HEAD` was `6b4c429` "Fixed a bug with back-faced
+culling", and the work since it is **2D rotation, joined up** — verified at 45
+checks and building in all three configs.
 
-- **`.mtl` parsing** (`MtlLoader`) plus submesh ranges from `usemtl`, a
-  `firstIndex` on `DrawIndexed`, and `Renderer::SubmitSubmesh`. 52 checks.
-- **`beacon.obj` / `beacon.mtl`** in the demo, so a real multi-material model
-  exercises all of that. `MeshComponent::Material` became `Materials`, one per
-  submesh, with `MaterialsFromFile` to stop the component's `Color` overwriting
-  what the file said.
-- **Smoothing groups** in `ObjLoader` — the sharing key's `FlatFace` became
-  `Share`. 24 checks.
-- **`Raycast3D`** — slab test against mesh bounds in each object's local space,
-  plus graded `Occlusion`, wired to Cube3D's emitters. 30 checks.
-
-New untracked files worth not losing: `Raycast3D.{h,cpp}`, `MtlLoader.{h,cpp}`,
-and the two `beacon.*` assets.
+- The narrowphase calls `Sat2D`; `Contact` carries up to two `ContactPoint`s
+  with per-point lever arms, impulses and effective masses; the solver has its
+  angular terms. Warm starting matches points by position, not index.
+- `BodyBounds`, `RaycastBox` and the circle-box test are all oriented now.
+  `ResolveCircle` follows for free, being built on the shared narrowphase.
+- **`Step` was reordered** to integrate positions after the solve rather than
+  before. That was a real, pre-existing bug — see the trap below, and the
+  changelog entry, which is the most useful thing written this session.
+- `Physics2D` renders rotated and has an actual ramp; every third spawn is a
+  crate that lands on a corner and tips flush against it.
 
 The owner commits their own work, often between sessions and sometimes while
 a reply is being written. **Do not commit or push unless asked**, and do not
@@ -62,7 +60,7 @@ assume something is still outstanding because a previous message said so.
 | Cameras | `Camera` base, `Orthographic`, `Perspective` | `BeginScene` takes any `Camera` |
 | Framebuffers | `Framebuffer` | `RED_INTEGER` attachment drives pixel-exact picking |
 | Scene | `Scene`, `Entity`, `ComponentStore` | ECS-lite: dense arrays, generational handles |
-| Physics | `PhysicsWorld2D`, `RigidBody2D`, `Sat2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. Angular state integrates and `Sat2D` gives oriented-box manifolds, but **collisions are still axis-aligned** — the two are not joined up yet |
+| Physics | `PhysicsWorld2D`, `RigidBody2D`, `Sat2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. **Rotation is in**: oriented SAT manifolds of up to two points, per-point lever arms and angular impulses, oriented rays and bounds |
 | Rays 3D | `Raycast3D` | Slab test against mesh bounds in local space, plus graded occlusion. No 3D rigid bodies |
 | Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb behind a 4th-order Butterworth splitter |
 | Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
@@ -168,22 +166,42 @@ Check the measurement first. Real examples from this project:
   from a previous automated run. (It did reveal a real gap — the gizmo grabbed
   a button that was already down — so the fix was still worth making.)
 
-### Screenshot automation is unreliable here
+### Capturing frames
 
-It works often enough to be tempting and fails in ways that look like bugs:
+**From inside the engine.** `Application::CaptureFrame(path)` requests a PNG of
+the frame being drawn; the read happens between the last draw and the swap,
+which is the only moment a finished frame exists. F2 does it interactively.
+Unattended:
 
-- `xdotool key --window <id>` **does not reach GLFW.** Activate the window and
-  send to the focused window instead. An earlier "cycled every demo" check
-  silently never switched demos.
-- `import -window <id>` sometimes returns a **stale** frame. Two probes coming
-  back byte-identical means the capture, not the app.
-- Window geometry changes between runs. Re-read it every time; hard-coded
-  coordinates land on the wrong widget and quietly change a slider.
-- Clicking ImGui controls by coordinate is fragile. To test a non-default code
-  path, temporarily change the default, rebuild, screenshot, revert.
+```sh
+./TestEnv --demo Physics --lockstep --hide-ui --capture shots/a.png --capture-step 240
+```
 
-Prefer numbers. Use screenshots to confirm something *looks* right after the
-numbers say it *is* right.
+`--demo` takes an index or a short name, so exercising a non-default path no
+longer means editing `g_ActiveDemo` and rebuilding.
+
+That command is **bit-reproducible**: two runs give byte-identical PNGs, so a
+captured frame can be a regression test. All three flags were needed, and each
+came from a measured failure rather than a guess:
+
+- **`--capture-step`, not `--capture-frame`.** Frames are skipped while the
+  window is being mapped, so frame N is not the same simulation state twice.
+- **`--lockstep`** runs exactly one fixed step per frame rather than feeding
+  the accumulator real time. Otherwise how much has been simulated by a given
+  frame depends on machine speed — two runs measurably differed.
+- **`--hide-ui`** drops the panels, which print milliseconds and so differ
+  every run however deterministic the simulation is.
+
+**Driving the app from outside still does not work**, and is not worth
+retrying: `xdotool key --window <id>` does not reach GLFW, `import` hangs
+against XWayland, window geometry moves between runs, and clicking ImGui by
+coordinate lands on the wrong widget. If a test needs input, add a flag rather
+than synthesising a click.
+
+Prefer numbers. Use a capture to confirm something *looks* right after the
+numbers say it *is* right — and note what numbers cannot see: they verified
+rotation to five decimals while discs were being drawn as squares, which one
+look caught immediately.
 
 ---
 
@@ -228,6 +246,21 @@ numbers say it *is* right.
 - **The audio thread must never allocate, lock, or block.** Buffers are sized
   when the voice or state is constructed. Parameter updates publish whole
   structs by rotating through a ring and releasing an index.
+- **`Step` must integrate positions *after* the contact solve**, not before.
+  Doing both up front gives every body one free-fall sub-step of `g·dt²` that
+  the solver never sees. Position correction hides the normal part of it, so on
+  flat ground it is invisible; the part along the surface is never undone and a
+  block rests on a 20° slope creeping downhill at `g·sinθ·dt`, with friction to
+  spare and a perfectly healthy contact. **Position moving while velocity reads
+  zero means integration, not friction.** This lived in the engine unnoticed
+  until rotation made slopes possible.
+- **`DrawRotatedQuad` takes degrees**; everything in the physics is radians.
+  Passing radians turns a box about a seventh as far as it should go, which
+  reads as a solver bug rather than a units mistake.
+- **Anything deriving bounds from `HalfExtents` has to account for rotation.**
+  A 45° square reaches 0.707, not 0.5. Bounds that miss it drop broadphase
+  pairs with no contact and no warning to show for it — the quietest failure in
+  the physics, and worth checking first when something passes through a corner.
 - **Cutting too much when editing a demo header** compiles clean, because
   `DemoLayer`'s virtuals have empty defaults. The symptom is a black screen and
   a suspiciously fast `OnUpdate`. Committed work makes this a `git checkout`.
@@ -277,15 +310,12 @@ whenever that is wanted.
 `BlendMode::Multiply` for surfaces; 27 checks through `ReadPixelRGBA`). Nothing
 outstanding in this cluster, which makes it the thinnest one on the list.
 
-**Physics** — rotation, and it is now **half built**. Angular state integrates
-(`Rotation`, `AngularVelocity`, `Torque`, `InverseInertia`, `ApplyImpulseAt`)
-and `Sat2D` produces oriented-box manifolds with up to two points. Both are
-verified in isolation and **neither is wired into collision**: the narrowphase
-still runs the AABB tests, no contact generates torque, and nothing renders
-rotated — drawing a spin the collider does not have would be a lie. What remains
-is the join: narrowphase calling `Sat2D`, contacts carrying a lever arm, and
-angular terms in the impulse solver. Doing it in this order was deliberate, and
-worth keeping to.
+**Physics** — rotation is **done**, built in three separable pieces and each
+verified before the next: angular state, then `Sat2D`, then the join. The
+narrowphase runs `Sat2D`, `Contact` holds up to two `ContactPoint`s with their
+own lever arms and impulses, and the solver has its angular terms. Rays, bounds
+and `ResolveCircle` all work in body-local space. What is left in this cluster
+is joints and colliders beyond boxes and circles.
 
 **Acoustics**, the most recently active area — 3D acoustics (`Acoustics2D` is
 2D because `Raycast` is); partitioned FFT convolution (for dense recorded
@@ -341,12 +371,11 @@ a ray carries three energy packets but only one direction.
 - **`glDrawElements` takes a byte offset, not an index.** `DrawIndexed`'s
   `firstIndex` counts indices and the backend multiplies. Getting that wrong
   draws from the wrong place while every submesh number stays correct.
-- **Screenshot verification does not work on this machine.** `import` hangs
-  against XWayland (once for two minutes before timing out) and `xdotool`
-  window matching picks up stale windows. Two sessions have now been lost to
-  it. Use `Framebuffer::ReadPixelRGBA` instead — it gives numbers to compare
-  rather than a picture to squint at, and it is how both the lighting and the
-  material work were verified.
+- **Screenshot verification from outside the process does not work here.**
+  `import` hangs against XWayland (once for two minutes before timing out) and
+  `xdotool` window matching picks up stale windows; two sessions were lost to
+  it. This is now solved from the inside — see "Capturing frames" — and the
+  outside route should not be retried.
 - A listener **inside** a body finds zero paths, however many bounces are
   traced, and reports an empty echogram rather than an error. The demo runs
   `ResolveCircle` on the source and listener every frame for this reason; any

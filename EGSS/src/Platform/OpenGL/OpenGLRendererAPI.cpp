@@ -148,4 +148,20 @@ namespace Egss {
 		}
 	}
 
+	void OpenGLRendererAPI::ReadPixels(unsigned int x, unsigned int y, unsigned int width,
+		unsigned int height, unsigned char* out)
+	{
+		// GL_PACK_ALIGNMENT defaults to 4, which pads every row up to a
+		// multiple of four bytes. RGBA rows already are, so this changes
+		// nothing today -- but it is the difference between a correct image
+		// and one sheared diagonally the moment anyone reads three channels
+		// at an odd width, and that is a confusing thing to debug.
+		glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+		// Whatever is bound. For the default framebuffer the read buffer is
+		// already GL_BACK, which before the swap holds the frame just drawn.
+		glReadPixels((GLint)x, (GLint)y, (GLsizei)width, (GLsizei)height,
+			GL_RGBA, GL_UNSIGNED_BYTE, out);
+	}
+
 }

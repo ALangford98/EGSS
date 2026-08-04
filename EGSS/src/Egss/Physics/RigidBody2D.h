@@ -25,8 +25,8 @@ namespace Egss {
 	// A body and its collider in one struct.
 	//
 	// Real engines separate the two so one body can carry several shapes; that
-	// is worth doing when it is needed and not before. Everything here is
-	// axis-aligned and has no rotation -- see the note on PhysicsWorld2D.
+	// is worth doing when it is needed and not before. One body, one collider,
+	// and the collider turns with the body -- see the note on PhysicsWorld2D.
 	struct EGSS_API RigidBody2D
 	{
 		BodyType Type = BodyType::Dynamic;
@@ -42,11 +42,10 @@ namespace Egss {
 
 		// --- Angular state ---------------------------------------------------
 		//
-		// Integrated, but **not yet produced by collisions**: nothing in the
-		// solver generates torque, so a body spins only if something sets
-		// AngularVelocity directly. That is deliberate -- the state and its
-		// integration are separable from the contact maths, and shipping them
-		// apart means each can be checked on its own.
+		// Integrated, and produced by collisions: a contact away from the
+		// centre of mass spins the body through its lever arm. The state, the
+		// oriented narrowphase and the solver's angular terms were built and
+		// checked in that order, each on its own, before being joined up.
 		//
 		// Radians. Degrees are for the UI and for .obj files; every trig
 		// function here takes radians and converting at the boundary is how you

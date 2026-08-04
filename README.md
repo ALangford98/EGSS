@@ -12,8 +12,9 @@ of that: a **batched 2D renderer** (quads, lines, triangles, circles) with
 sprite sheets and framebuffers with integer-attachment mouse picking;
 orthographic and perspective cameras; **mesh loading** from Wavefront `.obj`;
 a **scene layer** with generational entity handles and dense component stores;
-a **2D rigid-body physics** world with warm-started impulses, island sleeping,
-raycasts and a uniform-grid broadphase; a lock-free **audio engine** with
+a **2D rigid-body physics** world with rotation, oriented SAT manifolds,
+warm-started impulses, island sleeping, raycasts and a uniform-grid broadphase;
+a lock-free **audio engine** with
 positional sound, occlusion and reverb; an instrumenting **profiler** with
 Chrome-trace export; and ImGui (docking) as a debug overlay.
 
@@ -651,6 +652,17 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [ ] **A PCH for `TestEnv`.** Only the engine has one. The demo headers now
       pull in most of the engine, so this would actually pay off
 - [ ] **Vendor a `premake5` binary per platform**, or script fetching it
+- [ ] **Demo recording and playback**, in the `.dem` sense. Frame capture is
+      reproducible now, which was the hard half: `--lockstep` plus
+      `--capture-step` gives byte-identical output across runs, and there is no
+      RNG anywhere in the engine or the demos to seed. What remains is input —
+      `Input::IsKeyPressed` polls GLFW directly, so replay needs a backend that
+      reads recorded state instead, sampled and replayed per *fixed step*. Two
+      caveats worth knowing before starting: `Lighting2D`, `Cube3D` and
+      `Acoustics2DDemo` move things in `OnUpdate` with a variable `ts` and
+      would drift on replay (the other three simulate on the fixed step and
+      would not), and ImGui slider changes mutate simulation parameters, so
+      either record those too or record only from defaults
 - [ ] **Multi-viewport ImGui.** Docking is on; `ImGuiConfigFlags_ViewportsEnable`
       would let panels be dragged out into their own OS windows, but it needs
       the platform-window loop in `ImGuiLayer::End` and a GL context restore
@@ -659,17 +671,17 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       is the format worth supporting second
 - [ ] **Gizmo: rotate and scale handles.** Translate works; rotation rings and
       scale boxes are the same picking maths applied to different geometry
-- [ ] **Physics: rotation — the solver half.** Both prerequisites are in and
-      verified: angular state integrates, and `Sat2D` produces oriented-box
-      manifolds. What remains is the join — the narrowphase calling `Sat2D`
-      instead of the AABB tests, contacts carrying a lever arm `r`, and the
-      impulse solver gaining its angular terms. **Until that lands, bodies
-      still collide as axis-aligned boxes and nothing generates torque**, which
-      is why nothing renders rotated yet: drawing a spin the collider does not
-      have would be a lie
+- [ ] **Physics: joints, and shapes beyond boxes and circles.** Rotation is
+      done — the narrowphase runs `Sat2D`, contacts carry a lever arm and the
+      solver has its angular terms. What is still missing is anything that
+      constrains two bodies other than contact, and any collider that is not a
+      box or a circle. Convex hulls would reuse the SAT that is already there;
+      only the axis list changes
 - [ ] **3D rigid bodies.** `Raycast3D` answers "what is in the way"; nothing in
-      3D falls, collides or rests. A genuinely large item, and only worth
-      starting once 2D rotation has settled the ideas
+      3D falls, collides or rests. A genuinely large item, and the one 2D
+      rotation was meant to settle the ideas for — the lever arm becomes a
+      cross product that does not collapse to a scalar, and the scalar inertia
+      becomes a tensor that has to be rotated into world space every step
 
 - [ ] **Partitioned FFT convolution.** The convolution reverb takes a *sparse*
       response, which is what the ray tracer produces. A dense recorded impulse
@@ -949,6 +961,182 @@ construction whichever way round it is. Only a file that states its normals can
 be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
+### 2026-08-04 (in-engine frame capture, and what it caught)
+
+Screenshots had been declared impossible on this machine, and the diagnosis was
+right but the conclusion too broad: the *compositor* route is impossible. This
+session is Wayland, `grim` is not installed, and `import` is an X11 tool with no
+real root window to grab under XWayland — so it hangs. Nothing about that
+prevents the engine photographing its own back buffer.
+
+`ScreenCapture::SaveFrame` reads the bound framebuffer with `glReadPixels` and
+writes a PNG through `stb_image_write` (vendored beside `stb_image`, same
+pattern, so premake's existing glob picked it up with no build change). The read
+happens between the last draw and the swap — the only moment a finished frame
+exists. `Application::CaptureFrame` defers to exactly that point, so it is safe
+to call from a key handler or an ImGui button. F2 in `TestEnv`.
+
+This cannot go stale the way `import` did, because there is no compositor being
+asked what it thinks is on screen; it is the buffer that was just drawn, read on
+the thread that drew it. It also works identically on Wayland, X11, or a machine
+with no session at all.
+
+**Making it reproducible took three flags, each from a measured failure.** The
+goal was a capture that can serve as a regression test, which means two runs
+must produce the same image. They did not, and the reasons came out one at a
+time:
+
+- Two identical runs captured at frame 240 differed. `m_Accumulator += frameTime`
+  is fed *wall-clock* time, so how many steps have run by a given frame depends
+  on how fast the machine was. **`--lockstep`** runs exactly one fixed step per
+  frame instead, and turns VSync off since nobody is watching.
+- Still differed. Frames are skipped while the window is being mapped, so frame
+  N is not step N. **`--capture-step`** indexes by the simulation's own clock.
+  With it, both runs captured at "frame 239, step 240" — and the *scene* was
+  then pixel-identical, confirmed by hashing raw RGB.
+- The full frame still differed, because both ImGui panels print frame times in
+  milliseconds. **`--hide-ui`** skips the panels while still beginning and
+  ending the ImGui frame, so its state stays consistent.
+
+With all three, two separate runs produce **byte-identical PNG files**. There is
+also `--demo <index|shortname>`, which retires the "change the default, rebuild,
+look, revert" dance the handover recommended for reaching a non-default path.
+
+#### What one look caught that 45 checks had not
+
+The rotation work was verified numerically to five decimal places, and the
+capture immediately showed **discs being drawn as squares**. The demo had used a
+quad as a stand-in behind a comment saying there was no circle primitive; there
+is one, added at some point after that comment. Static squares were a harmless
+placeholder. Rotating squares are not: a ball rolling down a slope drawn as a
+spinning box reads as a tumbling crate, so the change that made rotation visible
+also made the stand-in a lie. `DrawCircle` now draws the fill.
+
+Numbers cannot see that. They said the angle was right, and it was — nothing
+was wrong with the physics or with the drawn rotation. The wrongness was in what
+the shape claimed to be, which is exactly the class of thing a picture is for.
+The reverse holds too, and is why the numbers came first: a units error between
+degrees and radians would leave every box drawn at a fifty-seventh of its angle,
+and the capture confirms it is not.
+
+### 2026-08-04 (rotation, joined up — and the ordering bug it exposed)
+
+The join the last entry left open: the narrowphase now calls `Sat2D`, contacts
+carry a lever arm, and the impulse solver has its angular terms. Bodies rotate,
+and the demo draws them rotated, which it deliberately would not do before.
+
+**`Contact` became a manifold.** Up to two `ContactPoint`s, each with its own
+lever arms, penetration, accumulated impulses and effective masses. The effective
+mass along an axis picked up the term that makes rotation work:
+
+```
+1 / ( imA + imB + iIA (rA x n)^2 + iIB (rB x n)^2 )
+```
+
+A point far from a centre of mass is *heavier* to push, because part of the
+impulse becomes spin rather than travel. With no rotation both angular terms
+vanish and it collapses to the sum of inverse masses the old solver divided by,
+which is the reassuring part: nothing was replaced, one term was added.
+
+Warm starting had to become per point, and matched **by position rather than by
+index** — clipping hands the two corners back in either order and drops one
+entirely as a crate tips, so index 0 is not the same corner from step to step.
+Points more than 2 cm apart are treated as new and start from zero.
+
+Circles got the same treatment. Their contact point moved from A's surface to
+halfway into the overlap, which keeps the lever arm a full radius long for both
+bodies — that is what lets friction *roll* a disc instead of dragging it.
+
+**Everything that assumed an AABB had to be fixed, and one of them silently.**
+
+- `BodyBounds` ignored rotation, so the broadphase grid dropped pairs the
+  narrowphase would have caught. A 45° square reaches 0.707, not 0.5. A missed
+  collision leaves nothing behind to notice — no contact, no warning, a body
+  passing through a corner — which makes it the worst of the three.
+- `RaycastBox` and the circle-box test now work in the body's **local space**,
+  the trick `Raycast3D` established: a rotated box is not an AABB in world
+  space, but a ray is still a ray in any frame you put it in. `ResolveCircle`
+  came along for free, since it was already built on the shared narrowphase.
+
+**Position correction gained an angular half.** Correcting a crate's two contact
+points by different amounts *is* a rotation; a translation-only solver can only
+average the two and leave the crate tilted forever.
+
+#### The measurement that mattered
+
+45 checks. The useful ones were deliberately *not* re-derivations of the
+solver's own arithmetic — copying a formula twice proves only that it was copied
+twice. They were against physics the code knows nothing about:
+
+- **Total angular and linear momentum are unchanged across an impact.** Contact
+  impulses are internal: equal and opposite at one shared point, so
+  `ΔL = -(p x J) + (p x J) = 0` however messy the manifold. This is the single
+  strongest check on the lever arms and the cross-product signs, and it is the
+  one that caught the bug below. Read 2.00000 against 2.00000.
+- **A disc rolls down a 20° slope at `(2/3) g sin θ`** — the textbook
+  `g sin θ / (1 + I/mr²)` for a solid disc. Measured 2.218 against 2.237,
+  0.86% out, with `v = -ωr` holding to 1.3%: it is genuinely rolling, and
+  measurably slower than the `g sin θ` a frictionless slide would give.
+- **A block on the same slope slides at `g(sin θ - μ cos θ)`** when μ = 0.1
+  (1.197 m against 1.217, 1.65% out) and holds when μ = 0.8, since
+  tan 20° = 0.364.
+- **A stack's bottom contact carries exactly the weight above it**, `m g dt` per
+  step. Five 1 kg boxes at 1/60 s: 0.81750 against 0.81750, to five decimals.
+
+#### The bug: `Step` integrated position too early
+
+The μ = 0.8 block did **not** hold. It slid 5.5 cm every second, and the
+interesting part was that all the obvious explanations were wrong: friction had
+double the headroom it needed (0.123 available against 0.056 used), 64 solver
+iterations behaved identically to 8, the contact normal was exactly the slope
+normal with two healthy points, and setting `PositionIterations = 0` changed
+nothing. The block's velocity read exactly **zero** while it drifted.
+
+Position moving with velocity at zero can only be integration. `Step` was
+integrating velocity *and* position up front, so every body took one free-fall
+sub-step of `g dt²` before the solver ever saw it. Position correction pushes
+the normal part of that back out — which is why it was invisible on flat ground
+for the entire life of the engine — but the part *along* the surface is never
+undone. Friction cannot object to a movement that has already happened.
+
+`g sin θ dt² × 60 = 0.0559 m/s`, against 0.055 measured. The arithmetic named
+the cause before the fix confirmed it.
+
+The fix is the standard ordering: integrate velocities, solve contacts, *then*
+integrate positions (`IntegrateVelocities` / `IntegratePositions`, with contacts
+generated at the positions the bodies ended the last step at). Creep went to
+**exactly 0.00000** in the second and third seconds, and the rolling disc's
+error improved from 2.60% to 0.86% as a free side effect.
+
+It had gone unnoticed because **until rotation there were no slopes.** Every
+contact in every demo was axis-aligned, and the error was purely along the
+normal where correction hides it. A whole class of bug was sitting behind the
+absence of a feature.
+
+One failure on the way was mine and in the test: the momentum check computed the
+solve-time positions as `p + v dt`, which was right for the old ordering and
+wrong the moment it changed. It read as broken conservation rather than as a
+stale assumption — worth remembering, because a conservation law failing is
+alarming enough to make you doubt the physics first.
+
+#### The demo
+
+`Physics2D` draws rotated now — `DrawRotatedQuad` with `PreviousRotation`
+interpolated exactly as position already was, oriented collider outlines walked
+from their own corners, and a spoke on each disc so rolling is visible. Contact
+points are drawn individually rather than one per pair, since one versus two is
+the difference between a crate that rocks and one that rests.
+
+The staircase of axis-aligned boxes that stood in for a ramp is now an actual
+ramp at −22°, with a shallower one below it. Every third spawn is a crate
+dropped already tilted and spinning, so it lands on a corner, tips, tumbles down
+the slope and settles flush against it. 90 bodies over 900 steps settle to a
+fastest 0.012 m/s with nothing escaping the walls.
+
+**`DrawRotatedQuad` takes degrees**; the physics is radians throughout. Passing
+radians draws a box turned about a seventh of the way it should be, which looks
+convincingly like a solver bug.
 
 ### 2026-08-03 (rotation, the two halves that can be checked alone)
 

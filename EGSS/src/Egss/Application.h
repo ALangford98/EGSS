@@ -41,6 +41,49 @@ namespace Egss {
 		// loop falling behind: consistently above 1 means the step is too
 		// short or the simulation too slow.
 		inline unsigned int GetFixedStepsLastFrame() const { return m_FixedStepsLastFrame; }
+
+		// --- Capture ---------------------------------------------------------
+
+		// Write the frame currently being drawn to a PNG.
+		//
+		// Safe to call from anywhere inside a frame -- a layer's OnUpdate, an
+		// ImGui button, a key handler -- because it only *requests* the shot.
+		// The read happens at the one instant a finished frame exists, between
+		// the last draw and the swap. Calling it twice in a frame keeps the
+		// last path; there is one back buffer to photograph.
+		void CaptureFrame(const std::string& path);
+
+		// Frames completed since startup. The capture scheduling is built on
+		// this, and it is the honest clock for "let it settle then look":
+		// wall-clock time says nothing about how much has been drawn.
+		inline unsigned long long GetFrameCount() const { return m_FrameCount; }
+
+		// Fixed steps run since startup. This -- not the frame count -- is the
+		// simulation's clock, and the only index a reproducible capture can
+		// use: frames get skipped while the window is being mapped or
+		// minimised, so the same frame number is not the same simulation state
+		// twice.
+		inline unsigned long long GetStepCount() const { return m_StepCount; }
+
+		// Stashed by EntryPoint before the application is constructed, so the
+		// constructor can read its own flags.
+		static void SetCommandLine(int argc, char** argv);
+		static const std::vector<std::string>& GetCommandLine();
+	private:
+		// --capture <path>        write a PNG, by default at frame 60
+		// --capture-frame <n>     which frame to write it at
+		// --exit-after <n>        quit once n frames have been drawn
+		// --capture-step <n>      ...or at simulation step n, which is the
+		//                         reproducible one: frames get skipped while
+		//                         the window is mapping, steps do not
+		// --lockstep              one fixed step per frame, ignoring real time
+		// --hide-ui               no demo panels, so nothing in shot is timing
+		//
+		// Together these make an unattended run produce one image and stop,
+		// which is the whole point: a capture nobody has to watch for. Add
+		// --lockstep and the image is the *same* image every run, which is
+		// what turns it into a test rather than an anecdote.
+		void ParseCommandLine();
 	private:
 		bool OnWindowClose(WindowCloseEvent& e);
 		bool OnWindowResize(WindowResizeEvent& e);
@@ -58,6 +101,32 @@ namespace Egss {
 		float m_Accumulator = 0.0f;
 		float m_InterpolationAlpha = 0.0f;
 		unsigned int m_FixedStepsLastFrame = 0;
+
+		unsigned long long m_FrameCount = 0;
+
+		// Drives the loop by simulation steps rather than by the clock. The
+		// prerequisite for a recorded demo replaying the same way twice, and
+		// on its own enough to make a captured frame reproducible.
+		bool m_Lockstep = false;
+
+		// Skips the demo panels. They print frame times, so a capture
+		// including them differs every run however deterministic the
+		// simulation underneath is.
+		bool m_HideUI = false;
+
+		// Empty when nothing is pending. Cleared as soon as it is written, so
+		// a request never survives into the next frame.
+		std::string m_PendingCapturePath;
+
+		// The scheduled shot, from --capture. Zero means none.
+		std::string m_CapturePath;
+		unsigned long long m_CaptureFrame = 0;
+		unsigned long long m_CaptureStep = 0;
+		unsigned long long m_ExitAfterFrame = 0;
+		bool m_ExitAfterExplicit = false;
+		bool m_Captured = false;
+
+		unsigned long long m_StepCount = 0;
 
 		static Application* s_Instance;
 	};

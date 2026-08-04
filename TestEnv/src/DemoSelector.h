@@ -72,7 +72,7 @@ public:
 
 		ImGui::Spacing();
 		ImGui::Separator();
-		ImGui::TextDisabled("F1 cycles. Each demo has its own panel.");
+		ImGui::TextDisabled("F1 cycles. F2 screenshots. Each demo has its own panel.");
 
 		ImGui::End();
 	}
@@ -85,6 +85,21 @@ public:
 		{
 			if (e.GetRepeatCount() > 0)
 				return false;
+
+			// F2: a screenshot of the frame about to be drawn. Named by frame
+			// number rather than by a counter of its own, so two shots taken
+			// in the same run can never collide and the filename says when it
+			// was taken.
+			if (e.GetKeyCode() == EGSS_KEY_F2)
+			{
+				Egss::Application& app = Egss::Application::Get();
+
+				std::string path = "screenshots/egss-"
+					+ std::to_string(app.GetFrameCount()) + ".png";
+
+				app.CaptureFrame(path);
+				return true;
+			}
 
 			// F1 rather than Tab: ImGui uses Tab to cycle widget focus, which
 			// turns a slider into a text field and then swallows the keyboard.
