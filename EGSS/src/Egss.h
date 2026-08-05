@@ -36,6 +36,7 @@
 
 #include "Egss/Physics/RigidBody2D.h"
 #include "Egss/Physics/PhysicsWorld2D.h"
+#include "Egss/Physics/PhysicsWorld3D.h"
 #include "Egss/Physics/Raycast3D.h"
 #include "Egss/Physics/Sat2D.h"
 

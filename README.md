@@ -672,11 +672,15 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       constrains two bodies other than contact, and any collider that is not a
       box or a circle. Convex hulls would reuse the SAT that is already there;
       only the axis list changes
-- [ ] **3D rigid bodies.** `Raycast3D` answers "what is in the way"; nothing in
-      3D falls, collides or rests. A genuinely large item, and the one 2D
-      rotation was meant to settle the ideas for — the lever arm becomes a
-      cross product that does not collapse to a scalar, and the scalar inertia
-      becomes a tensor that has to be rotated into world space every step
+- [ ] **3D rigid bodies — pieces two and three.** Piece one is in and verified:
+      `RigidBody3D` and `PhysicsWorld3D` integrate position and orientation
+      with a real inertia tensor, and `ApplyImpulseAt` spins a body about the
+      axis `r × j` gives. **Nothing collides yet** — bodies fall, tumble and
+      pass straight through each other. What remains is `Sat3D` (fifteen
+      candidate axes rather than four: three faces each plus nine edge-edge
+      cross products, and the edge-edge cases are the ones that bite), then
+      the join — contacts, manifolds and the solver's angular terms, which are
+      the 2D ones with the cross product left as a vector
 
 - [ ] **Partitioned FFT convolution.** The convolution reverb takes a *sparse*
       response, which is what the ray tracer produces. A dense recorded impulse
@@ -956,6 +960,69 @@ construction whichever way round it is. Only a file that states its normals can
 be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
+### 2026-08-05 (3D rigid bodies, piece one: angular state)
+
+The same three-piece plan 2D used, because building the halves separately and
+checking each alone is what kept that honest. This is piece one: `RigidBody3D`
+and `PhysicsWorld3D` with position, orientation and their integration.
+**Nothing collides** — bodies fall, tumble and pass straight through each
+other, which is deliberate and is the point.
+
+Two things stop this being 2D with an extra component:
+
+- **Orientation is a quaternion.** Three angles cannot represent orientation
+  without gimbal lock, and a matrix has six redundant numbers to keep
+  consistent.
+- **Inertia is a tensor written in body space**, so it has to be rotated into
+  world space as `R·I·Rᵀ` whenever the body turns. Skip that and a box behaves
+  correctly only while it happens to be axis-aligned.
+
+31 checks. Tensors against the textbook — a 2×3×4 box of mass 12 has diagonal
+(25, 20, 13), a sphere `⅖mr²` — with the box deliberately not a cube, because
+pairing the wrong extents with an axis is invisible on one. A quarter turn about
+z swaps the world tensor's xx and yy entries, and a sphere's is rotation-
+invariant, which is the control that would catch an error the box test could
+mask.
+
+#### Angular momentum is conserved; angular velocity is not
+
+In 2D those were the same statement up to a constant. In 3D they part company,
+and everything interesting lives in the gap. `L` is captured before the body
+turns and angular velocity recovered from it after, rather than carried across
+unchanged — the tensor has moved, so the same momentum implies a different
+velocity, and *that line is where tumbling comes from*.
+
+The check that this is right is not a formula but a phenomenon: the **tennis
+racket theorem**. Spin a body about its largest or smallest principal axis and
+it is stable; spin it about the middle one and it flips over, periodically,
+forever. Nothing in the code knows this. Measured as how far the spin axis
+wanders in the body frame, where 2.0 is a complete reversal: major axis 0.010,
+minor 0.010, intermediate **2.000**.
+
+#### Two failures, one mine and one real
+
+The flip did not appear at first, and the test was wrong rather than the code:
+it measured the spin axis in *world* space, where angular momentum is fixed and
+angular velocity stays close to it. The body tumbles under `w`; `w` does not
+swing about. In the body frame it was there all along.
+
+The real one: rotational energy grew **18.4%** over ten seconds of free
+tumbling while angular momentum held to five decimals. Torque-free motion
+conserves both, so that was the integrator doing work. Substepping the
+orientation update bought it back roughly proportionally — 4.2% at four
+substeps, 1.31% at sixteen — which is first-order convergence and an expensive
+way to buy accuracy.
+
+Taking angular velocity from the **midpoint** of the step instead of its start
+fixed it outright: **0.02%**, at a single step, for one extra tensor rebuild
+rather than four times the work. The substep count was then measured to be
+actively *harmful* — 0.08% at four, 0.31% at sixteen — because each substep
+renormalises a quaternion and rounding had become the largest error left. The
+knob was removed rather than defaulted to one.
+
+Final drift over a full minute of undamped tumbling: energy +0.130%, angular
+momentum +0.059%. Identical figures in Debug and Release.
 
 ### 2026-08-05 (replay: recording and playing back input, `.dem` style)
 

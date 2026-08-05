@@ -1,0 +1,219 @@
+#pragma once
+
+#include "egsspch.h"
+#include "Egss/Core.h"
+#include "Egss/Physics/RigidBody2D.h"   // BodyType, shared by both dimensions
+
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+
+namespace Egss {
+
+	enum class ColliderShape3D
+	{
+		Sphere = 0,
+		Box
+	};
+
+	// A rigid body in three dimensions.
+	//
+	// Two things stop this being RigidBody2D with an extra component, and both
+	// are the reason 2D was built first:
+	//
+	//   * **Orientation is a quaternion, not an angle.** Three angles cannot
+	//     represent orientation without gimbal lock, and a matrix has six
+	//     redundant numbers to keep consistent. A quaternion has one
+	//     constraint -- unit length -- and renormalising it is one line.
+	//
+	//   * **Inertia is a tensor, not a scalar.** In 2D there is one axis to
+	//     turn about, so the whole 3x3 collapses to a number. In 3D a body
+	//     resists rotation differently about each axis, the tensor is written
+	//     in *body* space, and it therefore has to be rotated into world space
+	//     every time the body turns. Skip that and a box behaves correctly
+	//     only while it happens to be axis-aligned -- which looks like a
+	//     solver bug and is not one.
+	struct EGSS_API RigidBody3D
+	{
+		BodyType Type = BodyType::Dynamic;
+		ColliderShape3D Shape = ColliderShape3D::Sphere;
+
+		glm::vec3 Position = { 0.0f, 0.0f, 0.0f };
+		glm::vec3 Velocity = { 0.0f, 0.0f, 0.0f };
+
+		// Unit length. Anything that changes it must renormalise: integration
+		// adds a small non-unit part every step, and left alone that grows
+		// until the body visibly shears.
+		glm::quat Orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+		// In *world* space, radians per second, direction is the axis and
+		// length is the rate. World rather than body space because that is
+		// what contacts and impulses speak.
+		glm::vec3 AngularVelocity = { 0.0f, 0.0f, 0.0f };
+
+		glm::vec3 Force = { 0.0f, 0.0f, 0.0f };
+		glm::vec3 Torque = { 0.0f, 0.0f, 0.0f };
+
+		// Where the body was at the start of the current step, so rendering
+		// can interpolate. The orientation pair wants slerp, not mix.
+		glm::vec3 PreviousPosition = { 0.0f, 0.0f, 0.0f };
+		glm::quat PreviousOrientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+		float InverseMass = 1.0f;
+
+		// The inertia tensor in body space, and its inverse. Diagonal for
+		// every shape here, because a box and a sphere are both symmetric
+		// about their own axes -- but stored as full matrices, since the
+		// world-space versions are not diagonal and the two want the same
+		// type.
+		//
+		// The forward tensor is kept as well as the inverse purely so nothing
+		// has to invert a matrix to ask what a body's angular momentum is.
+		glm::mat3 InertiaLocal = glm::mat3(1.0f);
+		glm::mat3 InverseInertiaLocal = glm::mat3(1.0f);
+
+		// The same tensor rotated into world space: R * I_local^-1 * R^T.
+		// Cached because it changes only when the orientation does, and the
+		// solver would otherwise rebuild it per contact.
+		glm::mat3 InverseInertiaWorld = glm::mat3(1.0f);
+
+		float LinearDamping = 0.01f;
+		float AngularDamping = 0.05f;
+
+		// Sphere uses Radius; Box uses HalfExtents.
+		float Radius = 0.5f;
+		glm::vec3 HalfExtents = { 0.5f, 0.5f, 0.5f };
+
+		float Restitution = 0.2f;
+		float Friction = 0.4f;
+		float GravityScale = 1.0f;
+
+		bool Awake = true;
+		float SleepTimer = 0.0f;
+
+		void SetMass(float mass) { InverseMass = mass > 0.0f ? 1.0f / mass : 0.0f; }
+		float GetMass() const { return InverseMass > 0.0f ? 1.0f / InverseMass : 0.0f; }
+
+		// Rebuilds the world tensor from the current orientation. Called by
+		// the world every step; call it by hand if you set Orientation
+		// directly and want to ask about inertia before the next step.
+		//
+		// R I^-1 R^T, and the transpose is what makes it a *similarity*
+		// transform rather than merely a rotation of the numbers: the tensor
+		// maps angular momentum to angular velocity, and both of those live in
+		// world space, so the frame has to be changed on the way in and back
+		// again on the way out.
+		void UpdateInertiaWorld()
+		{
+			glm::mat3 rotation = glm::mat3_cast(Orientation);
+			InverseInertiaWorld = rotation * InverseInertiaLocal * glm::transpose(rotation);
+		}
+
+		// Angular momentum, in world space. The quantity that is actually
+		// conserved when nothing is pushing: angular *velocity* is not, and a
+		// tumbling box changes it constantly while L stays put.
+		glm::vec3 GetAngularMomentum() const
+		{
+			if (Type == BodyType::Static || InverseMass <= 0.0f)
+				return glm::vec3(0.0f);
+
+			glm::mat3 rotation = glm::mat3_cast(Orientation);
+			glm::mat3 inertia = rotation * InertiaLocal * glm::transpose(rotation);
+			return inertia * AngularVelocity;
+		}
+
+		// Rotational kinetic energy, 1/2 w . (I w).
+		float GetRotationalEnergy() const
+		{
+			return 0.5f * glm::dot(AngularVelocity, GetAngularMomentum());
+		}
+
+		// The inertia this body's shape and mass imply, about its centre and
+		// along its own axes:
+		//
+		//   solid box      m/12 * (h^2 + d^2, w^2 + d^2, w^2 + h^2)
+		//   solid sphere   2/5 m r^2, the same about every axis
+		//
+		// Note which extents pair with which axis: the moment about x is
+		// resisted by the *other* two dimensions, not by x. Getting that wrong
+		// is invisible on a cube and obvious on anything long.
+		void RecalculateInertia()
+		{
+			float mass = GetMass();
+			if (mass <= 0.0f)
+			{
+				InertiaLocal = glm::mat3(0.0f);
+				InverseInertiaLocal = glm::mat3(0.0f);
+				InverseInertiaWorld = glm::mat3(0.0f);
+				return;
+			}
+
+			glm::vec3 diagonal(0.0f);
+
+			if (Shape == ColliderShape3D::Box)
+			{
+				glm::vec3 size = HalfExtents * 2.0f;
+				diagonal = (mass / 12.0f) * glm::vec3(
+					size.y * size.y + size.z * size.z,
+					size.x * size.x + size.z * size.z,
+					size.x * size.x + size.y * size.y);
+			}
+			else
+			{
+				float value = 0.4f * mass * Radius * Radius;
+				diagonal = glm::vec3(value);
+			}
+
+			InertiaLocal = glm::mat3(0.0f);
+			InverseInertiaLocal = glm::mat3(0.0f);
+
+			for (int axis = 0; axis < 3; axis++)
+			{
+				InertiaLocal[axis][axis] = diagonal[axis];
+				InverseInertiaLocal[axis][axis] =
+					diagonal[axis] > 0.0f ? 1.0f / diagonal[axis] : 0.0f;
+			}
+
+			UpdateInertiaWorld();
+		}
+
+		static RigidBody3D MakeSphere(const glm::vec3& position, float radius, float mass = 1.0f)
+		{
+			RigidBody3D body;
+			body.Shape = ColliderShape3D::Sphere;
+			body.Position = position;
+			body.PreviousPosition = position;
+			body.Radius = radius;
+			body.SetMass(mass);
+			body.RecalculateInertia();
+			return body;
+		}
+
+		static RigidBody3D MakeBox(const glm::vec3& position, const glm::vec3& halfExtents, float mass = 1.0f)
+		{
+			RigidBody3D body;
+			body.Shape = ColliderShape3D::Box;
+			body.Position = position;
+			body.PreviousPosition = position;
+			body.HalfExtents = halfExtents;
+			body.SetMass(mass);
+			body.RecalculateInertia();
+			return body;
+		}
+
+		// Static bodies are dynamic ones with no inverse mass, exactly as in 2D.
+		static RigidBody3D MakeStaticBox(const glm::vec3& position, const glm::vec3& halfExtents)
+		{
+			RigidBody3D body = MakeBox(position, halfExtents, 0.0f);
+			body.Type = BodyType::Static;
+			return body;
+		}
+
+		static RigidBody3D MakeStaticSphere(const glm::vec3& position, float radius)
+		{
+			RigidBody3D body = MakeSphere(position, radius, 0.0f);
+			body.Type = BodyType::Static;
+			return body;
+		}
+	};
+
+}
