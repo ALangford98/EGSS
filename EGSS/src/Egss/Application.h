@@ -114,6 +114,9 @@ namespace Egss {
 		// simulation underneath is.
 		bool m_HideUI = false;
 
+		// Quit when the recording runs out, unless --exit-after said otherwise.
+		bool m_ExitWhenReplayEnds = false;
+
 		// Empty when nothing is pending. Cleared as soon as it is written, so
 		// a request never survives into the next frame.
 		std::string m_PendingCapturePath;

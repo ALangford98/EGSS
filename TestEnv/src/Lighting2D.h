@@ -86,13 +86,21 @@ public:
 		}
 	}
 
+	// Both of these move things, so both belong on the fixed step: the orbit
+	// because its speed should not depend on the frame rate, and the light
+	// control because it is driven by held keys. Doing it per frame made this
+	// demo unable to reproduce itself run to run, which also made it
+	// unrecordable.
+	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
+	{
+		UpdateLightControl(fixedStep);
+		UpdateOrbit(fixedStep);
+	}
+
 	void OnDemoUpdate(Egss::Timestep ts) override
 	{
 
 		m_FrameTime = ts.GetMilliseconds();
-
-		UpdateLightControl(ts);
-		UpdateOrbit(ts);
 
 		// One list, used by both the polygon pass and the surface shading, so
 		// the two can never disagree about what is lighting the scene.

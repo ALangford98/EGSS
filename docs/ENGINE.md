@@ -287,6 +287,15 @@ Application::Get().GetStepCount();                // fixed steps run -- the sim'
 // --demo takes an index or short name; --capture-step beats --capture-frame,
 // because frames are skipped while the window maps and steps are not.
 
+// Replay — record input and play it back, the way a Quake .dem does
+//   ./TestEnv --demo Breakout --record run.rec      # play normally, then quit
+//   ./TestEnv --play run.rec                        # replays it exactly
+// The file names its own scene, so --play needs no --demo. Input is sampled
+// once per *fixed step*, so the frame rate it was recorded at does not matter;
+// playback forces --lockstep, since a replay paced by wall-clock is not one.
+// Recording and playing at once is refused rather than half-done.
+Replay::IsPlaying();          // e.g. to disable a menu during playback
+
 RaycastHit hit = world.Raycast(origin, direction, maxDistance);  // dir auto-normalised
 world.ResolveCircle(position, radius);        // push a circle out of geometry --
                                               // character controllers, cameras

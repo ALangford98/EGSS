@@ -52,6 +52,21 @@ inline void SelectDemoFromCommandLine()
 {
 	const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
 
+	// A recording knows which scene it belongs to, and it outranks --demo:
+	// replaying Breakout's input into Physics2D would produce something, and
+	// that something would look like a broken replay rather than a mistake.
+	if (Egss::Replay::IsPlaying())
+	{
+		int recorded = Egss::Replay::GetRecordedDemoIndex();
+		if (recorded >= 0 && recorded < s_DemoCount)
+		{
+			g_ActiveDemo = recorded;
+			return;
+		}
+
+		EGSS_WARN("Replay names demo {0}, which does not exist here", recorded);
+	}
+
 	for (size_t i = 1; i + 1 < arguments.size(); i++)
 	{
 		if (arguments[i] != "--demo")
@@ -105,6 +120,19 @@ inline void SelectDemoFromCommandLine()
 inline void PushAllDemos(Egss::Application& app)
 {
 	SelectDemoFromCommandLine();
+
+	// Recording starts here rather than in the engine, because the header
+	// stamps which scene is being recorded and only the sandbox knows that.
+	// After selection, so the number written is the one actually used.
+	const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
+	for (size_t i = 1; i + 1 < arguments.size(); i++)
+	{
+		if (arguments[i] == "--record")
+		{
+			Egss::Replay::StartRecording(arguments[i + 1], g_ActiveDemo, app.GetFixedTimestep());
+			break;
+		}
+	}
 
 	for (int i = 0; i < s_DemoCount; i++)
 	{

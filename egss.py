@@ -103,17 +103,21 @@ def binary_dir(config):
     return os.path.join(ROOT, "bin", f"{config.capitalize()}-{system}-x86_64", "TestEnv")
 
 
-def launch(config):
+def launch(config, forwarded=None):
     directory = binary_dir(config)
     executable = os.path.join(directory, "TestEnv.exe" if IS_WINDOWS else "TestEnv")
 
     if not os.path.isfile(executable):
         sys.exit(f"No binary at {executable} -- build it first.")
 
-    print("\033[90m$ cd " + directory + " && ./TestEnv\033[0m")
+    forwarded = list(forwarded or [])
+    print("\033[90m$ cd " + directory + " && ./TestEnv "
+          + " ".join(forwarded) + "\033[0m")
 
-    # From its own directory, so imgui.ini and profile.json land beside it.
-    return subprocess.call([executable], cwd=directory)
+    # From its own directory, so imgui.ini, profile.json, screenshots and
+    # recordings all land beside it -- and so assets resolve, since they are
+    # loaded by path relative to the executable.
+    return subprocess.call([executable] + forwarded, cwd=directory)
 
 
 def main():
@@ -125,7 +129,23 @@ def main():
     parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
     parser.add_argument("--no-gen", action="store_true",
                         help="skip regenerating project files")
-    args = parser.parse_args()
+    # Everything after a bare -- goes to TestEnv rather than to this script,
+    # which is the only way to reach its flags: the binary lives beside its
+    # assets under bin/, so running it by hand means knowing the config-
+    # dependent path. `./egss.py run -- --demo Breakout --record run.rec`.
+    #
+    # Split by hand rather than with argparse.REMAINDER, which eats the `--`
+    # itself and then offers the first forwarded flag to the `config`
+    # positional -- so `run -- --demo Breakout` failed with "invalid choice:
+    # '--demo'" instead of forwarding anything.
+    argv = sys.argv[1:]
+    forwarded = []
+    if "--" in argv:
+        separator = argv.index("--")
+        forwarded = argv[separator + 1:]
+        argv = argv[:separator]
+
+    args = parser.parse_args(argv)
 
     if args.command == "gen":
         return generate()
@@ -148,7 +168,7 @@ def main():
     if args.command == "run":
         if args.config == "all":
             sys.exit("Pick one config to run.")
-        return launch(args.config)
+        return launch(args.config, forwarded)
 
     return 0
 

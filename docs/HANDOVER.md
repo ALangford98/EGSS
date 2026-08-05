@@ -61,6 +61,7 @@ assume something is still outstanding because a previous message said so.
 | Framebuffers | `Framebuffer` | `RED_INTEGER` attachment drives pixel-exact picking |
 | Scene | `Scene`, `Entity`, `ComponentStore` | ECS-lite: dense arrays, generational handles |
 | Physics | `PhysicsWorld2D`, `RigidBody2D`, `Sat2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. **Rotation is in**: oriented SAT manifolds of up to two points, per-point lever arms and angular impulses, oriented rays and bounds |
+| Capture | `ScreenCapture`, `Replay` | In-engine PNG of the frame just drawn, and `.dem`-style input recording replayed per fixed step. Both reproducible; see "Capturing frames" |
 | Rays 3D | `Raycast3D` | Slab test against mesh bounds in local space, plus graded occlusion. No 3D rigid bodies |
 | Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb behind a 4th-order Butterworth splitter |
 | Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
@@ -78,7 +79,17 @@ assume something is still outstanding because a previous message said so.
 ./egss.py clean
 ./egss.py gen              # project files only
 ./egss.py build --no-gen   # skip regeneration
+
+# Anything after a bare -- is forwarded to TestEnv
+./egss.py run -- --demo Breakout --record run.rec
+./egss.py run release -- --play run.rec --hide-ui
 ```
+
+**`TestEnv/` at the repo root is source.** The binary is
+`bin/<Config>-linux-x86_64/TestEnv/TestEnv` and has to run from its own
+directory, because assets resolve relative to the executable and recordings,
+screenshots and `imgui.ini` land beside it. `./egss.py run` does that; running
+`./TestEnv` from the root just finds the source directory.
 
 **It always regenerates on purpose.** premake expands file globs at
 *generation* time, so a new `.cpp` is invisible to the build until it does.
@@ -192,11 +203,15 @@ came from a measured failure rather than a guess:
 - **`--hide-ui`** drops the panels, which print milliseconds and so differ
   every run however deterministic the simulation is.
 
+**If a test needs input, record it.** `--record <file>` writes a replay while
+you play; `--play <file>` reproduces it exactly, and the file names its own
+scene. Input is sampled per fixed step, so the frame rate it was recorded at
+does not matter.
+
 **Driving the app from outside still does not work**, and is not worth
 retrying: `xdotool key --window <id>` does not reach GLFW, `import` hangs
 against XWayland, window geometry moves between runs, and clicking ImGui by
-coordinate lands on the wrong widget. If a test needs input, add a flag rather
-than synthesising a click.
+coordinate lands on the wrong widget.
 
 Prefer numbers. Use a capture to confirm something *looks* right after the
 numbers say it *is* right — and note what numbers cannot see: they verified
@@ -246,6 +261,11 @@ look caught immediately.
 - **The audio thread must never allocate, lock, or block.** Buffers are sized
   when the voice or state is constructed. Parameter updates publish whole
   structs by rotating through a ring and releasing an index.
+- **Anything that moves belongs in `OnFixedUpdate`, not `OnUpdate`.** Movement
+  scaled by frame time makes speed depend on the frame rate, and the symptom is
+  worse than it sounds: three demos could not reproduce themselves run to run,
+  so nothing about them was testable or recordable. `OnUpdate` is for drawing
+  and for reading the interpolation alpha, not for changing state.
 - **`Step` must integrate positions *after* the contact solve**, not before.
   Doing both up front gives every body one free-fall sub-step of `g·dt²` that
   the solver never sees. Position correction hides the normal part of it, so on

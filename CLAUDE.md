@@ -38,7 +38,15 @@ that the risk exists and let the owner decide.
 ./egss.py clean
 ./egss.py gen              # project files only
 ./egss.py build --no-gen   # skip regeneration
+
+# Flags for TestEnv go after a bare --
+./egss.py run -- --demo Breakout --record run.rec
 ```
+
+**`TestEnv/` in the repo root is source, not a binary.** The executable is at
+`bin/<Config>-linux-x86_64/TestEnv/TestEnv` and must run from that directory —
+assets load by path relative to it, and screenshots, recordings, `imgui.ini` and
+`profile.json` all land beside it. `./egss.py run` handles that for you.
 
 It regenerates every time **on purpose**: premake expands file globs at
 generation time, so a new `.cpp` is invisible to the build until it does. That
@@ -97,6 +105,21 @@ That makes a captured frame a **regression test**: run it, hash the pixels,
 compare. `Framebuffer::ReadPixelRGBA` is still the right tool for checking one
 colour at one point — use it when the question is "what value is this pixel",
 and capture when the question is "does this scene look right".
+
+**Recorded input replays exactly**, which is how a test gets input without a
+person:
+
+```sh
+./TestEnv --demo Breakout --record run.rec    # play it, then quit
+./TestEnv --play run.rec --hide-ui --capture a.png --capture-step 200
+```
+
+Input is sampled per *fixed step*, so the frame rate it was recorded at does not
+matter, and the file names its own scene. All six demos are step-deterministic;
+keep them that way — **anything that moves belongs in `OnFixedUpdate`, not
+`OnUpdate`**. Three demos violated that and could not reproduce themselves run
+to run, let alone under replay. What is *not* recorded is ImGui slider state,
+which reaches the simulation without going through input: record from defaults.
 
 ### The self-test pattern
 

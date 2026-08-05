@@ -652,17 +652,12 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [ ] **A PCH for `TestEnv`.** Only the engine has one. The demo headers now
       pull in most of the engine, so this would actually pay off
 - [ ] **Vendor a `premake5` binary per platform**, or script fetching it
-- [ ] **Demo recording and playback**, in the `.dem` sense. Frame capture is
-      reproducible now, which was the hard half: `--lockstep` plus
-      `--capture-step` gives byte-identical output across runs, and there is no
-      RNG anywhere in the engine or the demos to seed. What remains is input —
-      `Input::IsKeyPressed` polls GLFW directly, so replay needs a backend that
-      reads recorded state instead, sampled and replayed per *fixed step*. Two
-      caveats worth knowing before starting: `Lighting2D`, `Cube3D` and
-      `Acoustics2DDemo` move things in `OnUpdate` with a variable `ts` and
-      would drift on replay (the other three simulate on the fixed step and
-      would not), and ImGui slider changes mutate simulation parameters, so
-      either record those too or record only from defaults
+- [ ] **Replay: record the ImGui panel state too.** Recording captures input,
+      which is everything a person does *through the keyboard and mouse*. It
+      does not capture slider drags, which reach the simulation directly —
+      move "Gravity" mid-recording and the replay will not. Recording from
+      defaults is exact; anything else needs the parameters stored alongside
+      the input, which is a natural extension of the header
 - [ ] **Multi-viewport ImGui.** Docking is on; `ImGuiConfigFlags_ViewportsEnable`
       would let panels be dragged out into their own OS windows, but it needs
       the platform-window loop in `ImGuiLayer::End` and a GL context restore
@@ -961,6 +956,80 @@ construction whichever way round it is. Only a file that states its normals can
 be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
+### 2026-08-05 (replay: recording and playing back input, `.dem` style)
+
+What Quake and Doom meant by a demo file — not a video, but the *input* that
+produced one, replayed through the same simulation. `--record <file>` writes it,
+`--play <file>` replays it, and the file names the scene it belongs to so
+playback selects it without being told.
+
+Called "replay" in code rather than "demo" only because `TestEnv` already uses
+that word for Breakout, Physics2D and the rest, and one word for two things in
+the same codebase is how you end up reading the wrong file.
+
+**Input is sampled once per fixed step, never per frame.** That is the whole
+design. Frames come and go at whatever rate the machine manages; steps are the
+simulation's own clock, so a recording indexed by them replays the same on a
+slow machine, a fast one, and one being dragged around mid-run. The cost, stated
+plainly: a key pressed and released entirely between two steps is never seen, so
+never recorded. At 60 Hz that is a 16 ms tap. Doom had the same property for the
+same reason.
+
+`Input` grew an `InputSnapshot` — a keycode-indexed bitset plus mouse — and a
+playback override, so polling answers from the recording instead of the
+hardware. Records are written **only when the state changes**, which is why a
+260-step Breakout session with three keypresses is 416 bytes: a 32-byte header
+and six records.
+
+Edges become events. Code here uses both halves — Breakout moves the paddle by
+polling and launches the ball from a `KeyPressedEvent` — so playback synthesises
+presses and releases from state changes and pushes them through the normal path.
+Live hardware events are dropped while playing, so a keypress from whoever is
+watching cannot desynchronise the run; window events are let through, since
+closing and resizing are the host's business, not the recording's.
+
+#### What the measurements found
+
+The first record-then-replay comparison **diverged**, and the reason was the
+test rather than the code: the synthetic input driver written to make a
+recording without a person at the keyboard set the polled state but dispatched
+no events, so the recording launched no ball while the replay of it did. The
+replay was right and the fake keyboard was incomplete. Once it produced both,
+record and replay came back **byte-identical** at every step checked — 50, 100,
+180, 260 and 350 — with a no-input control confirming the comparison was not
+vacuous.
+
+Two things that looked like bugs and were not:
+
+- Asking for `--record` and `--play` together silently recorded an *inputless*
+  run, because starting a recording stopped the playback first. A plausible file
+  with nothing in it is the worst kind of wrong answer, so it now refuses.
+- A recording made without `--lockstep` came out 352 bytes against 416 and
+  replayed differently. It had simply not reached the last input change:
+  `s_MaxFrameTime` clamps a slow frame and *discards* that simulation time, so
+  300 frames is fewer than 300 steps. Given enough frames the two agree exactly.
+
+#### The demos had to become frame-rate independent
+
+`Acoustics2DDemo`, `Cube3D` and `Lighting2D` moved things in `OnUpdate` with a
+variable `ts`, and the consequence was sharper than expected: they could not
+reproduce *themselves* run to run, never mind under replay. Movement, the light
+orbit and the spinner's rotation moved to `OnDemoFixedUpdate`. All six demos are
+now step-deterministic, and a recording made at a **variable frame rate**
+replays to a frame pixel-identical to a canonical `--lockstep` run — checked for
+every demo.
+
+Two remain non-reproducible in their *rendering* without `--lockstep`, and
+correctly so: Breakout and Physics2D interpolate between simulation states, and
+the blend factor is leftover wall-clock time. Their simulation at a given step
+is identical; only the sub-step visual phase differs. Playback forces lockstep,
+which pins it to zero.
+
+An earlier note in this file claimed those three demos would "drift on replay".
+That was half right for the wrong reason — they drift because they were not
+step-deterministic at all, and lockstep would have hidden it rather than fixed
+it.
 
 ### 2026-08-04 (in-engine frame capture, and what it caught)
 

@@ -309,11 +309,19 @@ public:
 		Egss::AudioEngine::SetReverb(reverb);
 	}
 
+	// Movement belongs on the fixed step, not the frame. Driving it from
+	// frame time makes how far you travel depend on the frame rate, which is
+	// both wrong and unrecordable: a replay reproduces the input exactly, and
+	// then the demo moves a different distance with it. Measured -- this demo
+	// did not even reproduce itself run to run until this moved here.
+	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
+	{
+		MoveThings(fixedStep);
+	}
+
 	void OnDemoUpdate(Egss::Timestep ts) override
 	{
 		m_FrameTime = ts.GetMilliseconds();
-
-		MoveThings(ts);
 
 		// Tracing is milliseconds of work, so it happens when the geometry has
 		// actually changed rather than every frame. Sound does not move fast

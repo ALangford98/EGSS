@@ -8,6 +8,7 @@
 #include "Egss/Renderer/Renderer.h"
 #include "Egss/Debug/Instrumentor.h"
 #include "Egss/Debug/ScreenCapture.h"
+#include "Egss/Debug/Replay.h"
 #include "Egss/Audio/AudioEngine.h"
 
 namespace Egss {
@@ -92,6 +93,27 @@ namespace Egss {
 			m_HideUI = m_HideUI || argument == "--hide-ui";
 		}
 
+		// --play <file> / --record <file>. Playback starts here, in the
+		// constructor, because TestEnv asks the recording which scene it
+		// belongs to when it builds its layers -- which happens next.
+		std::string play = valueOf("--play");
+		if (!play.empty() && Replay::StartPlayback(play))
+		{
+			// A replay driven by wall-clock time is not a replay: how much has
+			// been simulated by a given moment would depend on the machine.
+			// Forced rather than merely defaulted, since the alternative
+			// silently produces a different run.
+			m_Lockstep = true;
+			m_Window->SetVSync(false);
+
+			m_ExitWhenReplayEnds = !m_ExitAfterExplicit;
+		}
+
+		// --record is deliberately *not* handled here. Starting a recording
+		// needs the scene index to stamp into the header, and which scene is
+		// which is the sandbox's business -- the engine has no idea what a
+		// demo is. TestEnv starts it once it has chosen one.
+
 		if (m_Lockstep)
 		{
 			// The swap would otherwise pace the run to the display, and a
@@ -135,6 +157,10 @@ namespace Egss {
 
 	Application::~Application()
 	{
+		// Before anything else: a recording is only valid once its header has
+		// been patched with the step count, and that happens here.
+		Replay::Stop();
+
 		AudioEngine::Shutdown();
 		Renderer::Shutdown();
 	}
@@ -153,6 +179,23 @@ namespace Egss {
 
 	void Application::OnEvent(Event& e)
 	{
+		// While replaying, the keyboard and mouse belong to the recording.
+		// A stray keypress from whoever is watching would otherwise be seen by
+		// the layers and desynchronise the run from the file -- which looks
+		// like the replay being wrong rather than like interference.
+		//
+		// Window events are let through regardless: closing, resizing and
+		// minimising are the host's business, not the recording's.
+		if (Replay::IsPlaying() && !Replay::IsDispatchingSyntheticEvent())
+		{
+			bool isInput = e.IsInCategory(EventCategoryKeyboard)
+				|| e.IsInCategory(EventCategoryMouse)
+				|| e.IsInCategory(EventCategoryMouseButton);
+
+			if (isInput)
+				return;
+		}
+
 		EventDispatcher dispatcher(e);
 		dispatcher.Dispatch<WindowCloseEvent>(EGSS_BIND_EVENT_FN(Application::OnWindowClose));
 		dispatcher.Dispatch<WindowResizeEvent>(EGSS_BIND_EVENT_FN(Application::OnWindowResize));
@@ -236,6 +279,12 @@ namespace Egss {
 				while (m_Accumulator >= m_FixedTimestep)
 				{
 					EGSS_PROFILE_SCOPE("Layer::OnFixedUpdate");
+
+					// Input is sampled and replayed here, on the simulation's
+					// clock, rather than per frame. A recording indexed by
+					// frames would replay differently on a machine that draws
+					// them at a different rate.
+					Replay::BeginStep(m_StepCount);
 
 					for (Layer* layer : m_LayerStack)
 						layer->OnFixedUpdate(m_FixedTimestep);
@@ -334,6 +383,27 @@ namespace Egss {
 			if (m_ExitAfterFrame != 0 && m_FrameCount >= m_ExitAfterFrame)
 			{
 				EGSS_CORE_INFO("Exiting after {0} frames as requested", m_FrameCount);
+				m_Running = false;
+			}
+
+			// A replay that has run out has nothing left to drive it, and
+			// carrying on would show the simulation continuing from recorded
+			// state under no input at all -- which is a different thing from
+			// what was recorded and would be easy to mistake for it.
+			if (m_ExitWhenReplayEnds && Replay::PlaybackFinished())
+			{
+				EGSS_CORE_INFO("Replay finished at step {0}", m_StepCount);
+
+				// A capture scheduled past the end of the recording never
+				// fires, and the run exits looking entirely successful with no
+				// file written. Say so -- an empty output directory is a
+				// miserable thing to debug from.
+				if (!m_CapturePath.empty() && !m_Captured)
+				{
+					EGSS_CORE_ERROR("Capture at step {0} never happened: the replay is only {1} steps",
+						m_CaptureStep, Replay::GetTotalSteps());
+				}
+
 				m_Running = false;
 			}
 		}

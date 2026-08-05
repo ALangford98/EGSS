@@ -453,13 +453,24 @@ public:
 	// Presentation only -- no OnFixedUpdate. Nothing here is simulated: the
 	// camera is feel, and the spin is decoration, so both want the real frame
 	// time rather than a fixed step. Not everything needs the simulation loop.
+	// On the fixed step, so how far the camera travels does not depend on the
+	// frame rate. Anything driven by held keys belongs here -- it is also what
+	// lets a session be recorded and replayed and arrive in the same place.
+	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
+	{
+		m_PreviousCameraPosition = m_Camera.GetPosition();
+		MoveCamera(fixedStep);
+
+		if (m_Spinning)
+			m_Rotation += fixedStep * 35.0f;
+	}
+
 	void OnDemoUpdate(Egss::Timestep ts) override
 	{
 
 		m_FrameTime = ts.GetMilliseconds();
 
-		glm::vec3 previousCameraPosition = m_Camera.GetPosition();
-		MoveCamera(ts);
+		glm::vec3 previousCameraPosition = m_PreviousCameraPosition;
 
 		// The listener rides the camera. PerspectiveCamera already hands back
 		// position, forward and up in exactly the form a listener wants.
@@ -509,11 +520,9 @@ public:
 			}
 		}
 
-		if (m_Spinning)
-			m_Rotation += ts * 35.0f;
-
 		// The spinner's rotation is a property of the entity now, not a global
-		// the draw loop reaches for.
+		// the draw loop reaches for. Advanced on the fixed step -- see
+		// OnDemoFixedUpdate -- so its speed does not follow the frame rate.
 		if (auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(m_Spinner))
 			transform->Rotation.y = m_Rotation;
 
@@ -1460,4 +1469,10 @@ private:
 	glm::vec4 m_Tint = { 1.0f, 1.0f, 1.0f, 1.0f };
 
 	float m_FrameTime = 0.0f;
+
+	// Where the camera was before the last fixed step moved it. The listener's
+	// velocity is derived from this, and it has to be sampled on the step that
+	// does the moving rather than per frame -- otherwise on a frame with no
+	// step the camera has not moved and Doppler reads zero.
+	glm::vec3 m_PreviousCameraPosition = { 0.0f, 0.0f, 0.0f };
 };
