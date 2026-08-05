@@ -18,15 +18,31 @@ is the orientation doc. `README.md` is the reference, and its changelog records
 
 ## Git
 
-**Do not commit, push, or create branches unless asked.** The owner commits
-their own work, often between sessions and sometimes while a reply is being
-written. This is not a formality — assume any git state you did not just observe
-is stale, and check `git log` / `git status` rather than trusting an earlier
-message.
+**Never commit to `main`, and never push.** The owner owns both, commits their
+own work between sessions and sometimes while a reply is being written. Assume
+any git state you did not just observe is stale — check `git log` and
+`git status` rather than trusting an earlier message.
 
-If asked to work in isolation, leave finished work as a patch or as files and
-say where they are. Do not commit "so it isn't lost" without being asked; say
-that the risk exists and let the owner decide.
+**Do commit finished work to the isolated worktree branch.** That is where
+handover happens:
+
+```sh
+git log -p main..worktree-<name>      # review
+git merge worktree-<name>             # or cherry-pick, or drop
+```
+
+Commit in logical units and let the messages carry the reasoning, the same way
+the changelog does. Do not fabricate granular history — if a change was
+genuinely developed as one thing, it is one commit.
+
+This replaced handing work over as patch files, which went stale the moment the
+owner applied one and had to be rebuilt by hand against their working tree. The
+branch outlives the worktree directory, so committing is also what stops work
+being lost when the session ends.
+
+Never `git stash` in a shared checkout, and never `reset --hard` anywhere
+without checking which repository the command will actually run in — a `cd` in
+an earlier command persists.
 
 ## Build
 

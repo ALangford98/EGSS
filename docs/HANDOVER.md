@@ -47,8 +47,13 @@ checks and building in all three configs.
   crate that lands on a corner and tips flush against it.
 
 The owner commits their own work, often between sessions and sometimes while
-a reply is being written. **Do not commit or push unless asked**, and do not
+a reply is being written. **Never commit to `main` and never push**, and do not
 assume something is still outstanding because a previous message said so.
+
+Finished work is handed over as commits on the **isolated worktree branch**,
+reviewed with `git log -p main..worktree-<name>` and merged, cherry-picked or
+dropped by the owner. This replaced handing over patch files, which went stale
+as soon as one was applied.
 
 ### Subsystems, roughly in the order they were built
 
@@ -62,7 +67,8 @@ assume something is still outstanding because a previous message said so.
 | Scene | `Scene`, `Entity`, `ComponentStore` | ECS-lite: dense arrays, generational handles |
 | Physics | `PhysicsWorld2D`, `RigidBody2D`, `Sat2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. **Rotation is in**: oriented SAT manifolds of up to two points, per-point lever arms and angular impulses, oriented rays and bounds |
 | Capture | `ScreenCapture`, `Replay` | In-engine PNG of the frame just drawn, and `.dem`-style input recording replayed per fixed step. Both reproducible; see "Capturing frames" |
-| Rays 3D | `Raycast3D` | Slab test against mesh bounds in local space, plus graded occlusion. No 3D rigid bodies |
+| Rays 3D | `Raycast3D` | Slab test against mesh bounds in local space, plus graded occlusion |
+| Physics 3D | `RigidBody3D`, `PhysicsWorld3D` | Quaternion orientation, real inertia tensor, midpoint angular integration. **Nothing collides yet** — piece one of three |
 | Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb behind a 4th-order Butterworth splitter |
 | Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
 | Profiling | `Instrumentor` | `EGSS_PROFILE_SCOPE`, live panel, Chrome trace |
@@ -261,6 +267,17 @@ look caught immediately.
 - **The audio thread must never allocate, lock, or block.** Buffers are sized
   when the voice or state is constructed. Parameter updates publish whole
   structs by rotating through a ring and releasing an index.
+- **In 3D, angular momentum is conserved and angular velocity is not.** Carry
+  `w` across a rotation unchanged and a tumbling body conserves the wrong
+  thing; capture `L` before the turn and recover `w` from it after. And take
+  `w` from the step's *midpoint*, not its start — the difference measured 18.4%
+  of invented rotational energy against 0.02%. Substepping is not the fix and
+  makes it worse, since each substep renormalises a quaternion.
+- **The tennis racket theorem is the test.** A body spun about its intermediate
+  principal axis must flip over periodically; about the largest or smallest it
+  must not. Nothing in the code knows this, so it catches an angular integrator
+  that is merely plausible. Measure it in the **body** frame — in world space
+  `w` stays near the fixed `L` and the flip is invisible.
 - **Anything that moves belongs in `OnFixedUpdate`, not `OnUpdate`.** Movement
   scaled by frame time makes speed depend on the frame rate, and the symptom is
   worse than it sounds: three demos could not reproduce themselves run to run,
