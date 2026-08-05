@@ -50,9 +50,15 @@ In flight, on the branch, **built in three separable pieces the way 2D was**:
   lever arms, and the solver's angular terms. Boxes and spheres collide, stack,
   roll and settle. 21 checks.
 
-Two things 3D still lacks: a broadphase (every pair is tested, as 2D did until
-a profile asked otherwise) and any demo — `Cube3D` renders meshes but runs no
-simulation, so the 3D physics is verified by arithmetic alone.
+**3D stacking is unstable and is the next thing to fix.** Whether four boxes
+stand depends chaotically on the iteration counts — adjacent settings flip
+between standing and collapsed, and more iterations often make it worse, which
+rules out slow convergence. The `Physics3D` demo shows it. Single bodies rest
+correctly and rolling is accurate to under a percent, so it is specific to
+bodies resting on other *dynamic* bodies.
+
+3D also still has a brute-force broadphase, as 2D did until a profile asked
+otherwise.
 
 The owner commits their own work, often between sessions and sometimes while
 a reply is being written. **Never commit to `main` and never push**, and do not
@@ -76,7 +82,7 @@ as soon as one was applied.
 | Physics | `PhysicsWorld2D`, `RigidBody2D`, `Sat2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. **Rotation is in**: oriented SAT manifolds of up to two points, per-point lever arms and angular impulses, oriented rays and bounds |
 | Capture | `ScreenCapture`, `Replay` | In-engine PNG of the frame just drawn, and `.dem`-style input recording replayed per fixed step. Both reproducible; see "Capturing frames" |
 | Rays 3D | `Raycast3D` | Slab test against mesh bounds in local space, plus graded occlusion |
-| Physics 3D | `RigidBody3D`, `PhysicsWorld3D`, `Sat3D` | Quaternion orientation, real inertia tensor, midpoint angular integration, oriented-box manifolds over fifteen axes, warm-started impulses with two-tangent friction. Boxes and spheres collide, stack and roll. Brute-force broadphase; no demo yet |
+| Physics 3D | `RigidBody3D`, `PhysicsWorld3D`, `Sat3D`, `Physics3D` demo | Quaternion orientation, real inertia tensor, midpoint angular integration, oriented-box manifolds over fifteen axes, warm-started impulses with two-tangent friction. Bodies collide, roll and rest — but **stacking is unstable**, see below. Brute-force broadphase |
 | Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb behind a 4th-order Butterworth splitter |
 | Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
 | Profiling | `Instrumentor` | `EGSS_PROFILE_SCOPE`, live panel, Chrome trace |
@@ -275,6 +281,10 @@ look caught immediately.
 - **The audio thread must never allocate, lock, or block.** Buffers are sized
   when the voice or state is constructed. Parameter updates publish whole
   structs by rotating through a ring and releasing an index.
+- **A cube's tilt cannot be measured from its local up axis.** One that has
+  yawed reads as perfectly level and one resting on another face reads as 90
+  degrees, so the metric says nothing about whether a stack is standing. Use
+  the height. This wasted a sweep before the numbers started making sense.
 - **Do not rotate bodies in 3D position correction.** 2D does and is right to:
   there the correction is a scalar and a face's two points are symmetric. In 3D
   a small box's inverse inertia is around 24, so the implied rotation dwarfs

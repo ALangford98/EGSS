@@ -672,12 +672,17 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       constrains two bodies other than contact, and any collider that is not a
       box or a circle. Convex hulls would reuse the SAT that is already there;
       only the axis list changes
-- [ ] **3D physics: a broadphase, and a demo.** All three pieces of 3D rigid
-      bodies are in and joined — boxes and spheres collide, stack, roll and
-      settle. What is missing is a broadphase (every pair is still tested,
-      which 2D also did until a profile asked otherwise) and anything in
-      `TestEnv` that shows it: `Cube3D` renders meshes but runs no simulation,
-      so the 3D physics is currently verified only by arithmetic
+- [ ] **3D physics: stacking is unstable.** The most important item here.
+      Boxes and spheres collide, roll and settle, and single bodies rest
+      correctly — but whether a four-box stack stands depends *chaotically* on
+      the iteration counts. Measured as the top box's height against where it
+      started, over a grid of velocity and position iterations, almost every
+      setting collapses to 0.14 and the successes (0.99 at v8/p4, 1.02 at
+      v16/p2) sit next to failures with no trend. More iterations often make
+      it worse, which rules out slow convergence. The `Physics3D` demo shows
+      it happening
+- [ ] **3D physics: a broadphase.** Every pair is still tested, which 2D also
+      did until a profile asked otherwise
 - [ ] **3D physics: shapes beyond boxes and spheres**, and capsules in
       particular — they are what characters are usually made of, and a capsule
       is a segment with a radius, so most of the sphere code generalises
@@ -961,6 +966,52 @@ be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
 
+### 2026-08-05 (a 3D demo, and what it showed)
+
+`Physics3D`: boxes and spheres dropped onto a ramp, tumbling down it into a
+walled pit, with a stack of four crates off to one side. The first place the 3D
+solver could actually be *looked* at — everything before this was arithmetic,
+and the 2D demo had already shown that arithmetic can be entirely right while
+the thing on screen is nonsense.
+
+Two things it caught immediately. Asleep bodies were drawn grey, which made
+every settled crate look like part of the scenery; they are dimmed versions of
+their own colour now, so a pile that has gone to sleep still reads as boxes and
+balls. And orientation is interpolated with **slerp**, not `mix` — lerping two
+quaternions leaves an unnormalised one, which is a rotation *and* a scale, so a
+fast-tumbling box visibly swells between steps.
+
+#### The stack falls over, and the solver test had been lucky
+
+The demo's four-crate stack collapses on its own, before anything reaches it.
+The solver test that passed 21/21 had used 16 velocity and 8 position
+iterations; the demo uses the defaults, 8 and 4.
+
+Sweeping both, measuring the top box's height against where it started, where
+1.0 is standing and 0.14 is flat on the floor:
+
+```
+        p2      p4      p6      p8
+ v4    0.14    0.14    0.14    0.14
+ v8    0.14    0.99    0.14    0.14
+ v12   0.14    0.14    0.14    0.14
+ v16   1.02    0.14    0.14    0.71
+ v24   0.42    0.42    0.42    0.42
+```
+
+That is not slow convergence — it is chaotic. Adjacent settings flip between
+standing and collapsed, and twenty-four iterations is worse than eight. The
+earlier claim that boxes "stack" was generalised from a single configuration
+that happens to work, which is exactly the error the sweep exists to catch.
+
+The measurement itself needed fixing first: the obvious metric, the angle of a
+box's local up axis, is meaningless for a **cube** — one that has merely yawed
+reads as perfectly level, and one resting on a different face reads as 90°
+while still being a fine stack. Only the height distinguishes standing from
+fallen.
+
+Left visible in the demo rather than hidden behind the settings that work.
+
 ### 2026-08-05 (3D rigid bodies, piece three: the join)
 
 `Sat3D` wired into a narrowphase, contacts carrying lever arms, and the
@@ -974,7 +1025,8 @@ since a contact plane in 3D is a plane, and they are clamped against a *circle*
 of radius `μJₙ` rather than per axis; a per-axis clamp bounds friction by a
 square, letting a body slide 41% harder along a diagonal.
 
-21 checks. Linear and angular momentum are unchanged across an off-centre
+21 checks — though see the entry below on what they did *not* cover. Linear
+and angular momentum are unchanged across an off-centre
 impact between two tumbling boxes — to five decimal places, which is the check
 that proves the levers and the tensor reached the contact. A resting crate's
 contact carries `m g dt` to 0.02%. And the headline: **a sphere rolls down a
