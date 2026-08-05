@@ -672,16 +672,15 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       constrains two bodies other than contact, and any collider that is not a
       box or a circle. Convex hulls would reuse the SAT that is already there;
       only the axis list changes
-- [ ] **3D rigid bodies — piece three, the join.** Pieces one and two are in
-      and verified separately: `RigidBody3D`/`PhysicsWorld3D` integrate
-      position and orientation with a real inertia tensor, and `Sat3D` gives
-      oriented-box manifolds of up to eight points across fifteen axes.
-      **Neither is wired to the other** — nothing collides, exactly as 2D was
-      left between its own pieces. What remains is the same join 2D needed: a
-      narrowphase calling `Sat3D`, contacts carrying a lever arm, and the
-      solver's angular terms, which are the 2D ones with the cross product
-      left as a vector and the scalar inertia replaced by the world tensor.
-      A broadphase will be wanted too — 3D has no equivalent of the 2D grid yet
+- [ ] **3D physics: a broadphase, and a demo.** All three pieces of 3D rigid
+      bodies are in and joined — boxes and spheres collide, stack, roll and
+      settle. What is missing is a broadphase (every pair is still tested,
+      which 2D also did until a profile asked otherwise) and anything in
+      `TestEnv` that shows it: `Cube3D` renders meshes but runs no simulation,
+      so the 3D physics is currently verified only by arithmetic
+- [ ] **3D physics: shapes beyond boxes and spheres**, and capsules in
+      particular — they are what characters are usually made of, and a capsule
+      is a segment with a radius, so most of the sphere code generalises
 
 - [ ] **Partitioned FFT convolution.** The convolution reverb takes a *sparse*
       response, which is what the ray tracer produces. A dense recorded impulse
@@ -961,6 +960,62 @@ construction whichever way round it is. Only a file that states its normals can
 be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
+### 2026-08-05 (3D rigid bodies, piece three: the join)
+
+`Sat3D` wired into a narrowphase, contacts carrying lever arms, and the
+solver's angular terms. Boxes and spheres now collide, stack, roll and settle.
+
+Most of it is the 2D solver with the cross product left as a vector and the
+scalar inertia replaced by the world tensor. The effective mass along an axis
+goes from `(r × n)² / I` to `n · ((I⁻¹ (r × n)) × r)` — the same quantity
+written where facing matters. Friction needs **two** tangents rather than one,
+since a contact plane in 3D is a plane, and they are clamped against a *circle*
+of radius `μJₙ` rather than per axis; a per-axis clamp bounds friction by a
+square, letting a body slide 41% harder along a diagonal.
+
+21 checks. Linear and angular momentum are unchanged across an off-centre
+impact between two tumbling boxes — to five decimal places, which is the check
+that proves the levers and the tensor reached the contact. A resting crate's
+contact carries `m g dt` to 0.02%. And the headline: **a sphere rolls down a
+20° slope at `(5/7) g sin θ`**, measured 0.49% out. The 2D disc did `(2/3)`;
+the difference is entirely `⅖mr²` against `½mr²`, so the number distinguishes
+a correct tensor from a plausible one.
+
+#### The stack collapsed, and the cause was not where I looked
+
+Four stacked boxes tilted 0.09°, 0.32°, 0.84°, 2.24° and were over within four
+seconds. Boxes resting on the *static floor* never tilted; only box-on-box did.
+
+Isolating it by turning one thing off at a time:
+
+| configuration | worst tilt after 200 steps |
+| --- | --- |
+| as written | 99.6°, collapsed |
+| no friction | 0.000° |
+| 64 velocity iterations | 0.000° |
+| no position correction | 3.6° |
+| **no angular position correction** | **0.24°** |
+
+Two wrong guesses on the way. The clip was returning **eight** contact points
+for two identical stacked boxes — four real corners plus four spurious vertices
+where a 0.03° tilt makes each edge cross its own clip plane near the middle.
+That was a genuine defect and worth fixing (manifolds now reduce to the four
+most widely spread points, which is what holds a footprint), but it was not the
+cause. Nor was solving normal and friction interleaved per point rather than in
+separate passes; splitting them is more correct and changed nothing.
+
+The cause was the **angular half of position correction**. A small box has an
+inverse inertia around 24, so the rotation implied by a correction impulse is
+large next to the linear nudge beside it — and it was applied per point, four
+points deep, eight iterations a step, each using a lever measured before the
+previous point had turned the body. The asymmetries compound and friction locks
+in whatever lean they produce, which is why it needed both to go wrong.
+
+2D rotates in position correction and is right to: there the correction is a
+scalar and a face's two points are symmetric. In 3D it is removed, and nothing
+is lost — levelling a crate that landed on a corner is the velocity solver's
+job, and a crate dropped flat onto an 18° slope still settles flush to 0.21°.
 
 ### 2026-08-05 (3D rigid bodies, piece two: `Sat3D`)
 

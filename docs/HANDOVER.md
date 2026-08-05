@@ -46,11 +46,13 @@ In flight, on the branch, **built in three separable pieces the way 2D was**:
   midpoint angular integration. 31 checks.
 - **Piece two, done.** `Sat3D`: fifteen candidate axes, clipped manifolds of up
   to eight points. 40 checks.
-- **Piece three, not started.** The join — a narrowphase calling `Sat3D`,
-  contacts with lever arms, and the solver's angular terms. **Until it lands
-  nothing in 3D collides**; bodies fall and tumble through each other.
+- **Piece three, done.** The join: a narrowphase calling `Sat3D`, contacts with
+  lever arms, and the solver's angular terms. Boxes and spheres collide, stack,
+  roll and settle. 21 checks.
 
-A 3D broadphase does not exist yet either; 2D's uniform grid has no counterpart.
+Two things 3D still lacks: a broadphase (every pair is tested, as 2D did until
+a profile asked otherwise) and any demo — `Cube3D` renders meshes but runs no
+simulation, so the 3D physics is verified by arithmetic alone.
 
 The owner commits their own work, often between sessions and sometimes while
 a reply is being written. **Never commit to `main` and never push**, and do not
@@ -74,7 +76,7 @@ as soon as one was applied.
 | Physics | `PhysicsWorld2D`, `RigidBody2D`, `Sat2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. **Rotation is in**: oriented SAT manifolds of up to two points, per-point lever arms and angular impulses, oriented rays and bounds |
 | Capture | `ScreenCapture`, `Replay` | In-engine PNG of the frame just drawn, and `.dem`-style input recording replayed per fixed step. Both reproducible; see "Capturing frames" |
 | Rays 3D | `Raycast3D` | Slab test against mesh bounds in local space, plus graded occlusion |
-| Physics 3D | `RigidBody3D`, `PhysicsWorld3D`, `Sat3D` | Quaternion orientation, real inertia tensor, midpoint angular integration; oriented-box manifolds over fifteen axes. **The two are not joined** — nothing collides |
+| Physics 3D | `RigidBody3D`, `PhysicsWorld3D`, `Sat3D` | Quaternion orientation, real inertia tensor, midpoint angular integration, oriented-box manifolds over fifteen axes, warm-started impulses with two-tangent friction. Boxes and spheres collide, stack and roll. Brute-force broadphase; no demo yet |
 | Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb behind a 4th-order Butterworth splitter |
 | Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
 | Profiling | `Instrumentor` | `EGSS_PROFILE_SCOPE`, live panel, Chrome trace |
@@ -273,6 +275,13 @@ look caught immediately.
 - **The audio thread must never allocate, lock, or block.** Buffers are sized
   when the voice or state is constructed. Parameter updates publish whole
   structs by rotating through a ring and releasing an index.
+- **Do not rotate bodies in 3D position correction.** 2D does and is right to:
+  there the correction is a scalar and a face's two points are symmetric. In 3D
+  a small box's inverse inertia is around 24, so the implied rotation dwarfs
+  the linear nudge beside it, and applied per point per iteration with stale
+  levers it compounds — a four-box stack tilted 99.6 degrees and fell over,
+  against 0.24 degrees with it removed. Levelling a tipped crate is the
+  velocity solver's job and it does it.
 - **A one-sided oracle asserted both ways will contradict a correct answer.**
   The random-direction search behind `Sat3D` proves boxes are *apart* when it
   finds a separating direction and proves nothing when it does not — a narrow

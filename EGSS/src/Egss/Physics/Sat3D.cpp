@@ -1,6 +1,9 @@
 #include "egsspch.h"
 #include "Egss/Physics/Sat3D.h"
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/norm.hpp>
+
 namespace Egss {
 
 	void Obb3D::Corners(glm::vec3 out[8]) const
@@ -286,6 +289,18 @@ namespace Egss {
 		// were -- which holds a body up in mid-air.
 		float faceOffset = glm::dot(referenceFace[0], referenceNormal);
 
+		// Points closer together than this are the same point.
+		//
+		// Clipping a square against a square of the same size puts every
+		// corner exactly on two of the clip planes, and each plane emits it --
+		// so a flat stack of identical boxes came back with eight contact
+		// points that were four corners listed twice. Duplicates are not
+		// harmless: each one is solved as its own constraint, so the corners
+		// get twice the share of the impulse that the honest points do, and a
+		// stack leans on whichever corner rounded first. An octagon is a real
+		// answer when the faces are turned against each other; this is not.
+		const float mergeDistance = 0.001f;
+
 		for (const glm::vec3& point : polygon)
 		{
 			if (manifold.PointCount >= 8)
@@ -295,9 +310,126 @@ namespace Egss {
 			if (depth < 0.0f)
 				continue;
 
+			bool duplicate = false;
+			for (int i = 0; i < manifold.PointCount; i++)
+			{
+				glm::vec3 offset = manifold.Points[i] - point;
+				if (glm::dot(offset, offset) < mergeDistance * mergeDistance)
+				{
+					duplicate = true;
+					break;
+				}
+			}
+
+			if (duplicate)
+				continue;
+
 			manifold.Points[manifold.PointCount] = point;
 			manifold.Depths[manifold.PointCount] = depth;
 			manifold.PointCount++;
+		}
+
+		// --- Reduce to at most four points ----------------------------------
+		//
+		// A face contact between two boxes is fully constrained by four
+		// points, and clipping regularly produces more that carry no extra
+		// information. On two identical boxes stacked flat, a tilt of a
+		// hundredth of a degree makes each edge cross its own clip plane near
+		// the middle and emit a vertex there: eight points, four of them
+		// meaningless, sitting on the boundary and moving about as the tilt
+		// changes. Each is solved as its own constraint, so the patch is held
+		// by points that are partly noise.
+		//
+		// Kept: the deepest point, the one furthest from it, then the two that
+		// most enlarge the polygon spanned so far. That is the standard choice
+		// and it keeps the *outline* -- holding a box level needs the corners
+		// of its footprint, not the middle of its edges.
+		if (manifold.PointCount > 4)
+		{
+			glm::vec3 points[8];
+			float depths[8];
+			int total = manifold.PointCount;
+
+			std::memcpy(points, manifold.Points, sizeof(glm::vec3) * total);
+			std::memcpy(depths, manifold.Depths, sizeof(float) * total);
+
+			bool used[8] = {};
+			int kept[4] = {};
+
+			// 1. The deepest, since that is the one most needing solving.
+			int deepest = 0;
+			for (int i = 1; i < total; i++)
+			{
+				if (depths[i] > depths[deepest])
+					deepest = i;
+			}
+
+			kept[0] = deepest;
+			used[deepest] = true;
+
+			// 2. The furthest from it.
+			int furthest = -1;
+			float bestDistance = -1.0f;
+			for (int i = 0; i < total; i++)
+			{
+				if (used[i])
+					continue;
+
+				float distance = glm::length2(points[i] - points[kept[0]]);
+				if (distance > bestDistance)
+				{
+					bestDistance = distance;
+					furthest = i;
+				}
+			}
+
+			kept[1] = furthest;
+			used[furthest] = true;
+
+			// 3 and 4. Whichever adds the most area to the polygon so far.
+			for (int slot = 2; slot < 4; slot++)
+			{
+				int best = -1;
+				float bestArea = -1.0f;
+
+				for (int i = 0; i < total; i++)
+				{
+					if (used[i])
+						continue;
+
+					float area = 0.0f;
+					for (int j = 0; j < slot; j++)
+					{
+						int next = (j + 1) % slot;
+						if (slot == 2 && j == 1)
+							break;
+
+						area += glm::length(glm::cross(
+							points[kept[next]] - points[kept[j]],
+							points[i] - points[kept[j]]));
+					}
+
+					if (area > bestArea)
+					{
+						bestArea = area;
+						best = i;
+					}
+				}
+
+				if (best < 0)
+					break;
+
+				kept[slot] = best;
+				used[best] = true;
+			}
+
+			for (int i = 0; i < 4; i++)
+			{
+				manifold.Points[i] = points[kept[i]];
+				manifold.Depths[i] = depths[kept[i]];
+			}
+
+			manifold.PointCount = 4;
 		}
 
 		// Overlapping on every axis but with nothing surviving the clip means
