@@ -39,6 +39,7 @@
 #include "Egss/Physics/PhysicsWorld3D.h"
 #include "Egss/Physics/Raycast3D.h"
 #include "Egss/Physics/Sat2D.h"
+#include "Egss/Physics/Sat3D.h"
 
 // RENDERER ***************
 

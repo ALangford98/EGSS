@@ -672,15 +672,16 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       constrains two bodies other than contact, and any collider that is not a
       box or a circle. Convex hulls would reuse the SAT that is already there;
       only the axis list changes
-- [ ] **3D rigid bodies — pieces two and three.** Piece one is in and verified:
-      `RigidBody3D` and `PhysicsWorld3D` integrate position and orientation
-      with a real inertia tensor, and `ApplyImpulseAt` spins a body about the
-      axis `r × j` gives. **Nothing collides yet** — bodies fall, tumble and
-      pass straight through each other. What remains is `Sat3D` (fifteen
-      candidate axes rather than four: three faces each plus nine edge-edge
-      cross products, and the edge-edge cases are the ones that bite), then
-      the join — contacts, manifolds and the solver's angular terms, which are
-      the 2D ones with the cross product left as a vector
+- [ ] **3D rigid bodies — piece three, the join.** Pieces one and two are in
+      and verified separately: `RigidBody3D`/`PhysicsWorld3D` integrate
+      position and orientation with a real inertia tensor, and `Sat3D` gives
+      oriented-box manifolds of up to eight points across fifteen axes.
+      **Neither is wired to the other** — nothing collides, exactly as 2D was
+      left between its own pieces. What remains is the same join 2D needed: a
+      narrowphase calling `Sat3D`, contacts carrying a lever arm, and the
+      solver's angular terms, which are the 2D ones with the cross product
+      left as a vector and the scalar inertia replaced by the world tensor.
+      A broadphase will be wanted too — 3D has no equivalent of the 2D grid yet
 
 - [ ] **Partitioned FFT convolution.** The convolution reverb takes a *sparse*
       response, which is what the ray tracer produces. A dense recorded impulse
@@ -960,6 +961,62 @@ construction whichever way round it is. Only a file that states its normals can
 be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
+### 2026-08-05 (3D rigid bodies, piece two: `Sat3D`)
+
+The separating axis test one dimension up. In 2D four directions could separate
+two boxes; in 3D there are **fifteen** — three face normals each, plus the nine
+cross products of one box's axis with the other's.
+
+Those nine are not an optimisation to skip. They are the only axes that can
+separate two boxes crossing like the arms of an X, where every face of each
+still overlaps every face of the other. The test builds exactly that case: two
+bars rolled 45° about their own lengths and crossed at right angles. Each
+reaches `0.5cos45 + 0.5sin45 = 0.70711` along z, so they clear at 1.41421, and
+at a separation of 1.5 they are apart — while **all six face axes still
+overlap**. A six-axis test calls that a collision.
+
+40 checks. Manifolds come from clipping the incident face against the reference
+face's four side planes — the same Sutherland-Hodgman idea as 2D, run twice
+more because a face here is a rectangle rather than a segment. A cube resting
+flat gives four points at its footprint corners; a cube overhanging a narrow
+plinth has them clipped to the plinth, since a point past the edge is resting
+on nothing; a cube balanced on a corner gives one.
+
+Two details that are tolerances rather than fudges:
+
+- **Parallel axes give a zero-length cross product**, which is not a direction.
+  Testing it anyway gives both shadows zero width, an overlap of exactly zero,
+  and the conclusion that the boxes are apart. Two axis-aligned boxes hit this
+  on all nine at once — so the classic failure mode breaks the easiest case
+  there is, which is why it is the first thing checked.
+- **Edge-edge axes are believed only if they beat a face axis by 0.5%.** Two
+  boxes resting face to face have edge axes very nearly as good, and floating
+  point regularly hands one a marginally smaller overlap; taking it skews the
+  contact normal a few degrees off the surface and a resting box slowly slides.
+  The bias decides which axis wins and is deliberately kept out of the reported
+  depth — reporting the biased figure would make every edge contact half a
+  percent deeper than it is, and the position solver would push that far too
+  far, every step, forever.
+
+#### The oracle was one-sided and I used it as two-sided
+
+Alongside the hand-worked cases there is an independent ground truth: the
+fifteen axes are provably sufficient, so if SAT says two boxes touch and *any*
+direction separates them, SAT is definitively wrong. Ten thousand directions
+spread over a Fibonacci sphere is a cheap way to look.
+
+It promptly "disagreed" with a correct answer. The bars at `dz = 1.5` are
+apart, SAT said so, and the search found nothing — because that is the half of
+the oracle that proves nothing. The gap is 0.0858 on bars four units long, so
+the cone of directions that separates them is far narrower than the two degrees
+ten thousand samples resolve. The comment above the function said exactly this
+and the assertion below it ignored it.
+
+The fix is to assert only the sound direction — where the search finds a gap,
+SAT must too — and to verify "apart" by hand from the projections instead. Over
+a 60-configuration sweep, half of them overlapping, there are no disagreements
+in that direction.
 
 ### 2026-08-05 (3D rigid bodies, piece one: angular state)
 

@@ -31,20 +31,26 @@ Reading order for a newcomer:
 ## Current state
 
 **Check `git log` and `git status` first — this section goes stale quickly.**
-At the time of writing, `HEAD` was `6b4c429` "Fixed a bug with back-faced
-culling", and the work since it is **2D rotation, joined up** — verified at 45
-checks and building in all three configs.
+At the time of writing `main` was at `3ddef51` "Added working demo recording
+and replay", with **3D rigid bodies** in flight on the worktree branch.
 
-- The narrowphase calls `Sat2D`; `Contact` carries up to two `ContactPoint`s
-  with per-point lever arms, impulses and effective masses; the solver has its
-  angular terms. Warm starting matches points by position, not index.
-- `BodyBounds`, `RaycastBox` and the circle-box test are all oriented now.
-  `ResolveCircle` follows for free, being built on the shared narrowphase.
-- **`Step` was reordered** to integrate positions after the solve rather than
-  before. That was a real, pre-existing bug — see the trap below, and the
-  changelog entry, which is the most useful thing written this session.
-- `Physics2D` renders rotated and has an actual ramp; every third spawn is a
-  crate that lands on a corner and tips flush against it.
+Landed in `main` already: 2D rotation joined into the solver, in-engine frame
+capture, and replay. Each has a changelog entry worth reading before touching
+that area — the `Step` reordering and the frame-rate-dependence findings in
+particular were pre-existing bugs, not new work.
+
+In flight, on the branch, **built in three separable pieces the way 2D was**:
+
+- **Piece one, done.** `RigidBody3D` / `PhysicsWorld3D`: quaternion
+  orientation, a real inertia tensor rotated into world space each step, and
+  midpoint angular integration. 31 checks.
+- **Piece two, done.** `Sat3D`: fifteen candidate axes, clipped manifolds of up
+  to eight points. 40 checks.
+- **Piece three, not started.** The join — a narrowphase calling `Sat3D`,
+  contacts with lever arms, and the solver's angular terms. **Until it lands
+  nothing in 3D collides**; bodies fall and tumble through each other.
+
+A 3D broadphase does not exist yet either; 2D's uniform grid has no counterpart.
 
 The owner commits their own work, often between sessions and sometimes while
 a reply is being written. **Never commit to `main` and never push**, and do not
@@ -68,7 +74,7 @@ as soon as one was applied.
 | Physics | `PhysicsWorld2D`, `RigidBody2D`, `Sat2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. **Rotation is in**: oriented SAT manifolds of up to two points, per-point lever arms and angular impulses, oriented rays and bounds |
 | Capture | `ScreenCapture`, `Replay` | In-engine PNG of the frame just drawn, and `.dem`-style input recording replayed per fixed step. Both reproducible; see "Capturing frames" |
 | Rays 3D | `Raycast3D` | Slab test against mesh bounds in local space, plus graded occlusion |
-| Physics 3D | `RigidBody3D`, `PhysicsWorld3D` | Quaternion orientation, real inertia tensor, midpoint angular integration. **Nothing collides yet** — piece one of three |
+| Physics 3D | `RigidBody3D`, `PhysicsWorld3D`, `Sat3D` | Quaternion orientation, real inertia tensor, midpoint angular integration; oriented-box manifolds over fifteen axes. **The two are not joined** — nothing collides |
 | Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb behind a 4th-order Butterworth splitter |
 | Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
 | Profiling | `Instrumentor` | `EGSS_PROFILE_SCOPE`, live panel, Chrome trace |
@@ -267,6 +273,15 @@ look caught immediately.
 - **The audio thread must never allocate, lock, or block.** Buffers are sized
   when the voice or state is constructed. Parameter updates publish whole
   structs by rotating through a ring and releasing an index.
+- **A one-sided oracle asserted both ways will contradict a correct answer.**
+  The random-direction search behind `Sat3D` proves boxes are *apart* when it
+  finds a separating direction and proves nothing when it does not — a narrow
+  gap hides in the sampling. Asserting the converse made it "disagree" with a
+  right answer, and the comment above the function had already said so.
+- **Parallel axes give a zero-length cross product**, which is not a candidate
+  axis. Testing it reports zero-width shadows and a false gap; two axis-aligned
+  boxes hit this on all nine at once, so the bug breaks the easiest case there
+  is rather than an exotic one.
 - **In 3D, angular momentum is conserved and angular velocity is not.** Carry
   `w` across a rotation unchanged and a tumbling body conserves the wrong
   thing; capture `L` before the turn and recover `w` from it after. And take
