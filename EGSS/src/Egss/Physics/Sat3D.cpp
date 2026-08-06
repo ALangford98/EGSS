@@ -106,7 +106,26 @@ namespace Egss {
 
 			glm::vec3 centre = box.Centre + box.Axis(bestAxis) * (box.HalfExtents[bestAxis] * sign);
 			glm::vec3 uEdge = box.Axis(u) * box.HalfExtents[u];
-			glm::vec3 vEdge = box.Axis(v) * box.HalfExtents[v];
+
+			// Wound counter-clockwise about the face's *outward* normal, which
+			// is why `sign` appears here as well as in `centre`.
+			//
+			// Without it the corners come out in the same (u, v) order whichever
+			// way the face points, so a face along a negative axis is wound
+			// backwards relative to its own normal. The caller builds its clip
+			// planes as cross(edge, outwardNormal), so every one of them then
+			// points inward and Sutherland-Hodgman keeps the *outside* of the
+			// reference face: the polygon clips to nothing, and the "they must
+			// meet at a corner" fallback fabricates a single point.
+			//
+			// A stack hid this. Body A is the lower box and its +y face wins the
+			// tie, so the four-point manifold is correct -- until a hair of tilt
+			// lets the upper box's axis win instead, the reference becomes a
+			// *bottom* face, and the manifold silently drops to one point. One
+			// point cannot hold a box level, so it tips, and which box wins that
+			// near-tie depends on rounding: four boxes stood or fell chaotically
+			// with the iteration counts and no trend.
+			glm::vec3 vEdge = box.Axis(v) * (box.HalfExtents[v] * sign);
 
 			out[0] = centre - uEdge - vEdge;
 			out[1] = centre + uEdge - vEdge;

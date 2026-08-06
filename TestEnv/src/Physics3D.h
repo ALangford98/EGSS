@@ -78,13 +78,15 @@ public:
 	// solver, but boxes resting on each other only stand if the manifold, the
 	// friction and the position correction are all sane.
 	//
-	// **This one falls over, and that is not a demo bug.** 3D stacking is
-	// currently unstable: whether four boxes stand depends chaotically on the
-	// iteration counts, with adjacent settings flipping between standing and
-	// collapsed and more iterations often making it worse. It is left in
-	// because it is the clearest statement of what still needs fixing --
-	// hiding it behind the one configuration that happens to work would be
-	// the dishonest option. Press R to watch it again.
+	// This used to fall over, chaotically, depending on the iteration counts --
+	// and it was the manifold that was wrong, not the friction or the
+	// correction. `Sat3D` wound a face pointing down a negative axis backwards
+	// relative to its own normal, so whenever the *upper* box won the near-tie
+	// for reference face the contact collapsed from four points to one, and one
+	// point cannot hold a box level. See the changelog entry for the sweep.
+	//
+	// It now stands at every setting from 4 to 24 velocity iterations, with
+	// sleeping on or off. Press R to watch it build again.
 	void BuildStack()
 	{
 		for (int i = 0; i < 4; i++)

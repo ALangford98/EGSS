@@ -50,12 +50,14 @@ In flight, on the branch, **built in three separable pieces the way 2D was**:
   lever arms, and the solver's angular terms. Boxes and spheres collide, stack,
   roll and settle. 21 checks.
 
-**3D stacking is unstable and is the next thing to fix.** Whether four boxes
-stand depends chaotically on the iteration counts — adjacent settings flip
-between standing and collapsed, and more iterations often make it worse, which
-rules out slow convergence. The `Physics3D` demo shows it. Single bodies rest
-correctly and rolling is accurate to under a percent, so it is specific to
-bodies resting on other *dynamic* bodies.
+**3D stacking is fixed.** It was `Sat3D`, not the solver: `MostFacingFace` wound
+a face pointing down a negative axis backwards relative to its own outward
+normal, so every clip plane pointed inward and the reference face clipped to
+nothing whenever the *upper* box of a pair won the near-tie. The manifold
+dropped from four points to one without saying so, and one point cannot hold a
+box level. Four boxes now stand at every setting from 4 to 24 velocity
+iterations with sleeping on or off, against 11/20 and 4/20 before. The
+changelog entry has the sweep and the arithmetic.
 
 3D also still has a brute-force broadphase, as 2D did until a profile asked
 otherwise.
@@ -82,7 +84,7 @@ as soon as one was applied.
 | Physics | `PhysicsWorld2D`, `RigidBody2D`, `Sat2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. **Rotation is in**: oriented SAT manifolds of up to two points, per-point lever arms and angular impulses, oriented rays and bounds |
 | Capture | `ScreenCapture`, `Replay` | In-engine PNG of the frame just drawn, and `.dem`-style input recording replayed per fixed step. Both reproducible; see "Capturing frames" |
 | Rays 3D | `Raycast3D` | Slab test against mesh bounds in local space, plus graded occlusion |
-| Physics 3D | `RigidBody3D`, `PhysicsWorld3D`, `Sat3D`, `Physics3D` demo | Quaternion orientation, real inertia tensor, midpoint angular integration, oriented-box manifolds over fifteen axes, warm-started impulses with two-tangent friction. Bodies collide, roll and rest — but **stacking is unstable**, see below. Brute-force broadphase |
+| Physics 3D | `RigidBody3D`, `PhysicsWorld3D`, `Sat3D`, `Physics3D` demo | Quaternion orientation, real inertia tensor, midpoint angular integration, oriented-box manifolds over fifteen axes, warm-started impulses with two-tangent friction. Bodies collide, roll, rest and **stack**. Brute-force broadphase |
 | Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb behind a 4th-order Butterworth splitter |
 | Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
 | Profiling | `Instrumentor` | `EGSS_PROFILE_SCOPE`, live panel, Chrome trace |
@@ -292,6 +294,19 @@ look caught immediately.
   levers it compounds — a four-box stack tilted 99.6 degrees and fell over,
   against 0.24 degrees with it removed. Levelling a tipped crate is the
   velocity solver's job and it does it.
+- **A clipped face has to be wound about its own outward normal.** Emitting the
+  corners in a fixed `(u, v)` order while flipping the normal with a sign leaves
+  faces along negative axes wound backwards, so clip planes built as
+  `cross(edge, normal)` all point inward and Sutherland-Hodgman keeps the
+  outside of the face. It clips to nothing and the corner fallback quietly
+  returns *one* point instead of four. Nothing reports an error: the depth and
+  the normal stay correct, and only the point count is wrong. This is what made
+  3D stacks collapse chaotically, because which of the two boxes owns the
+  reference face is decided by a near-tie in the last bits.
+- **Sleeping can hide a broken stack.** Bodies that freeze look like bodies that
+  settled. Measure stacks with `AllowSleeping = false` — the collapse rate went
+  from 9/20 to 16/20 with sleeping turned off, and the difference was entirely
+  bodies falling asleep partway through falling over.
 - **A one-sided oracle asserted both ways will contradict a correct answer.**
   The random-direction search behind `Sat3D` proves boxes are *apart* when it
   finds a separating direction and proves nothing when it does not — a narrow
@@ -387,6 +402,11 @@ narrowphase runs `Sat2D`, `Contact` holds up to two `ContactPoint`s with their
 own lever arms and impulses, and the solver has its angular terms. Rays, bounds
 and `ResolveCircle` all work in body-local space. What is left in this cluster
 is joints and colliders beyond boxes and circles.
+
+**3D physics** — bodies collide, roll, rest and stack. What is left is a
+broadphase (every pair is still tested, as 2D did until a profile asked
+otherwise) and shapes beyond boxes and spheres — capsules first, since a capsule
+is a segment with a radius and most of the sphere code generalises.
 
 **Acoustics**, the most recently active area — 3D acoustics (`Acoustics2D` is
 2D because `Raycast` is); partitioned FFT convolution (for dense recorded

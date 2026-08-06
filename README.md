@@ -672,15 +672,6 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       constrains two bodies other than contact, and any collider that is not a
       box or a circle. Convex hulls would reuse the SAT that is already there;
       only the axis list changes
-- [ ] **3D physics: stacking is unstable.** The most important item here.
-      Boxes and spheres collide, roll and settle, and single bodies rest
-      correctly — but whether a four-box stack stands depends *chaotically* on
-      the iteration counts. Measured as the top box's height against where it
-      started, over a grid of velocity and position iterations, almost every
-      setting collapses to 0.14 and the successes (0.99 at v8/p4, 1.02 at
-      v16/p2) sit next to failures with no trend. More iterations often make
-      it worse, which rules out slow convergence. The `Physics3D` demo shows
-      it happening
 - [ ] **3D physics: a broadphase.** Every pair is still tested, which 2D also
       did until a profile asked otherwise
 - [ ] **3D physics: shapes beyond boxes and spheres**, and capsules in
@@ -965,6 +956,95 @@ construction whichever way round it is. Only a file that states its normals can
 be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
+### 2026-08-06 (3D stacking: a face wound the wrong way round)
+
+The stack falls over because `Sat3D` wound half its reference faces backwards.
+One line, and it had been there since the clipping was written.
+
+**Finding it started by not tuning anything.** The previous entry's sweep said
+the failure was chaotic in the iteration counts, which rules out slow
+convergence, so the thing to look for was something changing *identity* between
+steps rather than something converging too slowly. A headless harness — the
+same four crates and floor, no renderer, `PhysicsWorld3D` being pure arithmetic
+— swept the grid in a second and logged what the demo cannot show: manifold
+sizes, warm-start match rates, and per-contact impulses.
+
+The manifolds gave it away by step three:
+
+```
+step   2  pts[0-1:4 1-2:4 3-4:4]              sat[1-2:A4  2-3:B1  3-4:A4]
+step   4  pts[0-1:4 1-2:4 2-3:1 3-4:1]        sat[1-2:A4  2-3:B1  3-4:B1]
+```
+
+`B1` is a **face** contact — normal exactly `(0,1,0)`, tilt 0.00°, depth
+0.0085 — carrying a single point. Two identical level boxes resting flat should
+clip to the four corners of their footprint. The `A` cases did. The `B` cases,
+where the *upper* box owns the reference face, did not.
+
+**Reduced to geometry with no simulation at all**, which is where it stopped
+being a physics problem:
+
+```
+overlap 0.0500: lower-first 4 pts, upper-first 1 pts
+overlap 0.0100: lower-first 4 pts, upper-first 1 pts
+overlap 0.0050: lower-first 4 pts, upper-first 1 pts
+overlap 0.0010: lower-first 4 pts, upper-first 1 pts
+```
+
+Same two boxes, arguments swapped. The depth was right in every case, so the
+axis test was fine and the clipping was not.
+
+`MostFacingFace` emits the four corners in a fixed `(u, v)` order but flips the
+outward normal with `sign`, so a face pointing down a *negative* body axis comes
+out wound backwards relative to its own normal. The caller builds clip planes as
+`cross(edge, outwardNormal)`, so all four then point inward and Sutherland-
+Hodgman keeps the **outside** of the reference face. Worked by hand for the
+failing case: the first clip plane is `(1,0,0)` with limit `-0.35`, keeping
+`x <= -0.35` of an incident face spanning `[-0.35, +0.35]`. The working case
+gives `(-1,0,0)` with limit `+0.35`, keeping `x >= -0.35`. The polygon clips to
+nothing, and the "then they must meet at a corner" fallback fabricates one
+point.
+
+Why a stack, and why chaotically: body A is the lower box and its `+y` face wins
+the tie for reference, which is the case that works — until a hair of tilt lets
+the upper box's axis win instead, the reference becomes a *bottom* face, and the
+manifold silently drops to one point. One point cannot hold a box level, so it
+tips, which produces more tilt. Which box wins that near-tie is decided in the
+last bits, and the iteration count changes the last bits.
+
+The fix is `sign` appearing in the second edge as well as in the centre.
+
+| | before | after |
+| --- | --- | --- |
+| stack standing, sleeping on | 11/20 | **20/20** |
+| stack standing, sleeping off | 4/20 | **20/20** |
+| manifold size changes per run | 9–53 | **0** |
+| warm-start match rate | 0.95–0.99 | **1.000** |
+| max penetration | 0.008–0.10 | **0.0085** |
+
+**The independent check** is the one that makes this more than a green table.
+Each crate is 1 kg, so a contact holding `n` of them must carry `n · 9.81 / 60`
+per step, and nothing in the solver knows how many crates are above it:
+
+```
+measured   0.654   0.490   0.327   0.163
+expected   0.6540  0.4905  0.3270  0.1635
+```
+
+**Sleeping had been hiding it.** With sleeping off the stack stood in only 4 of
+20 configurations before the fix, against 11 with it on — so the settings that
+"worked" were partly bodies freezing before they could finish falling over. Any
+future stack measurement is worth taking with `AllowSleeping = false` for that
+reason. Confirmed in the demo too: the stack stands at step 1500 with 25 other
+bodies in the scene.
+
+Two things this says about the earlier work. The 21/21 solver test passed
+because it used 16/8 iterations, one of the configurations that happened to
+land on the working side of the tie — a test that samples one point of a
+chaotic parameter space proves very little. And the previous entry blamed the
+solver ("the manifold, the friction and the position correction") when the
+manifold alone was wrong; the friction and the correction were fine.
 
 ### 2026-08-05 (a 3D demo, and what it showed)
 
