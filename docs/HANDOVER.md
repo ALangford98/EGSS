@@ -248,6 +248,12 @@ look caught immediately.
   z the depth test rejects the later fragment — so the **first** thing drawn
   wins, the opposite of painter's order. This caused three separate bugs,
   including "the lights don't blend" (which was not blending at all).
+- **`--demo` takes the short name from `DemoRegistry.h`, not the class name.**
+  `Lighting`, `Physics`, `Scene` — not `Lighting2D`, `Physics2D`, `SceneDemo`.
+  An unmatched name logs a warning and **falls back to the default demo**
+  (`g_ActiveDemo`, currently `Scene`), so a batch of captures comes back
+  looking plausible while being the same demo several times over. The symptom
+  is two demos with identical pixel hashes.
 - **`OnAttach` runs for every pushed layer**, whichever demo is showing. Start
   continuous things (looping sounds) in `OnDemoActivated`, not `OnAttach`.
   Looping audio has escaped this way twice.
@@ -382,8 +388,16 @@ before, and "a component with no system" was the phrase used to decline it.
 
 `README.md` has the full roadmap (18 items). The clusters:
 
-**Renderer debt** — `ShaderLibrary`; query `GL_MAX_TEXTURE_IMAGE_UNITS`; a PCH
-for `TestEnv`; vendor a premake binary; multi-viewport ImGui.
+**Renderer debt** — what is left here is **multi-viewport ImGui**, and recording
+ImGui panel state into the replay format. `ShaderLibrary` is done; the texture
+slot count is now queried from the driver and the sampler switch generated to
+match (32 slots on this machine, was a hardcoded 16); `egss.py` fetches a
+pinned, checksummed premake instead of telling you to go and download one.
+
+The **`TestEnv` PCH was measured and declined** — it makes a clean build 39%
+slower. `TestEnv` is one translation unit, and 67% of its compile is codegen,
+which a PCH cannot touch. Do not reopen it without first making the demos
+separate `.cpp` files; the changelog entry has the phase breakdown.
 
 **3D** — `.gltf`; rotate/scale gizmo handles. Everything else in this cluster
 is done: materials with instance overrides, `ShaderLibrary`, `.mtl` parsing,

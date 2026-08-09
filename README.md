@@ -647,11 +647,16 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 
 ## Still outstanding
 
-- [ ] **Query `GL_MAX_TEXTURE_IMAGE_UNITS`** at runtime rather than assuming
-      the 16-slot floor, and generate the sampler switch to match
-- [ ] **A PCH for `TestEnv`.** Only the engine has one. The demo headers now
-      pull in most of the engine, so this would actually pay off
-- [ ] **Vendor a `premake5` binary per platform**, or script fetching it
+- [x] **Query `GL_MAX_TEXTURE_IMAGE_UNITS`** at runtime rather than assuming
+      the 16-slot floor, and generate the sampler switch to match — done, and
+      this driver reports 32, so a batch now holds twice the textures
+- [ ] ~~**A PCH for `TestEnv`.**~~ **Declined on measurement.** `TestEnv` is
+      one translation unit, and 67% of its compile is codegen, which a PCH
+      cannot touch. Building the PCH costs more than it saves. See the
+      changelog entry for the numbers; reopen this only if the demos ever
+      become separate `.cpp` files
+- [x] **Vendor a `premake5` binary per platform**, or script fetching it —
+      `egss.py` now fetches a pinned, checksummed premake on first use
 - [ ] **Replay: record the ImGui panel state too.** Recording captures input,
       which is everything a person does *through the keyboard and mouse*. It
       does not capture slider drags, which reach the simulation directly —
@@ -956,6 +961,104 @@ construction whichever way round it is. Only a file that states its normals can
 be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
+### 2026-08-09 (three debt items, one of which was worth declining)
+
+Renderer and build debt, taken because it was small and self-contained. Two
+landed; the third was measured and dropped, which is the interesting one.
+
+#### `GL_MAX_TEXTURE_IMAGE_UNITS`, asked rather than assumed
+
+`Renderer2DData::MaxTextureSlots` was `constexpr 16` with a comment explaining
+that 16 is the OpenGL 3.3 floor and so the largest safe value without asking
+the driver. The fragment shader carried a matching 16-case switch, written out
+by hand — GLSL 330 cannot index a sampler array with a non-constant, so the
+switch is the only legal way to select a slot.
+
+Now `RendererAPI::GetMaxTextureSlots` queries it in `Init`, the slot array is a
+`std::vector` sized to the answer, and the switch is generated to match. **This
+driver reports 32**, so a batch holds twice the distinct textures it did.
+
+Two things worth recording:
+
+- **`GL_MAX_TEXTURE_IMAGE_UNITS`, not `GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS`.**
+  The combined figure sums every shader stage — on a driver reporting 16 per
+  stage it comes back as 80, and a fragment shader declaring 80 samplers fails
+  to link on exactly the hardware the query was supposed to protect.
+- **Clamped to `[16, 32]`.** The floor because a smaller answer in a valid 3.3
+  context means the query failed, not that the hardware is small. The ceiling
+  because past 32 the generated switch and the uniform array grow for nothing.
+
+Verified by a temporary self-test, since slots 16–31 were code that had never
+run before and a shader that links proves nothing about them. 31 textures of
+known distinct colours, one quad each, every quad read back: **slot i samples
+texture i, 0 of 31 wrong**, all in one draw call, and one texture more splits
+into two. The expected colours are computed from the slot index and owe nothing
+to the renderer, so agreeing with them means the mapping is right.
+
+The clean pass was distrusted and given a negative control: regenerating the
+switch as `case i -> u_Textures[(i+1) % slots]` made every slot read its
+neighbour's colour, exactly as injected. The check has teeth.
+
+Then the regression question — does the *generated* shader still render what
+the hand-written one did? Clamping the count to 16 reproduces the old shader
+exactly, so both were captured: **all seven demos are byte-identical at 16 and
+at 32 slots.** No scene here uses more than 16 textures, which is the point —
+the change adds headroom without moving a pixel.
+
+One wrong turn, caught by the same rule that catches everything here. The first
+capture run gave three demos the *same* hash. The demos were fine; the names
+were wrong. `DemoRegistry.h` uses short names (`Lighting`, `Physics`, `Scene`),
+not class names, and an unmatched `--demo` warns and falls back to the default
+demo — so three runs had captured the same demo three times.
+
+#### The `TestEnv` PCH, declined
+
+The roadmap said a PCH for `TestEnv` "would actually pay off", because the demo
+headers now pull in most of the engine. Measured before building it:
+
+| phase | no PCH | with PCH |
+| --- | --- | --- |
+| preprocess (`-E`) | 0.15 s | — |
+| parse + sema (`-fsyntax-only`) | 1.91 s | 1.25 s |
+| full compile | 5.81 s | 5.21 s |
+
+Codegen is 3.90 s of the 5.81 s — **67% of the compile, and a PCH cannot touch
+any of it.** A PCH removes parse time, and only 0.66 s of that. Header *text*
+is not the cost either: preprocessing is 0.15 s.
+
+The premise was wrong in two ways. PCH savings scale with the number of
+translation units, and **`TestEnv` is exactly one** — building the PCH costs
+2.75 s to save 0.60 s once, so a clean build goes 5.71 s → 7.92 s, **39%
+slower**. And the demos being header-only is the reason, not the cure: their
+code is inlined into that single TU and has to be code-generated there, which
+is precisely the phase a PCH leaves alone.
+
+Reopen it if the demos ever become separate `.cpp` files. That would also
+parallelise a build that currently runs one TU on a twelve-core machine — but
+it is a design change to how demos are added, not debt, and `DemoRegistry.h`
+deliberately trades that away.
+
+#### `premake5`, fetched rather than hunted
+
+The binary is gitignored, so a fresh clone and every new worktree started
+without one and failed at the first build with a link to go and find it. Both
+happened again setting up the worktree for *this* work, which is how it got
+picked.
+
+`egss.py` now downloads a pinned 5.0.0-beta7 on first use and verifies a
+**SHA256 of the archive before unpacking**, so a corrupted or substituted
+payload never reaches the filesystem as an executable. Confirmed both ways: the
+real archive installs and runs, and a deliberately wrong expected hash is
+rejected with nothing written. The extracted binary hashes `5e1a55dc…` —
+byte-identical to the one that had been downloaded by hand, so pinning the
+version changed nothing about the build.
+
+`--no-fetch` restores the old fail-with-a-link behaviour.
+
+The submodules are the same first-five-minutes failure, so `egss.py` now checks
+them too — but it names `git submodule update --init --recursive` rather than
+running it, because that is a git operation on the user's own repository.
 
 ### 2026-08-06 (3D stacking: a face wound the wrong way round)
 
