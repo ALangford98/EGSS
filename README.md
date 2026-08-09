@@ -972,6 +972,69 @@ be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
 
+### 2026-08-09 (the 2D broadphase had both problems, and one was worse)
+
+Having found that the 3D grid needed sorting to be equivalent and a threshold
+to be worth switching on, the obvious question was whether the 2D grid — on
+unconditionally since it was written — had the same two problems. It had.
+
+#### `UseBroadphase` was silently changing the simulation
+
+Grid and brute force were **not the same run**. They diverged at step 56 and
+drifted **0.102 world units** apart, which is visible when the bodies are about
+0.2 units across. Reproducible to the identical body, step and separation on
+every run, so it was deterministic divergence rather than noise.
+
+Two controls before believing it: two brute-force worlds agree bit for bit, so
+the comparison reports identity when it should; and applying the 3D sort made
+grid and brute force bit-identical immediately.
+
+That second one is the diagnosis, and it is the good news. **Nothing was being
+dropped** — the 2D broadphase was correct. It simply visited candidates in cell
+order rather than ascending index, and contacts are resolved by sequential
+impulses in the order they were found. A different order is a different, equally
+valid answer. Had the sort *not* fixed it, the cause would have been a missed
+pair, which is a bug of a completely different character.
+
+So the sort is now in 2D as well, with the measurement recorded next to it.
+
+#### And the same crossover, steeper at the bottom
+
+Three runs, speedup over brute force:
+
+|  bodies | speedup       |  bodies | speedup      |
+| ------: | ------------- | ------: | ------------ |
+|      13 | 0.10 – 0.14x  |     123 | 1.15x        |
+|      28 | 0.33 – 0.38x  |     203 | 1.52x        |
+|      53 | 0.62 – 0.85x  |     403 | 2.47 – 2.56x |
+|      83 | 0.85 – 0.86x  |     803 | 4.73 – 4.77x |
+
+Crossover is around 100, and at 13 bodies the grid is **seven to ten times
+slower** — worse than 3D's 3.4x, because a 2D pair test is cheap enough that the
+grid rebuild dominates sooner. Breakout runs about 50 bodies and had been paying
+for this the whole time.
+
+`BroadphaseMinBodies = 100`, and as in 3D the threshold is only safe because the
+sort landed first.
+
+One difference from 3D worth keeping: the threshold gates **the pair search
+only**. Below it the grid is left *dirty* rather than disabled, because
+`Raycast` builds it on demand and a ray query is O(rays x bodies) — it can pay
+for a grid in a world far too small for pair testing to. Verified: below the
+threshold the pair search builds no grid, a raycast then builds one and still
+reports its hit.
+
+#### What moved
+
+Two demo captures changed, and only the two that should have: **Physics2D** and
+**Scene**, the demos with many interacting dynamic bodies where contact order
+decides the outcome. Breakout is unchanged despite being below the threshold —
+it has one moving body, so there is no order for the ordering to matter to.
+Lighting2D and Acoustics2D are unchanged; their obstacles are static.
+
+Both new frames were checked rather than assumed: bodies settled on the slope
+and the ramp, nothing exploded or sank through.
+
 ### 2026-08-09 (a 3D broadphase, and the threshold the measurement forced)
 
 `PhysicsWorld3D` tested every pair, as the 2D world did until a profile asked

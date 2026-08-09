@@ -579,15 +579,20 @@ namespace Egss {
 		m_Contacts.clear();
 		m_Candidates = 0;
 
-		if (UseBroadphase)
-		{
-			if (m_GridDirty)
-				RebuildGrid();
-		}
+		// Below the threshold the grid is not even rebuilt here, which is most
+		// of what it costs. It is deliberately left *dirty* rather than
+		// disabled: Raycast builds it on demand, and a ray query's economics
+		// are nothing like a pair search's -- it is O(rays x bodies), so the
+		// grid can still pay for itself there in a world far too small for it
+		// to pay here.
+		bool wantGrid = UseBroadphase && m_Bodies.size() >= BroadphaseMinBodies;
+
+		if (wantGrid && m_GridDirty)
+			RebuildGrid();
 
 		// Falls back to brute force if the grid could not be built -- an empty
 		// world, or a cell size that would have needed too many cells.
-		bool useGrid = UseBroadphase && m_GridWidth > 0 && m_GridHeight > 0;
+		bool useGrid = wantGrid && m_GridWidth > 0 && m_GridHeight > 0;
 
 		for (unsigned int i = 0; i < m_Bodies.size(); i++)
 		{
@@ -595,6 +600,7 @@ namespace Egss {
 			{
 				// Only bodies sharing a cell with this one can touch it.
 				m_QueryCounter++;
+				m_Neighbours.clear();
 
 				glm::vec2 boundsMin, boundsMax;
 				BodyBounds(m_Bodies[i], boundsMin, boundsMax);
@@ -612,17 +618,35 @@ namespace Egss {
 						{
 							// j > i keeps each pair once; the stamp keeps a
 							// pair that shares several cells from being
-							// tested several times.
+							// collected twice.
 							if (j <= i)
 								continue;
 							if (m_QueryStamp[j] == m_QueryCounter)
 								continue;
 							m_QueryStamp[j] = m_QueryCounter;
 
-							m_Candidates++;
-							TestPair(i, j);
+							m_Neighbours.push_back(j);
 						}
 					}
+				}
+
+				// Sorted into ascending j -- exactly the order brute force
+				// would have produced, restricted to the candidates.
+				//
+				// This was not here originally, and the world was measurably a
+				// different simulation with the grid on: it diverged from the
+				// brute-force run at step 56 and drifted 0.1 world units apart.
+				// Nothing was being *dropped* -- adding this sort made the two
+				// bit-identical, which is what proved the cause was ordering
+				// rather than a missed pair. Contacts are solved by sequential
+				// impulses, so the order they were found in is the order they
+				// are resolved in, and cell order is not index order.
+				std::sort(m_Neighbours.begin(), m_Neighbours.end());
+
+				for (unsigned int j : m_Neighbours)
+				{
+					m_Candidates++;
+					TestPair(i, j);
 				}
 			}
 			else

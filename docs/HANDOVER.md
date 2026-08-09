@@ -248,6 +248,13 @@ look caught immediately.
   z the depth test rejects the later fragment — so the **first** thing drawn
   wins, the opposite of painter's order. This caused three separate bugs,
   including "the lights don't blend" (which was not blending at all).
+- **Contact order is part of the answer.** Sequential impulses resolve contacts
+  in the order they were generated, so a broadphase that finds pairs in a
+  different order produces a different — equally valid — simulation. Both grids
+  now sort their candidates into ascending index, which is brute force's order,
+  and that is what makes `UseBroadphase` a pure optimisation rather than a
+  second physics engine. It is also what makes the body-count thresholds safe:
+  without the sort, crossing one would change the run.
 - **Cube3D's capture depends on the mouse cursor position.** `UpdateGizmo`
   reads `Input::GetMousePosition()` to pick the highlighted axis, so a shot of
   it differs between sessions by exactly the pixels of one gizmo line — 87 of
@@ -432,6 +439,15 @@ narrowphase runs `Sat2D`, `Contact` holds up to two `ContactPoint`s with their
 own lever arms and impulses, and the solver has its angular terms. Rays, bounds
 and `ResolveCircle` all work in body-local space. What is left in this cluster
 is joints and colliders beyond boxes and circles.
+
+The 2D grid was measured after the 3D one and had the same two faults: it was a
+*different simulation* from brute force (diverging 0.1 world units by step 56 —
+ordering, not dropped pairs, proved by the sort fixing it outright), and it lost
+badly below ~100 bodies, 7-10x slower at 13. Both fixed the same way, with one
+difference: `BroadphaseMinBodies` gates the pair search only, leaving the grid
+dirty so `Raycast` can still build it on demand. Physics2D and Scene captures
+moved as a result; Breakout did not, having one moving body and so no ordering
+to be sensitive to.
 
 **3D physics** — bodies collide, roll, rest and stack, and there is now a
 uniform-grid broadphase. It is **bit-identical to brute force** (candidates are

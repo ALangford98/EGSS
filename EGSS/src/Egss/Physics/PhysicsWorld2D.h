@@ -217,6 +217,23 @@ namespace Egss {
 		// than assumed -- which is the only reason to have built it.
 		bool UseBroadphase = true;
 
+		// Below this many bodies the grid loses, measured rather than assumed.
+		// Speedup over brute force, three runs each: 0.10-0.14x at 13 bodies,
+		// 0.33-0.38x at 28, 0.62-0.85x at 53, 0.85-0.86x at 83, 1.15x at 123,
+		// 1.52x at 203, and 4.7x at 803. Rebuilding the grid costs more than
+		// the pairs it rejects until there are enough pairs to matter.
+		//
+		// It only gates the *pair search*. The grid is left dirty rather than
+		// disabled, so Raycast still builds it on demand -- ray queries are
+		// O(rays x bodies) and can pay for a grid in a world far too small for
+		// pair testing to.
+		//
+		// Safe to switch automatically only because the candidate list is
+		// sorted, which makes grid and brute force the same simulation. Before
+		// that sort existed this threshold would have changed the answer the
+		// moment a body count crossed it.
+		unsigned int BroadphaseMinBodies = 100;
+
 		// Cells should be around the size of a typical body. Much smaller and
 		// a body spans many cells; much larger and each cell holds everything,
 		// which is brute force with extra steps.
@@ -284,6 +301,10 @@ namespace Egss {
 		mutable int m_GridHeight = 0;
 		mutable float m_GridCellSize = 0.25f;
 		mutable bool m_GridDirty = true;
+
+		// One body's candidate partners, gathered then sorted. A member rather
+		// than a local so the allocation is reused across steps.
+		std::vector<unsigned int> m_Neighbours;
 
 		// Per-body stamp, so a query can skip bodies it has already considered
 		// without allocating a set. Cheaper than the alternative and the
