@@ -73,6 +73,12 @@ namespace Egss {
 		{
 			s_RendererAPI->ReadPixels(x, y, width, height, out);
 		}
+
+		// Valid only after Init. See RendererAPI.
+		inline static unsigned int GetMaxTextureSlots()
+		{
+			return s_RendererAPI->GetMaxTextureSlots();
+		}
 	private:
 		static RendererAPI* s_RendererAPI;
 	};

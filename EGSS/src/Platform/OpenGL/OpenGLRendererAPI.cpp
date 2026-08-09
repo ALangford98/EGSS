@@ -36,6 +36,24 @@ namespace Egss {
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 		glEnable(GL_DEPTH_TEST);
+
+		// GL_MAX_TEXTURE_IMAGE_UNITS, not GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS.
+		// The combined figure sums every stage, so on a driver reporting 16 per
+		// stage it comes back as 80 -- and a fragment shader declaring 80
+		// samplers would fail to link on exactly the hardware the query was
+		// meant to protect.
+		GLint units = 0;
+		glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &units);
+
+		// Floor: GL 3.3 guarantees 16, so a smaller answer means the query
+		// failed rather than that the hardware is small. Ceiling: past 32 the
+		// generated sampler switch and the uniform array grow for nothing --
+		// a batch that needs more than 32 distinct textures is rare enough
+		// that the extra flush costs less than the shader does.
+		m_MaxTextureSlots = (unsigned int)std::clamp(units, 16, 32);
+
+		EGSS_CORE_INFO("GL: {0} fragment texture units reported, using {1}",
+			units, m_MaxTextureSlots);
 	}
 
 	void OpenGLRendererAPI::SetViewport(unsigned int x, unsigned int y, unsigned int width, unsigned int height)

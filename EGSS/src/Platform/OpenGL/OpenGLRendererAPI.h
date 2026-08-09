@@ -24,6 +24,12 @@ namespace Egss {
 
 		void ReadPixels(unsigned int x, unsigned int y, unsigned int width,
 			unsigned int height, unsigned char* out) override;
+
+		unsigned int GetMaxTextureSlots() const override { return m_MaxTextureSlots; }
+	private:
+		// Queried once in Init rather than per call: glGet round-trips to the
+		// driver, and this cannot change for the life of the context.
+		unsigned int m_MaxTextureSlots = 16;
 	};
 
 }

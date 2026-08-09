@@ -44,9 +44,6 @@ namespace Egss {
 		static constexpr unsigned int MaxQuads = 10000;
 		static constexpr unsigned int MaxVertices = MaxQuads * 4;
 		static constexpr unsigned int MaxIndices = MaxQuads * 6;
-		// OpenGL 3.3 guarantees at least 16 fragment texture units, so this is
-		// the largest value that is safe without querying the driver.
-		static constexpr unsigned int MaxTextureSlots = 16;
 		// Two vertices per segment, and debug geometry is usually sparse.
 		static constexpr unsigned int MaxLineVertices = MaxQuads * 2;
 		static constexpr unsigned int MaxTriangleVertices = MaxQuads * 3;
@@ -77,7 +74,13 @@ namespace Egss {
 		TriangleVertex* TriangleVertexBufferBase = nullptr;
 		TriangleVertex* TriangleVertexBufferPtr = nullptr;
 
-		std::array<std::shared_ptr<Texture2D>, MaxTextureSlots> TextureSlots;
+		// Asked of the driver in Init rather than assumed. 16 is the OpenGL 3.3
+		// floor and was hardcoded here; most desktop drivers report 32, which
+		// halves the number of flushes a texture-heavy scene needs.
+		unsigned int MaxTextureSlots = 16;
+		// Sized to MaxTextureSlots once that is known, which is why this is a
+		// vector and not the std::array it used to be.
+		std::vector<std::shared_ptr<Texture2D>> TextureSlots;
 		// Slot 0 is permanently the white texture, so flat-colour quads take
 		// the same path as textured ones.
 		unsigned int TextureSlotIndex = 1;
@@ -204,6 +207,11 @@ namespace Egss {
 		unsigned int whiteTextureData = 0xffffffff;
 		s_Data.WhiteTexture->SetData(&whiteTextureData, sizeof(unsigned int));
 
+		// The driver decides how many slots there are, so the shader that
+		// samples them has to be written after the answer is known.
+		s_Data.MaxTextureSlots = RenderCommand::GetMaxTextureSlots();
+		s_Data.TextureSlots.resize(s_Data.MaxTextureSlots);
+
 		// GLSL 330 cannot index a sampler array with a non-constant
 		// expression, so the switch below is not a stylistic choice -- it is
 		// the only legal way to select a slot at this version.
@@ -251,7 +259,7 @@ namespace Egss {
 			in float v_TilingFactor;
 			flat in int v_EntityID;
 
-			uniform sampler2D u_Textures[16];
+			uniform sampler2D u_Textures[$SLOTS$];
 
 			void main()
 			{
@@ -260,38 +268,40 @@ namespace Egss {
 
 				switch (int(v_TexIndex))
 				{
-					case  0: texColor = texture(u_Textures[ 0], uv); break;
-					case  1: texColor = texture(u_Textures[ 1], uv); break;
-					case  2: texColor = texture(u_Textures[ 2], uv); break;
-					case  3: texColor = texture(u_Textures[ 3], uv); break;
-					case  4: texColor = texture(u_Textures[ 4], uv); break;
-					case  5: texColor = texture(u_Textures[ 5], uv); break;
-					case  6: texColor = texture(u_Textures[ 6], uv); break;
-					case  7: texColor = texture(u_Textures[ 7], uv); break;
-					case  8: texColor = texture(u_Textures[ 8], uv); break;
-					case  9: texColor = texture(u_Textures[ 9], uv); break;
-					case 10: texColor = texture(u_Textures[10], uv); break;
-					case 11: texColor = texture(u_Textures[11], uv); break;
-					case 12: texColor = texture(u_Textures[12], uv); break;
-					case 13: texColor = texture(u_Textures[13], uv); break;
-					case 14: texColor = texture(u_Textures[14], uv); break;
-					case 15: texColor = texture(u_Textures[15], uv); break;
-				}
+$CASES$				}
 
 				color = texColor * v_Color;
 				entityID = v_EntityID;
 			}
 		)";
 
+		// One case per slot, written out because the array index has to be a
+		// literal. Substituting into the source is the whole reason the count
+		// could not stay a constexpr.
+		std::string cases;
+		for (unsigned int i = 0; i < s_Data.MaxTextureSlots; i++)
+		{
+			cases += "\t\t\t\t\tcase " + std::to_string(i)
+				+ ": texColor = texture(u_Textures[" + std::to_string(i) + "], uv); break;\n";
+		}
+
+		auto substitute = [](std::string& src, const std::string& token, const std::string& value)
+		{
+			size_t at = src.find(token);
+			EGSS_CORE_ASSERT(at != std::string::npos, "Renderer2D shader template lost a token");
+			src.replace(at, token.size(), value);
+		};
+
+		substitute(fragmentSrc, "$SLOTS$", std::to_string(s_Data.MaxTextureSlots));
+		substitute(fragmentSrc, "$CASES$", cases);
+
 		s_Data.TextureShader.reset(Shader::Create("Renderer2D", vertexSrc, fragmentSrc));
 
-		int samplers[Renderer2DData::MaxTextureSlots];
-		for (unsigned int i = 0; i < Renderer2DData::MaxTextureSlots; i++)
-			samplers[i] = i;
-
 		s_Data.TextureShader->Bind();
-		for (unsigned int i = 0; i < Renderer2DData::MaxTextureSlots; i++)
-			s_Data.TextureShader->SetInt("u_Textures[" + std::to_string(i) + "]", samplers[i]);
+		// Slot i samples texture unit i. The identity mapping is what lets the
+		// vertex's TexIndex be used directly as the switch selector.
+		for (unsigned int i = 0; i < s_Data.MaxTextureSlots; i++)
+			s_Data.TextureShader->SetInt("u_Textures[" + std::to_string(i) + "]", (int)i);
 
 		s_Data.TextureSlots[0] = s_Data.WhiteTexture;
 
@@ -302,7 +312,7 @@ namespace Egss {
 		s_Data.QuadVertexPositions[3] = { -0.5f,  0.5f, 0.0f, 1.0f };
 
 		EGSS_CORE_INFO("Renderer2D initialized ({0} quads/batch, {1} texture slots)",
-			Renderer2DData::MaxQuads, Renderer2DData::MaxTextureSlots);
+			Renderer2DData::MaxQuads, s_Data.MaxTextureSlots);
 	}
 
 	void Renderer2D::Shutdown()
@@ -456,7 +466,7 @@ namespace Egss {
 				return (float)i;
 		}
 
-		if (s_Data.TextureSlotIndex >= Renderer2DData::MaxTextureSlots)
+		if (s_Data.TextureSlotIndex >= s_Data.MaxTextureSlots)
 		{
 			Renderer2D::Flush();
 			s_Data.QuadIndexCount = 0;

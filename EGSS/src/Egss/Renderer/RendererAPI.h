@@ -90,6 +90,11 @@ namespace Egss {
 		virtual void ReadPixels(unsigned int x, unsigned int y, unsigned int width,
 			unsigned int height, unsigned char* out) = 0;
 
+		// How many textures one fragment shader may sample from at once, which
+		// is what caps the size of a Renderer2D batch. Only valid after Init --
+		// it is a driver query, and there is no context to ask before then.
+		virtual unsigned int GetMaxTextureSlots() const = 0;
+
 		inline static API GetAPI() { return s_API; }
 	private:
 		static API s_API;
