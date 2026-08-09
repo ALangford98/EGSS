@@ -254,6 +254,11 @@ look caught immediately.
   (`g_ActiveDemo`, currently `Scene`), so a batch of captures comes back
   looking plausible while being the same demo several times over. The symptom
   is two demos with identical pixel hashes.
+- **ImGui config flags are read once, in `OnAttach`**, and `PushOverlay` runs
+  `OnAttach` immediately. Anything that has to reach the ImGui context — the
+  viewports flag is the live example — must be set *before* the layer is
+  pushed, which is why `Application` parses the command line first. Set it
+  after and it is applied to a context already built without it, silently.
 - **`OnAttach` runs for every pushed layer**, whichever demo is showing. Start
   continuous things (looping sounds) in `OnDemoActivated`, not `OnAttach`.
   Looping audio has escaped this way twice.
@@ -388,8 +393,12 @@ before, and "a component with no system" was the phrase used to decline it.
 
 `README.md` has the full roadmap (18 items). The clusters:
 
-**Renderer debt** — what is left here is **multi-viewport ImGui**, and recording
-ImGui panel state into the replay format. `ShaderLibrary` is done; the texture
+**Renderer debt** — what is left here is recording ImGui panel state into the
+replay format. Multi-viewport ImGui is done, behind `--viewports` and off by
+default; the load-bearing part is the GL context save/restore around
+`RenderPlatformWindowsDefault` in `ImGuiLayer::End`, without which the screen
+capture reads an undocked panel's window instead of the scene. `ShaderLibrary`
+is done; the texture
 slot count is now queried from the driver and the sampler switch generated to
 match (32 slots on this machine, was a hardcoded 16); `egss.py` fetches a
 pinned, checksummed premake instead of telling you to go and download one.

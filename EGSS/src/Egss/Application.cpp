@@ -38,12 +38,18 @@ namespace Egss {
 		Renderer::Init();
 		AudioEngine::Init();
 
+		// Parsed before the ImGui layer is pushed, not after. PushOverlay runs
+		// OnAttach immediately, and OnAttach is where the ImGui context is
+		// created and its config flags read -- so --viewports arriving
+		// afterwards would be set on a context that had already been built
+		// without it, and would silently do nothing.
+		ParseCommandLine();
+
 		// Owned by the layer stack, but kept as a pointer so Run can bracket
 		// the per-layer ImGui rendering.
 		m_ImGuiLayer = new ImGuiLayer();
+		m_ImGuiLayer->EnableViewports(m_Viewports);
 		PushOverlay(m_ImGuiLayer);
-
-		ParseCommandLine();
 	}
 
 	void Application::SetCommandLine(int argc, char** argv)
@@ -91,6 +97,7 @@ namespace Egss {
 		{
 			m_Lockstep = m_Lockstep || argument == "--lockstep";
 			m_HideUI = m_HideUI || argument == "--hide-ui";
+			m_Viewports = m_Viewports || argument == "--viewports";
 		}
 
 		// --play <file> / --record <file>. Playback starts here, in the

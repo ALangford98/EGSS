@@ -203,7 +203,8 @@ You should see a 1280x720 window running one of the demos, plus:
 ```
 [22:00:24] EGSS: Creating Window Every Game Starts Somewhere (1280, 720)
 [22:00:24] EGSS: OpenGL 4.6 (Core Profile) Mesa 26.1.5 | Mesa Intel(R) Iris(R) Xe Graphics (RPL-U)
-[22:00:24] EGSS: Renderer2D initialized (10000 quads/batch, 16 texture slots)
+[22:00:24] EGSS: GL: 32 fragment texture units reported, using 32
+[22:00:24] EGSS: Renderer2D initialized (10000 quads/batch, 32 texture slots)
 [22:00:24] EGSS: Audio PulseAudio | 48000 Hz, 2 ch, 32 voices
 [22:00:24] EGSS: ImGui 1.92.9b initialized
 ```
@@ -227,6 +228,14 @@ The **Demos** panel switches between them; **F1** cycles.
 
 The **Profiler** panel is the only honest timing in the app: VSync pins every
 frame near 16.7ms regardless of what the frame actually cost.
+
+The texture-slot line is a driver query, so the number varies by machine. 16 is
+the OpenGL 3.3 floor and the smallest you should ever see; this machine reports
+32, which is how many distinct textures one batch can hold before it flushes.
+
+Pass **`--viewports`** to let panels be dragged out of the window into their
+own OS windows. Off by default — each one is a real window with its own GL
+context.
 
 Closing the window exits cleanly.
 
@@ -663,9 +672,9 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       move "Gravity" mid-recording and the replay will not. Recording from
       defaults is exact; anything else needs the parameters stored alongside
       the input, which is a natural extension of the header
-- [ ] **Multi-viewport ImGui.** Docking is on; `ImGuiConfigFlags_ViewportsEnable`
-      would let panels be dragged out into their own OS windows, but it needs
-      the platform-window loop in `ImGuiLayer::End` and a GL context restore
+- [x] **Multi-viewport ImGui** — done, behind `--viewports` /
+      `ImGuiLayer::EnableViewports`. Off by default: every undocked panel is a
+      real OS window with its own GL context
 - [ ] **`.gltf` loading.** `.obj` carries geometry and nothing else — no
       hierarchy, no skinning, no PBR parameters. glTF is where those live, and
       is the format worth supporting second
@@ -961,6 +970,63 @@ construction whichever way round it is. Only a file that states its normals can
 be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
+### 2026-08-09 (multi-viewport ImGui, and the one line that carries it)
+
+Panels can now be dragged out of the window into their own OS windows, behind
+`--viewports` (or `ImGuiLayer::EnableViewports` before the layer is attached).
+
+The config flag is the easy half. The half that matters is four lines in
+`ImGuiLayer::End`:
+
+```cpp
+GLFWwindow* backup = glfwGetCurrentContext();
+ImGui::UpdatePlatformWindows();
+ImGui::RenderPlatformWindowsDefault();
+glfwMakeContextCurrent(backup);
+```
+
+`RenderPlatformWindowsDefault` makes each extra viewport's GL context current
+in turn and **leaves the last one current**. Everything later in the frame is
+then talking to the wrong window — the swap, and more quietly the screen
+capture, which reads the default framebuffer of whatever context happens to be
+current.
+
+That is not theoretical, and it is the reason this item was never just a flag.
+With the restore deleted, a `--capture` of Breakout came back as *the undocked
+panel's window*: the little test panel adrift in a field of uninitialised
+white, at the main window's dimensions. The scene was never in the file.
+
+Verified with a temporary test, since a panel cannot be dragged out by a
+script. One was positioned outside the main viewport's bounds instead, which is
+what makes ImGui give it a platform window of its own — it lived in
+`ImGuiLayer::Begin` rather than in `TestEnv` precisely so it would also render
+under `--hide-ui`, which is the only way to compare captures that are otherwise
+reproducible.
+
+- **A second platform window really is created** — 2 viewports, not 1. Without
+  that the rest of the test would have been measuring nothing.
+- **The main GL context is current after `End()`** — and the negative control,
+  skipping the restore, flips exactly that check to FAIL while leaving the
+  viewport count alone.
+- **All seven demos capture byte-identically with `--viewports` on**, matching
+  the no-viewport reference hashes. Multi-viewport costs nothing in
+  reproducibility, so recordings and captures are unaffected.
+
+**Off by default**, unlike docking. An undocked panel is a real OS window with
+its own GL context, which is a cost a game that never undocks one should not
+pay. It also has to be set *before* `OnAttach`: the flag is read once when the
+ImGui context is created. `Application` therefore parses the command line
+before pushing the ImGui layer rather than after — `PushOverlay` runs
+`OnAttach` immediately, so the old order would have set the flag on a context
+already built without it, and `--viewports` would have silently done nothing.
+
+Style is forced opaque and square-cornered when viewports are on: rounded
+corners and a translucent background show the *desktop* through the gaps once a
+panel is its own window.
+
+Not tested by a person dragging a panel: that needs hands. What is tested is
+that the platform window is created, rendered, and that the context comes back.
 
 ### 2026-08-09 (three debt items, one of which was worth declining)
 

@@ -114,6 +114,10 @@ namespace Egss {
 		// simulation underneath is.
 		bool m_HideUI = false;
 
+		// Lets panels be dragged out into their own OS windows. Off unless
+		// --viewports asks, and read before the ImGui layer is attached.
+		bool m_Viewports = false;
+
 		// Quit when the recording runs out, unless --exit-after said otherwise.
 		bool m_ExitWhenReplayEnds = false;
 

@@ -35,7 +35,21 @@ namespace Egss {
 		// wants.
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
+		if (m_ViewportsEnabled)
+			io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+
 		ImGui::StyleColorsDark();
+
+		// A panel that has left the main window is an OS window, and an OS
+		// window with rounded corners and a translucent background shows the
+		// desktop through its gaps. Inside the main window both are fine,
+		// which is why this is conditional rather than just the style.
+		if (m_ViewportsEnabled)
+		{
+			ImGuiStyle& style = ImGui::GetStyle();
+			style.WindowRounding = 0.0f;
+			style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+		}
 
 		GLFWwindow* window = static_cast<GLFWwindow*>(Application::Get().GetWindow().GetNativeWindow());
 
@@ -88,6 +102,24 @@ namespace Egss {
 
 		ImGui::Render();
 		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+		if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+		{
+			// RenderPlatformWindowsDefault walks every extra viewport, making
+			// each one's GL context current in turn -- and leaves the last one
+			// current when it is done. Everything after this point in the
+			// frame would then be talking to the wrong window: the swap, and
+			// more quietly the screen capture, which reads the default
+			// framebuffer of whatever context happens to be current and would
+			// hand back an undocked panel instead of the scene.
+			//
+			// So the main context is saved and restored around the call. This
+			// is the whole reason the item was more than a config flag.
+			GLFWwindow* backup = glfwGetCurrentContext();
+			ImGui::UpdatePlatformWindows();
+			ImGui::RenderPlatformWindowsDefault();
+			glfwMakeContextCurrent(backup);
+		}
 	}
 
 }
