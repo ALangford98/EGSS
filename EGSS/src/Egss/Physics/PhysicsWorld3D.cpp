@@ -43,6 +43,45 @@ namespace Egss {
 		return body.Velocity + glm::cross(body.AngularVelocity, lever);
 	}
 
+	// World-space axis-aligned bounds, whatever the shape and whichever way it
+	// is facing.
+	static void BodyBounds(const RigidBody3D& body, glm::vec3& outMin, glm::vec3& outMax)
+	{
+		glm::vec3 extent;
+
+		if (body.Shape == ColliderShape3D::Sphere)
+		{
+			// A sphere looks the same from every direction, which is the one
+			// case where orientation genuinely does not matter.
+			extent = glm::vec3(body.Radius);
+		}
+		else
+		{
+			// The 3D form of the trap 2D already fell into: a turned box
+			// reaches further than its half extents. Along each world axis it
+			// reaches the sum of its three half extents projected onto that
+			// axis, which is |R| * h -- the rotation matrix with every entry
+			// made positive.
+			//
+			// Bounds that ignore the orientation are too small, so the grid
+			// drops pairs the narrowphase would have caught. A missed
+			// collision leaves nothing behind to notice: no contact, no
+			// warning, just a body passing through a corner it should have
+			// clipped.
+			glm::mat3 rotation = glm::mat3_cast(body.Orientation);
+			glm::mat3 absolute;
+
+			for (int column = 0; column < 3; column++)
+				for (int row = 0; row < 3; row++)
+					absolute[column][row] = std::fabs(rotation[column][row]);
+
+			extent = absolute * body.HalfExtents;
+		}
+
+		outMin = body.Position - extent;
+		outMax = body.Position + extent;
+	}
+
 	// Two unit vectors spanning the plane perpendicular to `normal`.
 	//
 	// Built by crossing the normal with whichever world axis it is least
@@ -113,13 +152,19 @@ namespace Egss {
 		// after the Make* helper ran.
 		added.UpdateInertiaWorld();
 
+		// The grid indexes bodies by position in m_Bodies, so it is stale the
+		// moment the vector grows.
+		MarkGridDirty();
+
 		return (BodyHandle)(m_Bodies.size() - 1);
 	}
 
 	void PhysicsWorld3D::Clear()
 	{
 		m_Bodies.clear();
+		m_Contacts.clear();
 		m_AwakeBodyCount = 0;
+		MarkGridDirty();
 	}
 
 	// --- Narrowphase --------------------------------------------------------
@@ -274,6 +319,12 @@ namespace Egss {
 
 		IntegrateVelocities(dt);
 
+		// Against the positions the bodies ended the last step at, which is
+		// also where the solve will run. Velocities have changed by now but
+		// nothing has moved yet, so the bounds are still the ones the grid was
+		// last built from -- rebuilding here rather than after IntegratePositions
+		// is what keeps the grid describing the geometry being tested.
+		MarkGridDirty();
 		GenerateContacts();
 		PrepareContacts();
 		WarmStart();
@@ -308,16 +359,155 @@ namespace Egss {
 		UpdateSleeping(dt);
 	}
 
-	void PhysicsWorld3D::GenerateContacts()
+	// Buckets every body into the cells its bounds overlap. Rebuilt whenever
+	// anything has moved, which for a simulated world is every step -- that
+	// rebuild is the price the pair search pays for being cheap.
+	void PhysicsWorld3D::RebuildGrid()
 	{
-		EGSS_PROFILE_SCOPE("Physics3D::Narrowphase");
+		m_GridDirty = false;
+		m_Cells.clear();
+		m_GridWidth = 0;
+		m_GridHeight = 0;
+		m_GridDepth = 0;
 
-		m_Contacts.clear();
+		if (m_Bodies.empty())
+			return;
+
+		glm::vec3 worldMin(std::numeric_limits<float>::max());
+		glm::vec3 worldMax(-std::numeric_limits<float>::max());
+
+		for (const RigidBody3D& body : m_Bodies)
+		{
+			glm::vec3 boundsMin, boundsMax;
+			BodyBounds(body, boundsMin, boundsMax);
+			worldMin = glm::min(worldMin, boundsMin);
+			worldMax = glm::max(worldMax, boundsMax);
+		}
+
+		m_GridCellSize = std::max(CellSize, 0.01f);
+		m_GridOrigin = worldMin;
+
+		glm::vec3 span = worldMax - worldMin;
+		m_GridWidth = std::max(1, (int)(span.x / m_GridCellSize) + 1);
+		m_GridHeight = std::max(1, (int)(span.y / m_GridCellSize) + 1);
+		m_GridDepth = std::max(1, (int)(span.z / m_GridCellSize) + 1);
+
+		// A pathological cell size would otherwise allocate unboundedly, and
+		// in 3D that arrives far sooner than in 2D: halving the cell size
+		// costs eight times the cells rather than four. Smaller cap than the
+		// 2D world's for the same reason.
+		const long long maxCells = 1 << 18;
+		if ((long long)m_GridWidth * m_GridHeight * m_GridDepth > maxCells)
+		{
+			m_GridWidth = 0;
+			m_GridHeight = 0;
+			m_GridDepth = 0;
+			return;
+		}
+
+		m_Cells.assign((size_t)m_GridWidth * m_GridHeight * m_GridDepth, {});
 
 		for (unsigned int i = 0; i < m_Bodies.size(); i++)
 		{
-			for (unsigned int j = i + 1; j < m_Bodies.size(); j++)
-				TestPair(i, j);
+			glm::vec3 boundsMin, boundsMax;
+			BodyBounds(m_Bodies[i], boundsMin, boundsMax);
+
+			int x0, y0, z0, x1, y1, z1;
+			CellRange(boundsMin, boundsMax, x0, y0, z0, x1, y1, z1);
+
+			// A body large relative to the cell lands in several -- the floor
+			// in the demo spans most of the grid -- which is what makes the
+			// per-query stamp necessary.
+			for (int z = z0; z <= z1; z++)
+				for (int y = y0; y <= y1; y++)
+					for (int x = x0; x <= x1; x++)
+						m_Cells[CellIndex(x, y, z)].push_back(i);
+		}
+
+		m_QueryStamp.assign(m_Bodies.size(), 0);
+		m_QueryCounter = 0;
+	}
+
+	void PhysicsWorld3D::GenerateContacts()
+	{
+		EGSS_PROFILE_SCOPE("Physics3D::Broadphase+Narrowphase");
+
+		m_Contacts.clear();
+		m_Candidates = 0;
+
+		// Small worlds skip the grid entirely -- not just its use, but its
+		// rebuild, which is most of what it costs.
+		bool wantGrid = UseBroadphase && m_Bodies.size() >= BroadphaseMinBodies;
+
+		if (wantGrid && m_GridDirty)
+			RebuildGrid();
+
+		// Falls back to brute force if the grid could not be built -- an empty
+		// world, or a cell size that would have needed too many cells. The
+		// answer is the same either way; only the cost differs.
+		bool useGrid = wantGrid && m_GridWidth > 0;
+
+		for (unsigned int i = 0; i < m_Bodies.size(); i++)
+		{
+			if (useGrid)
+			{
+				// Only bodies sharing a cell with this one can touch it.
+				m_QueryCounter++;
+				m_Neighbours.clear();
+
+				glm::vec3 boundsMin, boundsMax;
+				BodyBounds(m_Bodies[i], boundsMin, boundsMax);
+
+				int x0, y0, z0, x1, y1, z1;
+				CellRange(boundsMin, boundsMax, x0, y0, z0, x1, y1, z1);
+
+				for (int z = z0; z <= z1; z++)
+				{
+					for (int y = y0; y <= y1; y++)
+					{
+						for (int x = x0; x <= x1; x++)
+						{
+							for (unsigned int j : m_Cells[CellIndex(x, y, z)])
+							{
+								// j > i keeps each pair once; the stamp keeps
+								// a pair sharing several cells from being
+								// collected twice.
+								if (j <= i)
+									continue;
+								if (m_QueryStamp[j] == m_QueryCounter)
+									continue;
+								m_QueryStamp[j] = m_QueryCounter;
+
+								m_Neighbours.push_back(j);
+							}
+						}
+					}
+				}
+
+				// Sorted so the pairs are tested in ascending j -- exactly the
+				// order brute force would have produced, restricted to the
+				// candidates. Cell iteration order is deterministic but it is
+				// not *that* order, and contacts are solved by sequential
+				// impulses, which are order-dependent: without this the grid
+				// and brute force reach slightly different, both-valid answers
+				// and the toggle stops being a pure optimisation. It is worth
+				// far more as an A/B that provably changes nothing.
+				std::sort(m_Neighbours.begin(), m_Neighbours.end());
+
+				for (unsigned int j : m_Neighbours)
+				{
+					m_Candidates++;
+					TestPair(i, j);
+				}
+			}
+			else
+			{
+				for (unsigned int j = i + 1; j < m_Bodies.size(); j++)
+				{
+					m_Candidates++;
+					TestPair(i, j);
+				}
+			}
 		}
 	}
 

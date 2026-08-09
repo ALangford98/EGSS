@@ -248,6 +248,13 @@ look caught immediately.
   z the depth test rejects the later fragment — so the **first** thing drawn
   wins, the opposite of painter's order. This caused three separate bugs,
   including "the lights don't blend" (which was not blending at all).
+- **Cube3D's capture depends on the mouse cursor position.** `UpdateGizmo`
+  reads `Input::GetMousePosition()` to pick the highlighted axis, so a shot of
+  it differs between sessions by exactly the pixels of one gizmo line — 87 of
+  them, all by the same colour delta. It is the ImGui-slider problem wearing a
+  different hat: state reaching the demo without going through recorded input
+  or the fixed step. **Do not use Cube3D as a byte-exact regression reference
+  across sessions.** The other six demos are fine.
 - **`--demo` takes the short name from `DemoRegistry.h`, not the class name.**
   `Lighting`, `Physics`, `Scene` — not `Lighting2D`, `Physics2D`, `SceneDemo`.
   An unmatched name logs a warning and **falls back to the default demo**
@@ -426,10 +433,15 @@ own lever arms and impulses, and the solver has its angular terms. Rays, bounds
 and `ResolveCircle` all work in body-local space. What is left in this cluster
 is joints and colliders beyond boxes and circles.
 
-**3D physics** — bodies collide, roll, rest and stack. What is left is a
-broadphase (every pair is still tested, as 2D did until a profile asked
-otherwise) and shapes beyond boxes and spheres — capsules first, since a capsule
-is a segment with a radius and most of the sphere code generalises.
+**3D physics** — bodies collide, roll, rest and stack, and there is now a
+uniform-grid broadphase. It is **bit-identical to brute force** (candidates are
+sorted into brute-force order before testing, because sequential impulses are
+order-dependent), which is what makes `UseBroadphase` a real A/B and what makes
+it safe to switch on automatically. It does switch automatically:
+`BroadphaseMinBodies = 200`, because below ~120 bodies the grid measurably
+*loses* — 3x slower at 13 bodies. What is left in this cluster is shapes beyond
+boxes and spheres — capsules first, since a capsule is a segment with a radius
+and most of the sphere code generalises.
 
 **Acoustics**, the most recently active area — 3D acoustics (`Acoustics2D` is
 2D because `Raycast` is); partitioned FFT convolution (for dense recorded

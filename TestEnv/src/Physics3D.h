@@ -316,6 +316,21 @@ public:
 			points += (size_t)contact.PointCount;
 		ImGui::Text("Contact points: %zu", points);
 
+		// What the broadphase saved, against the every-pair figure it replaced.
+		// Below the body threshold the grid is not built at all -- it costs
+		// more than it saves down there -- so this reads "brute force" for the
+		// default scene and switches over if you raise Max bodies past it.
+		size_t bodies = m_World.GetBodyCount();
+		size_t allPairs = bodies > 1 ? bodies * (bodies - 1) / 2 : 0;
+		bool gridActive = m_World.GetBroadphaseCellCount() > 0;
+
+		ImGui::Text("Pairs tested: %u of %zu  (%s)",
+			m_World.GetBroadphaseCandidates(), allPairs,
+			gridActive ? "grid" : "brute force");
+
+		if (gridActive)
+			ImGui::Text("Grid cells: %u", m_World.GetBroadphaseCellCount());
+
 		ImGui::Text("Frame: %.2f ms (%.0f fps)", m_FrameTime,
 			m_FrameTime > 0.0f ? 1000.0f / m_FrameTime : 0.0f);
 

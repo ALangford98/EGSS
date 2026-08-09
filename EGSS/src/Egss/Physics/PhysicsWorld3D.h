@@ -152,6 +152,55 @@ namespace Egss {
 		unsigned int VelocityIterations = 8;
 		unsigned int PositionIterations = 4;
 
+		// --- Broadphase ---------------------------------------------------
+		// A uniform grid, the same shape as the 2D one: bodies are bucketed by
+		// the cells their world bounds overlap, and only bodies sharing a cell
+		// are handed to the narrowphase. Brute force is O(n^2) pairs, which is
+		// what this world did until a profile asked otherwise.
+		//
+		// Left switchable, because a broadphase that cannot be turned off
+		// cannot be shown to be an improvement -- or shown to agree with the
+		// brute-force answer, which matters more.
+		bool UseBroadphase = true;
+
+		// Below this many bodies the grid *loses*, which was measured rather
+		// than assumed. Speedup over brute force, three runs each:
+		//
+		//     13 bodies   0.30x    203 bodies   1.31 - 1.43x
+		//     43          0.65     253          1.48 - 1.56x
+		//     83          0.76 - 0.83      503  2.80 - 3.49x
+		//    123          0.99 - 1.01     1003  8.11 - 8.72x
+		//    153          0.84 - 1.10
+		//
+		// Rebuilding the grid and sorting the candidate lists costs more than
+		// the pairs it rejects until there are enough pairs to matter. Break
+		// even is around 123; 153 straddles 1.0x depending on the run, and 203
+		// is the first count where the win is unambiguous in every run. Set
+		// here rather than at break-even so the switch only happens where it
+		// is really a gain.
+		//
+		// Safe to switch on automatically precisely because the two paths are
+		// bit-identical -- see the note on sorting in GenerateContacts. If they
+		// disagreed, the simulation would change the moment a body count
+		// crossed this, which is far worse than being slow.
+		//
+		// Set to 0 to force the grid on regardless, which is what an A/B
+		// measurement wants.
+		unsigned int BroadphaseMinBodies = 200;
+
+		// Cells want to be about the size of a typical body. Much smaller and
+		// one body spans many cells; much larger and every cell holds
+		// everything, which is brute force paying rent for a grid.
+		//
+		// Larger than the 2D default because a 3D world is physically bigger
+		// and the cell count grows with the cube of the span, not the square.
+		float CellSize = 1.0f;
+
+		unsigned int GetBroadphaseCellCount() const { return (unsigned int)m_Cells.size(); }
+		// Pairs the narrowphase was actually asked about this step. The number
+		// to watch: against n(n-1)/2 it says what the grid saved.
+		unsigned int GetBroadphaseCandidates() const { return m_Candidates; }
+
 		// Bodies slower than this for longer than SleepTime stop integrating.
 		float SleepVelocity = 0.08f;
 		float SleepAngularVelocity = 0.05f;
@@ -169,9 +218,58 @@ namespace Egss {
 		void SolveVelocities();
 		void CorrectPositions();
 		void UpdateSleeping(float dt);
+
+		void RebuildGrid();
+		void MarkGridDirty() { m_GridDirty = true; }
+
+		// Both the build and the query need to turn world bounds into a cell
+		// range, and they must agree exactly: a body bucketed into cells the
+		// query does not look at is a body the narrowphase never sees. Shared
+		// rather than written twice for that reason.
+		size_t CellIndex(int x, int y, int z) const
+		{
+			return ((size_t)z * m_GridHeight + y) * m_GridWidth + x;
+		}
+
+		void CellRange(const glm::vec3& boundsMin, const glm::vec3& boundsMax,
+			int& x0, int& y0, int& z0, int& x1, int& y1, int& z1) const
+		{
+			glm::vec3 low = (boundsMin - m_GridOrigin) / m_GridCellSize;
+			glm::vec3 high = (boundsMax - m_GridOrigin) / m_GridCellSize;
+
+			x0 = std::max(0, (int)low.x);
+			y0 = std::max(0, (int)low.y);
+			z0 = std::max(0, (int)low.z);
+			x1 = std::min(m_GridWidth - 1, (int)high.x);
+			y1 = std::min(m_GridHeight - 1, (int)high.y);
+			z1 = std::min(m_GridDepth - 1, (int)high.z);
+		}
 	private:
 		std::vector<RigidBody3D> m_Bodies;
 		std::vector<Contact3D> m_Contacts;
+
+		// --- Grid ---
+		// Body indices per cell, in x-major order: (z * H + y) * W + x.
+		std::vector<std::vector<unsigned int>> m_Cells;
+		glm::vec3 m_GridOrigin = { 0.0f, 0.0f, 0.0f };
+		int m_GridWidth = 0;
+		int m_GridHeight = 0;
+		int m_GridDepth = 0;
+		float m_GridCellSize = 1.0f;
+		bool m_GridDirty = true;
+
+		// A body large relative to a cell sits in several, so the same pair can
+		// be reached more than once per query. The stamp is what makes a
+		// candidate list a *set* -- without it the narrowphase runs repeatedly
+		// on one pair and the contact is pushed more than once, which the
+		// solver then treats as several separate contacts.
+		std::vector<unsigned int> m_QueryStamp;
+		unsigned int m_QueryCounter = 0;
+		unsigned int m_Candidates = 0;
+
+		// One body's candidate partners, gathered then sorted. A member rather
+		// than a local so the allocation is reused across steps.
+		std::vector<unsigned int> m_Neighbours;
 
 		// Last step's impulses for one pair, with the points they were applied
 		// at. Matched by position rather than index, because clipping has no

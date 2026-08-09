@@ -686,8 +686,9 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       constrains two bodies other than contact, and any collider that is not a
       box or a circle. Convex hulls would reuse the SAT that is already there;
       only the axis list changes
-- [ ] **3D physics: a broadphase.** Every pair is still tested, which 2D also
-      did until a profile asked otherwise
+- [x] **3D physics: a broadphase** — a uniform grid, bit-identical to brute
+      force and switched on automatically above 200 bodies, because below that
+      it measurably loses
 - [ ] **3D physics: shapes beyond boxes and spheres**, and capsules in
       particular — they are what characters are usually made of, and a capsule
       is a segment with a radius, so most of the sphere code generalises
@@ -970,6 +971,100 @@ construction whichever way round it is. Only a file that states its normals can
 be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
+### 2026-08-09 (a 3D broadphase, and the threshold the measurement forced)
+
+`PhysicsWorld3D` tested every pair, as the 2D world did until a profile asked
+otherwise. It now has the same uniform grid: bodies bucketed by the cells their
+world bounds overlap, and only bodies sharing a cell handed to the narrowphase.
+
+#### The property that makes it checkable
+
+A broadphase is only allowed to make the narrowphase cheaper. If it changes the
+answer it is not an optimisation, it is a bug that happens to be faster — and
+the failure is silent, because a dropped pair leaves no contact behind and so
+nothing to notice.
+
+The grid therefore **gathers its candidates and sorts them** before testing,
+rather than testing them in cell order. Cell order is deterministic, but it is
+not the order brute force would have used, and contacts are solved by
+sequential impulses, which are order-dependent. Without the sort the two paths
+reach slightly different, both-valid answers and the toggle stops being an A/B.
+With it, the claim under test is the strong one:
+
+> With the grid on and off, the two worlds stay **bit-identical** for the whole
+> run — same positions, orientations, velocities, angular velocities, to the
+> last bit.
+
+Verified over 240 steps and 63 bodies, alongside the saving: **8.5% of the
+brute-force candidate pairs**, with the brute-force count checked against
+`n(n-1)/2 x steps = 468720` exactly — arithmetic the world knows nothing about.
+An impossible cell size builds no grid and falls back to testing every pair,
+which is also checked.
+
+The negative control is the good part. Making `BodyBounds` ignore orientation —
+the 3D form of the turned-box trap 2D already fell into, where a box at an
+angle reaches `|R| * h` rather than `h` — diverges at step 37 and loses 186
+contacts. And it tests **fewer** pairs while doing it: 7.2% against the correct
+version's 8.5%. A broadphase that drops pairs looks *better* on the only metric
+a pair count can offer, which is precisely why "fewer pairs" is not a success
+criterion and the equivalence check is.
+
+#### The threshold, which was not the plan
+
+The grid was going to default on, as it does in 2D. Measured first, three runs
+per row, speedup over brute force:
+
+|  bodies | speedup       |  bodies | speedup       |
+| ------: | ------------- | ------: | ------------- |
+|      13 | 0.30x         |     203 | 1.31 – 1.43x  |
+|      43 | 0.65x         |     253 | 1.48 – 1.56x  |
+|      83 | 0.76 – 0.83x  |     503 | 2.80 – 3.49x  |
+|     123 | 0.99 – 1.01x  |    1003 | 8.11 – 8.72x  |
+|     153 | 0.84 – 1.10x  |         |               |
+
+**Below about 120 bodies the grid loses**, and at 13 it loses badly — three
+times slower than simply testing every pair. Rebuilding the grid and sorting
+the candidate lists costs more than the pairs it rejects until there are enough
+pairs for the rejection to matter. Break-even is around 123; 153 straddles 1.0x
+depending on the run; 203 is the first count where the win is unambiguous in
+every run.
+
+So `BroadphaseMinBodies = 200`: below it the grid is not merely unused, it is
+not built. Set at the first reliable win rather than at break-even, because the
+noisy band is not worth switching for.
+
+Switching automatically is only safe *because* the two paths are bit-identical.
+If they disagreed, the simulation would change the instant a body count crossed
+the threshold — a body spawning and every other body's trajectory shifting — and
+that would be far worse than being slow. The equivalence earns the right to the
+threshold.
+
+The Physics3D demo defaults to 90 bodies and so runs brute force; its **Max
+bodies** slider reaches 300, so raising it crosses the boundary live, and the
+panel now names which path is in use and how many pairs it tested.
+
+#### One measurement that was the measurement's fault
+
+Six of the seven demo captures came back byte-identical. **Cube3D did not** —
+and it is not a physics demo at all.
+
+Restoring the base commit's `PhysicsWorld3D` in the same worktree produced the
+*same* hash as the broadphase build, which cleared the change outright: the
+difference is between the two worktrees, not between the two commits.
+`imgui.ini` was the obvious suspect and was wrong — swapping the layout file
+changed nothing.
+
+The pixels settled it. Exactly 87 pixels differ, every one by the same RGB
+delta — a light blue line present in one shot and not the other, not shading.
+That is a gizmo axis, and `Cube3D::UpdateGizmo` reads
+`Input::GetMousePosition()` to decide which axis is highlighted. **The capture
+depends on where the physical mouse cursor happens to be sitting.**
+
+Which makes Cube3D unusable as a byte-exact regression reference across
+sessions, for the same reason ImGui slider state is: it reaches the demo
+without going through the recorded input or the fixed step. Noted in HANDOVER;
+the other six demos are unaffected.
 
 ### 2026-08-09 (multi-viewport ImGui, and the one line that carries it)
 
