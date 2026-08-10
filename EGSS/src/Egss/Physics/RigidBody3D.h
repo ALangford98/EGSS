@@ -6,13 +6,23 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/constants.hpp>
 
 namespace Egss {
 
 	enum class ColliderShape3D
 	{
 		Sphere = 0,
-		Box
+		Box,
+		// A segment with a radius: the line from -HalfHeight to +HalfHeight
+		// along the body's own **y** axis, swept by Radius. Total height is
+		// 2*(HalfHeight + Radius), so a capsule with HalfHeight 0 is a sphere
+		// and every test below has to stay correct in that limit.
+		//
+		// Worth having because it is what characters are made of: it has no
+		// corners to catch on a step, and it stands up rather than rolling
+		// away like a sphere.
+		Capsule
 	};
 
 	// A rigid body in three dimensions.
@@ -79,9 +89,14 @@ namespace Egss {
 		float LinearDamping = 0.01f;
 		float AngularDamping = 0.05f;
 
-		// Sphere uses Radius; Box uses HalfExtents.
+		// Sphere uses Radius; Box uses HalfExtents; Capsule uses both Radius
+		// and HalfHeight.
 		float Radius = 0.5f;
 		glm::vec3 HalfExtents = { 0.5f, 0.5f, 0.5f };
+
+		// Half the length of the capsule's *segment*, not of the whole capsule
+		// -- the caps add Radius at each end on top of this.
+		float HalfHeight = 0.5f;
 
 		float Restitution = 0.2f;
 		float Friction = 0.4f;
@@ -157,6 +172,42 @@ namespace Egss {
 					size.x * size.x + size.z * size.z,
 					size.x * size.x + size.y * size.y);
 			}
+			else if (Shape == ColliderShape3D::Capsule)
+			{
+				// A cylinder plus two hemispheres, each contributing about the
+				// capsule's centre. Mass is split between them by volume, so
+				// the tensor stays right when the caps dominate a stubby
+				// capsule or the cylinder dominates a long one.
+				float r = Radius;
+				float h = HalfHeight * 2.0f;              // the cylinder's length
+
+				float cylinderVolume = glm::pi<float>() * r * r * h;
+				float capsVolume = (4.0f / 3.0f) * glm::pi<float>() * r * r * r;
+				float total = cylinderVolume + capsVolume;
+
+				if (total <= 0.0f)
+				{
+					diagonal = glm::vec3(0.0f);
+				}
+				else
+				{
+					float mc = mass * cylinderVolume / total;    // cylinder
+					float mh = mass * capsVolume / total * 0.5f; // one hemisphere
+
+					// About y, the axis of symmetry: everything is a disc.
+					float yy = 0.5f * mc * r * r + 2.0f * (0.4f * mh * r * r);
+
+					// About x and z. The hemisphere term looks arbitrary and is
+					// not: shifting (2/5) m r^2 from the sphere centre to the
+					// capsule centre via the parallel-axis theorem leaves
+					// exactly h^2/4 + 3hr/8, because the 9r^2/64 from the
+					// hemisphere's own centre of mass cancels out.
+					float xx = mc * (h * h / 12.0f + r * r * 0.25f)
+						+ 2.0f * mh * (0.4f * r * r + h * h * 0.25f + 0.375f * h * r);
+
+					diagonal = { xx, yy, xx };
+				}
+			}
 			else
 			{
 				float value = 0.4f * mass * Radius * Radius;
@@ -200,6 +251,22 @@ namespace Egss {
 			return body;
 		}
 
+		// `halfHeight` is half the segment, so the capsule stands
+		// 2*(halfHeight + radius) tall.
+		static RigidBody3D MakeCapsule(const glm::vec3& position, float radius,
+			float halfHeight, float mass = 1.0f)
+		{
+			RigidBody3D body;
+			body.Shape = ColliderShape3D::Capsule;
+			body.Position = position;
+			body.PreviousPosition = position;
+			body.Radius = radius;
+			body.HalfHeight = halfHeight;
+			body.SetMass(mass);
+			body.RecalculateInertia();
+			return body;
+		}
+
 		// Static bodies are dynamic ones with no inverse mass, exactly as in 2D.
 		static RigidBody3D MakeStaticBox(const glm::vec3& position, const glm::vec3& halfExtents)
 		{
@@ -213,6 +280,23 @@ namespace Egss {
 			RigidBody3D body = MakeSphere(position, radius, 0.0f);
 			body.Type = BodyType::Static;
 			return body;
+		}
+
+		static RigidBody3D MakeStaticCapsule(const glm::vec3& position, float radius,
+			float halfHeight)
+		{
+			RigidBody3D body = MakeCapsule(position, radius, halfHeight, 0.0f);
+			body.Type = BodyType::Static;
+			return body;
+		}
+
+		// The capsule's segment in world space. Everything that touches a
+		// capsule starts here, so it is written once.
+		void GetSegment(glm::vec3& outA, glm::vec3& outB) const
+		{
+			glm::vec3 axis = Orientation * glm::vec3(0.0f, HalfHeight, 0.0f);
+			outA = Position - axis;
+			outB = Position + axis;
 		}
 	};
 

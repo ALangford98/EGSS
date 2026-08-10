@@ -252,4 +252,55 @@ namespace Egss {
 		return new Mesh(data, "Sphere");
 	}
 
+	Mesh* Mesh::CreateCylinder(float radius, float halfHeight, unsigned int segments)
+	{
+		if (segments < 3) segments = 3;
+
+		MeshData data;
+		data.Vertices.reserve((size_t)(segments + 1) * 2);
+		data.Indices.reserve((size_t)segments * 6);
+
+		// Two rings, bottom then top. The seam gets a duplicated column for the
+		// same reason the sphere's does: one point on the tube needs u = 0 on
+		// one side and u = 1 on the other, and a vertex carries one of them.
+		for (int end = 0; end < 2; end++)
+		{
+			float y = end == 0 ? -halfHeight : halfHeight;
+			float v = end == 0 ? 0.0f : 1.0f;
+
+			for (unsigned int segment = 0; segment <= segments; segment++)
+			{
+				float u = (float)segment / (float)segments;
+				float theta = u * glm::two_pi<float>();
+
+				glm::vec3 outward(std::cos(theta), 0.0f, std::sin(theta));
+
+				// The normal points straight out from the axis, with no y
+				// component -- a cylinder's side is vertical, so shading it
+				// with the position as a normal (which works for a sphere)
+				// would light the tube as though it bulged.
+				data.Vertices.push_back({
+					{ outward.x * radius, y, outward.z * radius },
+					outward,
+					{ u, v } });
+			}
+		}
+
+		unsigned int stride = segments + 1;
+		for (unsigned int segment = 0; segment < segments; segment++)
+		{
+			unsigned int bottom = segment;
+			unsigned int top = stride + segment;
+
+			// Counter-clockwise seen from outside, matching the cube and the
+			// sphere. Getting this backwards is invisible until backface
+			// culling is switched on and the tube turns inside out.
+			data.Indices.insert(data.Indices.end(), { bottom, bottom + 1, top });
+			data.Indices.insert(data.Indices.end(), { bottom + 1, top + 1, top });
+		}
+
+		data.RecalculateBounds();
+		return new Mesh(data, "Cylinder");
+	}
+
 }

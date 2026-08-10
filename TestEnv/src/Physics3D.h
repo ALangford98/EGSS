@@ -35,6 +35,9 @@ public:
 		BuildShader();
 		m_Cube.reset(Egss::Mesh::CreateCube(1.0f));
 		m_Sphere.reset(Egss::Mesh::CreateSphere(0.5f, 24, 12));
+		// Unit radius and unit half-height, so the scale in the draw call is
+		// the capsule's own diameter and segment length.
+		m_Cylinder.reset(Egss::Mesh::CreateCylinder(0.5f, 0.5f, 24));
 
 		BuildScene();
 	}
@@ -110,10 +113,28 @@ public:
 		float z = -1.2f + 0.8f * (float)(m_SpawnCounter % 4);
 		glm::vec3 where = { -6.5f, 5.5f, z };
 
+		// Every fourth is a capsule, dropped lying across the ramp. It should
+		// roll down on its side like a barrel rather than tumbling like a
+		// crate, and come to rest flat -- which takes the two-point manifold.
+		if (m_SpawnCounter % 4 == 3)
+		{
+			float radius = 0.22f;
+			float halfHeight = 0.35f + 0.15f * std::fabs(std::sin((float)m_SpawnCounter));
+
+			Egss::RigidBody3D capsule = Egss::RigidBody3D::MakeCapsule(
+				where, radius, halfHeight, 1.0f);
+			// Turned onto its side, across the slope.
+			capsule.Orientation = glm::angleAxis(glm::half_pi<float>(),
+				glm::vec3(0.0f, 0.0f, 1.0f));
+			capsule.Restitution = 0.05f;
+			capsule.Friction = 0.6f;
+			capsule.AngularDamping = 0.03f;
+			m_World.AddBody(capsule);
+		}
 		// Every third is a crate, dropped already tilted and spinning so it
 		// lands on a corner. Tipping flush against the slope is the thing the
 		// angular half of the solver exists for.
-		if (m_SpawnCounter % 3 == 2)
+		else if (m_SpawnCounter % 3 == 2)
 		{
 			float half = 0.3f + 0.1f * std::fabs(std::sin((float)m_SpawnCounter));
 
@@ -240,9 +261,12 @@ public:
 			}
 			else
 			{
-				colour = body.Shape == Egss::ColliderShape3D::Sphere
-					? glm::vec4(0.95f, 0.62f, 0.28f, 1.0f)
-					: glm::vec4(0.42f, 0.68f, 0.95f, 1.0f);
+				if (body.Shape == Egss::ColliderShape3D::Sphere)
+					colour = { 0.95f, 0.62f, 0.28f, 1.0f };
+				else if (body.Shape == Egss::ColliderShape3D::Capsule)
+					colour = { 0.55f, 0.85f, 0.45f, 1.0f };
+				else
+					colour = { 0.42f, 0.68f, 0.95f, 1.0f };
 
 				// Asleep bodies are dimmed rather than greyed, so it is obvious
 				// when a pile settles *without* losing what shape it is. Grey
@@ -261,6 +285,30 @@ public:
 				// extents rather than the half ones.
 				Egss::Renderer::Submit(m_SceneMaterial, m_Cube,
 					glm::scale(transform, body.HalfExtents * 2.0f));
+			}
+			else if (body.Shape == Egss::ColliderShape3D::Capsule)
+			{
+				// Exactly what a capsule is: a cylinder between two
+				// hemispheres. Two fixed meshes cover every size, because a
+				// cylinder stays a cylinder under a non-uniform scale and a
+				// sphere stays a sphere under a uniform one. A single capsule
+				// mesh could not -- stretching one turns its caps into
+				// ellipsoids.
+				//
+				// This was a box shaft first, which read as a rectangle with
+				// balls stuck on the ends.
+				float d = body.Radius * 2.0f;
+
+				Egss::Renderer::Submit(m_SceneMaterial, m_Cylinder,
+					glm::scale(transform, { d, body.HalfHeight * 2.0f, d }));
+
+				for (float end : { -1.0f, 1.0f })
+				{
+					glm::mat4 cap = glm::translate(transform,
+						{ 0.0f, end * body.HalfHeight, 0.0f });
+					Egss::Renderer::Submit(m_SceneMaterial, m_Sphere,
+						glm::scale(cap, glm::vec3(d)));
+				}
 			}
 			else
 			{
@@ -440,6 +488,7 @@ private:
 	std::shared_ptr<Egss::Material> m_SceneMaterial;
 	std::shared_ptr<Egss::Mesh> m_Cube;
 	std::shared_ptr<Egss::Mesh> m_Sphere;
+	std::shared_ptr<Egss::Mesh> m_Cylinder;
 
 	unsigned int m_StaticCount = 0;
 	int m_SpawnCounter = 0;

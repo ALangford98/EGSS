@@ -12,7 +12,7 @@ time more than once.
 **EGSS** — a game engine written from scratch in C++17, following the shape of
 TheCherno's Hazel series but diverging where it made sense. `EGSS/` is the
 engine, built as a shared library; `TestEnv/` is a sandbox app that links
-against it and holds six demos.
+against it and holds seven demos.
 
 The owner is building this to **understand** it, not to ship a game. That
 matters for how you work: a working black box is worth less here than a
@@ -84,7 +84,7 @@ as soon as one was applied.
 | Physics | `PhysicsWorld2D`, `RigidBody2D`, `Sat2D` | Warm-started sequential impulses, island sleeping, raycasts, uniform-grid broadphase. **Rotation is in**: oriented SAT manifolds of up to two points, per-point lever arms and angular impulses, oriented rays and bounds |
 | Capture | `ScreenCapture`, `Replay` | In-engine PNG of the frame just drawn, and `.dem`-style input recording replayed per fixed step. Both reproducible; see "Capturing frames" |
 | Rays 3D | `Raycast3D` | Slab test against mesh bounds in local space, plus graded occlusion |
-| Physics 3D | `RigidBody3D`, `PhysicsWorld3D`, `Sat3D`, `Physics3D` demo | Quaternion orientation, real inertia tensor, midpoint angular integration, oriented-box manifolds over fifteen axes, warm-started impulses with two-tangent friction. Bodies collide, roll, rest and **stack**. Brute-force broadphase |
+| Physics 3D | `RigidBody3D`, `PhysicsWorld3D`, `Sat3D`, `Physics3D` and `Ragdoll` demos | Quaternion orientation, real inertia tensor, oriented-box manifolds over fifteen axes, warm-started impulses with two-tangent friction. Boxes, spheres and **capsules**. **Joints**: ball, hinge, angle limits, cone-and-twist, motors. Uniform-grid broadphase above 200 bodies |
 | Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb behind a 4th-order Butterworth splitter |
 | Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
 | Profiling | `Instrumentor` | `EGSS_PROFILE_SCOPE`, live panel, Chrome trace |
@@ -248,6 +248,41 @@ look caught immediately.
   z the depth test rejects the later fragment — so the **first** thing drawn
   wins, the opposite of painter's order. This caused three separate bugs,
   including "the lights don't blend" (which was not blending at all).
+- **Separate the peak from the settled value before blaming the solver.** The
+  ragdoll's joints appeared to stretch 38 mm and its limits to leak 0.56 rad;
+  settled, both were essentially zero, and the peaks were one or two frames of
+  a 71 kg figure hitting the floor inside one step. Throwing iterations at it
+  barely moved the peak and made it worse at 64, which is the tell that the
+  measurement rather than the convergence was wrong.
+- **A test rig whose bodies all start aligned cannot see a rest-pose bug.**
+  Cone-and-twist limits measured swing from the bodies being *aligned* rather
+  than from the pose the limits were set in, so a bone built at an angle to its
+  parent started outside its own cone. Every cone-twist test passed, because
+  every rig in them had the bone and the torso starting aligned and the
+  relative rotation was the identity. Every limb on a real skeleton sits at an
+  angle to its parent. **Build at least one test rig crooked.**
+- **Check the initial state is physical before believing the final one.**
+  Setting a body's angular velocity without the matching linear velocity
+  describes a body rotating about a pivot whose centre is not moving, which
+  does not exist — the solver fixes it on the first step by trading angular for
+  linear, and it reads as a joint eating the rotation. Three hinge tests failed
+  this way in a row, all with the solver correct underneath. `SpinAbout` in the
+  hinge test set both; there is no such helper in the engine, so write one
+  again if you need it.
+- **An under-solved stiff constraint gains energy rather than merely sagging.**
+  A 6-link chain with 20 kg on the end peaked at 7217 J of kinetic energy at
+  two velocity iterations, against roughly 500 J of gravitational potential
+  available. Too few iterations is an instability, not an inaccuracy.
+- **A manifold must describe what is touching, not what the shape spans.** A
+  contact constraint resists *approach* along its normal, so a contact point
+  emitted where nothing is actually in contact pushes the bodies apart there.
+  Clipping a capsule's segment to a box face and emitting both ends
+  unconditionally left a tilted capsule resting at 10 degrees for ever, held up
+  by a point in mid-air. Drop points with no penetration.
+- **A resting test dropped level proves nothing.** Gravity acts through the
+  centre, nothing applies a torque, and a single contact point holds a level
+  body level — so the check passes with the manifold disabled. Drop it tilted
+  and slowly spinning, or it is measuring symmetry.
 - **Contact order is part of the answer.** Sequential impulses resolve contacts
   in the order they were generated, so a broadphase that finds pairs in a
   different order produces a different — equally valid — simulation. Both grids
@@ -455,9 +490,218 @@ sorted into brute-force order before testing, because sequential impulses are
 order-dependent), which is what makes `UseBroadphase` a real A/B and what makes
 it safe to switch on automatically. It does switch automatically:
 `BroadphaseMinBodies = 200`, because below ~120 bodies the grid measurably
-*loses* — 3x slower at 13 bodies. What is left in this cluster is shapes beyond
-boxes and spheres — capsules first, since a capsule is a segment with a radius
-and most of the sphere code generalises.
+*loses* — 3x slower at 13 bodies.
+
+**Capsules are in**: segment-with-a-radius along the body's own y axis, with a
+closed-form inertia tensor checked against its sphere and thin-rod limits.
+Capsule–sphere and capsule–capsule reduce to sphere–sphere once the nearest
+points are known; capsule–box clips the segment against the face for a
+two-point manifold, without which a capsule rests at a permanent tilt.
+**Capsule–capsule is deliberately one point** — two parallel capsules settle
+more slowly than two boxes, and the fix is the same clipping if it is ever
+wanted.
+
+**Ball-and-socket joints** are in — the first bilateral constraint, with a 3x3
+effective mass, warm starting, and contact suppression between jointed bodies.
+Verified against the compound-pendulum period to 0.09%. **Use eight velocity
+iterations or more for jointed work**: at a 20:1 mass ratio, one or two
+iterations do not merely lose accuracy, they gain energy and throw the chain
+about. Sleeping propagates along joints, or half a chain freezes and anchors
+the rest to mid-air.
+
+**Hinges are in too**, with angle limits — knees and elbows. Built as a ball
+joint plus two locked rotations rather than as its own constraint: a 2x2
+angular effective mass beside the 3x3 point one. The limit is the only
+unilateral piece of a joint and so the only part that clamps its impulse.
+Verified to 0.08% against the hinged-bar period, with zero overshoot at the
+stops. **Limits are perfectly inelastic** — there is no restitution term, so a
+limb striking its stop loses that spin rather than bouncing.
+
+**Cone-and-twist limits** are in for ball joints, so shoulders and hips can be
+built. Swing and twist are separated by a **swing-twist decomposition** of the
+relative quaternion rather than measured directly, because direct measurements
+interfere — a twist read off a reference vector changes when the bone swings.
+The relative quaternion's scalar part is forced non-negative first, or a small
+swing gets reported as a large one. Verified to within 0.05 degrees of the
+limits given, from eight directions, with the swing re-measured independently
+of the joint's own decomposition.
+
+**Motors are in**, for both hinges and ball joints. Written as a velocity
+constraint with a target rather than as a torque, which makes them PD
+controllers without a separate derivative term. Two rules for using them:
+**never warm start a motor** (its budget is per step, and a carried-over
+impulse sitting at the clamp makes it silently stop pulling), and
+**`MotorMaxSpeed` must be matched to `MotorMaxTorque`**, or the motor asks for
+a speed it cannot decelerate from and limit-cycles.
+
+**The humanoid rig exists** — `TestEnv/src/Ragdoll.h`, thirteen bodies and
+twelve joints, passive or powered on the **M** key. Pose drift over ten seconds
+is 0.137 rad powered against 13.900 passive. It topples on its own and that is
+correct: motors hold joint angles, and a body tipping about its ankles does not
+change one.
+
+**Balance stands, and cannot be pushed.** The measurement is complete and drawn
+every step: support polygon from the foot contacts, centre of mass, capture
+point (`com + v*sqrt(h/g)`), and a signed margin that goes negative before
+anything looks wrong. The **ankle is a tightly-limited ball joint, not a
+hinge** — that change is what gave it a roll axis and fixed lateral balance,
+which no amount of gain tuning could. The figure stands **35 seconds** unpushed.
+
+**A 20 Ns shove still puts it down in two seconds**, and that is the strategy's
+real limit rather than a tuning problem: an ankle can only move where the weight
+bears *within* the feet, so once the capture point leaves the support polygon
+nothing at the ankle can recover it.
+
+**Stepping costs nothing and buys nothing.** The trigger is fixed: a step now
+needs the capture point to be outside the feet *and stay outside* for eight
+consecutive fixed steps, which stops it firing during ordinary sway. Measured as
+a survival fraction over sixteen perturbed trials, that restores quiet standing
+to 12/16 — exactly the no-stepping figure — from 8/16 when it stepped on the
+first crossing.
+
+It still does not help under a shove: 8/16 either way at 20 Ns, 0/16 either way
+at 40 Ns, because **the swing foot is carrying 363 N -- 52% of body weight -- at
+the moment the step tries to lift it**. `Ragdoll::FootLoad` reports this and it
+is on the demo panel. Every swing controller so far has been lifting a foot with
+half the figure standing on it; the load has to come off before any trajectory
+matters.
+
+The standing pose **bounces**, and it cannot be tuned out: motor stiffness 14 is
+the measured optimum (7/8 trials standing, against 1/8 at 11 and 3/8 at 18) and
+is the only value at which the feet never leave the ground. Stiffer bounces
+harder, softer cannot stand. The bounce is what standing costs here.
+
+Two traps in measuring it. **A fallen figure's foot load is not a measurement**
+-- check the mean is near 697 N before believing any row, or "turn the balance
+off and the bounce goes away" reads as a result. And per-foot matters more than
+the total: the pair never unloads (minimum 176 N) but each foot individually
+reaches 0 N, spends **11% of its time under 150 N**, with quiet windows of about
+**0.10 s**.
+
+**That lead worked.** The lift is now gated on the swing foot's own load: the
+trigger decides the step, then it waits for that foot to drop below 150 N,
+re-aiming at the capture point while it waits and abandoning the step if no
+trough arrives within a quarter second. Foot travel went from **8% of the
+distance asked for to 22%** -- the first movement in that number across five
+attempts.
+
+Survival is still 8/16 at 20 Ns and 0/16 at 40 Ns, and **nothing since load
+gating has changed it**. A shorter swing, a longer swing, and pre-committing to
+a predicted trough were all tried and all made things worse or made no
+difference. In metres the foot travels 0.11-0.16 m whatever the swing schedule,
+against the ~0.5 m it needs.
+
+Two traps found here. Pre-commit fails because the load is a **spike train** --
+its derivative is huge and erratic, so extrapolation predicts troughs that never
+arrive and the step commits at high load. And **beware the travel percentage**:
+a longer swing reports a higher fraction only because it triggers when the
+target is nearer, so always convert to metres. That is the second metric in
+three sessions to be measuring its own denominator.
+
+**The hip motor is not the limit** and never was: peak torque 166 Nm of a
+220 Nm budget, saturated in none of the ten swing frames, peak demanded speed
+6.5 rad/s of a 10 rad/s cap. Raising either would do nothing.
+
+**The foot lands again four frames into the swing** and drags for the rest of
+it. Load along one swing: 41 N, 0, then 189, 198, 171. Clearing the ground is
+the constraint, so `m_StepLift` went from 0.40 to 1.40 rad -- airborne frames
+2.3 to 7.1 and foot travel 0.083 m to 0.183 m, more than double from a leg that
+is nominally shorter while swinging. The earlier reasoning that a bent knee
+costs reach was backwards.
+
+Travel is now 0.183 m of the ~0.5 m needed, and **survival has not moved**:
+8/16 at 20 Ns and 0/16 at 40 Ns, unchanged by every controller and parameter
+tried.
+
+**The stance leg is fine too** -- averaged over twelve swings it carries 533 N
+of the figure's 697, buckles 0.029 rad, slips 0.025 m, and runs its knee motor
+at 23.5 Nm of a 160 Nm budget. And the trigger is **not** late: the centre of
+mass is at 1.030 m when it fires, against 1.08 m standing. (A single traced
+swing suggested 0.845 m and had to be thrown out -- the fourth single-run
+false conclusion of that session.)
+
+**Bend-early-straighten-late was tried and is worse**, monotonically: foot
+travel 0.183 m at a symmetric knee peak, 0.131 m at a peak of 0.15, with the
+airborne fraction flat throughout. Much of the foot's travel comes from the knee
+*extending*, so extension late adds reach and extension early is wasted.
+
+**Everything has now been measured and cleared** -- motor torque, speed cap,
+trigger timing, stance leg, swing duration, knee profile, weight shift, stance
+width. Three changes really did improve the mechanism (load gating, knee lift,
+trigger persistence) and took foot travel from 0.06 m to 0.183 m. **Survival has
+not moved once through any of it**: 8/16 at 20 Ns, 0/16 at 40 Ns, identical to
+not stepping.
+
+**The arithmetic was done and the rig is fine.** Linear inverted pendulum on the
+rig's own numbers (71.2 kg, com 1.085 m, tau 0.3325 s, foot half-length 0.110 m):
+ankles alone should catch 23.6 Ns, the 0.183 m step already achieved should catch
+62.7 Ns, and the geometry allows 181 Ns. **The ankle figure is confirmed** -- 20 Ns
+survives half the time and 40 Ns never does -- so the model is trustworthy and
+the step should nearly triple what the figure can take.
+
+**It does not, and the reason is one number**: support reach towards the fall is
+**0.0019 m before the step and 0.0000 m after the foot lands**. The foot travels
+0.183 m and the base it stands on gains nothing. Every controller performed
+identically because none of them ever converted foot travel into support.
+
+**Diagnosed: the body outruns the leg.** Along the fall direction over twelve
+steps the foot moves **−0.069 m** while the centre of mass moves **+0.332 m**,
+so the foot ends 0.58 m behind having started 0.18 m behind. It is not aimed
+wrongly -- foot-to-target shrinks 1.243 m to 0.988 m through the swing -- but
+the target is 1.24 m away to begin with, because the pelvis has already
+travelled **0.724 m past the foot** before the swing runs.
+
+Nothing is saturated: hip at 0.856 rad of a 0.960 rad cone, motor at 76%,
+stance leg at 15% of its budget. **The step is not too weak, it is too late** --
+a 0.16 s manoeuvre cannot catch a body already moving faster than a leg swings.
+
+**The character is playable, and self-balancing turned out not to be needed.**
+There are two modes. *Controlled*: the pelvis is a **kinematic** body -- a new
+`BodyType`, infinite mass to the solver but integrated from its own velocity --
+so the character is driven about and cannot fall, while every other body stays
+dynamic and hangs off it. *Ragdoll*: the pelvis goes dynamic and the motors go
+slack. `G` toggles; a hit above `m_RagdollThreshold` (2000 N, about three times
+body weight) switches automatically.
+
+Measured: 60 s controlled without falling, walks exactly 8.000 m in 5 s at
+1.6 m/s, ragdolls at 40 Ns but not at 20 Ns.
+
+**The trap that cost the most here**: the impact trigger fired on the character
+touching *itself*. A forearm against the torso and one shin against the other
+are not jointed to each other, so they collide normally and their impulses look
+like a car strike. It knocked the character down within a quarter second of
+standing up. An impact now requires exactly one side of the contact to be part
+of the character.
+
+Not done: **getting up** is a snap rather than a blend, and the feet do not
+reliably plant while walking (fine for a kinematic root, not fine for anything
+wanting traction).
+
+The self-balancing and stepping work is documented in the changelog and is no
+longer on the critical path. Its diagnosis is complete if anyone wants it: the
+step does not widen the support polygon.
+
+**Measure balance as a survival fraction, never as a mean fall time.** Fall
+times here are heavy tailed -- most trials fall in a second, a few survive the
+whole budget -- so a mean is a summary of its rarest outcomes and six- and
+eight-trial means disagreed between sessions on configurations that were not
+different. A claim of "+36% under a shove" in an earlier entry was exactly this
+artefact and has been withdrawn.
+
+A **wider stance was tried and refuted** — 0.20 m and 0.30 m are both worse than
+0.10 m, because splayed legs push outwards and the balance has to fight the
+reaction. The slider is still there so the refutation reproduces.
+
+Watch out for one trap it produced: `SignedDistance` returns −1 for a support
+polygon of fewer than three points, and a raised foot often leaves exactly that.
+Read as a margin, that means "far outside" and triggers another step — 236 steps
+in fifteen seconds before it was caught.
+
+Gains were swept, not guessed, and the sweep is in the changelog: there is a
+clear optimum with falls on both sides, and roll gain matters more than pitch.
+
+After stepping comes a second character, which is the same rig with a different
+driver. Convex hulls are the remaining shape, and would reuse `Sat3D`.
 
 **Acoustics**, the most recently active area — 3D acoustics (`Acoustics2D` is
 2D because `Raycast` is); partitioned FFT convolution (for dense recorded

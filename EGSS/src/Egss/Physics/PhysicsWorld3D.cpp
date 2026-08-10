@@ -25,15 +25,24 @@ namespace Egss {
 	// A sleeping body is immovable for as long as it stays asleep. Without
 	// this the solver keeps pushing it: it never integrates, so it does not
 	// visibly move, but it banks velocity and lurches when it wakes.
+	// Kinematic bodies are immovable to the solver in exactly the way static
+	// ones are: a contact or a joint may not shift them. The difference lives
+	// in the integrator, not here.
+	static bool Immovable(const RigidBody3D& body)
+	{
+		return body.Type == BodyType::Static
+			|| body.Type == BodyType::Kinematic
+			|| !body.Awake;
+	}
+
 	static float SolverInverseMass(const RigidBody3D& body)
 	{
-		return (body.Type == BodyType::Static || !body.Awake) ? 0.0f : body.InverseMass;
+		return Immovable(body) ? 0.0f : body.InverseMass;
 	}
 
 	static glm::mat3 SolverInverseInertia(const RigidBody3D& body)
 	{
-		return (body.Type == BodyType::Static || !body.Awake)
-			? glm::mat3(0.0f) : body.InverseInertiaWorld;
+		return Immovable(body) ? glm::mat3(0.0f) : body.InverseInertiaWorld;
 	}
 
 	// Velocity of the material point at `lever`: the body's own velocity plus
@@ -54,6 +63,17 @@ namespace Egss {
 			// A sphere looks the same from every direction, which is the one
 			// case where orientation genuinely does not matter.
 			extent = glm::vec3(body.Radius);
+		}
+		else if (body.Shape == ColliderShape3D::Capsule)
+		{
+			// The union of two spheres at the segment's ends, which is exactly
+			// the capsule's bounds -- the middle never reaches past them.
+			glm::vec3 p, q;
+			body.GetSegment(p, q);
+
+			outMin = glm::min(p, q) - glm::vec3(body.Radius);
+			outMax = glm::max(p, q) + glm::vec3(body.Radius);
+			return;
 		}
 		else
 		{
@@ -163,6 +183,7 @@ namespace Egss {
 	{
 		m_Bodies.clear();
 		m_Contacts.clear();
+		m_Joints.clear();
 		m_AwakeBodyCount = 0;
 		MarkGridDirty();
 	}
@@ -261,6 +282,352 @@ namespace Egss {
 		return true;
 	}
 
+	// Closest point to `point` on the segment pq, and where along it that is.
+	static glm::vec3 ClosestOnSegment(const glm::vec3& p, const glm::vec3& q,
+		const glm::vec3& point)
+	{
+		glm::vec3 along = q - p;
+		float lengthSquared = glm::dot(along, along);
+
+		// A zero-length segment is a point, which is the HalfHeight == 0 case
+		// -- a capsule that is really a sphere.
+		if (lengthSquared < 1e-12f)
+			return p;
+
+		float t = glm::clamp(glm::dot(point - p, along) / lengthSquared, 0.0f, 1.0f);
+		return p + along * t;
+	}
+
+	// Closest pair of points between two segments. The unclamped solution is
+	// two lines' closest approach; the clamping is what turns lines into
+	// segments, and it has to be done in both parameters and then re-solved,
+	// because clamping one moves where the other should be.
+	static void ClosestBetweenSegments(const glm::vec3& p1, const glm::vec3& q1,
+		const glm::vec3& p2, const glm::vec3& q2, glm::vec3& outA, glm::vec3& outB)
+	{
+		glm::vec3 d1 = q1 - p1;
+		glm::vec3 d2 = q2 - p2;
+		glm::vec3 r = p1 - p2;
+
+		float a = glm::dot(d1, d1);
+		float e = glm::dot(d2, d2);
+		float f = glm::dot(d2, r);
+
+		const float epsilon = 1e-12f;
+		float s = 0.0f, t = 0.0f;
+
+		if (a <= epsilon && e <= epsilon)
+		{
+			outA = p1;
+			outB = p2;
+			return;
+		}
+
+		if (a <= epsilon)
+		{
+			// First segment is a point.
+			t = glm::clamp(f / e, 0.0f, 1.0f);
+		}
+		else
+		{
+			float c = glm::dot(d1, r);
+
+			if (e <= epsilon)
+			{
+				// Second segment is a point.
+				s = glm::clamp(-c / a, 0.0f, 1.0f);
+			}
+			else
+			{
+				float b = glm::dot(d1, d2);
+				float denominator = a * e - b * b;
+
+				// Zero denominator means the segments are parallel, and any s
+				// is as good as any other -- pick the start and let the clamp
+				// below place t. Parallel is the common case for two capsules
+				// lying side by side, so this branch is not exotic.
+				s = denominator > epsilon
+					? glm::clamp((b * f - c * e) / denominator, 0.0f, 1.0f)
+					: 0.0f;
+
+				t = (b * s + f) / e;
+
+				// Clamping t invalidates s, so s is recomputed against the
+				// clamped t. Skipping this is the classic bug: it shows up
+				// only when one segment's nearest point falls off its end.
+				if (t < 0.0f)
+				{
+					t = 0.0f;
+					s = glm::clamp(-c / a, 0.0f, 1.0f);
+				}
+				else if (t > 1.0f)
+				{
+					t = 1.0f;
+					s = glm::clamp((b - c) / a, 0.0f, 1.0f);
+				}
+			}
+		}
+
+		outA = p1 + d1 * s;
+		outB = p2 + d2 * t;
+	}
+
+	// Two spheres of the given radii at the given centres, written once so the
+	// capsule tests can reduce to it. `a` and `b` name the bodies the contact
+	// belongs to, which need not be spheres at all.
+	static bool ContactFromSpheres(unsigned int ia, const glm::vec3& centreA, float radiusA,
+		unsigned int ib, const glm::vec3& centreB, float radiusB, Contact3D& out)
+	{
+		glm::vec3 delta = centreB - centreA;
+		float radiusSum = radiusA + radiusB;
+
+		float distanceSquared = glm::dot(delta, delta);
+		if (distanceSquared >= radiusSum * radiusSum)
+			return false;
+
+		float distance = std::sqrt(distanceSquared);
+
+		out.A = ia;
+		out.B = ib;
+		out.Normal = distance > 0.0001f ? delta / distance : glm::vec3(1.0f, 0.0f, 0.0f);
+		out.Penetration = radiusSum - distance;
+		out.Point = centreA + out.Normal * (radiusA - out.Penetration * 0.5f);
+
+		out.PointCount = 1;
+		out.Points[0].Position = out.Point;
+		out.Points[0].Penetration = out.Penetration;
+		return true;
+	}
+
+	// A is the capsule, B is the sphere. The nearest point on the capsule's
+	// segment is the centre of the sphere the capsule looks like from there.
+	static bool CollideCapsuleSphere(unsigned int ia, const RigidBody3D& a,
+		unsigned int ib, const RigidBody3D& b, Contact3D& out)
+	{
+		glm::vec3 p, q;
+		a.GetSegment(p, q);
+
+		glm::vec3 centre = ClosestOnSegment(p, q, b.Position);
+		return ContactFromSpheres(ia, centre, a.Radius, ib, b.Position, b.Radius, out);
+	}
+
+	static bool CollideCapsuleCapsule(unsigned int ia, const RigidBody3D& a,
+		unsigned int ib, const RigidBody3D& b, Contact3D& out)
+	{
+		glm::vec3 p1, q1, p2, q2;
+		a.GetSegment(p1, q1);
+		b.GetSegment(p2, q2);
+
+		glm::vec3 centreA, centreB;
+		ClosestBetweenSegments(p1, q1, p2, q2, centreA, centreB);
+
+		// One point, even for two capsules lying exactly alongside each other.
+		// That is a real limitation rather than an oversight: a single point
+		// cannot resist roll, so two stacked parallel capsules will settle
+		// more slowly than two boxes would. Stated in the changelog; the fix
+		// is a clipped manifold, which is what CollideCapsuleBox does.
+		return ContactFromSpheres(ia, centreA, a.Radius, ib, centreB, b.Radius, out);
+	}
+
+	// A is the capsule, B is the box.
+	//
+	// Everything happens in the box's frame, where it is an AABB -- the same
+	// move CollideSphereBox and Raycast3D make. The extra work over the sphere
+	// case is the manifold: a capsule lying on a floor touches along a line,
+	// and one contact point cannot hold a line level. That is the lesson the
+	// box stacking bug already taught, arriving in a different shape.
+	static bool CollideCapsuleBox(unsigned int ia, const RigidBody3D& a,
+		unsigned int ib, const RigidBody3D& b, Contact3D& out)
+	{
+		glm::quat inverse = glm::conjugate(b.Orientation);
+
+		glm::vec3 worldP, worldQ;
+		a.GetSegment(worldP, worldQ);
+
+		glm::vec3 p = inverse * (worldP - b.Position);
+		glm::vec3 q = inverse * (worldQ - b.Position);
+		const glm::vec3& half = b.HalfExtents;
+
+		// Closest pair between the segment and the box, by alternating: clamp
+		// the current segment point into the box, then find the nearest point
+		// on the segment to that. A few rounds is plenty -- it is a descent on
+		// a convex problem, and the first step is already close.
+		glm::vec3 segPoint = ClosestOnSegment(p, q, glm::clamp((p + q) * 0.5f, -half, half));
+		glm::vec3 boxPoint = glm::clamp(segPoint, -half, half);
+
+		for (int i = 0; i < 4; i++)
+		{
+			segPoint = ClosestOnSegment(p, q, boxPoint);
+			boxPoint = glm::clamp(segPoint, -half, half);
+		}
+
+		glm::vec3 away = segPoint - boxPoint;      // box towards capsule
+		float distanceSquared = glm::dot(away, away);
+
+		glm::vec3 normal;      // box towards capsule, in the box's frame
+		float penetration;
+
+		if (distanceSquared > 1e-12f)
+		{
+			if (distanceSquared >= a.Radius * a.Radius)
+				return false;
+
+			float distance = std::sqrt(distanceSquared);
+			normal = away / distance;
+			penetration = a.Radius - distance;
+		}
+		else
+		{
+			// The segment reaches the box's interior, so there is no direction
+			// to be had from the closest pair. Out through the nearest face,
+			// as the sphere case does.
+			int axis = 0;
+			float leastOverlap = std::numeric_limits<float>::max();
+
+			for (int i = 0; i < 3; i++)
+			{
+				float overlap = half[i] - std::fabs(segPoint[i]);
+				if (overlap < leastOverlap)
+				{
+					leastOverlap = overlap;
+					axis = i;
+				}
+			}
+
+			normal = glm::vec3(0.0f);
+			normal[axis] = segPoint[axis] < 0.0f ? -1.0f : 1.0f;
+			penetration = leastOverlap + a.Radius;
+		}
+
+		out.A = ia;
+		out.B = ib;
+		// Contacts point from A towards B, and `normal` points from the box to
+		// the capsule -- so it is negated on the way out.
+		out.Normal = b.Orientation * -normal;
+
+		auto toWorld = [&](const glm::vec3& local)
+		{
+			return b.Position + b.Orientation * local;
+		};
+
+		// Is this a face contact with the capsule lying along the face? Only
+		// then is there a line to clip, and only then does a second point mean
+		// anything.
+		int axis = 0;
+		for (int i = 1; i < 3; i++)
+			if (std::fabs(normal[i]) > std::fabs(normal[axis]))
+				axis = i;
+
+		glm::vec3 along = q - p;
+		float length = glm::length(along);
+
+		bool faceContact = std::fabs(normal[axis]) > 0.9f;
+		bool lyingAlong = length > 1e-6f
+			&& std::fabs(glm::dot(along / length, normal)) < 0.3f;
+
+		if (faceContact && lyingAlong)
+		{
+			// The stretch of the segment that is actually over the face: clip
+			// against the box's extent in the two axes that are not the
+			// normal's.
+			float t0 = 0.0f, t1 = 1.0f;
+
+			for (int i = 0; i < 3 && t0 < t1; i++)
+			{
+				if (i == axis)
+					continue;
+
+				float origin = p[i];
+				float direction = along[i];
+
+				if (std::fabs(direction) < 1e-6f)
+				{
+					// Parallel to this slab: either wholly inside it or wholly
+					// out, and wholly out means no overlap to clip to.
+					if (std::fabs(origin) > half[i])
+					{
+						t0 = 1.0f;
+						t1 = 0.0f;
+					}
+					continue;
+				}
+
+				float near = (-half[i] - origin) / direction;
+				float far = (half[i] - origin) / direction;
+				if (near > far)
+					std::swap(near, far);
+
+				t0 = std::max(t0, near);
+				t1 = std::min(t1, far);
+			}
+
+			// A meaningful span, not two points a hair apart -- those would
+			// behave worse than one honest point.
+			if (t1 - t0 > 0.05f)
+			{
+				float sign = normal[axis] < 0.0f ? -1.0f : 1.0f;
+				int count = 0;
+
+				for (int i = 0; i < 2; i++)
+				{
+					float t = i == 0 ? t0 : t1;
+					glm::vec3 onSegment = p + along * t;
+
+					// How far this end of the segment has sunk past the face,
+					// measured along the normal rather than reusing the single
+					// closest-pair depth -- a tilted capsule is deeper at one
+					// end than the other, and that difference is exactly what
+					// levels it.
+					float gap = sign * onSegment[axis] - half[axis];
+					float depth = a.Radius - gap;
+
+					// Only the ends that are actually touching.
+					//
+					// Emitting both unconditionally kept a tilted capsule
+					// tilted: a contact resists *approach* along its normal, so
+					// a point out in mid-air under the raised end held that end
+					// up and the capsule rested at about 10 degrees for ever.
+					// The manifold has to describe what is touching, not what
+					// the shape spans.
+					if (depth <= 0.0f)
+						continue;
+
+					glm::vec3 onFace = onSegment;
+					onFace[axis] = sign * half[axis];
+
+					out.Points[count].Position = toWorld(onFace);
+					out.Points[count].Penetration = depth;
+					count++;
+				}
+
+				if (count > 0)
+				{
+					out.PointCount = count;
+					out.Penetration = out.Points[0].Penetration;
+					out.Point = out.Points[0].Position;
+
+					for (int i = 1; i < count; i++)
+					{
+						if (out.Points[i].Penetration > out.Penetration)
+						{
+							out.Penetration = out.Points[i].Penetration;
+							out.Point = out.Points[i].Position;
+						}
+					}
+					return true;
+				}
+			}
+		}
+
+		// End-on, edge, or corner: one point is the honest answer.
+		out.Penetration = penetration;
+		out.Point = toWorld(boxPoint);
+		out.PointCount = 1;
+		out.Points[0].Position = out.Point;
+		out.Points[0].Penetration = penetration;
+		return true;
+	}
+
 	static bool CollideBoxBox(unsigned int ia, const RigidBody3D& a,
 		unsigned int ib, const RigidBody3D& b, Contact3D& out)
 	{
@@ -293,18 +660,44 @@ namespace Egss {
 	static bool Collide(unsigned int i, const RigidBody3D& a, unsigned int j,
 		const RigidBody3D& b, Contact3D& out)
 	{
-		if (a.Shape == ColliderShape3D::Sphere && b.Shape == ColliderShape3D::Sphere)
+		const ColliderShape3D sphere = ColliderShape3D::Sphere;
+		const ColliderShape3D box = ColliderShape3D::Box;
+		const ColliderShape3D capsule = ColliderShape3D::Capsule;
+
+		// Like-with-like first.
+		if (a.Shape == sphere && b.Shape == sphere)
 			return CollideSphereSphere(i, a, j, b, out);
 
-		if (a.Shape == ColliderShape3D::Box && b.Shape == ColliderShape3D::Box)
+		if (a.Shape == box && b.Shape == box)
 			return CollideBoxBox(i, a, j, b, out);
 
-		if (a.Shape == ColliderShape3D::Sphere)
+		if (a.Shape == capsule && b.Shape == capsule)
+			return CollideCapsuleCapsule(i, a, j, b, out);
+
+		// Then the mixed pairs in their canonical order.
+		if (a.Shape == sphere && b.Shape == box)
 			return CollideSphereBox(i, a, j, b, out);
 
-		// Box vs sphere: run it the other way round and flip the normal,
-		// rather than writing the test twice.
-		if (!CollideSphereBox(j, b, i, a, out))
+		if (a.Shape == capsule && b.Shape == sphere)
+			return CollideCapsuleSphere(i, a, j, b, out);
+
+		if (a.Shape == capsule && b.Shape == box)
+			return CollideCapsuleBox(i, a, j, b, out);
+
+		// Everything else is one of those with the bodies the other way round.
+		// Run the canonical test and flip the normal, rather than writing each
+		// test twice -- the swapped versions were where the 2D narrowphase
+		// grew its bugs.
+		bool hit = false;
+
+		if (a.Shape == box && b.Shape == sphere)
+			hit = CollideSphereBox(j, b, i, a, out);
+		else if (a.Shape == sphere && b.Shape == capsule)
+			hit = CollideCapsuleSphere(j, b, i, a, out);
+		else if (a.Shape == box && b.Shape == capsule)
+			hit = CollideCapsuleBox(j, b, i, a, out);
+
+		if (!hit)
 			return false;
 
 		out.A = i;
@@ -327,13 +720,23 @@ namespace Egss {
 		MarkGridDirty();
 		GenerateContacts();
 		PrepareContacts();
+		PrepareJoints(dt);
 		WarmStart();
 
 		{
 			EGSS_PROFILE_SCOPE("Physics3D::Solve");
 
+			// Joints and contacts share the iteration loop rather than each
+			// getting their own pass. They are coupled -- a jointed chain
+			// resting on the floor is both at once -- and solving all of one
+			// then all of the other lets each undo the other's work. Joints
+			// go first because a contact correcting a limb that is about to be
+			// pulled somewhere else is wasted.
 			for (unsigned int i = 0; i < VelocityIterations; i++)
+			{
+				SolveJoints();
 				SolveVelocities();
+			}
 		}
 
 		IntegratePositions(dt);
@@ -516,8 +919,16 @@ namespace Egss {
 		const RigidBody3D& a = m_Bodies[i];
 		const RigidBody3D& b = m_Bodies[j];
 
-		// Two immovable bodies can never resolve anything.
-		if (a.InverseMass == 0.0f && b.InverseMass == 0.0f)
+		// Two immovable bodies can never resolve anything. Asked of the solver
+		// rather than of InverseMass, so a kinematic body -- which keeps a real
+		// mass but is immovable to contacts -- counts.
+		if (SolverInverseMass(a) == 0.0f && SolverInverseMass(b) == 0.0f)
+			return;
+
+		// An upper and lower arm overlap at the elbow permanently. Without
+		// this the contact and the joint push against each other every step
+		// and the limb buzzes.
+		if (JointSuppressesContact(i, j))
 			return;
 
 		Contact3D contact;
@@ -558,6 +969,633 @@ namespace Egss {
 		}
 
 		m_Contacts.push_back(contact);
+	}
+
+	// The matrix that turns a vector into a cross product: skew(r) * v == r x v.
+	// Needed because the joint's effective mass has to be assembled as a
+	// matrix, and `r x (I^-1 (r x P))` only becomes one when the crosses are
+	// written this way.
+	static glm::mat3 Skew(const glm::vec3& r)
+	{
+		// glm is column-major: the first index is the column.
+		glm::mat3 m(0.0f);
+		m[1][0] = -r.z;  m[2][0] =  r.y;
+		m[0][1] =  r.z;  m[2][1] = -r.x;
+		m[0][2] = -r.y;  m[1][2] =  r.x;
+		return m;
+	}
+
+	PhysicsWorld3D::JointHandle PhysicsWorld3D::AddBallJoint(BodyHandle a, BodyHandle b,
+		const glm::vec3& worldAnchor)
+	{
+		Joint3D joint;
+		joint.A = a;
+		joint.B = b;
+
+		// Into each body's frame, which is what freezes the current relative
+		// placement as the one the joint will hold.
+		const RigidBody3D& bodyA = m_Bodies[a];
+		const RigidBody3D& bodyB = m_Bodies[b];
+
+		joint.LocalAnchorA = glm::conjugate(bodyA.Orientation) * (worldAnchor - bodyA.Position);
+		joint.LocalAnchorB = glm::conjugate(bodyB.Orientation) * (worldAnchor - bodyB.Position);
+
+		m_Joints.push_back(joint);
+		return (JointHandle)(m_Joints.size() - 1);
+	}
+
+	PhysicsWorld3D::JointHandle PhysicsWorld3D::AddHingeJoint(BodyHandle a, BodyHandle b,
+		const glm::vec3& worldAnchor, const glm::vec3& worldAxis)
+	{
+		JointHandle handle = AddBallJoint(a, b, worldAnchor);
+
+		Joint3D& joint = m_Joints[handle];
+		joint.Type = JointType3D::Hinge;
+
+		const RigidBody3D& bodyA = m_Bodies[a];
+		const RigidBody3D& bodyB = m_Bodies[b];
+
+		glm::vec3 axis = glm::normalize(worldAxis);
+		joint.LocalAxisA = glm::conjugate(bodyA.Orientation) * axis;
+		joint.LocalAxisB = glm::conjugate(bodyB.Orientation) * axis;
+
+		// A reference direction perpendicular to the axis, stored in both
+		// frames. Because the *same* world direction goes into both, the angle
+		// measured between them reads zero right now -- so a limit of
+		// (-2.4, 0) means "from here, bend one way only".
+		glm::vec3 reference, unused;
+		BuildTangents(axis, reference, unused);
+
+		joint.LocalRefA = glm::conjugate(bodyA.Orientation) * reference;
+		joint.LocalRefB = glm::conjugate(bodyB.Orientation) * reference;
+
+		return handle;
+	}
+
+	void PhysicsWorld3D::SetConeTwistLimits(JointHandle handle, const glm::vec3& worldTwistAxis,
+		float coneAngle, float twistLower, float twistUpper)
+	{
+		Joint3D& joint = m_Joints[handle];
+		const RigidBody3D& a = m_Bodies[joint.A];
+		const RigidBody3D& b = m_Bodies[joint.B];
+
+		glm::vec3 axis = glm::normalize(worldTwistAxis);
+
+		// The same world direction into both frames, so the swing angle reads
+		// zero in the pose this was called in and the cone opens around where
+		// the bone currently points.
+		joint.LocalAxisA = glm::conjugate(a.Orientation) * axis;
+		joint.LocalAxisB = glm::conjugate(b.Orientation) * axis;
+
+		// The pose the limits are measured from. Without this a bone built at
+		// an angle to its parent reads that angle as swing and starts outside
+		// its own cone -- which is invisible on a test rig whose bodies all
+		// start aligned, and wrong on every real skeleton.
+		joint.ConeTwistRest = glm::normalize(glm::conjugate(a.Orientation) * b.Orientation);
+
+		joint.ConeTwistEnabled = true;
+		joint.ConeAngle = std::max(coneAngle, 0.0f);
+		joint.TwistLower = std::min(twistLower, twistUpper);
+		joint.TwistUpper = std::max(twistLower, twistUpper);
+	}
+
+	void PhysicsWorld3D::SetJointMotor(JointHandle handle, float stiffness, float maxTorque)
+	{
+		Joint3D& joint = m_Joints[handle];
+		const RigidBody3D& a = m_Bodies[joint.A];
+		const RigidBody3D& b = m_Bodies[joint.B];
+
+		joint.MotorEnabled = true;
+		joint.MotorStiffness = std::max(stiffness, 0.0f);
+		joint.MotorMaxTorque = std::max(maxTorque, 0.0f);
+
+		// Hold the current pose until told otherwise, which is nearly always
+		// what is wanted on a rig that was just assembled in its rest pose.
+		joint.MotorTargetRotation = glm::normalize(glm::conjugate(a.Orientation) * b.Orientation);
+		joint.MotorTargetAngle = joint.Angle;
+	}
+
+	void PhysicsWorld3D::SetHingeLimits(JointHandle handle, float lower, float upper)
+	{
+		Joint3D& joint = m_Joints[handle];
+		joint.LimitEnabled = true;
+		joint.LowerLimit = std::min(lower, upper);
+		joint.UpperLimit = std::max(lower, upper);
+	}
+
+	float PhysicsWorld3D::GetWorstJointSeparation() const
+	{
+		float worst = 0.0f;
+		for (const Joint3D& joint : m_Joints)
+			worst = std::max(worst, joint.Separation);
+
+		return worst;
+	}
+
+	bool PhysicsWorld3D::JointSuppressesContact(unsigned int a, unsigned int b) const
+	{
+		// Linear, because a body is jointed to two or three others at most and
+		// a humanoid has about fifteen joints in total. A map would cost more
+		// to maintain than it saves.
+		for (const Joint3D& joint : m_Joints)
+		{
+			if (joint.CollideConnected)
+				continue;
+
+			if ((joint.A == a && joint.B == b) || (joint.A == b && joint.B == a))
+				return true;
+		}
+
+		return false;
+	}
+
+	void PhysicsWorld3D::PrepareJoints(float dt)
+	{
+		for (Joint3D& joint : m_Joints)
+		{
+			RigidBody3D& a = m_Bodies[joint.A];
+			RigidBody3D& b = m_Bodies[joint.B];
+
+			joint.LeverA = a.Orientation * joint.LocalAnchorA;
+			joint.LeverB = b.Orientation * joint.LocalAnchorB;
+
+			// How far the two anchors have drifted apart. This is the
+			// constraint error, and driving it to zero is the whole job.
+			glm::vec3 error = (b.Position + joint.LeverB) - (a.Position + joint.LeverA);
+			joint.Separation = glm::length(error);
+
+			float inverseMassA = SolverInverseMass(a);
+			float inverseMassB = SolverInverseMass(b);
+			glm::mat3 inverseInertiaA = SolverInverseInertia(a);
+			glm::mat3 inverseInertiaB = SolverInverseInertia(b);
+
+			// K = (1/ma + 1/mb) I - [ra]x Ia^-1 [ra]x - [rb]x Ib^-1 [rb]x
+			//
+			// The 3x3 form of the scalar EffectiveMass used for contacts. The
+			// minus signs are not a sign error: skew(r) * skew(r) is negative
+			// semi-definite, so subtracting makes K positive definite and
+			// therefore invertible.
+			glm::mat3 skewA = Skew(joint.LeverA);
+			glm::mat3 skewB = Skew(joint.LeverB);
+
+			glm::mat3 k = glm::mat3(inverseMassA + inverseMassB)
+				- skewA * inverseInertiaA * skewA
+				- skewB * inverseInertiaB * skewB;
+
+			// Two static bodies jointed together leave K singular. Nothing can
+			// move, so the identity is as good an answer as any and avoids a
+			// division by zero.
+			float determinant = glm::determinant(k);
+			joint.EffectiveMass = std::fabs(determinant) > 1e-12f
+				? glm::inverse(k)
+				: glm::mat3(0.0f);
+
+			// Baumgarte: feed a fraction of the position error back in as a
+			// velocity target, so drift is corrected over a few steps rather
+			// than all at once. Correcting all of it adds energy -- the same
+			// reason CorrectPositions uses a percentage.
+			const float beta = 0.2f;
+			joint.Bias = dt > 0.0f ? (beta / dt) * error : glm::vec3(0.0f);
+
+			if (joint.Type != JointType3D::Hinge)
+			{
+				joint.LimitState = 0;
+				joint.SwingState = 0;
+				joint.TwistState = 0;
+
+				// --- the ball motor, driving towards a target orientation ---
+				if (joint.MotorEnabled)
+				{
+					joint.MotorMaxImpulse = joint.MotorMaxTorque * dt;
+
+					// Reset rather than carried over. The limits and the point
+					// constraint are warm started, but a motor is not: its
+					// budget is per step, and an accumulated impulse left
+					// sitting at the clamp from last step means this step's
+					// solve computes a delta of nothing and the motor silently
+					// stops pulling. That is exactly what happened -- a motor
+					// given three times the torque it needed still could not
+					// hold an arm up.
+					joint.AccumulatedMotorImpulse3 = glm::vec3(0.0f);
+
+					glm::mat3 sumInverse = inverseInertiaA + inverseInertiaB;
+					float motorDeterminant = glm::determinant(sumInverse);
+
+					joint.MotorMass3 = std::fabs(motorDeterminant) > 1e-12f
+						? glm::inverse(sumInverse)
+						: glm::mat3(0.0f);
+
+					// The rotation that would take B where it is now to where
+					// it is wanted, expressed in A's frame.
+					glm::quat current = glm::normalize(
+						glm::conjugate(a.Orientation) * b.Orientation);
+					glm::quat error = glm::normalize(
+						joint.MotorTargetRotation * glm::conjugate(current));
+
+					if (error.w < 0.0f)
+						error = glm::quat(-error.w, -error.x, -error.y, -error.z);
+
+					// Axis-angle. For a small error the vector part is already
+					// half the rotation vector, so this is the usual 2*xyz --
+					// but written through the angle so a large error is still
+					// right rather than merely small-angle correct.
+					glm::vec3 axis(error.x, error.y, error.z);
+					float axisLength = glm::length(axis);
+
+					glm::vec3 rotationVector(0.0f);
+					if (axisLength > 1e-6f)
+					{
+						float angle = 2.0f * std::atan2(axisLength, error.w);
+						rotationVector = (axis / axisLength) * angle;
+					}
+
+					// Proportional term. The derivative half is not written
+					// anywhere: constraining the spin *to* this value removes
+					// any excess, which is what a D term does.
+					glm::vec3 targetSpin = joint.MotorStiffness
+						* (a.Orientation * rotationVector);
+
+					float speed = glm::length(targetSpin);
+					if (speed > joint.MotorMaxSpeed && speed > 0.0f)
+						targetSpin *= joint.MotorMaxSpeed / speed;
+
+					joint.MotorTargetSpin = targetSpin;
+				}
+				else
+				{
+					joint.AccumulatedMotorImpulse3 = glm::vec3(0.0f);
+				}
+
+				if (!joint.ConeTwistEnabled)
+				{
+					joint.AccumulatedSwingImpulse = 0.0f;
+					joint.AccumulatedTwistImpulse = 0.0f;
+					continue;
+				}
+
+				// How far B has moved from the pose the limits were set in,
+				// expressed in A's frame. Everything below happens in that
+				// frame and is rotated out to world at the end.
+				//
+				// Measured against the rest pose rather than against the
+				// bodies being aligned: a shoulder's cone opens around where
+				// the arm was built, not around the torso's own axes.
+				glm::quat relative = glm::normalize(
+					glm::normalize(glm::conjugate(a.Orientation) * b.Orientation)
+					* glm::conjugate(joint.ConeTwistRest));
+
+				// A quaternion and its negation are the same rotation, but the
+				// decomposition below is not sign-agnostic -- forcing a
+				// non-negative scalar part is what makes it take the short way
+				// round rather than reporting a 350 degree swing as a 10.
+				if (relative.w < 0.0f)
+					relative = glm::quat(-relative.w, -relative.x, -relative.y, -relative.z);
+
+				const glm::vec3& twistAxisLocal = joint.LocalAxisA;
+
+				// Swing-twist decomposition. The part of the rotation about
+				// the bone's own axis is found by projecting the quaternion's
+				// vector part onto that axis; whatever is left is the lean.
+				//
+				// Done this way rather than measuring the two angles directly
+				// because the direct measurements interfere: a twist read off
+				// a reference vector changes when the bone swings even though
+				// nothing twisted.
+				glm::vec3 vector(relative.x, relative.y, relative.z);
+				glm::vec3 projected = glm::dot(vector, twistAxisLocal) * twistAxisLocal;
+
+				glm::quat twist(relative.w, projected.x, projected.y, projected.z);
+				float twistLength = glm::length(twist);
+				twist = twistLength > 1e-6f
+					? twist / twistLength
+					: glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+				glm::quat swing = relative * glm::conjugate(twist);
+
+				joint.TwistAngle = 2.0f * std::atan2(
+					glm::dot(glm::vec3(twist.x, twist.y, twist.z), twistAxisLocal),
+					twist.w);
+				joint.SwingAngle = 2.0f * std::acos(glm::clamp(swing.w, -1.0f, 1.0f));
+
+				glm::mat3 sum = inverseInertiaA + inverseInertiaB;
+				const float slop = 0.005f;
+
+				// --- swing: is the bone outside its cone? ------------------
+				glm::vec3 swingVector(swing.x, swing.y, swing.z);
+				float swingVectorLength = glm::length(swingVector);
+
+				if (swingVectorLength > 1e-6f && joint.SwingAngle > joint.ConeAngle - slop)
+				{
+					// The axis the swing happened about. Positive relative
+					// spin about it leans the bone further out.
+					joint.SwingAxis = glm::normalize(a.Orientation * (swingVector / swingVectorLength));
+
+					float mass = glm::dot(joint.SwingAxis, sum * joint.SwingAxis);
+					joint.SwingMass = mass > 0.0f ? 1.0f / mass : 0.0f;
+
+					joint.SwingState = 1;
+					joint.SwingBias = dt > 0.0f
+						? (beta / dt) * std::max(joint.SwingAngle - joint.ConeAngle, 0.0f)
+						: 0.0f;
+				}
+				else
+				{
+					joint.AccumulatedSwingImpulse = 0.0f;
+				}
+
+				// --- twist -------------------------------------------------
+				joint.TwistAxis = glm::normalize(a.Orientation * twistAxisLocal);
+
+				float twistMass = glm::dot(joint.TwistAxis, sum * joint.TwistAxis);
+				joint.TwistMass = twistMass > 0.0f ? 1.0f / twistMass : 0.0f;
+
+				if (joint.TwistAngle >= joint.TwistUpper - slop)
+				{
+					joint.TwistState = 1;
+					joint.TwistBias = dt > 0.0f
+						? (beta / dt) * std::max(joint.TwistAngle - joint.TwistUpper, 0.0f)
+						: 0.0f;
+				}
+				else if (joint.TwistAngle <= joint.TwistLower + slop)
+				{
+					joint.TwistState = -1;
+					joint.TwistBias = dt > 0.0f
+						? (beta / dt) * std::min(joint.TwistAngle - joint.TwistLower, 0.0f)
+						: 0.0f;
+				}
+				else
+				{
+					joint.AccumulatedTwistImpulse = 0.0f;
+				}
+
+				continue;
+			}
+
+			// --- the two locked rotations ---------------------------------
+			glm::vec3 axisA = a.Orientation * joint.LocalAxisA;
+			glm::vec3 axisB = b.Orientation * joint.LocalAxisB;
+
+			joint.WorldAxis = glm::normalize(axisA);
+			BuildTangents(joint.WorldAxis, joint.AxisTangent[0], joint.AxisTangent[1]);
+
+			// The axes have drifted apart by this much. Their cross product is
+			// the rotation that would bring them back together, and projecting
+			// it onto the two tangents gives the error in each locked
+			// direction.
+			glm::vec3 misalignment = glm::cross(axisA, axisB);
+			joint.AxisError = glm::length(misalignment);
+
+			glm::mat3 sum = inverseInertiaA + inverseInertiaB;
+
+			// A 2x2 for the same reason the point constraint takes a 3x3: the
+			// two locked directions are coupled through the inertia tensor,
+			// and solving them separately converges badly.
+			glm::mat2 angular;
+			for (int row = 0; row < 2; row++)
+			{
+				for (int column = 0; column < 2; column++)
+				{
+					angular[column][row] = glm::dot(joint.AxisTangent[row],
+						sum * joint.AxisTangent[column]);
+				}
+			}
+
+			float angularDeterminant = angular[0][0] * angular[1][1]
+				- angular[0][1] * angular[1][0];
+
+			joint.AngularMass = std::fabs(angularDeterminant) > 1e-12f
+				? glm::inverse(angular)
+				: glm::mat2(0.0f);
+
+			joint.AngularBias = dt > 0.0f
+				? (beta / dt) * glm::vec2(glm::dot(misalignment, joint.AxisTangent[0]),
+					glm::dot(misalignment, joint.AxisTangent[1]))
+				: glm::vec2(0.0f);
+
+			// --- the angle, and whether it is against a limit --------------
+			glm::vec3 referenceA = a.Orientation * joint.LocalRefA;
+			glm::vec3 referenceB = b.Orientation * joint.LocalRefB;
+
+			// Signed angle from A's reference to B's, about the hinge axis.
+			// atan2 rather than acos: acos loses the sign, and a knee needs to
+			// know which side of straight it is on.
+			joint.Angle = std::atan2(
+				glm::dot(glm::cross(referenceA, referenceB), joint.WorldAxis),
+				glm::dot(referenceA, referenceB));
+
+			joint.LimitState = 0;
+
+			// The hinge's motor: one number, about one axis. Shares the
+			// limit's effective mass, since both act along the hinge axis.
+			if (joint.MotorEnabled)
+			{
+				joint.MotorMaxImpulse = joint.MotorMaxTorque * dt;
+				joint.AccumulatedMotorImpulse = 0.0f;   // per step; see the ball case
+
+				float axisMass = glm::dot(joint.WorldAxis, sum * joint.WorldAxis);
+				joint.LimitMass = axisMass > 0.0f ? 1.0f / axisMass : 0.0f;
+
+				// Shortest way round, so a motor asked to go from +3 to -3
+				// radians turns through the gap rather than the long way.
+				float error = joint.MotorTargetAngle - joint.Angle;
+				while (error > glm::pi<float>()) error -= glm::two_pi<float>();
+				while (error < -glm::pi<float>()) error += glm::two_pi<float>();
+
+				float targetSpin = glm::clamp(joint.MotorStiffness * error,
+					-joint.MotorMaxSpeed, joint.MotorMaxSpeed);
+
+				joint.MotorTargetSpin = glm::vec3(targetSpin, 0.0f, 0.0f);
+			}
+			else
+			{
+				joint.AccumulatedMotorImpulse = 0.0f;
+			}
+
+			if (joint.LimitEnabled)
+			{
+				float axisMass = glm::dot(joint.WorldAxis, sum * joint.WorldAxis);
+				joint.LimitMass = axisMass > 0.0f ? 1.0f / axisMass : 0.0f;
+
+				// A small slop, as contacts have: correcting a limit to
+				// exactly its value every step makes a resting limb buzz.
+				const float slop = 0.005f;
+
+				if (joint.Angle <= joint.LowerLimit + slop)
+				{
+					joint.LimitState = -1;
+					joint.LimitBias = dt > 0.0f
+						? (beta / dt) * std::min(joint.Angle - joint.LowerLimit + slop, 0.0f)
+						: 0.0f;
+				}
+				else if (joint.Angle >= joint.UpperLimit - slop)
+				{
+					joint.LimitState = 1;
+					joint.LimitBias = dt > 0.0f
+						? (beta / dt) * std::max(joint.Angle - joint.UpperLimit - slop, 0.0f)
+						: 0.0f;
+				}
+
+				// The stored impulse only means anything while the joint stays
+				// against the same limit.
+				if (joint.LimitState == 0)
+					joint.AccumulatedLimitImpulse = 0.0f;
+			}
+		}
+	}
+
+	void PhysicsWorld3D::SolveJoints()
+	{
+		for (Joint3D& joint : m_Joints)
+		{
+			RigidBody3D& a = m_Bodies[joint.A];
+			RigidBody3D& b = m_Bodies[joint.B];
+
+			// Angular parts first, then the point constraint. The point
+			// constraint is the one that must hold visibly -- a limb detaching
+			// looks far worse than one bending a degree past its stop -- so it
+			// gets the last word each iteration.
+			//
+			// One shared shape for every angular limit here: measure the
+			// relative spin along the limit's axis, solve for the impulse that
+			// stops it, and clamp the running total to a single sign so the
+			// stop resists but never holds.
+			auto solveLimit = [&](const glm::vec3& axis, float mass, float bias,
+				float& accumulated, bool positiveOnly)
+			{
+				float along = glm::dot(b.AngularVelocity - a.AngularVelocity, axis);
+				float impulse = -mass * (along + bias);
+
+				float previous = accumulated;
+				accumulated = positiveOnly
+					? std::max(previous + impulse, 0.0f)
+					: std::min(previous + impulse, 0.0f);
+
+				glm::vec3 world = (accumulated - previous) * axis;
+				a.AngularVelocity -= SolverInverseInertia(a) * world;
+				b.AngularVelocity += SolverInverseInertia(b) * world;
+			};
+
+			// Motors before limits, so a limit always has the last word over a
+			// motor driving into it. A muscle cannot pull a knee backwards.
+			if (joint.MotorEnabled && joint.Type != JointType3D::Hinge)
+			{
+				glm::vec3 relativeSpin = b.AngularVelocity - a.AngularVelocity;
+				glm::vec3 impulse = joint.MotorMass3
+					* (joint.MotorTargetSpin - relativeSpin);
+
+				glm::vec3 previous = joint.AccumulatedMotorImpulse3;
+				glm::vec3 total = previous + impulse;
+
+				// Clamped in magnitude, not per axis: a torque budget is a
+				// scalar, and clamping the components separately would let a
+				// diagonal pull exceed it by root three.
+				float maximum = joint.MotorMaxImpulse;
+				float length = glm::length(total);
+				if (length > maximum && length > 0.0f)
+					total *= maximum / length;
+
+				joint.AccumulatedMotorImpulse3 = total;
+
+				glm::vec3 applied = total - previous;
+				a.AngularVelocity -= SolverInverseInertia(a) * applied;
+				b.AngularVelocity += SolverInverseInertia(b) * applied;
+			}
+
+			if (joint.MotorEnabled && joint.Type == JointType3D::Hinge)
+			{
+				float along = glm::dot(b.AngularVelocity - a.AngularVelocity,
+					joint.WorldAxis);
+				float impulse = joint.LimitMass * (joint.MotorTargetSpin.x - along);
+
+				float previous = joint.AccumulatedMotorImpulse;
+				float maximum = joint.MotorMaxImpulse;
+				joint.AccumulatedMotorImpulse =
+					glm::clamp(previous + impulse, -maximum, maximum);
+
+				glm::vec3 applied = (joint.AccumulatedMotorImpulse - previous)
+					* joint.WorldAxis;
+
+				a.AngularVelocity -= SolverInverseInertia(a) * applied;
+				b.AngularVelocity += SolverInverseInertia(b) * applied;
+			}
+
+			if (joint.ConeTwistEnabled && joint.Type != JointType3D::Hinge)
+			{
+				if (joint.SwingState != 0)
+				{
+					// Leaning further out is what must be refused, so the
+					// impulse may only ever push the bone back in.
+					solveLimit(joint.SwingAxis, joint.SwingMass, joint.SwingBias,
+						joint.AccumulatedSwingImpulse, false);
+				}
+
+				if (joint.TwistState != 0)
+				{
+					solveLimit(joint.TwistAxis, joint.TwistMass, joint.TwistBias,
+						joint.AccumulatedTwistImpulse, joint.TwistState < 0);
+				}
+			}
+
+			if (joint.Type == JointType3D::Hinge)
+			{
+				glm::vec3 relativeSpin = b.AngularVelocity - a.AngularVelocity;
+
+				// The two locked rotations.
+				glm::vec2 spinError(glm::dot(relativeSpin, joint.AxisTangent[0]),
+					glm::dot(relativeSpin, joint.AxisTangent[1]));
+
+				glm::vec2 angularImpulse = joint.AngularMass
+					* -(spinError + joint.AngularBias);
+
+				joint.AccumulatedAngularImpulse += angularImpulse;
+
+				glm::vec3 worldAngular = angularImpulse.x * joint.AxisTangent[0]
+					+ angularImpulse.y * joint.AxisTangent[1];
+
+				a.AngularVelocity -= SolverInverseInertia(a) * worldAngular;
+				b.AngularVelocity += SolverInverseInertia(b) * worldAngular;
+
+				// The limit, which unlike everything else here is unilateral:
+				// a knee stop resists bending further but must not hold the
+				// knee *at* the stop, so the accumulated impulse is clamped to
+				// one sign and the joint is free to leave.
+				if (joint.LimitState != 0)
+				{
+					float along = glm::dot(b.AngularVelocity - a.AngularVelocity,
+						joint.WorldAxis);
+
+					float impulse = -joint.LimitMass * (along + joint.LimitBias);
+
+					float previous = joint.AccumulatedLimitImpulse;
+					if (joint.LimitState < 0)
+						joint.AccumulatedLimitImpulse = std::max(previous + impulse, 0.0f);
+					else
+						joint.AccumulatedLimitImpulse = std::min(previous + impulse, 0.0f);
+
+					impulse = joint.AccumulatedLimitImpulse - previous;
+
+					glm::vec3 worldLimit = impulse * joint.WorldAxis;
+					a.AngularVelocity -= SolverInverseInertia(a) * worldLimit;
+					b.AngularVelocity += SolverInverseInertia(b) * worldLimit;
+				}
+			}
+
+			glm::vec3 relative = PointVelocity(b, joint.LeverB)
+				- PointVelocity(a, joint.LeverA);
+
+			// No clamping anywhere in here. That is the bilateral part: the
+			// joint pulls as readily as it pushes, and an accumulated impulse
+			// that wants to reverse sign is allowed to.
+			glm::vec3 impulse = joint.EffectiveMass * -(relative + joint.Bias);
+
+			joint.AccumulatedImpulse += impulse;
+
+			a.Velocity -= impulse * SolverInverseMass(a);
+			a.AngularVelocity -= SolverInverseInertia(a) * glm::cross(joint.LeverA, impulse);
+
+			b.Velocity += impulse * SolverInverseMass(b);
+			b.AngularVelocity += SolverInverseInertia(b) * glm::cross(joint.LeverB, impulse);
+		}
 	}
 
 	void PhysicsWorld3D::PrepareContacts()
@@ -605,6 +1643,52 @@ namespace Egss {
 
 	void PhysicsWorld3D::WarmStart()
 	{
+		for (Joint3D& joint : m_Joints)
+		{
+			RigidBody3D& a = m_Bodies[joint.A];
+			RigidBody3D& b = m_Bodies[joint.B];
+
+			const glm::vec3& impulse = joint.AccumulatedImpulse;
+
+			a.Velocity -= impulse * SolverInverseMass(a);
+			a.AngularVelocity -= SolverInverseInertia(a) * glm::cross(joint.LeverA, impulse);
+
+			b.Velocity += impulse * SolverInverseMass(b);
+			b.AngularVelocity += SolverInverseInertia(b) * glm::cross(joint.LeverB, impulse);
+
+			if (joint.Type != JointType3D::Hinge)
+			{
+				if (joint.ConeTwistEnabled)
+				{
+					glm::vec3 stored(0.0f);
+					if (joint.SwingState != 0)
+						stored += joint.AccumulatedSwingImpulse * joint.SwingAxis;
+					if (joint.TwistState != 0)
+						stored += joint.AccumulatedTwistImpulse * joint.TwistAxis;
+
+					a.AngularVelocity -= SolverInverseInertia(a) * stored;
+					b.AngularVelocity += SolverInverseInertia(b) * stored;
+				}
+				continue;
+			}
+
+			// The angular impulses need carrying over for the same reason the
+			// linear one does. The axis tangents are rebuilt every step and can
+			// swing round as the body turns, so the stored pair is applied
+			// along the *current* tangents -- an approximation, but the
+			// alternative is storing the impulse as a world vector and having
+			// it fight the new frame.
+			glm::vec3 worldAngular =
+				joint.AccumulatedAngularImpulse.x * joint.AxisTangent[0]
+				+ joint.AccumulatedAngularImpulse.y * joint.AxisTangent[1];
+
+			if (joint.LimitState != 0)
+				worldAngular += joint.AccumulatedLimitImpulse * joint.WorldAxis;
+
+			a.AngularVelocity -= SolverInverseInertia(a) * worldAngular;
+			b.AngularVelocity += SolverInverseInertia(b) * worldAngular;
+		}
+
 		for (const Contact3D& contact : m_Contacts)
 		{
 			RigidBody3D& a = m_Bodies[contact.A];
@@ -712,7 +1796,11 @@ namespace Egss {
 			body.PreviousPosition = body.Position;
 			body.PreviousOrientation = body.Orientation;
 
-			if (body.Type == BodyType::Static || !body.Awake)
+			// Kinematic bodies are steered, not simulated: no gravity, no
+			// forces, no damping. Whatever velocity was set is the velocity
+			// they keep until it is set again.
+			if (body.Type == BodyType::Static || body.Type == BodyType::Kinematic
+				|| !body.Awake)
 			{
 				body.Force = glm::vec3(0.0f);
 				body.Torque = glm::vec3(0.0f);
@@ -745,6 +1833,8 @@ namespace Egss {
 
 		for (RigidBody3D& body : m_Bodies)
 		{
+			// Kinematic bodies are integrated here and nowhere else -- this is
+			// the whole difference between them and static ones.
 			if (body.Type == BodyType::Static || !body.Awake)
 				continue;
 
@@ -885,6 +1975,15 @@ namespace Egss {
 			if (body.Type == BodyType::Static)
 				continue;
 
+			// A sleeping kinematic body would stop being integrated and so
+			// stop moving, which is the one thing it exists to do.
+			if (body.Type == BodyType::Kinematic)
+			{
+				body.Awake = true;
+				body.SleepTimer = 0.0f;
+				continue;
+			}
+
 			if (!AllowSleeping)
 			{
 				body.Awake = true;
@@ -911,7 +2010,56 @@ namespace Egss {
 				}
 			}
 
-			if (body.Awake)
+		}
+
+		// Jointed bodies sleep together or not at all.
+		//
+		// Sleeping makes a body immovable to the solver, so half a sleeping
+		// chain would act as an anchor bolted to mid-air: the still-moving
+		// half would swing from it, and the moment the sleeper woke the whole
+		// thing would lurch. Wakefulness has to spread along the joints, and
+		// spread *transitively* -- waking a link's neighbour can wake its
+		// neighbour in turn -- so this runs until nothing changes.
+		//
+		// This is the poor relation of the island solver 2D has. It is enough
+		// for chains and ragdolls, which are what joints are for here.
+		if (AllowSleeping && !m_Joints.empty())
+		{
+			bool changed = true;
+			unsigned int guard = 0;
+
+			while (changed && guard++ <= m_Joints.size())
+			{
+				changed = false;
+
+				for (const Joint3D& joint : m_Joints)
+				{
+					RigidBody3D& a = m_Bodies[joint.A];
+					RigidBody3D& b = m_Bodies[joint.B];
+
+					// Static bodies are never awake and must not drag their
+					// partner awake either, or nothing anchored to the world
+					// would ever settle.
+					bool awakeA = a.Type != BodyType::Static && a.Awake;
+					bool awakeB = b.Type != BodyType::Static && b.Awake;
+
+					if (awakeA == awakeB)
+						continue;
+
+					RigidBody3D& sleeper = awakeA ? b : a;
+					if (sleeper.Type == BodyType::Static)
+						continue;
+
+					sleeper.Awake = true;
+					sleeper.SleepTimer = 0.0f;
+					changed = true;
+				}
+			}
+		}
+
+		for (const RigidBody3D& body : m_Bodies)
+		{
+			if (body.Type != BodyType::Static && body.Awake)
 				m_AwakeBodyCount++;
 		}
 	}

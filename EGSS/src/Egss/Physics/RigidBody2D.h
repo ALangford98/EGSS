@@ -13,7 +13,19 @@ namespace Egss {
 		// level geometry.
 		Static = 0,
 		// Moved by forces and collisions.
-		Dynamic
+		Dynamic,
+		// Moved by whoever sets its velocity, and by nothing else.
+		//
+		// Infinite mass to the solver, exactly like a static body -- contacts
+		// and joints cannot shift it, and gravity does not pull on it. Unlike
+		// a static body it *does* integrate its position from its velocity, so
+		// it can be driven about and will shove dynamic bodies out of its way
+		// without being shoved back.
+		//
+		// This is what a game character is while it is under control: it does
+		// not balance because it cannot fall. Switching it to Dynamic is what
+		// "going ragdoll" means.
+		Kinematic
 	};
 
 	enum class ColliderShape

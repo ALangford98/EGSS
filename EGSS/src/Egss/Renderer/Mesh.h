@@ -109,6 +109,19 @@ namespace Egss {
 		static Mesh* CreateSphere(float radius = 0.5f,
 			unsigned int segments = 32, unsigned int rings = 16);
 
+		// A tube about the **y** axis, open at both ends, from -halfHeight to
+		// +halfHeight. No caps, because the one thing this exists for is the
+		// shaft of a capsule, whose ends are covered by hemispheres.
+		//
+		// Open-ended also makes it the one primitive that survives a
+		// non-uniform scale: scale x and z together for radius and y for
+		// length, and it is still exactly a cylinder. A capsule mesh would
+		// not be -- stretching one turns its round caps into ellipsoids -- so
+		// a cylinder plus two spheres is how a capsule of any proportions gets
+		// drawn correctly from two fixed meshes.
+		static Mesh* CreateCylinder(float radius = 0.5f, float halfHeight = 0.5f,
+			unsigned int segments = 24);
+
 		const std::shared_ptr<VertexArray>& GetVertexArray() const { return m_VertexArray; }
 
 		// One entry per material the file switched to, in draw order. Always at

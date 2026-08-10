@@ -66,6 +66,200 @@ namespace Egss {
 		}
 	};
 
+	// A ball-and-socket joint: two bodies pinned at a shared point, free to
+	// turn about it however they like.
+	//
+	// This is the first *bilateral* constraint in the engine, and the word is
+	// what makes it different from a contact. A contact may only push -- its
+	// impulse is clamped at zero, because a floor cannot pull a box down. A
+	// joint may push and pull without limit, because a shoulder holds an arm
+	// on from both directions. That single difference is most of why the solve
+	// below looks like the contact solve with pieces missing: no clamping, no
+	// restitution, no friction.
+	//
+	// The other difference is that it takes a 3x3 effective mass rather than a
+	// scalar. A contact constrains one direction, so its effective mass is one
+	// number. A ball joint constrains all three at once, and they are coupled
+	// through the inertia tensor -- solving each axis separately converges
+	// slowly and visibly stretches under load, which for a ragdoll reads as
+	// limbs pulling out of their sockets.
+	enum class JointType3D
+	{
+		// Pinned at a point, free to turn any way about it. Shoulders, hips.
+		Ball = 0,
+		// Pinned at a point *and* about an axis, leaving one degree of freedom.
+		// Knees, elbows, doors.
+		Hinge
+	};
+
+	struct EGSS_API Joint3D
+	{
+		JointType3D Type = JointType3D::Ball;
+
+		unsigned int A = 0;
+		unsigned int B = 0;
+
+		// The shared point, written in each body's own frame. Stored per body
+		// rather than once in world space because that is what makes it a
+		// constraint: the two anchors are the same point now, and the solver's
+		// job is to keep them the same point.
+		glm::vec3 LocalAnchorA = { 0.0f, 0.0f, 0.0f };
+		glm::vec3 LocalAnchorB = { 0.0f, 0.0f, 0.0f };
+
+		// Whether the two bodies still collide with each other. Off by
+		// default: jointed bodies almost always overlap at the joint -- an
+		// upper and lower arm share the elbow -- and letting the narrowphase
+		// see that pair means the contact and the joint fight for ever.
+		bool CollideConnected = false;
+
+		// Carried between steps, exactly as contact impulses are. Warm
+		// starting matters more here than it does for contacts: a chain
+		// solved from cold sags visibly on the first frame and never quite
+		// catches up.
+		glm::vec3 AccumulatedImpulse = { 0.0f, 0.0f, 0.0f };
+
+		// Rebuilt each step in PrepareJoints.
+		glm::vec3 LeverA = { 0.0f, 0.0f, 0.0f };
+		glm::vec3 LeverB = { 0.0f, 0.0f, 0.0f };
+		glm::mat3 EffectiveMass = glm::mat3(1.0f);
+		glm::vec3 Bias = { 0.0f, 0.0f, 0.0f };
+
+		// How far apart the two anchors actually are, in world units. Zero is
+		// the constraint being met; it is the honest measure of whether the
+		// solver is keeping up, and the only reason it is stored.
+		float Separation = 0.0f;
+
+		// --- Hinge ---------------------------------------------------------
+		// The axis the two bodies may still turn about, in each body's frame.
+		// Keeping the angular constraint separate from the point constraint is
+		// what makes a hinge a ball joint plus two locked rotations rather than
+		// a different constraint written from scratch.
+		glm::vec3 LocalAxisA = { 0.0f, 0.0f, 1.0f };
+		glm::vec3 LocalAxisB = { 0.0f, 0.0f, 1.0f };
+
+		// A direction perpendicular to the axis in each frame, used only to
+		// measure the hinge angle. Chosen at construction so the angle reads
+		// zero wherever the bodies happen to be, which makes limits relative
+		// to the pose the joint was built in.
+		glm::vec3 LocalRefA = { 1.0f, 0.0f, 0.0f };
+		glm::vec3 LocalRefB = { 1.0f, 0.0f, 0.0f };
+
+		// Radians, measured about the axis from A to B. A knee wants roughly
+		// (-2.4, 0): it bends one way and stops straight.
+		bool LimitEnabled = false;
+		float LowerLimit = 0.0f;
+		float UpperLimit = 0.0f;
+
+		// The current angle, in radians. Readable, and the thing a limit test
+		// or a motor would look at.
+		float Angle = 0.0f;
+
+		// Rebuilt each step.
+		glm::vec3 WorldAxis = { 0.0f, 0.0f, 1.0f };
+		glm::vec3 AxisTangent[2] = {};
+		glm::mat2 AngularMass = glm::mat2(1.0f);
+		glm::vec2 AngularBias = { 0.0f, 0.0f };
+		glm::vec2 AccumulatedAngularImpulse = { 0.0f, 0.0f };
+
+		// -1 pressed against the lower limit, +1 against the upper, 0 free.
+		int LimitState = 0;
+		float LimitMass = 0.0f;
+		float LimitBias = 0.0f;
+		float AccumulatedLimitImpulse = 0.0f;
+
+		// How far the hinge axes have drifted out of alignment, in radians.
+		// The angular counterpart of Separation.
+		float AxisError = 0.0f;
+
+		// --- Cone and twist, for ball joints -------------------------------
+		// A shoulder is a ball joint, and an unlimited one lets the arm rotate
+		// through the torso. Two separate limits describe what a shoulder
+		// actually does:
+		//
+		//   * **Swing** -- how far the bone may lean away from its rest
+		//     direction, bounded by a cone of half-angle ConeAngle.
+		//   * **Twist** -- how far it may rotate *about* its own length,
+		//     bounded by TwistLower and TwistUpper.
+		//
+		// They are separated by a swing-twist decomposition of the relative
+		// rotation rather than measured independently, because the naive
+		// measurements interfere: twist read off a reference vector changes
+		// when the bone swings, even if nothing twisted.
+		bool ConeTwistEnabled = false;
+		float ConeAngle = 0.0f;        // radians, half-angle of the cone
+		float TwistLower = 0.0f;
+		float TwistUpper = 0.0f;
+
+		// B's orientation relative to A at the moment the limits were set.
+		// Both angles are measured as deviations from *this*, not from the
+		// bodies being aligned -- otherwise a limb built at an angle to its
+		// parent, which is every limb on a real skeleton, starts life outside
+		// its own cone and gets shoved to the boundary.
+		glm::quat ConeTwistRest = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+		// Readable results of the decomposition.
+		float SwingAngle = 0.0f;
+		float TwistAngle = 0.0f;
+
+		// Rebuilt each step. The axes are the directions positive relative
+		// spin about which *increases* the corresponding angle.
+		int SwingState = 0;            // 1 when outside the cone
+		glm::vec3 SwingAxis = { 0.0f, 0.0f, 1.0f };
+		float SwingMass = 0.0f;
+		float SwingBias = 0.0f;
+		float AccumulatedSwingImpulse = 0.0f;
+
+		int TwistState = 0;            // -1 below TwistLower, +1 above TwistUpper
+		glm::vec3 TwistAxis = { 0.0f, 1.0f, 0.0f };
+		float TwistMass = 0.0f;
+		float TwistBias = 0.0f;
+		float AccumulatedTwistImpulse = 0.0f;
+
+		// --- Motor ---------------------------------------------------------
+		// A limit says where a joint may not go. A motor says where it should
+		// be, and is the difference between a ragdoll and a body: a corpse
+		// falls, a person holds their arm up.
+		//
+		// Written as a velocity constraint with a target rather than as a
+		// torque, which is what makes it a *PD* controller without a separate
+		// derivative term. The proportional half is the target spin, set from
+		// how far the joint is from its goal; the derivative half falls out of
+		// constraining the spin to that value, since any excess is removed.
+		// MaxTorque is what keeps it a muscle rather than a weld -- push hard
+		// enough and the joint gives, which is the whole point for something
+		// meant to stumble.
+		bool MotorEnabled = false;
+
+		// How hard it converges, in inverse seconds: the target spin is this
+		// times the remaining angle error. Roughly 10 is a firm limb, 2 is a
+		// lazy one.
+		float MotorStiffness = 8.0f;
+
+		// The most it may exert, in newton-metres. Set it low and the limb is
+		// weak, which is what makes a shove push a character around instead of
+		// bouncing off them.
+		float MotorMaxTorque = 20.0f;
+
+		// The largest spin the motor will ask for, so a big angle error does
+		// not turn into a limb being flung at the target.
+		float MotorMaxSpeed = 10.0f;
+
+		// Where it is driving to. For a hinge, an angle about the hinge axis.
+		// For a ball joint, B's orientation relative to A.
+		float MotorTargetAngle = 0.0f;
+		glm::quat MotorTargetRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+		// Rebuilt each step.
+		float AccumulatedMotorImpulse = 0.0f;         // hinge, about the axis
+		glm::vec3 AccumulatedMotorImpulse3 = { 0.0f, 0.0f, 0.0f };   // ball
+		glm::mat3 MotorMass3 = glm::mat3(0.0f);
+		glm::vec3 MotorTargetSpin = { 0.0f, 0.0f, 0.0f };
+
+		// MaxTorque converted to an impulse budget for this step. Worked out
+		// in PrepareJoints because the solve does not know dt.
+		float MotorMaxImpulse = 0.0f;
+	};
+
 	// A rigid-body world in three dimensions.
 	//
 	// Built in three pieces, each verified before the next: the angular state
@@ -76,10 +270,11 @@ namespace Egss {
 	// Deliberately limited, and worth being explicit about:
 	//
 	//   * **Boxes and spheres only**, one collider per body.
-	//   * **Brute-force broadphase.** Every pair is tested, which is O(n^2).
-	//     2D started here too and only grew a uniform grid once a profile
-	//     asked for one; building it before that would be guessing.
-	//   * **No joints.**
+	//   * **Ball-and-socket joints only.** No hinges, no angular limits, no
+	//     motors -- a ragdoll built from these alone has elbows that bend
+	//     every way and will look like a bag of sticks. Limits are the next
+	//     piece, and the reason this one was built first is that everything
+	//     else is this plus angular terms.
 	class EGSS_API PhysicsWorld3D
 	{
 	public:
@@ -88,6 +283,55 @@ namespace Egss {
 
 		BodyHandle AddBody(const RigidBody3D& body);
 		void Clear();
+
+		using JointHandle = unsigned int;
+
+		// Pins the two bodies at `worldAnchor`, which must be where they are
+		// meant to be joined *right now* -- it is converted into each body's
+		// frame on the way in, so wherever they are at this moment becomes the
+		// rest state.
+		JointHandle AddBallJoint(BodyHandle a, BodyHandle b, const glm::vec3& worldAnchor);
+
+		// `worldAxis` need not be unit length. As with the ball joint, the
+		// bodies' current placement becomes the rest state -- and the hinge
+		// angle reads zero there, so limits are relative to the pose you built
+		// it in.
+		JointHandle AddHingeJoint(BodyHandle a, BodyHandle b,
+			const glm::vec3& worldAnchor, const glm::vec3& worldAxis);
+
+		// Radians, about the hinge axis. lower <= 0 <= upper for a joint built
+		// in its neutral pose; a knee is roughly (-2.4, 0).
+		void SetHingeLimits(JointHandle handle, float lower, float upper);
+
+		// Cone-and-twist limits for a ball joint.
+		//
+		// `worldTwistAxis` is the bone's direction right now -- the axis the
+		// cone opens around and twist is measured about. `coneAngle` is the
+		// cone's half-angle, so a shoulder allowing 60 degrees of lean in any
+		// direction takes radians(60). The twist range is measured from the
+		// current pose, so both limits are relative to however the bodies sit
+		// when this is called.
+		void SetConeTwistLimits(JointHandle handle, const glm::vec3& worldTwistAxis,
+			float coneAngle, float twistLower, float twistUpper);
+
+		// Turns on the motor and sets its strength. For a hinge the target is
+		// an angle about the hinge axis; for a ball joint it is B's orientation
+		// relative to A, and defaults to **wherever the bodies are now** -- so
+		// calling this on an assembled ragdoll means "hold this pose".
+		//
+		// Drive it by writing to the target each fixed step:
+		// `world.GetJoint(h).MotorTargetAngle = ...`.
+		void SetJointMotor(JointHandle handle, float stiffness, float maxTorque);
+
+		const std::vector<Joint3D>& GetJoints() const { return m_Joints; }
+		size_t GetJointCount() const { return m_Joints.size(); }
+		Joint3D& GetJoint(JointHandle handle) { return m_Joints[handle]; }
+		const Joint3D& GetJoint(JointHandle handle) const { return m_Joints[handle]; }
+
+		// The worst anchor separation across every joint, in world units. The
+		// number to watch: sequential impulses do not solve a chain exactly,
+		// and this says by how much they are missing.
+		float GetWorstJointSeparation() const;
 
 		RigidBody3D& GetBody(BodyHandle handle) { return m_Bodies[handle]; }
 		const RigidBody3D& GetBody(BodyHandle handle) const { return m_Bodies[handle]; }
@@ -214,8 +458,12 @@ namespace Egss {
 		void GenerateContacts();
 		void TestPair(unsigned int i, unsigned int j);
 		void PrepareContacts();
+		void PrepareJoints(float dt);
 		void WarmStart();
 		void SolveVelocities();
+		void SolveJoints();
+		// True when a joint holds these two and has asked them not to collide.
+		bool JointSuppressesContact(unsigned int a, unsigned int b) const;
 		void CorrectPositions();
 		void UpdateSleeping(float dt);
 
@@ -247,6 +495,7 @@ namespace Egss {
 	private:
 		std::vector<RigidBody3D> m_Bodies;
 		std::vector<Contact3D> m_Contacts;
+		std::vector<Joint3D> m_Joints;
 
 		// --- Grid ---
 		// Body indices per cell, in x-major order: (z * H + y) * W + x.

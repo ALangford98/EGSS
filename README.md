@@ -689,9 +689,31 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [x] **3D physics: a broadphase** — a uniform grid, bit-identical to brute
       force and switched on automatically above 200 bodies, because below that
       it measurably loses
-- [ ] **3D physics: shapes beyond boxes and spheres**, and capsules in
-      particular — they are what characters are usually made of, and a capsule
-      is a segment with a radius, so most of the sphere code generalises
+- [x] **3D physics: shapes beyond boxes and spheres** — capsules are in, with a
+      two-point manifold against boxes so one rests flat. Convex hulls are the
+      next shape worth having, and would reuse `Sat3D`
+- [x] **3D joints** — ball-and-socket, hinge, angle limits, cone-and-twist, and
+      motors. Enough to build a ragdoll that falls convincingly and one that
+      holds itself up
+- [x] **A humanoid rig** — thirteen jointed bodies with limits, in the Ragdoll
+      demo, passive or powered
+- [x] **Balance: the measurement and the ankle strategy.** Support polygon,
+      centre of mass, capture point, signed margin; two-axis ankles holding the
+      figure upright for 35 seconds unpushed, against one or two before
+- [x] **A controllable character** — kinematic pelvis, walk cycle, and a switch
+      to full ragdoll on a hard enough hit
+- [ ] **Getting up.** `G` puts control back but the character snaps upright
+      from wherever it is lying. Real games blend from the ragdoll's pose into
+      a get-up animation; the honest cheap version is to lerp the pelvis back
+      to standing over half a second and let the motors drag the limbs after it
+- [ ] **Stepping, if it is ever wanted.** Self-balancing is no longer on the
+      critical path for a playable character — the kinematic root removed the
+      need. Left documented because the diagnosis is complete and someone may
+      want it: the step does not widen the support polygon, and that one fact
+      is where any further work starts
+- [ ] **A second character, and pushing.** Once one figure balances, the second
+      is the same rig with a different driver; shoving is `ApplyImpulseAt`,
+      which already works
 
 - [ ] **Partitioned FFT convolution.** The convolution reverb takes a *sparse*
       response, which is what the ray tracer produces. A dense recorded impulse
@@ -971,6 +993,1465 @@ construction whichever way round it is. Only a file that states its normals can
 be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
+### 2026-08-10 (two modes: a character that walks, and a ragdoll it becomes)
+
+The balance work established that keeping a figure upright on its own skeleton
+is hard. This entry is the observation that games do not do it.
+
+**Controlled.** The pelvis is *kinematic* — a new body type: infinite mass to
+the solver exactly like a static body, but integrated from its own velocity, so
+it can be driven about and shoves dynamic bodies aside without being shoved
+back. The character cannot fall over because the thing holding it up is not
+being simulated. Everything else is unchanged: the same thirteen bodies, the
+same joints and limits, the same motors. The limbs are fully dynamic and hang
+off the root, so they swing, collide and react — which is what makes it read as
+physical rather than as an animation.
+
+**Ragdoll.** The pelvis becomes dynamic, inheriting whatever velocity it was
+being driven at, and the motors go slack. Nothing else changes. Physics takes
+over.
+
+The switch is the whole trick, and it is worth being blunt about what it buys:
+the entire stepping thread became unnecessary the moment the root stopped being
+simulated.
+
+Walking is a gait rather than a controller — hips swinging in antiphase, knees
+bending on the half of the cycle their foot is coming through — driven through
+the motors so the legs stay physical and get dragged towards the gait rather
+than snapped to it. Phase advances with *distance covered* rather than time, so
+the legs do not cycle on the spot or moonwalk when the speed changes.
+
+Measured:
+
+| | |
+| --- | --- |
+| controlled, 60 s undisturbed | still standing, com 1.085 m |
+| ragdolled from standing, 5 s | com 0.097 m — down |
+| shoved 5 Ns / 20 Ns | still controlled |
+| shoved 40 Ns / 80 Ns | ragdoll |
+| walked 5 s at 1.6 m/s | travelled **8.000 m**, exactly |
+
+The threshold behaves as designed: 2000 N over a 1/60 s step is 33 Ns, and the
+switch happens between 20 and 40.
+
+#### The bug that knocked it down on the first frame
+
+The impact trigger looks for a hard contact anywhere but the feet — feet are on
+the floor permanently and would fire it every step. That was not enough. The
+character collapsed immediately, and the trace showed it ragdolling within a
+quarter of a second of standing up.
+
+The contacts it was firing on were **the character touching itself**. A forearm
+rests against the torso and a shin brushes the other shin; those pairs are not
+jointed to each other, so nothing suppresses their collision, and their contact
+impulses are large enough to look exactly like being hit by a car.
+
+The trigger now requires exactly one side of the contact to be part of the
+character. Self-contact is not an impact, however hard it is.
+
+#### What it does not do
+
+Getting up is a snap: `G` restores control and the pelvis jumps back to standing
+height wherever it happens to be lying. Real games blend the ragdoll pose into a
+get-up animation, and the cheap honest version — lerping the root back over half
+a second and letting the motors drag the limbs after it — is not written.
+
+The feet also do not plant while walking; the support polygon reports fewer than
+three contact points much of the time. It does not matter for a kinematic root
+and it would matter enormously for anything that used the feet for traction.
+
+### 2026-08-09 (the trade that is not a trade)
+
+The last diagnosis said the step fires far too late — the body has travelled
+0.72 m past the foot before the swing runs. The obvious response is to trigger
+earlier, and the obvious objection is that an earlier trigger is exactly what
+was removed a few entries ago to stop the figure stepping during ordinary sway.
+Two real findings pointing opposite ways, and the trade between them had never
+been measured.
+
+Survival fractions over sixteen trials each, the two knobs that control
+earliness against the two things they were supposed to trade:
+
+| margin | persist | quiet 30 s | 20 Ns | 40 Ns |
+| ---: | ---: | --- | --- | --- |
+| 0.00 | 1 | 1/16 | 0/16 | 0/16 |
+| 0.00 | 4 | 7/16 | 3/16 | 0/16 |
+| 0.03 | 1 | 5/16 | 2/16 | 0/16 |
+| 0.03 | 4 | 9/16 | 7/16 | 0/16 |
+| 0.06 | 1 | 7/16 | 4/16 | 0/16 |
+| **0.06** | **8** | **10/16** | **8/16** | 0/16 |
+| 0.12 | 8 | 9/16 | 8/16 | 0/16 |
+
+**There is no trade.** Both columns move together — triggering earlier is worse
+at standing still *and* worse at surviving a shove, monotonically, and the
+earliest setting is catastrophic at both (1/16 and 0/16). The shipped
+configuration is already the best of the seven on every measure.
+
+#### Which is consistent, and worth saying plainly
+
+A trade requires both sides to have value. A step costs a foot's worth of
+support for a third of a second and — as the previous entry established —
+**delivers no increase in the base it stands on**. So a step is currently pure
+cost, taking more of them earlier is strictly worse, and no trigger tuning can
+be anything but harm reduction.
+
+That also retires the "step earlier" implication from the last entry. It was a
+reasonable inference from a correct diagnosis and it is wrong, because it
+assumed the step would be worth having once it was timely. It is not yet worth
+having at any time.
+
+#### Where the ragdoll thread actually ends up
+
+Standing balance works and is measured: 35 s unpushed with ankles alone, ankle
+strategy holding a positive capture margin, motor stiffness at its measured
+optimum, and a support polygon, centre of mass and capture point computed and
+drawn every frame. That is a real balance controller and it does its job.
+
+Stepping does not work, and after seven controllers and something like twenty
+sweeps the reason is finally a single sentence: **the step does not widen the
+base**. Everything else — the motor, the cone, the stance leg, the trigger, the
+swing shape, the knee profile, the weight shift, the stance width, the load
+gate — has been measured, and every one of them is either healthy or already at
+its optimum.
+
+The next thing to build is not another controller. It is one step, on a figure
+held artificially upright so the body is not outrunning the leg, that
+demonstrably extends the support polygon by the distance it moves the foot. If
+that can be made to happen in the easy case it can be chased into the hard one;
+if it cannot, the problem is somewhere nobody has looked yet, and there will at
+least be a small enough case to find it in.
+
+### 2026-08-09 (which of the three: the body outruns the leg)
+
+Three candidates for why a 0.183 m step adds nothing to the support polygon:
+the foot never lands, it lands in the wrong direction, or the centre of mass
+keeps pace with it. All three separate cleanly by fixing the fall direction at
+the moment of lift and tracking the foot and the centre of mass along it.
+
+| along the fall direction, over 12 steps | |
+| --- | ---: |
+| the foot moved | **−0.069 m** |
+| the centre of mass moved | **+0.332 m** |
+| foot behind the com | −0.18 m → −0.58 m |
+| swing foot in contact afterwards | 6/12, mean 215 N |
+
+The foot moves *backwards* relative to the fall, and ends 0.58 m behind the
+centre of mass having started 0.18 m behind it.
+
+#### Which is not what it looks like
+
+The obvious reading — the leg is aimed the wrong way — is wrong. Tracing one
+swing, the distance from foot to target **shrinks steadily**, 1.243 m to
+0.988 m. The leg is aimed correctly and closing.
+
+The number that matters is the 1.243 m. **The target is over a metre away when
+the swing starts**, because by then the pelvis has travelled **0.724 m
+horizontally past the foot**. The leg closes a quarter of a metre in its 0.16 s;
+the body covers a third of a metre in the same time. The foot is chasing a
+target bolted to a pelvis that is outrunning it, and finishes further behind
+than it began.
+
+So it is candidate 3, arrived at from the opposite direction to the one
+expected: not "the centre of mass keeps pace with the foot" but *the centre of
+mass is already long gone before the foot starts moving*.
+
+Nothing is saturated while this happens. The hip sits at 0.856 rad of a
+0.960 rad cone, the motor at 76% of its torque, the stance leg rigid at 15% of
+its own budget. **The step is not too weak. It is too late** — and not in the
+sense that the trigger fires late, which was measured and found false, but in
+the sense that a manoeuvre taking 0.16 s cannot catch a body already moving
+faster than a leg can swing.
+
+#### What that implies, and one more metric that lied
+
+The step has to begin much earlier — while the capture point is still heading
+out rather than once it has left — which means triggering on a *prediction* and
+accepting steps that turn out to have been unnecessary. That is the opposite of
+the trigger fix made a few entries ago, which reduced false steps and improved
+quiet standing by exactly the mechanism that now looks like the problem. Both
+findings are real; they simply trade against each other, and the trade has never
+been measured.
+
+And the third metric of this session to be measuring the wrong thing: "foot
+travel 0.183 m" was the **magnitude** of the displacement, never its direction.
+The foot was moving 0.18 m somewhere, and along the only axis that matters it
+was going backwards the whole time.
+
+### 2026-08-09 (the arithmetic: the rig is fine, and the step never widens the base)
+
+The suggestion at the end of the last entry was to stop tuning and ask whether
+this figure can be caught by a step at all. Done, and the answer is yes -- which
+makes the last several entries' worth of failure a bug rather than a limit.
+
+#### The model, on the rig's own numbers
+
+A linear inverted pendulum of height `h` falling at `v` is caught by a foot
+placed at `v * sqrt(h/g)` from the centre of mass. So the largest catchable
+speed is however far the support can be pushed out, over the pendulum's time
+constant -- and an impulse `J` at the chest gives the whole body `v = J/m`.
+
+Read off the rig rather than typed in: 71.2 kg, centre of mass 1.085 m,
+`tau = 0.3325 s`, foot half-length 0.110 m.
+
+| support reach | max speed | max impulse |
+| --- | --- | --- |
+| ankles only, 0.000 m | 0.33 m/s | **23.6 Ns** |
+| the step actually made, 0.183 m | 0.88 m/s | **62.7 Ns** |
+| the step the geometry allows, 0.737 m | 2.55 m/s | 181.4 Ns |
+
+**The first line is confirmed by experiment.** 20 Ns survives half the time and
+40 Ns never does, which brackets 23.6 Ns exactly. The model is right, and by it
+even the modest step already being made should nearly *triple* what the figure
+can take -- 24 Ns to 63 Ns.
+
+It does not. So the rig is not the limit and the premise was fine; something
+between "the foot moves 0.183 m" and "the figure is caught" is broken.
+
+#### And here it is
+
+Measuring how far the support polygon reaches towards the oncoming capture
+point, before the step and once the foot has landed:
+
+> **0.0019 m before. 0.0000 m after.**
+
+The base does not get any bigger. The foot travels 0.183 m and the polygon it
+stands on gains nothing in the direction it is falling.
+
+That is the entire failure, in one number, and it explains why every controller
+performed identically: none of them were ever converting foot travel into
+support. Load gating, the knee lift, the trigger persistence -- all of them
+genuinely improved how far the foot got, and none of it ever reached the thing
+that decides whether the figure stays up.
+
+Three candidates, none yet distinguished: the foot may not be making contact
+where it lands, it may be landing in a direction that does not extend the base
+towards the fall, or the centre of mass may simply be travelling as fast as the
+foot so the *relative* reach never improves. They are cheap to tell apart and
+that is the next measurement.
+
+#### Worth noting about the method
+
+The arithmetic took twenty minutes and settled a question that six controllers
+and a dozen parameter sweeps could not. It also validated itself on the way --
+the no-step prediction of 23.6 Ns matching the measured bracket is what makes
+the 62.7 Ns figure trustworthy, and without that check it would have been just
+another plausible number.
+
+The rule this project runs on is "compute the expected value by hand, then
+compare". It was applied to contact impulses, reverb tails and rolling discs,
+and somehow not to the one question the last several sessions were entirely
+about.
+
+### 2026-08-09 (bend early, straighten late: refuted, and a note on stopping)
+
+The last entry's untried idea, tried. The knee profile was a symmetric
+`sin(pi*t)` -- bend to a peak halfway, straighten by the end -- and the
+proposal was to peak it earlier so the leg spends longer extended while
+reaching. The phase is warped rather than the curve replaced, so the bend still
+starts and ends at zero and still peaks at exactly the same angle; only *when*
+moves.
+
+| knee peak | airborne | foot travel |
+| ---: | ---: | ---: |
+| **0.50 (symmetric)** | 71% | **0.183 m** |
+| 0.35 | 70% | 0.161 m |
+| 0.25 | 64% | 0.142 m |
+| 0.15 | 70% | 0.131 m |
+
+Worse, monotonically, and the airborne fraction stays flat at about 70%
+throughout -- so it is not a clearance effect. The likely reason is the
+opposite of the premise: **much of the foot's forward travel comes from the knee
+extending**, so extension late in the swing adds to the reach, and extension
+early is spent before the hip has turned. The symmetric curve was already the
+right shape.
+
+#### Where this thread actually stands
+
+Worth saying plainly, because the individual entries read more encouragingly
+than the whole:
+
+| measured and cleared | verdict |
+| --- | --- |
+| hip motor torque | 76% of budget, never saturated |
+| motor speed cap | 6.5 rad/s demanded of 10 |
+| trigger timing | fires with the centre of mass at 1.03 m of 1.08 |
+| stance leg | rigid, carries 533 N, motors at 15% of budget |
+| swing duration | travel flat in metres, 0.11-0.16 m, however timed |
+| knee profile | symmetric is best |
+| weight shift | rate limited to sqrt(h/g), too slow |
+| wider stance | worse on every measure |
+
+Three changes genuinely improved the mechanism -- load gating (0.06 to 0.158 m),
+knee lift (to 0.183 m), and the trigger persistence that stopped it stepping
+during sway. **Survival has not moved once, through any of it**: 8/16 at 20 Ns
+and 0/16 at 40 Ns, the same as not stepping at all.
+
+That pattern -- every component healthy, every refinement measured, the outcome
+untouched -- usually means the premise is wrong rather than the tuning. The step
+needs about 0.5 m and the leg delivers 0.183 m, and nothing in the mechanism is
+saturated, which suggests the geometry simply does not allow it in the time
+available. Before a seventh controller it is worth doing the arithmetic
+directly: given this figure's mass, foot size, leg length and joint torques, how
+large a disturbance *can* be caught by one step, and is it larger than the
+smallest shove that puts it over? If the answer is no, that is a design fact
+about the rig and not a controller to be found.
+
+### 2026-08-09 (the stance leg: cleared, and one more single run that lied)
+
+The swing had been measured to death and the leg holding the figure up had
+never been looked at. It turns out to be fine, and getting to that took one
+more correction of the kind this session kept needing.
+
+#### The single run said the figure was already falling
+
+Tracing one swing showed the stance foot carrying 60 N, then 23, then **zero**
+for several frames, with the centre of mass at 0.845 m when the foot lifted —
+against a standing height of 1.08 m and a fall threshold of 0.80. It looked
+conclusive: the step fires so late that the figure is already committed, both
+feet unloaded, nothing to push against.
+
+Averaged over twelve trials it is not true. The centre of mass is at **1.030 m
+when the trigger fires and 1.033 m when the foot lifts**, and the swing costs
+0.001 m of height. The traced run was one of the bad trials. The step is not
+firing late.
+
+That is the fourth time this session a single run has produced a confident
+wrong answer, and the only reason it did not become another rewrite is that
+checking it cost two minutes.
+
+#### The stance leg, averaged
+
+| | measured | for comparison |
+| --- | ---: | --- |
+| stance foot load during the swing | 533 N | 697 N is the whole figure |
+| stance knee buckle | 0.029 rad | 1.7 degrees |
+| stance knee motor torque | 23.5 Nm | budget is 160 Nm |
+| stance foot slip | 0.025 m | — |
+| airborne | 9% of the swing | — |
+
+The supporting leg is rigid, carries most of the figure, barely slips, and its
+motors are working at a seventh of their budget. **It is not the problem
+either.**
+
+#### What is left, now that everything else is cleared
+
+Five things have now been measured and each one exonerated: the hip motor
+(76% of budget, never saturated), the speed cap (6.5 of 10), the trigger timing
+(fires at 1.03 m), the swing schedule (travel is flat in metres however it is
+timed), and the stance leg.
+
+What remains is a real trade with both sides quantified. The bent knee that
+keeps the foot off the ground — without which it lands four frames in and drags
+— also folds the leg. **A hip reaching 4.48 rad/s would carry a straight 0.9 m
+leg about 0.6 m in the 0.16 s swing; folded, it delivers 0.183 m.** Clearance is
+worth more than reach at present, but the reach it costs is most of the step.
+
+The obvious thing nobody has tried is to stop treating the knee as one number:
+bend it early to clear the ground and straighten it late to reach, rather than
+holding a single fold across the whole swing. That is a shape change to
+`DriveSwingLeg`, it is small, and for once it follows from the measurements
+rather than from a theory about how walking works.
+
+### 2026-08-09 (measuring the hip motor, and finding the foot lands after four frames)
+
+Five controllers were tuned against a limit nobody had looked at. A motor
+written as a velocity constraint has three ways to run out — it saturates its
+torque budget, saturates its speed cap, or is not asked for much — and they want
+completely different fixes. All three are in numbers the solver already keeps.
+
+#### It is neither
+
+```
++ 0 | torque   24.2 Nm ( 11% of budget) | target spin 0.20 | actual 0.23 rad/s | foot load  41 N
++ 2 | torque   45.2 Nm ( 21% of budget) | target spin 2.06 | actual 1.44 rad/s | foot load   0 N
++ 4 | torque  166.2 Nm ( 76% of budget) | target spin 6.50 | actual 4.48 rad/s | foot load 189 N
++ 6 | torque  119.9 Nm ( 55% of budget) | target spin 4.28 | actual 3.36 rad/s | foot load 198 N
++ 8 | torque  101.0 Nm ( 46% of budget) | target spin 2.66 | actual 1.87 rad/s | foot load 171 N
+
+peak torque 166.2 Nm of 220 (76%), saturated 0/10 frames
+peak target spin 6.50 rad/s of a 10 cap, peak actual 4.48
+```
+
+**Peak torque 76% of budget, saturated in none of the ten frames. Peak demanded
+speed 6.5 of a 10 cap.** The hip motor was never the constraint, and raising
+either number would have done nothing — which five sessions of tuning had no way
+of knowing, because nobody had asked.
+
+#### What the same trace shows instead
+
+Read the foot load along that swing: **41 N, then 0, then 189, 198, 171**.
+
+The gate works exactly as designed — the foot leaves the ground into the
+trough. And then it **lands again four frames in**, and spends the remaining
+two thirds of the swing dragging along the floor. The step was not being
+under-powered, it was being cut short by the ground.
+
+#### Which reverses an earlier decision
+
+The knee lift had been *reduced* from 1.0 to 0.40 rad when the fast step was
+built, on the reasoning that a bent knee shortens the leg exactly when it needs
+to reach furthest. Measured, that is backwards:
+
+| knee lift | airborne frames (of 10) | foot travel |
+| ---: | ---: | ---: |
+| 0.40 rad | 2.3 | 0.083 m |
+| 0.70 rad | 4.7 | 0.080 m |
+| 1.00 rad | 6.5 | 0.118 m |
+| **1.40 rad** | **7.1** | **0.183 m** |
+
+Clearing the ground is worth far more than the reach it costs — **more than
+double the travel from a leg that is nominally shorter while swinging**. 1.40 is
+now the default.
+
+#### And survival still does not move
+
+8/16 at 20 Ns and 0/16 at 40 Ns, exactly as before. The foot now travels 0.183 m
+of the roughly 0.5 m it needs, up from 0.06 m before load gating and 0.083 m
+before the lift.
+
+Three of those numbers have improved by measuring rather than guessing, and the
+outcome has not moved once. The obvious remaining gap is that all of this
+concerns the **swing** leg, and a step has two: what the *stance* leg does while
+the other is in the air has never been looked at, and a stance leg that collapses
+or fails to push makes the best swing in the world irrelevant.
+
+### 2026-08-09 (a shorter swing and a predicted trough: both refuted)
+
+Two refinements the last entry proposed, both measured, both wrong.
+
+| swing | lead | foot travel | survives 20 Ns |
+| --- | --- | --- | --- |
+| **0.16 s** | **0.00 s** | **22%** | 8/16 |
+| 0.10 s | 0.00 s | 6% | 8/16 |
+| 0.16 s | 0.05 s | 6% | 8/16 |
+| 0.10 s | 0.05 s | 4% | 8/16 |
+
+**Pre-committing to a predicted trough** was supposed to centre the free window
+on the lift instead of starting it there. It cuts foot travel from 22% to 6%.
+The reason is visible in the earlier oscillation data and should have been
+predicted from it: the load is a *spike train*, swinging 0 to 900 N several
+times a second, so its derivative is enormous and erratic. Extrapolating it
+predicts troughs that never arrive, and the step then commits at high load —
+which is precisely the loaded lift that has never worked.
+
+**A shorter swing** was supposed to fit inside the 0.10 s trough. It also cuts
+travel to 6%, which is the opposite of what a trough-limited swing would do —
+so the swing was never trough-limited.
+
+#### The metric was flattering the wrong thing
+
+Testing longer swings to chase that seemed to help:
+
+| swing | travel % | distance asked | **actual travel** |
+| --- | --- | --- | --- |
+| 0.16 s | 22% | 0.72 m | **0.158 m** |
+| 0.22 s | 7% | 0.57 m | 0.040 m |
+| 0.30 s | 21% | 0.54 m | 0.113 m |
+| 0.45 s | 38% | 0.38 m | 0.144 m |
+
+38% looks like the winner and is not. A longer swing triggers when the target
+happens to be closer, so it reports a larger *fraction* of a smaller distance.
+**In metres the foot travels 0.11 to 0.16 m whatever the swing duration**, and
+0.16 s is still the best of them at 0.158 m.
+
+That is the second metric in three entries that turned out to be measuring its
+own denominator — after mean fall time, which measured its own tail. The
+percentage was introduced when the target distance was roughly constant and
+quietly stopped being valid when it was not.
+
+#### Where that leaves it
+
+Survival is 8/16 at 20 Ns and 0/16 at 40 Ns in **every configuration tested
+today**, unchanged since before any of this. The step needs about 0.5 m and
+delivers 0.15 m, and neither the schedule of the swing nor the moment it starts
+changes that.
+
+Load gating remains the one thing that moved the number, from 0.06 m to
+0.158 m, and it stays. What has not been measured even once is the swing's
+actual authority: how much torque the hip motor delivers while the leg is
+moving, and whether it is saturating. Five controllers have been tuned against
+a limit nobody has looked at. That is the next thing to measure, not the next
+thing to build.
+
+### 2026-08-09 (gating the lift on foot load: the first thing to move the number)
+
+Four step controllers moved the swing foot 9% of the distance they aimed it,
+whatever their timing. The load measurement said why -- the foot carries 52% of
+body weight at the moment of lift -- and the oscillation measurement offered a
+way out: each foot passes under 150 N about 11% of the time, in windows of a
+tenth of a second. So rather than trying to *create* an unload, which is rate
+limited to `sqrt(h/g)` and far too slow, wait for one and lift into it.
+
+The step is now decided and then held: the trigger picks the foot and the
+target, and the lift waits for that foot's own load to fall below a threshold,
+re-aiming at the capture point each frame while it waits. If no trough arrives
+within a quarter second the step is abandoned rather than taken loaded, because
+a loaded lift is the thing that never worked.
+
+| gate | foot travel | troughs used / missed | survives 20 Ns |
+| --- | --- | --- | --- |
+| none | 8% of 0.55 m | – | 8/16 |
+| **150 N** | **22% of 0.72 m** | 13 / 0 | 8/16 |
+| 80 N | 20% of 0.80 m | 10 / 8 | 8/16 |
+| 250 N | 7% of 0.58 m | 10 / 0 | 8/16 |
+
+**The foot travels nearly three times further.** That is the first movement in
+that number across five attempts, and it confirms the mechanism: the problem was
+never the swing, it was that the foot was pinned, and waiting for it to be free
+unpins it.
+
+The thresholds behave as the measurement predicted. 250 N is no better than not
+gating, because 250 N is still most of a body standing on the foot. 80 N catches
+a cleaner trough but misses eight of them outright -- the foot simply does not
+get that light often enough within the wait.
+
+#### And it still does not save the figure
+
+Survival is 8/16 in every row, unchanged from no stepping at all. 22% of the way
+is a much better failed step than 8%, and it is still a failed step.
+
+Two costs are now visible that were not before, and both come from waiting:
+
+- **The target recedes.** The distance the step has to cover grows from 0.55 m
+  to 0.72 m while waiting for the trough, because the capture point keeps moving
+  away. Some of what the trough buys is spent on the longer step it causes.
+- **The trough is 0.10 s and the swing is 0.16 s.** The foot is free for less
+  time than the swing needs, so the back half of the swing is once again lifting
+  against load.
+
+Neither is fatal and both are attackable -- a shorter swing, or committing to a
+predicted trough slightly before it arrives so the free window is centred on the
+lift rather than starting at it. For the first time in this thread the next
+thing to try is a refinement of something that works rather than a replacement
+for something that does not.
+
+### 2026-08-09 (the bounce cannot be tuned out, and is more useful than it looks)
+
+The standing figure presses on the ground with up to twice its own weight, which
+a body standing still cannot do except by bouncing. The question was what drives
+it: the balance controller, the joint motors, or the contact solver.
+
+#### The probe that measured nothing, and the tell that saved it
+
+Turning each suspect off in turn produced this:
+
+| configuration | mean load | min | max |
+| --- | ---: | ---: | ---: |
+| balance on, motors on | 696 N | 176 | 1335 |
+| balance off, motors on | 200 N | 0 | 989 |
+| balance on, gains zero | 198 N | 0 | 1229 |
+| soft motors | 112 N | 0 | 466 |
+
+It looks like everything reduces the bounce. It does not. **A standing figure
+presses with its own 697 N, and only the first row does** — every other
+configuration had fallen over, and a fallen figure's foot load is not a
+measurement of anything. The mean was the validity check that caught it, and
+without it the obvious reading would have been "turn the balance off and the
+bounce goes away".
+
+#### Stiffness is already at its optimum, and the window is narrow
+
+Sweeping motor stiffness, with standing measured as a survival fraction rather
+than read off the same run:
+
+| stiffness | mean load | max | airborne frames | stood 30 s |
+| ---: | ---: | ---: | ---: | --- |
+| 8 | 252 N | 1309 | 8 | 0/8 |
+| 11 | 692 N | 1325 | 2 | 1/8 |
+| **14** | **696 N** | 1335 | **0** | **7/8** |
+| 18 | 443 N | 1595 | 4 | 3/8 |
+| 24 | 698 N | 2144 | 11 | 0/8 |
+
+14 was already the shipped value, chosen by eye, and it is the optimum by a
+wide margin — and the only stiffness at which the feet never leave the ground.
+Stiffer bounces harder, softer cannot hold the figure up. **The bounce is not a
+tuning error; it is what standing costs at the only stiffness that stands.**
+
+#### Which turns out to be the good news
+
+Total load never drops below 176 N, so the figure is never airborne. But the two
+feet trade weight as it rocks, and individually:
+
+> Each foot ranges from **0 N to about 890 N**, spends **11% of its time under
+> 150 N**, and the longest continuous quiet window is **0.10 s**.
+
+A foot does fully unload, several times a second, for about a tenth of a second
+at a time. The swing that has to break contact is the first part of a 0.16 s
+step, so a 0.10 s window is plausibly enough to get the foot moving.
+
+That reframes the problem the last four entries have been stuck on. **Unloading
+the swing foot may be a timing problem rather than a force one** — not "create
+an unload", which the weight shift proved is rate limited to `sqrt(h/g)`, but
+"wait for one, and lift into it". The load is already measured and on the panel;
+gating the lift on it is a small change, and it is the first idea in this thread
+that the measurements suggested rather than one imposed on them.
+
+### 2026-08-09 (measuring the load on the swing foot, which explains everything)
+
+Three step controllers failed and each one was blamed on something different --
+the swing being too slow, then the missing weight shift, then the trigger. The
+number that would have settled it in one reading had never been taken.
+
+`FootLoad` now reports what each foot is pressing on the ground with, in
+newtons: the solver works in impulses, and a normal impulse is a force applied
+for one step, so dividing by the step recovers the force. The figure weighs
+71 kg, so 697 N is all of it and 348 N each is standing square.
+
+#### The answer
+
+> **At the moment a step tries to lift a foot, that foot is carrying 363 N --
+> 52% of body weight.**
+
+That is the whole story of the last three sessions. Every swing controller was
+asked to lift a foot with more than half the figure standing on it, and none of
+them could, which is why the foot travelled 9% of the distance it was aimed at
+regardless of how the swing was timed or shaped. It was never a trajectory
+problem.
+
+It also explains why the weight shift helped a little and not enough: it was
+the only attempt aimed at the right variable, and it moved 1 cm of the 10 cm
+needed because the shift is rate limited to `sqrt(h/g)`.
+
+#### And something that was not being looked for
+
+The load does not sit at a steady 348 N per foot while standing. It oscillates:
+
+```
+step  40: left   100 N  right   349 N
+step  80: left   393 N  right   371 N
+step 120: left   582 N  right   702 N
+```
+
+The last row sums to **1284 N -- nearly twice the figure's weight**, and during
+the step the swing foot spikes to 918 N and drops to 0 several times a second.
+A body standing still cannot press on the ground with twice its weight except
+by bouncing, so the standing pose is not still: the ankle controller is driving
+a vertical oscillation that the eye reads as a figure standing quietly.
+
+That matters for stepping beyond the obvious. A foot whose load is a spike
+train has no moment that is clearly the right one to lift -- and it may be that
+the useful version of "unload the swing foot" is to *time the lift to a trough
+that is already happening* rather than to create one.
+
+Both numbers are on the demo panel now, because they are the two the next
+attempt turns on.
+
+### 2026-08-09 (the trigger, fixed — and a claim from the last entry withdrawn)
+
+The last entry said stepping was worth +36% under a shove and −45% standing
+still, from means over eight trials. Half of that was real. The other half was
+the metric.
+
+#### The fix
+
+Two conditions now guard the trigger instead of one: the capture point must be
+outside the feet by a threshold, **and stay outside for a number of consecutive
+steps**. They reject different things — the threshold ignores small excursions,
+the persistence count ignores brief ones — and ordinary sway produces both.
+
+Measured as a **survival fraction over sixteen perturbed trials**, which is the
+point of this entry:
+
+| config | 3 s after 20 Ns | 30 s unpushed |
+| --- | --- | --- |
+| no stepping | 8/16 (50%) | 12/16 (75%) |
+| step, first crossing | 8/16 (50%) | **8/16 (50%)** |
+| step, 8 steps outside | 8/16 (50%) | **12/16 (75%)** |
+| step, 8 steps + higher threshold | 8/16 (50%) | 12/16 (75%) |
+
+Stepping on the first crossing costs a third of the quiet standing. Requiring
+the capture point to *stay* out restores it exactly. That is the fix, it works,
+and it is shipped.
+
+#### And the claim it withdraws
+
+Look at the first column. **Stepping does not change survival after a shove** —
+8/16 either way at 20 Ns, and 0/16 either way at 40 Ns. The +36% from the last
+entry was mean fall time, and mean fall time here is heavy tailed: most trials
+fall in about a second, a few survive the whole budget, and the mean is decided
+by how many of the few there happened to be. Six- and eight-trial means
+disagreed between sessions on configurations that were not different at all.
+
+A fraction is bounded and far better behaved, and under it the honest summary is:
+**stepping now costs nothing and buys nothing.** It fires at the right moment,
+picks the right foot, aims at the right place, and does not change the outcome,
+because the foot still travels 9% of the distance it is asked to.
+
+Three entries ago the measurement said stepping hurt. Two entries ago, after
+averaging, it said stepping helped. Now, with a metric that is not dominated by
+its own tail, it says stepping does neither. The code did not change between
+the last two of those.
+
+**Suspect the measurement** is the rule this project runs on, and it turns out
+to have a second half worth writing down: *and suspect the statistic*. An
+average is a summary, and a summary of a heavy-tailed distribution is mostly a
+summary of its rarest outcomes.
+
+### 2026-08-09 (a wider stance, refuted — and single runs shown to be worthless here)
+
+Two results, and the second is the one that matters.
+
+#### The wider stance does not help
+
+The idea was that feet further from the centre line would be loaded less
+equally by a disturbance, so one of them could actually be lifted. Splaying the
+legs — hips fixed at 0.10 m, ankles moved out, everything placed along the
+hip-to-ankle line — makes it measurably **worse**:
+
+| stance | 40 Ns shove, no step | unpushed, no step |
+| ---: | --- | --- |
+| 0.10 m | 1.99 s | 25.1 s |
+| 0.20 m | 1.14 s | 20.2 s |
+| 0.30 m | 1.00 s | 7.1 s |
+
+Splayed legs push outwards, and the ground reaction answering them is one more
+thing the balance controller has to fight. Kept as a slider so the refutation
+can be reproduced; the default is back to 0.10.
+
+#### Single runs here are worthless, and three sessions of conclusions rested on them
+
+The same nominal configuration — 0.10 m stance, no stepping, unpushed —
+measured **35.1 s in one session and 12.7 s in the next**, with nothing between
+them that should have touched it. A standing figure is an unstable equilibrium:
+two runs differing by a rounding error diverge completely, and every "it fell
+after 0.98 s" in the last three entries was one sample of a wide distribution.
+
+Redone properly — eight trials per configuration, each nudged slightly
+differently so the figure starts somewhere else on the knife edge, and the fall
+times averaged:
+
+| stance | 40 Ns shove: no step / step | unpushed: no step / step |
+| ---: | --- | --- |
+| 0.10 m | 1.99 / **2.71 s** | 25.1 / 13.7 s |
+| 0.20 m | 1.14 / 1.18 s | 20.2 / 5.3 s |
+| 0.30 m | 1.00 / **1.55 s** | 7.1 / 4.1 s |
+
+**Stepping helps under a shove.** At every width, and by 36% at the default
+stance. The previous three entries concluded the opposite — that stepping never
+helped and possibly hurt — from single runs that happened to land the other
+way. That conclusion was wrong, and the code was doing better than the
+measurement said.
+
+**Stepping hurts quiet standing**, also at every width and by more: 13.7 s
+against 25.1 s. It steps during ordinary sway, when nothing needs recovering,
+and each unnecessary step costs a foot's support.
+
+So the picture is the opposite of what it looked like. The swing is not the
+problem; the **trigger** is. Stepping when genuinely disturbed is worth 36%;
+stepping when not is worth −45%. That is a threshold to tune, not a controller
+to rewrite — and it is a much smaller job than the three rewrites that preceded
+it.
+
+The lesson is the one this project keeps relearning, in a new place: **suspect
+the measurement.** Here the measurement was not merely noisy, it was a single
+sample of a chaotic system being read as a number.
+
+### 2026-08-09 (the fast reactive step, and the measurement that should have come first)
+
+Third step controller, and the one that finally explained the other two.
+
+The plan from the previous entry: no weight shift, a short swing (0.16 s rather
+than 0.34), a small lift so the leg stays long enough to reach, and the aim
+snapping on in a third of the swing rather than two thirds. A foot thrown at the
+capture point rather than a leg aimed at it.
+
+One real bug was fixed on the way, and it was the worst of the three: **the
+planted leg was being pulled straight back out from under the figure.** On
+completion the hip target reset to the pose it started in, so the instant the
+foot touched down the leg swung back under the body, undoing the step. The
+stepped leg now holds where it landed.
+
+And the result was the same as the other two:
+
+| shove | no stepping | deliberate | fast |
+| ---: | --- | --- | --- |
+| 20 Ns | 2.10 s | 2.05 s | 2.08 s |
+| 40 Ns | 0.98 s | 0.93 s | 0.97 s |
+| 80 Ns | 0.62 s | 0.62 s | 0.58 s |
+| 120 Ns | 0.45 s | 0.45 s | 0.45 s |
+
+Three controllers, three different sets of timings, identical numbers. That is
+not a tuning problem, and it should have been the signal to stop tuning much
+earlier.
+
+#### The measurement that should have come first
+
+Every one of these assumed that aiming the hip puts the foot at the target.
+Nobody had checked. Checking took one trace:
+
+```
+foot starts at (-0.108 +0.025)
+target        (-0.018 -0.188)  -- asked to move 0.231 m
+foot landed at (-0.107 +0.003) -- moved 0.021 m, missed target by 0.211 m
+```
+
+**The step never happens.** The foot travels 9% of the way and lands where it
+started. Every controller above was correctly deciding to step, correctly
+choosing the foot, correctly picking the target — and then not stepping.
+
+#### Why, and why it ties the whole thread together
+
+The swing foot is still carrying weight, and **a loaded foot cannot be lifted**
+however hard the hip pulls. Unloading it means moving the weight laterally onto
+the other foot, which is the shift — and the shift is rate limited to
+`sqrt(h/g)` = 0.33 s, which the previous entry measured and which is longer
+than the whole recovery window.
+
+A backwards shove makes it worse in a way worth naming: it loads **both feet
+equally**. The body rotates towards its heels rather than onto one side, so
+neither foot frees itself, and there is nothing to step with. A person shoved
+backwards unweights one side first — and that lateral move is precisely the
+part there is no time for.
+
+So the three controllers were not three attempts at the same problem. They were
+three attempts at the wrong problem: the question is not how to swing a leg, it
+is how to get weight off a foot in under a third of a second.
+
+Left in the demo, switchable, defaulted off, with the diagnosis in the source
+next to the code it condemns.
+
+### 2026-08-09 (the weight shift, and why it does not save the step)
+
+The previous entry blamed the failed step on lifting a foot from a body whose
+weight was still on it. That was right, and fixing it was not enough — which is
+the more useful result.
+
+A shift phase now runs before the lift: both feet stay planted while a
+commanded ankle roll moves the centre of mass over the stance foot, ending
+early once the weight arrives. It does what it says. Step-with-shift is back to
+**parity** with not stepping, where step-without-shift was measurably worse:
+
+| shove | no stepping | step, no shift | step + shift |
+| ---: | --- | --- | --- |
+| 20 Ns | 2.10 s | 1.93 s | 1.90 s |
+| 40 Ns | 0.98 s | 0.85 s | 0.90 s |
+| 80 Ns | 0.62 s | 0.55 s | 0.62 s |
+
+So the shift repaid the damage the swing was doing, and bought nothing beyond
+it. The step still does not recover the push.
+
+#### The measurement that explains it
+
+Sweeping the shift's duration against its authority separates the two cleanly,
+and only one of them matters:
+
+| shift | roll 0.30 | roll 0.55 |
+| ---: | --- | --- |
+| 0.22 s | 0.101 → 0.091 m | 0.101 → 0.093 m |
+| 0.50 s | 0.101 → 0.068 m | 0.101 → 0.063 m |
+| 1.00 s | 0.101 → 0.053 m | 0.101 → 0.054 m |
+
+**Doubling the authority changes nothing; quadrupling the time halves the gap.**
+The shift is rate limited, and the rate is not a tuning constant — moving a
+centre of mass sideways is an inverted pendulum, whose time constant is
+`sqrt(h/g)`, about **0.33 s** for this figure. That is the same constant that
+appears in the capture point, arriving from the other direction. A 0.22 s shift
+was asking the weight to move faster than the pendulum permits, and no amount
+of ankle torque changes that.
+
+#### Which is the real answer
+
+Add it up: 0.35 s to shift, 0.34 s to swing, against a fall that is over in
+about a second. **A recovery step cannot afford to shift its weight first.**
+
+That is not a bug in the controller, it is the wrong controller. A weight shift
+is what a *deliberate* step does — walking, where there is time. An emergency
+step throws the foot out fast and accepts a moment of single support, catching
+the body rather than preparing to. People do both, and they are different
+manoeuvres.
+
+So the next attempt should be the fast one: no shift, a much shorter swing, and
+a foot placed at the capture point rather than a leg aimed at it. The capture
+point stays the target throughout; what changes is how much ceremony there is
+on the way.
+
+### 2026-08-09 (stepping: the right decision, the wrong swing)
+
+The last piece of "stumbles but does not fall", and the first thing in a while
+that does not work. It is in the demo, defaulted off, because turning it on
+makes the figure fall sooner.
+
+The idea is the one the capture point exists for. Once the capture point is
+outside the feet no ankle torque recovers it, because an ankle can only move
+where the weight bears *within* the base. The recovery is to move the base: put
+a foot where the capture point went. The step itself is a short scripted swing
+— bend the knee to lift, point the leg at the target, straighten and plant —
+and what is supposed to make it work is not the trajectory but *where it aims*.
+
+#### What works
+
+**The decision.** After three fixes it fires exactly when it should and not
+otherwise, which the trace confirms: nothing during the first two seconds of
+ordinary sway, then a step on the frame after the shove, aimed backwards at a
+capture point 0.19 m behind the feet. Correct trigger, correct foot, correct
+target.
+
+Getting there took three separate bugs, and the first is the instructive one:
+
+- **A degenerate support polygon read as "far outside".** `SignedDistance`
+  returns −1 for fewer than three contact points, and a raised foot often
+  leaves exactly that — so finishing a step triggered another one immediately.
+  The figure stepped continuously and walked itself over: **236 steps in
+  fifteen seconds**.
+- **The trigger was far too sensitive** at 0.02 m. It stepped three times
+  during normal sway *before* the push it was meant to be recovering from,
+  each one costing more stability than the disturbance it answered.
+- **Steps that landed where the foot already was.** A step to a target 2 cm
+  away buys nothing and costs the support of a raised foot for a third of a
+  second. There is now a minimum step length and a cooldown.
+
+#### What does not
+
+The swing. Every number is worse with stepping on:
+
+| case | stepping off | stepping on |
+| --- | ---: | ---: |
+| unpushed | 35.1 s | 14.8 s |
+| 20 Ns shove | fell after 2.10 s | 1.90 s |
+| 40 Ns | 0.98 s | 0.88 s |
+| 80 Ns | 0.62 s | 0.55 s |
+
+The diagnosis is not subtle once the masses are added up. The swing leg is a
+thigh, a shin and a foot — **11.8 kg, a sixth of the body** — thrown through a
+third of a second by a 220 Nm hip motor. The reaction on the pelvis is of the
+same order as the disturbance being recovered from, and meanwhile the figure
+has traded two feet of support for one.
+
+What real capture-step controllers do and this does not is **shift the weight
+onto the stance leg before the foot leaves the ground**. This lifts immediately,
+so the body is still half-supported by a foot that is no longer there. That is
+the next thing to try, and it is a controller change rather than an engine one.
+
+Left switchable in the demo rather than deleted, with the panel saying it is
+worse, because a failure that can be watched is worth more than one described
+in a changelog.
+
+### 2026-08-09 (a two-axis ankle, and a figure that stands for 35 seconds)
+
+The lateral gap from the previous entry, closed. **The ankle is now a ball
+joint on a short leash** rather than a hinge — a 35 degree cone and 15 degrees
+of twist — which gives it the roll axis a hinge cannot have. That was the whole
+problem: the sagittal strategy worked and the figure fell sideways every time,
+because nothing in the rig could push sideways at the foot.
+
+The hip strategy that was kept at zero gain is gone, superseded.
+
+#### Signs by experiment, gains by sweep
+
+The correction signs were settled by running all four combinations rather than
+by reasoning about which way a foot bends, which is how the earlier attempts
+went wrong. Pitch +1 with roll −1 stood 1.28 s where the others managed 0.18 to
+0.67.
+
+Then the gains, and the first sweep answered a different and better question —
+whether the correction has any authority at all:
+
+| gain | stood |
+| ---: | --- |
+| 0 | 2.10 s |
+| 1.0 | 2.22 s |
+| 2.5 | 9.85 s |
+| 5.0 | 3.97 s |
+| 20.0 | 0.47 s |
+
+A clear optimum with falls either side of it: too little authority below,
+over-gain oscillation above. Sweeping pitch against roll separately, **roll gain
+matters more than pitch** — the lateral axis being the weak one, exactly as the
+hinge diagnosis predicted. Pitch 2.0/roll 4.0, 3.0/4.0, 4.0/2.5 and 4.0/4.0 all
+held the full 20 second budget; the shipped values sit in the middle of that
+region rather than on its edge.
+
+#### What it does and does not buy
+
+**Standing still: 35 seconds**, against one or two before. Not indefinitely —
+drift accumulates and eventually wins.
+
+**Pushed: it goes down.** A 20 Ns shove at the chest topples it in 2.1 s, and
+harder shoves proportionally faster:
+
+| shove | falls after |
+| ---: | --- |
+| 20 Ns | 2.10 s |
+| 60 Ns | 0.75 s |
+| 200 Ns | 0.30 s |
+
+That is not a tuning failure, it is the ankle strategy's actual limit and the
+theory says so: an ankle can only shift where the weight bears *within the
+feet*. Once the capture point leaves the support polygon no ankle torque can
+bring it back, and the only recovery is to put a foot where the capture point
+went. Which is stepping, and is the next piece.
+
+### 2026-08-09 (balance: the measurement works, half the control does)
+
+The measurement first, because a balance controller is mostly a measurement
+with a small amount of pushing on the end.
+
+Every step the demo computes the **support polygon** — the convex hull of
+everywhere the feet actually touch, from the contacts rather than from where
+the feet are, so a foot in the air contributes nothing — and the **capture
+point**, `com + velocity * sqrt(height / g)`. The capture point is the idea
+that matters: not where the centre of mass *is* but where it is *going*, and
+the spot a foot would have to reach to bring the body to rest. Standing still
+they coincide; moving, the capture point leads. The signed distance from it to
+the polygon is the one number that says whether the figure is standing or
+merely upright, and it goes negative **before** anything looks wrong.
+
+Drawn in the scene, which `Renderer2D::BeginScene` taking any camera makes free:
+the hull in cyan, a plumb line from the centre of mass, and the capture point as
+a cross that is green inside the polygon and red outside. The hull is a proper
+convex hull rather than the bounding box of the contacts, because a box says a
+figure up on one toe is as stable as one flat-footed, which is exactly the case
+balance is about.
+
+#### The ankle strategy works, and the numbers say so
+
+With ankles alone the figure genuinely stands: capture margin **+0.075 m and
++0.071 m** at half a second and one second, with the centre of mass holding
+within a centimetre of where it started. That is a real inverted pendulum being
+actively held up, not a rig that happens not to have fallen yet.
+
+Then it goes sideways, and nothing can stop it. **The rig's ankle is a
+single-axis hinge and that axis is pitch**, so there is no way to push sideways
+at the foot at all. The support polygon collapses from five contact points to
+two as one foot rolls onto its edge, and the margin drops off a cliff.
+
+#### The lateral strategy that did not work, kept anyway
+
+The obvious substitute was a hip strategy: roll both hips to shift the body
+over the supporting foot. It destabilises, and the diagnosis is worth keeping
+because it took three experiments rather than a guess:
+
+- With the feet at their real size it drove the figure over in about a second.
+- **With deliberately enormous feet** — a base so wide that toppling should
+  have been impossible — it still ran away sideways, and the centre of mass
+  stayed at its standing height while doing it. So the figure was not falling;
+  it was being *driven*.
+- Flipping the sign did not fix it, which rules out the obvious cause. At
+  higher gain it lifted the centre of mass to 1.37 m instead of moving it
+  sideways.
+
+Rolling both hips about the world's z axis with the feet planted fights the
+ground rather than shifting weight. **The mechanism is wrong, not the sign.**
+It is left in the demo with its gain defaulted to zero and a slider, because a
+failed approach sitting next to a working one is worth more than a quietly
+deleted one — turn it up and the figure walks itself over in about five
+seconds.
+
+The fix is a roll axis at the ankle, and after that, stepping.
+
+### 2026-08-09 (capsules that are actually capsule-shaped)
+
+The capsules were drawn as a **box** with a sphere on each end, which reads
+exactly as what it is — a rectangle with balls stuck on. The collider was
+always the real thing; only the drawing was a shortcut, taken because the
+renderer had no round primitive and inventing one for a single demo shape did
+not seem worth it. It was, the moment there was a humanoid made of them.
+
+`Mesh::CreateCylinder` is the fix, and the reason it is a *cylinder* rather
+than a capsule mesh is the interesting part. A capsule mesh cannot be scaled to
+fit different capsules: stretching one along its axis turns its round caps into
+ellipsoids, so every distinct radius and length would need its own mesh. A
+cylinder has no such problem — scale x and z together for radius, y for length,
+and it is still exactly a cylinder — and a sphere under a uniform scale is
+still exactly a sphere.
+
+So **two fixed meshes draw a capsule of any proportions, exactly**: an
+open-ended tube between two spheres. Open-ended because the ends are covered by
+the caps, which also saves the two fans a closed cylinder would need.
+
+The one thing worth getting right is the normal. A cylinder's side normal
+points straight out from the axis with **no y component** — using the position
+as a normal, which is correct for a sphere and tempting to copy, would light
+the tube as though it bulged.
+
+### 2026-08-09 (a humanoid rig, and a test that measured an impact)
+
+Thirteen bodies, twelve joints, about 71 kg and 1.86 m: pelvis, torso, head,
+two arms and two legs with feet. Knees, elbows and ankles are limited hinges;
+hips, shoulders, spine and neck are cone-and-twist ball joints. Drawn as its
+own colliders, which needs no renderer work at all and is the reason `.gltf`
+and skinning stay deferred.
+
+The rig is where the constraint code stops being tested in twos. It is a chain
+of fifteen with the worst mass ratios in the project — a 24 kg torso meeting a
+1.6 kg forearm — and limits that have to hold while contacts push back.
+
+**The motors work, and the number is stark.** Pose drift over ten seconds,
+summed across twelve joints: **0.137 radians powered against 13.900 passive**.
+A hundredfold. Powered it falls stiffly like a mannequin; passive it folds into
+a heap.
+
+**It topples on its own, and that is correct.** A standing figure is an
+inverted pendulum on two small feet, and a motor holds a *joint angle* — which
+does not change when the whole body tips about its ankles. Nothing here knows
+where its centre of mass is. The demo says so on its own panel, because
+otherwise it reads as a bug.
+
+#### The failure that was the test measuring an impact
+
+Two checks failed at first, and both looked like real solver weakness: anchor
+separation peaking at **38 mm**, and hinges leaving their range by **0.56
+radians**. Both are the classic signature of an under-converged chain, so the
+obvious move was to throw iterations at it — and iterations barely helped,
+going from 0.10 m at eight to 0.04 m at thirty-two and then getting *worse*
+again at sixty-four.
+
+Which meant the diagnosis was wrong. Splitting peak from settled found it
+immediately:
+
+| iterations | separation peak / settled | limit breach peak / settled |
+| ---: | --- | --- |
+| 8 | 0.101 m / 0.0005 m | 0.598 / 0.000 rad |
+| 16 | 0.080 m / 0.0001 m | 0.555 / 0.000 rad |
+| 32 | 0.040 m / 0.0002 m | 0.270 / 0.000 rad |
+| 64 | 0.060 m / 0.0001 m | 0.168 / 0.004 rad |
+
+**Settled, the rig is exact** — a tenth of a millimetre of separation and no
+limit breach at all. The peaks are one or two frames as 71 kg of figure meets
+the floor inside a single 1/60 s step, which is a violent event; a
+velocity-level constraint recovering from it over a frame or two is the
+constraint working. The test had been asserting a steady-state expectation
+against a transient, and the iteration sweep was measuring how hard the impact
+happened to be rather than how well it was solved.
+
+Powered, the settled separation is **3 mm rather than 0.1 mm**, because a motor
+keeps every joint loaded where a collapsed ragdoll's joints carry almost
+nothing. On a figure 1.86 m tall that is a sixth of a percent of its height.
+
+### 2026-08-09 (joint motors, and the bug the cone-twist tests could not see)
+
+A limit says where a joint may not go. A motor says where it should be, and is
+the difference between a ragdoll and a body — a corpse falls, a person holds
+their arm up.
+
+Written as a **velocity constraint with a target**, not as a torque. That is
+what makes it a PD controller without a separate derivative term: the
+proportional half is the target spin, set from how far the joint is from its
+goal, and the derivative half falls out of constraining the spin *to* that
+value, since any excess is removed. `MotorMaxTorque` is what keeps it a muscle
+rather than a weld — push hard enough and the joint gives, which is the whole
+point for something meant to stumble. Hinges get a scalar motor about their
+axis; ball joints get a three-axis one driving towards a target orientation,
+which is what a ragdoll actually needs.
+
+Checked against arithmetic done outside the solver. A 1 kg bar with its centre
+0.5 m out needs `m g d = 4.905 Nm` to hold horizontal:
+
+- **Three times that torque holds it at y = 2.000**, exactly level.
+- **Three tenths of it sags by 0.499 m.** A motor that held here would be
+  ignoring its own budget.
+- A weak motor **gives when shoved** — 3.13 rad — and **returns to its target**
+  afterwards, which is the other half of a muscle.
+- A strong motor **driving at a limit does not pass it**: 0.52 rad against a
+  0.5 rad stop.
+- A ball motor **holds an outstretched arm against gravity** to within
+  0.00002 degrees, gives 37.8 degrees when struck, and recovers to 0.0001.
+
+#### Two findings worth keeping
+
+**A motor must not be warm started.** The limits and the point constraint are;
+a motor is not, because its budget is per step. Leaving the accumulated impulse
+sitting at the clamp from last step means this step's solve computes a delta of
+nothing and the motor silently stops pulling — a motor given *three times* the
+torque it needed still could not hold an arm up, and the strong and weak cases
+sagged identically, which is what gave it away.
+
+**`MotorMaxSpeed` has to be matched to `MotorMaxTorque`.** At the default
+10 rad/s a 2 Nm motor asks for a speed it cannot then decelerate from: it flies
+past its target and limit-cycles for ever, returning to 0.96 rad instead of 0.
+The rule is that a motor must be able to stop from whatever speed it is allowed
+to ask for. Worth knowing before tuning a ragdoll, where every limb is a weak
+motor by design.
+
+#### And a real bug the cone-twist tests could not have caught
+
+The ball motor held the arm perfectly with no limits and settled **exactly
+10.000 degrees** off with cone-and-twist enabled — at every stiffness, which
+ruled out droop immediately, since droop scales with stiffness and this did
+not.
+
+The cone was 80 degrees and the arm was built 90 degrees rotated from the
+torso. `SetConeTwistLimits` measured swing from the bodies being *aligned*
+rather than from the pose it was called in, so the arm started 90 degrees into
+an 80 degree cone and the limit shoved it to the boundary — 10 degrees, exactly
+as observed.
+
+The cone-twist tests all passed because every rig in them had the bone and the
+torso starting aligned, so the relative rotation was the identity and the bug
+was invisible. **Every limb on a real skeleton sits at an angle to its
+parent**, so this would have appeared the moment a humanoid was assembled and
+looked like the limits were wrong rather than their reference pose. The joint
+now stores the relative orientation it was built in and measures both angles as
+deviations from that; the droop reads 0.000 at every stiffness afterwards.
+
+### 2026-08-09 (cone-and-twist: limiting a ball joint without the two limits interfering)
+
+A hinge has one angle to limit. A shoulder has two very different ones — how
+far the arm may lean away from its rest direction, and how far it may rotate
+about its own length — and the reason this took more than doubling the hinge
+code is that **measuring them directly makes them interfere**. Twist read off a
+reference vector changes when the bone swings, even though nothing twisted.
+
+So the relative rotation is split by a **swing-twist decomposition**: project
+the relative quaternion's vector part onto the bone axis to get the twist, and
+whatever is left over is the swing. Two clean angles, each limited on its own.
+One detail is load-bearing — the relative quaternion's scalar part is forced
+non-negative first, because a quaternion and its negation are the same rotation
+but the decomposition is not sign-agnostic, and without it a 10 degree swing
+can be reported as 350.
+
+Both limits are unilateral, like the hinge's, so both clamp their accumulated
+impulse to one sign. They share one small lambda with the hinge limit, since
+all three are the same shape: measure the relative spin along the limit's axis,
+solve for the impulse that stops it, clamp the running total.
+
+Checked against the numbers that went in, not against the joint's own
+decomposition — which is the thing under test, so believing its `SwingAngle`
+would be marking its own homework. The swing is re-measured independently as
+the angle between the two bone directions:
+
+- **A 30 degree cone holds**, driven at 6 rad/s from **eight directions in
+  turn**: worst **30.03 degrees**. Testing one direction would have passed a
+  limit that only holds along the axis it was tested on.
+- **A 2 degree cone** pins the bone to 2.03 degrees; a **60 degree cone still
+  swings**, reaching 60.1. A limit that holds everywhere is a weld and would
+  have sailed through the first check.
+- **A twist limit of ±20 degrees** holds at 20.05.
+- **The decomposition does not leak, in either direction.** Spinning the bone
+  about its own length produces **0.000 degrees of swing**; swinging it 80
+  degrees through a wide cone produces **0.000 degrees of twist** against a 5
+  degree limit. Those are exact geometric facts rather than luck, which is why
+  they come out as zeroes.
+- **No energy added** banging against both stops for ten seconds.
+
+Disabling the cone sends the bone to **180 degrees** on the first two checks,
+so they are measuring the limit rather than something incidental.
+
+### 2026-08-09 (hinges and their limits, and three tests wrong in the same way)
+
+A hinge is a ball joint with two of its three rotations locked, so it is built
+as exactly that rather than as a constraint of its own: the point constraint is
+untouched, and an angular pair is solved beside it.
+
+The angular part takes a **2x2** effective mass for the same reason the point
+part takes a 3x3 — the two locked directions are coupled through the inertia
+tensor. The limit is the odd one out: it is the only **unilateral** piece of a
+joint, so alone in here it clamps its accumulated impulse to one sign. A knee
+stop must resist bending further without holding the knee *at* the stop.
+
+What it was checked against:
+
+- **A hinge refuses rotation off its axis**, driven at 8 rad/s about all three
+  at once: worst surviving off-axis spin **0.000000 rad/s**. Disabling the
+  angular constraint puts that straight back to 8.003, so the check has teeth.
+- **The axis stays free**: spun at 2 rad/s, still 1.926 five seconds later,
+  the loss being the linear damping the body carries by default.
+- **A hinged bar's period.** `T = 2*pi*sqrt((m L^2/3)/(m g L/2))` for a uniform
+  bar about its end — measured **1.6393 s against 1.6379 s, 0.08% out**.
+- **Limits stop it** at both stops with **zero overshoot** driven at 6 rad/s,
+  while leaving the range between them free: 0.4949 rad in half a second at
+  1 rad/s, against 0.5 expected.
+- **Limits add no energy**: bouncing between two stops for ten seconds, peak
+  kinetic energy never exceeds the starting figure. It falls to zero, which is
+  correct rather than suspicious — a limit here is perfectly inelastic, so each
+  strike removes the spin about the axis. A bouncy joint stop would need a
+  restitution term this deliberately does not have.
+
+#### Three tests wrong, one after another, all for one reason
+
+The hinge work produced no engine bugs and three test bugs, and every one was
+the same mistake: **asserting on a quantity without setting up a state
+consistent with it.**
+
+- Spinning a bar at `(8, 8, 2)` and expecting the `2` to survive. Constraining
+  two axes of a strongly anisotropic body legitimately changes the third — the
+  impulse goes in along the tangents and comes back out through `I^-1`. The
+  hinge was not eating the rotation.
+- Then, isolating it: spinning only about the axis at 2 rad/s, and watching it
+  arrive as 0.485. **Setting an angular velocity without the matching linear
+  one** describes a body rotating about a pivot whose centre is not moving,
+  which is not a thing. The joint fixed it on the first step by trading angular
+  for linear, exactly as it should. A `SpinAbout` helper that sets both made it
+  1.926.
+- And measuring "does it swing freely between the stops" **starting from a
+  stop**, which measures how fast the joint leaves a limit — a different
+  question, and one that reads as sluggishness.
+
+Worth recording because the failure looks identical each time: a plausible
+number, wrong, with the solver behaving correctly underneath it. The rule that
+caught all three was checking whether the *initial state* was physical before
+believing the *final* one.
+
+### 2026-08-09 (ball-and-socket joints: the first bilateral constraint)
+
+The first constraint in the engine that is not a contact, and the prerequisite
+for anything ragdoll-shaped.
+
+#### What makes it different from a contact
+
+Two things, and both shape the code:
+
+- **It is bilateral.** A contact may only push — its impulse is clamped at
+  zero, because a floor cannot pull a box down. A joint pushes and pulls
+  without limit, because a shoulder holds an arm on from both directions. So
+  the solve is the contact solve with pieces removed: no clamping, no
+  restitution, no friction.
+- **It takes a 3x3 effective mass, not a scalar.** A contact constrains one
+  direction. A ball joint constrains all three at once and they are coupled
+  through the inertia tensor, so `K = (1/ma + 1/mb) I - [ra]x Ia^-1 [ra]x -
+  [rb]x Ib^-1 [rb]x` is assembled and inverted per joint per step. Solving the
+  three axes separately converges slowly and stretches visibly under load,
+  which on a ragdoll reads as limbs pulling out of their sockets.
+
+Joints and contacts share one iteration loop rather than each getting a pass.
+They are coupled — a jointed chain resting on the floor is both at once — and
+solving all of one then all of the other lets each undo the other's work.
+
+#### What it was checked against
+
+- **The pendulum period.** A compound pendulum swings at
+  `T = 2*pi*sqrt(I / (m g d))`, with `I` about the pivot from the parallel-axis
+  theorem. Nothing in the solver knows that formula. Measured **2.0095 s
+  against a predicted 2.0077 s — 0.09% out**, timed from zero crossings rather
+  than peaks, since a peak is flat and its timing is far noisier.
+- **A joint does no work.** Released from rest and swung through the bottom,
+  the bob returns to within **0.5 mm of its starting height** over a 1 m swing,
+  with damping off.
+- **A chain holds.** Six links under their own weight: worst anchor separation
+  **0.000 m**, hanging plumb.
+- **Jointed bodies stop colliding.** Two overlapping spheres produce a contact;
+  add a joint and the contact disappears. Without this an upper and lower arm,
+  which share the elbow permanently, would have their contact and their joint
+  fighting every step.
+
+#### The suspiciously clean number, and what it was hiding
+
+A worst separation of exactly `0.00000` is the kind of result worth
+distrusting, so the metric was given something to fail at: a 6-link chain with
+a **20 kg weight** on the end — the mass ratio sequential impulses are famously
+worst at — swept across iteration counts.
+
+| iterations | worst separation | peak kinetic energy |
+| ---: | --- | --- |
+| 1 | 0.434 m | 1094 J |
+| 2 | 0.134 m | 7217 J |
+| 4 | 0.005 m | 390 J |
+| 8 | 0.006 m | 110 J |
+| 20 | 0.054 m | 298 J |
+
+The metric has teeth. The lesson is the energy column: the chain and weight
+have only about 500 J of gravitational potential available, so **1 and 2
+iterations are not merely inaccurate, they are unstable** — an under-solved
+stiff constraint gains energy and throws the chain about. At four and above it
+is bounded and the constraint holds to a few millimetres.
+
+Two false starts on the way to that table, both measurement rather than code:
+
+- The first version read the separation at a single instant, at step 1200. The
+  chain is still swinging then, so it sampled the *phase of the swing* rather
+  than the solver's accuracy — which is why 2 iterations first appeared worse
+  than 1. Taking the worst over a window fixed it.
+- More iterations still looked worse at 20 than at 8, which should not happen
+  if iterations only remove error. The suspicion was the Baumgarte bias pumping
+  energy in, and it was tested directly: a chain assembled exactly, at rest,
+  with gravity off. A correct solver does nothing there for ever, and this one
+  does — **zero kinetic energy and zero separation at both 4 and 20
+  iterations**. So the bias is not inventing energy; the runs are simply
+  different trajectories, because a stiffer solve holds the weight more rigidly
+  and transmits sharper accelerations up the chain. Peak energy is reported
+  beside the separation for exactly that reason.
+
+For ragdoll work the practical reading is: **use eight velocity iterations or
+more**, and do not trust a chain solved with fewer than four.
+
+#### Also
+
+Sleeping now propagates across joints. A body that sleeps becomes immovable to
+the solver, so half a sleeping chain would act as an anchor bolted to mid-air
+and the whole thing would lurch when it woke. Wakefulness spreads along joints
+until nothing changes — the poor relation of the island solver 2D has, and
+enough for chains and ragdolls.
+
+### 2026-08-09 (capsules, and a manifold that described the shape instead of the contact)
+
+A capsule is a segment with a radius, so most of the sphere code generalises —
+which is why it was the next shape worth having. It is also what characters are
+made of: no corners to catch on a step, and it stands up instead of rolling
+away.
+
+Built in the same separable pieces the 3D bodies were.
+
+#### The inertia tensor, and the two limits that check it
+
+A capsule's tensor is a cylinder plus two hemispheres, with the mass split
+between them by volume so it stays right whether the caps or the cylinder
+dominate. The transverse term carries a `h^2/4 + 3hr/8` that looks arbitrary
+and is not: shifting each hemisphere's `(2/5) m r^2` from the sphere centre out
+to the capsule centre leaves exactly that, because the `9r^2/64` from the
+hemisphere's own centre of mass cancels.
+
+Checked against the formula, but far more usefully against its **limits**,
+neither of which appears anywhere in the capsule branch:
+
+- A capsule with no cylinder is a sphere: `Ixx = Iyy = 2/5 m r^2`, agreeing
+  with the sphere branch to four decimals.
+- A capsule with almost no radius is a thin rod: `Ixx -> m L^2 / 12`, landing
+  within 1% at `r = 0.002`, and `Iyy` falling to nearly nothing.
+
+#### The manifold, which was wrong in an instructive way
+
+Capsule–sphere and capsule–capsule both reduce to sphere–sphere once the
+nearest points on the segments are known, so they are one function each. The
+segment-to-segment routine re-solves the second parameter after clamping the
+first, which is the classic place that code is wrong — it only shows when one
+segment's nearest point falls off its end.
+
+Capsule–box needed a real manifold. A capsule lying on a floor touches along a
+*line*, and one contact point cannot hold a line level — the same lesson the
+box stacking bug taught, arriving in a different shape. So the segment is
+clipped against the face, as `Sat3D` clips its reference face.
+
+The first version emitted both clipped ends unconditionally, and a capsule
+dropped with a tilt **settled at about 10 degrees and stayed there** —
+`0.2527` of end-to-end height difference, stable from step 80 to step 400, not
+asleep. The cause is worth keeping: a contact constraint resists *approach*
+along its normal, so the point out in mid-air beneath the raised end was
+holding that end up. The manifold has to describe **what is touching**, not
+what the shape spans. Dropping points with no penetration fixed it outright:
+the same drop now levels to `0.0038` and rests at `0.2469` against a predicted
+radius of `0.25`.
+
+#### The test that passed for the wrong reason
+
+The resting check originally dropped the capsule perfectly level, and it passed
+— including with the two-point manifold **disabled**. Gravity acts through the
+centre of a level capsule, nothing applies a torque, and a single point holds it
+fine. The test was measuring symmetry, not the manifold.
+
+Dropping it tilted and slowly spinning is what makes levelling something the
+contact has to do. With the second point disabled that version fails four ways,
+including failing to come to rest at all; with it, 18 checks pass.
+
+One test also had to be corrected rather than the code: two capsules crossed at
+right angles were asserted to be 0.3 apart and answered 0.4 of penetration. The
+code was right — the second capsule's segment passed straight *through* the
+first, so the true distance was 0. Offsetting it in z gives the 0.3 that was
+intended, and the normal comes back along z as it should.
+
+#### Known limitation, stated so it is not mistaken for a bug
+
+**Capsule–capsule produces one contact point**, even for two capsules lying
+exactly alongside each other. A single point cannot resist roll, so a pair of
+stacked parallel capsules settles more slowly than a pair of boxes would. The
+fix is the same clipped manifold `CollideCapsuleBox` uses; it was not needed for
+anything yet.
+
+The Physics3D demo now drops a capsule as every fourth body. They roll down the
+ramp on their sides like barrels and come to rest flat. They were drawn as two
+spheres and a *box* shaft at first, for want of a round primitive — see the
+later entry, which replaced it with a cylinder once a humanoid made of them
+made the shortcut obvious.
 
 ### 2026-08-09 (the 2D broadphase had both problems, and one was worse)
 
