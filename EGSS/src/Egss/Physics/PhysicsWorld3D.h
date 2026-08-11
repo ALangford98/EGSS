@@ -328,6 +328,20 @@ namespace Egss {
 		Joint3D& GetJoint(JointHandle handle) { return m_Joints[handle]; }
 		const Joint3D& GetJoint(JointHandle handle) const { return m_Joints[handle]; }
 
+		// The highest surface directly below `point`, ignoring one body -- the
+		// character asking the question, normally. Returns `floor` if nothing
+		// is under it.
+		//
+		// Tested against each body's **world axis-aligned bounds**, not its
+		// actual shape. For the level geometry this exists to stand on -- boxes
+		// that are not rotated -- the bounds *are* the shape and the answer is
+		// exact. For a rotated box or a sphere it reports the bounding volume
+		// and so reads slightly high. That is the right trade for a ground
+		// probe, where being a centimetre high is invisible and being late is
+		// a character sinking into a step.
+		float GroundHeightBelow(const glm::vec3& point,
+			BodyHandle ignore = InvalidHandle, float floor = 0.0f) const;
+
 		// The worst anchor separation across every joint, in world units. The
 		// number to watch: sequential impulses do not solve a chain exactly,
 		// and this says by how much they are missing.

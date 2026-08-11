@@ -1083,6 +1083,40 @@ namespace Egss {
 		joint.UpperLimit = std::max(lower, upper);
 	}
 
+	float PhysicsWorld3D::GroundHeightBelow(const glm::vec3& point,
+		BodyHandle ignore, float floor) const
+	{
+		float best = floor;
+
+		for (unsigned int i = 0; i < m_Bodies.size(); i++)
+		{
+			if (i == ignore)
+				continue;
+
+			const RigidBody3D& body = m_Bodies[i];
+
+			// Only things that hold still are ground. A crate the character
+			// happens to be standing on is a fair question and a different
+			// one; answering it here would make the stand height chase every
+			// loose object that wandered underfoot.
+			if (body.Type == BodyType::Dynamic)
+				continue;
+
+			glm::vec3 low, high;
+			BodyBounds(body, low, high);
+
+			if (point.x < low.x || point.x > high.x || point.z < low.z || point.z > high.z)
+				continue;
+
+			// Below the point, and the highest such surface wins -- a step on
+			// a floor should report the step.
+			if (high.y <= point.y && high.y > best)
+				best = high.y;
+		}
+
+		return best;
+	}
+
 	float PhysicsWorld3D::GetWorstJointSeparation() const
 	{
 		float worst = 0.0f;

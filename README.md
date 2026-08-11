@@ -702,10 +702,16 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       figure upright for 35 seconds unpushed, against one or two before
 - [x] **A controllable character** — kinematic pelvis, walk cycle, and a switch
       to full ragdoll on a hard enough hit
-- [ ] **Getting up.** `G` puts control back but the character snaps upright
-      from wherever it is lying. Real games blend from the ragdoll's pose into
-      a get-up animation; the honest cheap version is to lerp the pelvis back
-      to standing over half a second and let the motors drag the limbs after it
+- [x] **Getting up, terrain, and stepping over things** — a blend rather than a
+      snap, a root that follows the ground, and a leg that lifts higher for a
+      step it can see coming
+- [x] **Feet that plant** — the gait describes the *foot* now and the leg is
+      solved to reach it, so a stance foot stays where it landed
+- [x] **Footsteps that land on something** — a planted foot now reports **4.53**
+      contact points, up from 1.84, so the support polygon has three or more
+      whenever a foot is down. This was written off as needing a speculative
+      margin in the narrowphase; it did not. A real stance fraction and a sole
+      flat to 0.9° got there on their own
 - [ ] **Stepping, if it is ever wanted.** Self-balancing is no longer on the
       critical path for a playable character — the kinematic root removed the
       need. Left documented because the diagnosis is complete and someone may
@@ -993,6 +999,651 @@ construction whichever way round it is. Only a file that states its normals can
 be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
+### 2026-08-11 (leaning the right way, a hurdle, hands on the floor, and staying up)
+
+Four things that read wrong to the eye, and every one turned out to have a
+specific cause rather than needing polish.
+
+#### Leaning backwards
+
+The figure faces **+z**, and the lean was applied as `angleAxis(-lean, +x)`,
+which tips the body's up axis towards **−z**. Measured before touching it:
+**−5.7° walking and −17.6° running** — leaning back, and the −17.6 is exactly
+`(4.0/1.3) × 0.10 rad`, the right magnitude pointing the wrong way.
+
+The second hypothesis was wrong and worth recording. The spine joint's handle
+was being discarded and nothing drove the torso, so the theory was that it
+trailed backwards under acceleration. It does not: the torso tracked the pelvis
+to within **0.1°**, because the spine motor at 260 N·m is easily strong enough
+to carry it rigidly. The sign was the whole of it.
+
+Driving the spine was still worth doing, for a different reason — a rigid
+whole-body tilt is a plank falling over, not a person leaning. The lean is now
+split between pelvis and spine, and gained a second term that is not a taste
+setting: a body accelerating at `a` must put its weight `atan(a/g)` ahead of its
+feet or the acceleration has nothing to come from.
+
+| | torso | pelvis | spine bend |
+| --- | ---: | ---: | ---: |
+| walk | +4.0° | +1.8° | 2.2° |
+| run | +12.3° | +5.5° | 6.8° |
+
+Accelerating at 3.00 m/s² the torso peaks at **+19.6°** against `atan(a/g)` of
+17.0°, the difference being the speed term arriving. Braking reaches **−10.4°**,
+which is what stopping looks like.
+
+**The sway had the same disease**, and measuring caught something reasoning
+would not have: it was *inverted at a walk and correct at a run*. Tied to
+`sin(gaitPhase)`, which foot is carrying at a given phase depends on the duty
+factor — the pelvis sat 0.1033 m from the stance foot and 0.0955 m from the
+swing foot walking, leaning away from the leg holding it up. Keyed to the cycle
+position instead it is right for both gaits by construction: **0.0937 vs 0.1084
+walking, 0.0919 vs 0.1091 running.**
+
+A prediction of mine that did not come true: leaning forward was supposed to eat
+the balance margin. It did not — −0.6105 against −0.6258. The capture point is
+dominated by the CoM's *velocity*, not by the small offset from leaning.
+
+#### A hurdle instead of a hop
+
+Both legs got the same flight pose, so every jump was a two-foot hop. Now the
+takeoff waits for a foot to be under him, the leg that is next off the ground
+swings through in front, and the pose opens with speed.
+
+| | feet apart in flight | lead leg |
+| --- | ---: | --- |
+| standing | 0.015 m | none, a hop |
+| walking | 0.640 m | correct |
+| running | 0.584 m | correct |
+
+Two things had to be got right. The wait **cannot be unconditional** —
+`m_GaitPhase` is pinned to zero below 0.05 m/s, so standing still there is no
+plant coming and a press would hang forever. And landing resets the gait phase
+so the lead foot is the one arriving, which lands *into* the next stride and
+does the job a per-foot landing timer was going to do without needing one.
+
+The cost, measured across every press timing rather than one lucky sample: the
+wait averages **0.15 s and is at worst 0.37 s** walking, 0.10 / 0.23 running.
+
+An assertion of mine failed twice before the code did. Checking the lead leg
+"was swinging at the press" is the wrong instant — there is a wait and a windup
+in between. Checking it at the push-off is *also* wrong: at a walk the moment a
+foot plants is double support, so the other leg has another tenth of a cycle
+before it lifts. What must be true is that the lead leg is the **next** one to
+leave the ground, and it is.
+
+#### Getting up over the hands
+
+The arms did nothing. `SolveLeg` was already generic two-link IK with the thigh
+and shin baked into it, so it became `SolveLimb` and the arm is the same solve
+mirrored at the elbow — the knee and elbow ranges are `(0, 130)` and `(−140, 0)`
+for exactly that reason.
+
+The pelvis now travels through **three** waypoints rather than two: up onto the
+hands, back over the feet as they gather, and only then up. A person does not
+rise from where they are lying, because there is nothing under them there.
+
+| | hands reach | weight from over the feet at the rise | before |
+| --- | ---: | ---: | ---: |
+| face down | −0.004 m | **0.130 m** | 0.208 m |
+| face up | 0.011 m | **0.084 m** | 0.169 m |
+
+#### Not falling over so easily
+
+The old decision was two invented force numbers, and past 2000 N it was an
+instant collapse regardless of direction or whether a foot was even down.
+
+**An impulse is a velocity, and that is the whole model now.** A hit of `J`
+newton-seconds on 71.2 kg changes the velocity by `J/m`; a body toppling about
+its feet is an inverted pendulum with `τ = √(h/g)`; its capture point is `v·τ`
+ahead; a step of reach `R` catches `v = R/τ`. One step catches **1.50 m/s** and
+he gets about two and a half of them.
+
+The first idea was wrong and measuring killed it. Testing the capture point
+against the support polygon cannot work, because **running normally puts the
+capture point 1.16 m from the nearest foot** — further than any shove that used
+to fell him. Running *is* controlled falling and is supposed to look like that.
+The criterion has to be about the *unintended* velocity only.
+
+| impulse | 60 | 120 | 200 | 280 | 340 | 400 Ns |
+| --- | --- | --- | --- | --- | --- | --- |
+| forwards | up | up | up | **down** | down | down |
+| backwards | up | up | up | **down** | down | down |
+| sideways | up | up | **down** | down | down | down |
+
+The transition is exactly where the arithmetic puts it: 3.76 m/s × 71.2 kg =
+268 Ns, between 200 and 280. Sideways gives out sooner because a leg swings a
+long way fore-aft and barely at all across the body — 0.26 m of reach against
+0.50 — which is why a shove from the side puts people down that a shove from
+behind does not. `X` at its default leaves him standing; at full strength it
+still fells him, and 2000 Ns still fells him.
+
+Crouching while recovering is in there too, and it is not a flourish: taking
+height out of `h` shortens `τ`, which shortens the reach the feet have to make.
+It is the one thing a body can do about its own balance without moving its feet.
+
+#### Two bugs found by the harness, both real
+
+**The stagger survived getting up.** Nothing cleared `m_StaggerVelocity` when
+the character stood, so whatever felled him was still there the instant he was
+upright and felled him again. It survived a scene rebuild too, which is how it
+was caught: every case after the first fall reported a fall.
+
+**Facing survived a rebuild.** `m_Facing` is only ever written when getting up,
+so pressing reset after walking a while left a rig built facing +z while the
+gait placed its feet for wherever he had been going — left and right swapped and
+the legs crossed. It showed up as the standing knee wandering between 4° and 31°
+instead of sitting at 5°, and it was three "regressions" at once: the knee, the
+supine get-up, and a standing jump that came apart. Running the standing check
+*first* rather than last was what separated a real regression from state left
+behind by an earlier test.
+
+### 2026-08-10 (arms, a run, a jump, a stagger, and getting up properly)
+
+Five additions to movement. The two that were expected to be hardest were not.
+
+#### Arms
+
+The shoulder and elbow joints existed and their handles were being thrown away,
+so nothing drove them. They swing **antiphase to the leg on the same side** —
+which is not decoration: the legs throw angular momentum about the vertical axis
+every step and the arms are what cancels it. Measured against the same-side
+thigh, the correlation is **−0.90**; in phase would be +1, and is a toy soldier.
+
+#### The run is not a fast walk
+
+The difference is the **duty factor** — what fraction of its cycle a foot spends
+on the ground. The gait had this hard-wired at exactly half by a bare
+`cos(phase) < 0`, and half is neither gait: a walk *overlaps* (both feet down
+through the hand-over) and a run has *gaps* (neither foot down at all).
+
+| | duty | double support | flight | cadence |
+| --- | ---: | ---: | ---: | ---: |
+| walk | 62% | 25% | 0% | 2.2 steps/s |
+| run | 36% | 0% | **27%** | 3.3 steps/s |
+
+The flight arc is evaluated from the phase rather than integrated, so it lands
+exactly when the next foot is due instead of whenever gravity gets round to it,
+and its height is not a tuning knob — a flight of `T` seconds is `gT²/8` tall.
+
+The trap worth recording: a running stride is 2.4 m, and a quarter of that would
+put the foot 0.60 m in front of the body, which needs the hip **0.23 m** lower
+to be reachable at all. That is overstriding, which is a braking force, not a
+run. Real running gets its length from the flight phase, so the foot reach is
+capped and the stride grows past it.
+
+#### The jump
+
+With a kinematic root a jump is not a force on a mass — it is the height being
+integrated ballistically instead of pinned to the ground. Crouch, launch,
+parabola, absorb.
+
+Checked against arithmetic the code does not contain, `2√(2h/g)`:
+
+| asked | flight measured | flight predicted |
+| ---: | ---: | ---: |
+| 0.35 m | 0.533 s | 0.534 s |
+| 0.55 m | 0.667 s | 0.670 s |
+| 0.80 m | 0.800 s | 0.808 s |
+
+The apex reads about 5% low — 0.523 m for 0.55 — and that is not an error to
+chase: it is the half-step `v·dt/2` that an explicit integrator loses, and it
+comes out at 0.028 m against a measured 0.027.
+
+#### Catching himself
+
+The complaint was that the character ragdolled abruptly and just fell, and the
+cause was a single threshold: a shove was either nothing at all or a collapse.
+There is now a band between them. A hit inside it pushes the *root*, which is
+what being off balance is, and the legs chase it — they are placed relative to
+the root already, and the gait phase advances with distance covered, so being
+shoved fast makes the steps quick without being told to.
+
+| shove | outcome | moved | caught in |
+| ---: | --- | ---: | --- |
+| 500 N | nothing | 0.00 m | — |
+| 900 N | stayed up | 0.13 m | 0.53 s |
+| 1400 N | stayed up | 0.58 m | 1.08 s |
+| 1900 N | stayed up | 1.04 m | 1.33 s |
+| 2100 N | went down | — | — |
+| 4000 N | went down | — | — |
+
+Monotonic in both distance and recovery time, and the negative control holds:
+past the ragdoll threshold it still always goes down.
+
+#### Getting up rather than being placed
+
+The old get-up lerped the pelvis from where the body lay to a standing pose in
+one move, so the feet arrived under the hips at the same instant the hips
+arrived at standing height. That is not getting up, it is being placed — which
+is exactly what it looked like.
+
+It is two stages now. The hips come up only as far as **kneeling** while the
+feet are collected underneath them, and only then straighten, so the rise
+happens over feet that are already planted. Measured as how far the feet are
+from under the hips at the moment the rise takes over:
+
+| | when he fell | when he started to rise |
+| --- | ---: | ---: |
+| face down | 0.945 m | 0.208 m |
+| face up | 0.650 m | 0.169 m |
+
+Two things had to be fixed to get there. Strength was being blended back over
+the whole gather, so it arrived just as the gather ended and one leg was still
+0.79 m out of place; it now returns at twice that rate. And the feet were being
+*dragged* — a foot slid along the floor catches on its own friction and stays
+where it fell — so they lift clear on the way, which is what a person does.
+
+#### A bug of mine, and a measurement of mine
+
+The prone/supine test asked the pelvis's local **+y**, which runs up the body
+towards the head. For a figure lying flat that is horizontal, so its sign was
+noise and the branch it picked was a coin toss. The figure faces local **+z**.
+
+And the test that was meant to exercise both branches shoved him over and
+checked which way he landed — he lands on a *side* every time, `front.y ≈ 0`, so
+neither branch ran. The pose is set outright now.
+
+#### Unlooked-for
+
+The support polygon item is closed, and not by what was predicted. It was
+written off as needing a speculative margin in the narrowphase; a real stance
+fraction and a sole flat to 0.9° got there instead. A planted foot reports
+**4.53 of its 4 corners** where it used to report 1.84, and stance slide fell to
+**0.0049 m/frame**.
+
+Running slides more — 0.0298 m/frame — but a foot dragged at 4 m/s would be
+0.0667, so it is still 55% better than nothing, and a running foot is genuinely
+on the ground briefly and pushing hard.
+
+### 2026-08-10 (a walk with a human cadence, and a floor that ends)
+
+Three reports, and the interesting one was not the one that sounded hardest:
+the ragdoll stood with bent knees, the walk did not look human, and walking off
+the edge of the map did not make him fall.
+
+#### Standing in a half squat
+
+Mine, from the previous session. The crouch was there to give the IK reach
+slack, and 0.09 m of it. On a 0.48 m thigh and a 0.42 m shin that works out at
+**51.8° of knee bend** — near full extension the knee angle is violently
+sensitive to reach, about 12° per millimetre, so nine centimetres is a squat.
+
+The obvious fix — give it a *little* slack instead — was worse, and measuring
+it was worth more than the fix. At crouch 0 the standing knee is dead steady at
+5.1°. At 0.004 it swings **−38° to 64°**; at 0.006 it reaches **150°**, through
+both ends of a limit that runs 0 to 130. That same 12°/mm gain turns the
+kinematic pelvis's own micro-motion into thrash.
+
+Lowering the IK's extension cap to reduce the gain made it worse again, which
+killed the theory: at cap 0.99 the standing knee swung to −148°. The leg was
+then being asked for a reach it could not deliver, and the motors fought the
+floor.
+
+What works is the configuration that has **no** slack: standing demands very
+slightly more reach than the leg has, the reach clamp holds the knee target
+constant, and the knee rests against its own extension stop. Which is how a
+person stands — a straight leg is a mechanical stop, not a balance point.
+**5.1°, and it does not move at all.**
+
+#### The walk was taking seven steps a second
+
+The bob was inverted. Its own comment said "lowest when both feet are down,
+highest at mid-stance over a straight leg" and the code did precisely the
+opposite — `-(1 + cos 2φ)` is at its minimum at φ = 0, which is mid-stance. So
+the body sank over the straight leg and rose as the legs splayed, which is the
+shape of a waddle. The heel-strike nudge was firing at mid-stance too, with
+neither foot anywhere near landing.
+
+The dip is also not a style parameter. With the feet half a stride apart the hip
+*cannot* stay at full leg length — the leg is the hypotenuse of a triangle whose
+base is half the stride — so it is `L - sqrt(L² - half²)`, it grows as the square
+of the stride, and it is now computed rather than guessed. The measured pelvis
+travel, 0.072 m, is that 0.051 plus the 0.008 style bob plus the 0.012 heel
+strike.
+
+But the real defect was arithmetic nobody had done. Stride was 0.45 m per cycle
+at 1.6 m/s:
+
+| | this walk | a person |
+| --- | ---: | ---: |
+| cadence | **7.1 steps/s** | 2.0 |
+| step length | **0.225 m** | 0.70 |
+
+Three and a half times human cadence, in steps a third the length. No amount of
+bob or sway rescues that. The cause was a factor of two: one cycle is two steps,
+so the foot should land a **quarter** of a stride ahead of the body, not half.
+Placing it at half forced the stride down to 0.45 m to keep the target
+reachable, and the cadence followed.
+
+At a quarter, a 1.2 m stride at 1.3 m/s gives **2.2 steps a second at 0.60 m a
+step**, needing a 0.051 m hip drop — all three human numbers at once.
+
+It also made the feet plant far better, which was not the point of the change:
+**0.0036 m of slide per frame against 0.0106 before**, and 0.0267 for a foot
+simply dragged along. Longer steps keep a foot down for more frames and keep the
+leg in a comfortable part of its range. The sole came flatter too, 2.6° → 1.0°.
+
+#### The floor ends
+
+`GroundHeightBelow` takes a floor to fall back on and it defaults to zero, so off
+the edge of the world the probe cheerfully reported y = 0 and the character
+walked out over the void on an invisible floor. Probed against a floor far below
+instead, "there is nothing here" becomes answerable, and no ground within 1.5 m
+goes through the same door the shove and the impact use. He goes limp at the
+edge — measured at z = −8.01, and the floor ends at −8.0 — and falls.
+
+#### Three measurements that lied
+
+Worth recording together, because they were all the same mistake. A peak taken
+over a whole run caught the spawn transient and reported a 0.04 m foot lift as
+clearing *more* than a 0.10 m one; skipping the settle, the leg tracks its
+target to within a millimetre. A single sample of the standing knee caught an
+oscillation at a random phase and read anything from −2° to 17° for the same
+settings. And a gait measured while walking *at* the 0.30 m step reported a
+0.349 m bob. Suspect the measurement first.
+
+### 2026-08-10 (a flat sole, and asking about the step where the foot is)
+
+Two asks: lay the foot flat on flat ground, and raise the knee when stepping
+onto something.
+
+#### The sole was not flat because it was chasing
+
+The ankle was 4.4° off level through the stance, worst 13.5°. Three candidate
+causes, and measuring killed two of them outright. The cone limit was **never
+engaged** — 0% of stance frames. Torque was irrelevant: ten times the budget
+changed the tilt by nothing at all, identical to four significant figures, so
+the ankle was nowhere near saturating.
+
+What was left was lag. The ankle motor holds a target *relative to the shin*,
+and the shin turns all through the stance — so aiming at where the shin is now
+is aiming at where it was by the time the solver runs, and the sole trails the
+lean by roughly the shin's rate over the motor's stiffness. Integrating the shin
+forward one step before building the target halves it: **4.4° → 2.6°**, worst
+13.5° → 9.9°.
+
+One step, specifically. The lag is exactly one:
+
+| lead | tilt |
+| ---: | --- |
+| 0 steps | 4.4° |
+| **1 step** | **2.6°** |
+| 2 steps | 3.7° |
+| 4 steps | 9.2° |
+| 6 steps | 15.9° |
+
+Stiffening the ankle was tried on the theory that it carries a 1 kg foot rather
+than the body's weight, and it measured **worse** — 40 gives 2.6°, 80 gives 3.2,
+160 gives 8.3. A motor is a velocity constraint solved once per step, so past
+roughly `2/dt` it overshoots and rings. That is the same ceiling the leg
+stiffness sweep hit, from the other direction.
+
+The residual is spread evenly across the stance — 3.0° just after landing, 2.6
+carrying, 2.1 pushing off — so it is not a landing transient that the average
+was hiding.
+
+A planted foot still reports only 1.84 of its 4 corners, and that is not the
+ankle: the manifold drops every clipped point that is not behind the reference
+face, with no tolerance, so four points wants the sole flat to about a fifth of
+a degree. A speculative margin would be the honest fix and it would not even
+help here — at 2.6° the far corner of a 0.22 m foot is 10 mm up, outside any
+margin worth having. Left alone rather than perturbing every stack in the engine
+for a metric.
+
+#### The knee already lifted; the question was asked in the wrong place
+
+Measuring first was worth it, because the lift was already there and working:
+walking at the 0.30 m step against walking away from it, the foot clears
+**0.096 m → 0.317 m**, the thigh swings up **47.7° → 70.0°**, the knee joint
+itself rises **0.571 m → 0.759 m**, and the pelvis ends up on top at 1.300.
+
+So the fix was not to build a lift. Two wrong turns before finding what was:
+
+An extra "tuck" was added — pull the swing foot in towards the hip while it is
+up, on the reasoning that two-link IK given a foot held far out in front folds
+the shin back under a thigh that has barely moved. It measured as doing
+**nothing**: knee height 0.759 m with the tuck and 0.759 m without. The
+reasoning was wrong, so the code came out again.
+
+Then the timing test said the lift began only **0.19 m** short of the riser,
+less than half a stride — which would read as a stumble and a recovery. That was
+the test. It skipped 60 warm-up steps and then reported the first frame it
+looked at as the moment the lift began; the lift had started well before. A
+number that disagrees with the geometry is the measurement about as often as it
+is the code.
+
+The real defect was **where the question was asked**. A single probe, a stride
+ahead of the *root*, along the way the character was *facing* — and facing lags
+the direction of travel while turning, so walking onto a step out of a turn
+pointed the probe off to one side for the whole approach. It is now per leg, at
+the foot's own landing spot, which is already computed against the ground that
+is actually there, plus another stride beyond it so the warning is not halved.
+Latched for the length of the swing, because the target is recomputed every
+frame and a foot that clears the riser otherwise stops seeing a step and drops
+its lift halfway over — catching the thing it had just cleared.
+
+Walking straight in, the lift begins **0.40 m** short of a 0.45 m stride.
+Turning into the step, **0.42 m**, clearing 0.304 m. Standing still is unchanged
+at 30 s and the ragdoll still collapses to com 0.098 m.
+
+#### And a bit of sediment
+
+The demo's constructor had accumulated **nineteen** stray `BuildScene()` calls,
+one left behind by each test block deleted over previous sessions, with a live
+`m_SteppingEnabled = false` buried in the middle of them. Nineteen redundant
+rebuilds of the whole scene at startup. Now one.
+
+### 2026-08-10 (feet that plant, and a leg that was too long to walk on)
+
+The gait swung the hips and bent the knees on a sine wave and let the feet fall
+where they might. From a distance that reads as walking; up close the feet slide
+through the whole stance, because nothing was holding them anywhere.
+
+Now the **foot** is what the gait describes and the leg is solved to reach it.
+Through the stance half a foot is pinned to the spot it landed on and the body
+travels over it — which is what walking is — and through the swing half it arcs
+to where it will land next. Two-link inverse kinematics turns that world
+position back into a hip direction and a knee angle: the law of cosines twice,
+solved in the pelvis's frame where the knee's hinge axis is +x.
+
+#### The leg was exactly too long
+
+The first attempt slid *worse* than doing nothing: 0.033 m a frame against
+0.027 for a foot simply towed along at walking speed. Tracing the target against
+the actual foot showed the leg fully extended and the foot **0.4 m short** every
+stride.
+
+Two reasons, both geometric, and neither visible without the trace.
+
+The foot target was placed on the **ground**, but the ankle joint rides 0.10 m
+above the sole, so every target was buried in the floor.
+
+And the rig stood with its legs **dead straight** — the hip 0.90 m above the
+ankle, on a leg of exactly 0.90 m. There was no slack at all: the foot could not
+be placed a centimetre in front of the hip without the target going out of
+reach, and the IK dutifully extended the leg as far as it went and gave up. A
+person walks with slightly bent knees for exactly this reason, so the character
+does now, and the stride was cut to something the leg can actually cover.
+
+#### And then it was a tracking problem
+
+Placing the target correctly got the slide to 0.0218 m a frame, which is still
+most of the way to simply dragging. The target was right; the leg was not
+keeping up with it.
+
+| leg stiffness | torque | slide per frame |
+| ---: | ---: | --- |
+| 14 (the body's own) | 1x | 0.0218 m |
+| 40 | 1x | 0.0196 m |
+| **40** | **4x** | **0.0107 m** |
+| 90 | 1x | 0.0377 m |
+| 90 | 4x | 0.0769 m |
+
+The legs are now driven harder than the rest of the body. Stiffer is not
+monotonically better — at 90 it oscillates and the slide goes back up past where
+it started — which is the same shape of answer the motor stiffness sweep gave
+for standing.
+
+Final: **0.0106 m a frame against 0.0267 for a dragged foot**, a 60% reduction,
+with the controlled mode still standing for 30 s and the ragdoll still
+collapsing.
+
+#### What is still not right
+
+The support polygon has three or more contact points only **15%** of the time.
+The foot holds its ground but often meets the floor on an edge or a corner
+rather than flat, so it is planted without being properly *placed*. That is
+invisible with a kinematic root and would be the first thing to fix for footstep
+sounds, footprints, or anything that wants a clean contact event.
+
+### 2026-08-10 (WASD, and a camera that follows)
+
+The character was on `IJKL` because `WASD` was flying the camera. With a camera
+that follows, `WASD` is free, which is the arrangement anyone would expect.
+
+**Movement is camera-relative.** `W` goes away from the camera whichever way it
+is pointing, not along a fixed world axis. Steering in world space while the
+camera orbits is the thing that makes a follow camera feel like it is fighting
+you.
+
+**The camera follows the torso, not the pelvis.** The pelvis carries the bob and
+the sway deliberately — it is where the weight of the walk comes from — and a
+camera pinned to it inherits all of that and makes the picture seasick. It also
+eases towards its target rather than tracking it exactly, at a rate per second
+rather than per frame, so the lag does not change with the frame rate.
+
+It sits back along its own forward vector, so pointing it at its own yaw and
+pitch looks exactly at the focus with no aiming arithmetic. Pitch is clamped
+short of straight down, where an orbit camera flips and loses its horizon, and
+the position is lifted clear of the ground with the same `GroundHeightBelow`
+probe the walk uses — otherwise backing into a rise puts the camera underground
+looking at the inside of the world.
+
+`F` restores the old fly-around for inspecting things, and borrows `WASD` back
+while it is on.
+
+### 2026-08-10 (getting up, ground under the feet, and a leg that sees the step)
+
+Three additions to the controlled character, and one new engine call.
+
+#### Getting up is a blend
+
+`G` used to restore control and snap the pelvis back to standing wherever it was
+lying. Now the pelvis becomes kinematic immediately -- it has to be drivable to
+be blended -- and is carried from where it came to rest back to standing over
+about a second, on a smoothstep.
+
+The limbs are not animated at all. The motors come back up from limp over the
+same period and *drag* them into the pose, which is why the arms trail and
+settle rather than snapping into place. It is the cheap version of blending into
+a get-up animation, and most of what sells it is simply that it takes time.
+
+Two details that matter more than they look. It stands on **whatever is
+underneath**, not at the height of the floor it started on, or getting up on a
+step sinks into it. And it keeps whatever heading it ended up facing rather than
+the one it fell from -- standing up facing the way you fell reads as a stumble
+recovered, snapping back to the old heading reads as a rewind.
+
+Measured: lying at pelvis y 0.701, up to 1.090 over 1.12 s, ending in control.
+
+#### The ground moves, so the character does
+
+New in the engine: `PhysicsWorld3D::GroundHeightBelow`, the highest surface
+under a point. It tests **world axis-aligned bounds** rather than actual shapes,
+which for the boxes it exists to stand on is exact, and for a rotated box reads
+slightly high -- the right way to be wrong for a ground probe, where a
+centimetre high is invisible and being late is a character sinking into a step.
+Dynamic bodies are excluded: a crate that wandered underfoot is a fair question
+and a different one.
+
+The walk takes two probes. One under the root sets how high the character
+stands; the stand height is **eased** towards it rather than following it,
+because the probe is a step function at the edge of a box and following it
+exactly makes the hips jump the height of the step in a single frame.
+
+Measured walking onto a 0.30 m platform: stand height 1.090 m on the flat,
+**1.390 m** on the step -- exactly the clearance plus the step -- and back down
+the other side.
+
+#### And a leg that lifts for it
+
+The second probe looks a stride ahead. Where the ground there is higher, the
+swing leg lifts more: the knee bend and the hip swing both scale with how much
+higher the next foothold is, up to a step of 0.35 m.
+
+Measured: on the approach the knee target peaks at **1.75 rad against the flat
+gait's 0.90** -- the leg lifts nearly twice as high, and starts doing so before
+the foot would have met the riser rather than after.
+
+The clearance the character stands at is read off the pose the rig was built in
+rather than written down a second time, so changing the skeleton's proportions
+does not silently leave it hovering.
+
+### 2026-08-10 (weight, momentum, and a knee that bent the wrong way)
+
+Three complaints about the walk, all fair, and one of them a real bug.
+
+#### The knees bent backwards, and the limits only allowed that
+
+The knee's range was built as `(-130, 0)` degrees. Measuring which way that
+actually sends the foot settled it, and the first attempt at the measurement was
+wrong in an instructive way: the expectation was written down as "the figure
+faces -z". It does not. Its toes stick out towards **+z** — the foot box spans
+-0.08 to +0.14 in z — so the figure faces +z, and a knee bend that sent the foot
+to +z was sending the heel *forwards*.
+
+The range was not merely reversed, it was **exclusively wrong**: the joint could
+only hyperextend and was blocked from bending the way a knee bends. It is now
+`(0, 130)`, with the gait and the swing-leg lift following it, and the elbow --
+which is the knee's mirror -- is now `(-140, 0)`. Measured after: the foot
+finishes 0.165 m *behind* the shin.
+
+Worth noting the near miss. An earlier entry said the anatomical direction of
+the knees and elbows had not been checked and was worth thirty seconds with the
+demo. Nobody did, and it survived until it was visible in motion.
+
+#### Momentum
+
+Velocity and heading were both being set outright from the key state, which is
+most of what makes a character feel like a cursor. Now:
+
+- speed eases towards its target and coasts down, faster to brake than to
+  accelerate, as people are — 0 to 1.6 m/s in about 0.55 s, and stopped 0.27 s
+  after the key is released;
+- the heading turns towards the input at a limited rate, the short way round —
+  4 rad/s, so a half turn takes about 0.8 s;
+- the figure walks along its **facing** rather than along the input, so a turn
+  is a curve rather than a sidestep.
+
+#### Weight
+
+Three things sell a walk as having mass, and none of them are the legs. All are
+driven off the gait phase so they cannot drift apart from the stride:
+
+- **Bob** — lowest when both feet are down and the weight transfers, highest at
+  mid-stance over a straight leg. Twice per stride.
+- **Sway** — the hips move over whichever foot is carrying, once per stride.
+  Without it a walk looks like a puppet slid along a rail.
+- **The drop** — a short, sharp downward nudge as the foot lands. This is the
+  one that actually reads as the step *hitting* the ground; a smooth sinusoid
+  on its own feels like floating.
+
+Plus a small forward lean with speed and a roll with the sway, because a
+perfectly upright pelvis is the other half of looking weightless.
+
+Tuned against a person rather than by eye. Gait studies put the hips at roughly
+4-5 cm of vertical travel and 2-3 cm of lateral sway per stride; the first pass
+measured **6.5 cm and 6.0 cm**, which reads as a swagger. Now **4.7 cm and
+2.6 cm**.
+
+The bob and sway are an offset from a separately tracked anchor rather than
+something the root integrates, or they would accumulate into a drift.
+
+The balance overlay is also now hidden while under control. The character is not
+balancing then — its capture point sits outside its feet permanently and means
+nothing — and drawing it implied a failure that was not happening.
 
 ### 2026-08-10 (two modes: a character that walks, and a ragdoll it becomes)
 

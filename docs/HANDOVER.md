@@ -673,9 +673,172 @@ like a car strike. It knocked the character down within a quarter second of
 standing up. An impact now requires exactly one side of the contact to be part
 of the character.
 
-Not done: **getting up** is a snap rather than a blend, and the feet do not
-reliably plant while walking (fine for a kinematic root, not fine for anything
-wanting traction).
+The walk carries momentum -- speed eases in and coasts out, heading turns at a
+limited rate, and the figure walks along its facing rather than along the input.
+Weight comes from a vertical bob, a lateral sway and a sharp drop at foot
+plant, all driven off the gait phase, tuned to a person's 4-5 cm of vertical and
+2-3 cm of lateral hip travel (measured: 4.7 and 2.6).
+
+**The figure faces +z** -- its toes stick out that way. This matters: the knees
+were built with the range `(-130, 0)` and could therefore *only* hyperextend,
+which is why the walk looked wrong. Knees are now `(0, 130)` and elbows
+`(-140, 0)`. Check the facing before reasoning about any joint direction.
+
+**Controls**: `WASD` walks the character (camera-relative), arrows orbit a
+third-person camera, `G` ragdolls and gets up, `Space` shoves, `F` swaps back to
+the old fly-around. The camera follows the *torso* rather than the pelvis --
+the pelvis carries the walk's bob and sway on purpose and a camera pinned to it
+is seasick -- and eases at a rate per second so the lag does not vary with frame
+rate.
+
+**Getting up is a blend**, not a snap: the pelvis goes kinematic and is carried
+back to standing over about a second while the motors come up from limp and drag
+the limbs into the pose. It stands on whatever is underneath it and keeps the
+heading it fell facing.
+
+**The root follows the ground.** `PhysicsWorld3D::GroundHeightBelow` is new --
+highest surface under a point, tested against world AABBs rather than shapes,
+which is exact for unrotated boxes and reads slightly high otherwise (the right
+way to be wrong for a ground probe). The walk probes under the root for stand
+height, *eased* rather than followed because the probe is a step function at a
+box edge, and probes a stride ahead to lift the swing leg before it would meet a
+riser. Measured: 1.090 m standing on the flat, 1.390 m on a 0.30 m step; knee
+target 1.75 rad climbing against 0.90 on the flat.
+
+**The feet plant.** The gait describes the foot, not the joints: a stance foot
+is pinned where it landed and the body travels over it, and two-link IK solves
+the hip and knee to reach it. Slide is **0.0106 m a frame against 0.0267 for a
+dragged foot**.
+
+Two traps that cost the most here, both geometric. The foot target must be at
+the **ankle**, not the ground -- the ankle rides 0.10 m above the sole. And the
+rig stood with its legs **dead straight** (hip 0.90 m above the ankle, leg
+exactly 0.90 m), so there was no slack to place a foot even a centimetre
+forward; the character now stands with a slight crouch, which is why people do.
+
+The legs are also driven harder than the rest of the body -- stiffness 40 and
+four times the torque -- because they track an IK target that moves every frame.
+Stiffer is not better: at 90 it oscillates and slides worse than doing nothing.
+
+**Reset what a rebuild rebuilds.** Two pieces of state outlived `BuildScene`
+and both were real bugs, not test artefacts. `m_Facing` is only ever written by
+the get-up, so a reset after walking left the rig built facing +z while the gait
+placed feet for the old heading -- legs crossed, standing knee wandering 4-31
+degrees instead of sitting at 5. And `m_StaggerVelocity` was not cleared when he
+stood up, so whatever felled him was still there and felled him again. Both are
+cleared now; if you add gait state, clear it in the same places.
+
+**Run a standing check first, not last.** Those three symptoms looked like three
+regressions from the work in hand. Running the standing knee test immediately
+after a build gave 5.1 to 5.1, and later in the suite 4.1 to 30.8 -- which is
+what separated leaked state from a real regression in one measurement.
+
+**Impacts are impulses, not forces.** A hit of J newton-seconds on 71.2 kg gives
+J/m of velocity; the capture point is v*sqrt(h/g) ahead; a step of reach R
+catches R/tau, about 1.5 m/s, and he gets ~2.5 steps. **Do not test the capture
+point against the support polygon** -- running normally puts it 1.16 m from the
+nearest foot, further than any shove that used to fell him, because running is
+controlled falling. Only the *unintended* velocity counts. Reach is 0.50 m
+fore-aft and 0.26 m sideways, which is why a side-on shove fells him sooner.
+
+**`m_StaggerThreshold` is body weight (698 N) on purpose.** Below it, his own
+weight through his legs registers as a shove and he staggers while standing.
+
+**The lean's sign**: positive tips the top of the body towards +z, which is the
+way the figure faces. It was negated, so he leaned backwards at every speed.
+The torso does *not* trail the pelvis -- measured within 0.1 degrees, the spine
+motor at 260 N.m carries it rigidly -- so leaning the pelvis alone moves the
+whole figure as one plank; the lean is split between pelvis and spine.
+
+**Sway and roll must key off which foot is carrying**, not `sin(gaitPhase)`.
+Tied to raw phase they were inverted at a walk and correct at a run, because
+which foot is down at a given phase depends on the duty factor.
+
+**A jump's wait for a foot-plant cannot be unconditional** -- `m_GaitPhase` is
+pinned to 0 below 0.05 m/s, so a standing press would hang forever. Standing
+still is an immediate two-foot hop. Landing resets the gait phase to the lead
+foot, which removes the need for a per-foot landing timer.
+
+**Controls**: `WASD` walks (camera-relative), `shift` runs, `space` jumps, `X`
+shoves, `G` ragdolls and gets up, `F` swaps to the fly-around. `P` is pause and
+`R` is reset -- a shove was briefly bound to `P` and was dead code, because the
+pause handler above it returns first.
+
+**A run is a duty factor, not a speed.** What fraction of its cycle a foot is
+down: 62% walking (the overlap is double support) and 36% running (the gaps are
+flight). The gait had this hard-wired at exactly half by a bare
+`cos(phase) < 0`, which is neither gait. And **do not scale foot reach with the
+running stride** -- a quarter of a 2.4 m stride puts the foot 0.60 m ahead,
+needing the hip 0.23 m lower to reach it, which is overstriding and brakes. A
+run gets its length from flight; the reach is capped.
+
+**The jump is ballistic height on a kinematic root**, so the apex is `v^2/2g`
+and the flight is `2*sqrt(2h/g)` -- measured 0.533 s against 0.534 predicted.
+The apex reads ~5% low and that is the explicit integrator's half-step
+`v*dt/2`, not a bug.
+
+**Impacts have three bands now**, not two: below the stagger threshold nothing,
+between the thresholds the root is pushed and the legs chase it and he recovers,
+above the ragdoll threshold he goes down. The single threshold was why he
+"ragdolled abruptly".
+
+**Getting up is two stages** -- gather the feet under the hips at kneeling
+height, *then* rise over them. One lerp to a standing pose reads as being
+placed, not getting up. Blend strength back at twice the gather rate or the legs
+have no authority until it is too late, and **lift the feet** during the gather:
+dragged along the floor they catch on their own friction and stay where they
+fell (one leg was 0.79 m out of place at the rise).
+
+**Prone versus supine is the pelvis's local +z**, the way the figure faces --
+not local +y, which runs up the body and is horizontal for anyone lying flat, so
+its sign is noise. And a settling ragdoll lands on a *side* every time, so a
+test that shoves him over exercises neither branch.
+
+**Do not give the standing leg reach slack.** Standing asks for slightly *more*
+reach than the leg has, so the reach clamp pins the knee target and the knee
+rests against its extension stop -- steady at 5.1°, and that is how a person
+stands. Give it slack and the knee balances near full extension, where the law
+of cosines has a gain of about **12° per millimetre**, and the kinematic
+pelvis's own micro-motion drives it through both joint limits: at 0.006 m of
+crouch the standing knee swung -3° to 150°. Lowering the IK's extension cap to
+cut the gain is *also* wrong -- the leg is then asked for a reach it cannot
+deliver and fights the floor (-148° at cap 0.99).
+
+**One gait cycle is two steps**, so the foot lands a **quarter** of a stride
+ahead of the body, not half. Getting that factor wrong forced the stride down to
+0.45 m to keep the foot reachable, which meant **7.1 steps a second at 0.225 m a
+step** -- three and a half times human cadence. Now 1.2 m per cycle at 1.3 m/s:
+2.2 steps/s, 0.60 m steps, and slide fell to 0.0036 m/frame as a side effect.
+
+**The dip is geometry, not style.** With the feet half a stride apart the hip
+cannot stay at full leg length: it must drop `L - sqrt(L^2 - half^2)`, which
+grows as the *square* of the stride. The bob used to be a magic number and was
+also phased backwards -- lowest at mid-stance, highest at double support, the
+opposite of its own comment and the shape of a waddle.
+
+**`GroundHeightBelow` defaults its floor to 0**, so off the edge of the world it
+reports y = 0 and the character walks out over the void. Probe it with a floor
+far below when the question is "is there any ground here at all".
+
+**The sole is flat to 1.0°** (was 4.4). The trap: the ankle motor's target is
+*relative to the shin*, and the shin turns all through the stance -- so the
+target has to be built from the shin integrated **one step forward**, or the
+sole trails the lean. Neither the cone limit (never engaged, 0% of stance
+frames) nor torque (10x changed nothing) had anything to do with it, and
+stiffening the ankle made it worse: past roughly `2/dt` a motor rings, the same
+ceiling the leg sweep found.
+
+A planted foot now reports **4.53 of its 4 corners** (it was 1.84), so the
+support polygon has three or more whenever a foot is down. This was written off
+as needing a speculative margin in the narrowphase; a real stance fraction and a
+sole flat to 0.9 degrees got there without one.
+
+**The climb signal is per leg, at the foot's landing spot**, not one probe ahead
+of the root along `m_Facing`. Facing lags the direction of travel while turning,
+so approaching a step out of a turn aimed the probe sideways for the whole
+approach. It also looks a stride *beyond* the landing spot (the landing spot
+alone is only half a stride of warning) and is **latched for the swing**, or a
+foot that clears the riser stops seeing a step and drops its lift halfway over.
 
 The self-balancing and stepping work is documented in the changelog and is no
 longer on the critical path. Its diagnosis is complete if anyone wants it: the
