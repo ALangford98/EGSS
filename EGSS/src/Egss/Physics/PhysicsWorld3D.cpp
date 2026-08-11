@@ -75,6 +75,27 @@ namespace Egss {
 			outMax = glm::max(p, q) + glm::vec3(body.Radius);
 			return;
 		}
+		else if (body.Shape == ColliderShape3D::Heightfield)
+		{
+			// The whole map, which for the broadphase grid means the terrain
+			// body lands in every cell it can reach and rejects nothing. That
+			// is honest -- the ground really is a candidate for everything
+			// standing on it -- but it also means a world with terrain sets the
+			// grid's extent from the map rather than from the bodies in it. If
+			// a demo ever puts a few hundred bodies on a large heightfield,
+			// this is the line to come back to.
+			if (!body.Field || body.Field->Empty())
+			{
+				outMin = body.Position;
+				outMax = body.Position;
+				return;
+			}
+
+			float half = body.Field->HalfExtent();
+			outMin = body.Position + glm::vec3(-half, body.Field->Lowest, -half);
+			outMax = body.Position + glm::vec3(half, body.Field->Highest, half);
+			return;
+		}
 		else
 		{
 			// The 3D form of the trap 2D already fell into: a turned box
@@ -657,12 +678,236 @@ namespace Egss {
 		return true;
 	}
 
+	// --- Heightfield --------------------------------------------------------
+	//
+	// Every shape meets the terrain the same way: reduce it to a handful of
+	// places where it might be touching, ask the field about each, then hand
+	// the answers to one routine that assembles a manifold.
+	//
+	// The assembling is where the interesting constraint lives. A `Contact3D`
+	// carries **one normal** for all of its points, and the terrain does not --
+	// two triangles under one foot generally face different ways. So the
+	// deepest point's normal is adopted and every other point's depth is
+	// re-measured along it. On terrain this smooth that is a fraction of a
+	// degree; on a crease it makes the foot rest on the plane of whichever
+	// triangle it is most into, which is the same compromise `CollideBoxBox`
+	// makes when it picks a reference face.
+	//
+	// The alternative is one contact per triangle, and it was not taken: the
+	// solver keys warm starting on the *pair*, so several contacts between the
+	// same two bodies would each throw the others' impulses away every step.
+	struct FieldHit
+	{
+		glm::vec3 Surface = { 0.0f, 0.0f, 0.0f };   // on the terrain, local
+		glm::vec3 Centre = { 0.0f, 0.0f, 0.0f };    // of the query sphere, local
+		glm::vec3 Normal = { 0.0f, 1.0f, 0.0f };    // out of the terrain
+		float Radius = 0.0f;
+		float Depth = 0.0f;
+	};
+
+	// A sphere of `radius` about `centre`, both in the field's frame.
+	static bool SphereOnField(const Heightfield3D& field, const glm::vec3& centre,
+		float radius, FieldHit& out)
+	{
+		glm::vec3 closest, normal;
+		float distance;
+
+		if (!field.ClosestPoint(centre, radius, closest, normal, distance))
+			return false;
+
+		// `distance` is measured along the normal, so it goes negative once the
+		// centre is under the surface and this stays the right depth without a
+		// second case.
+		if (distance >= radius)
+			return false;
+
+		out.Surface = closest;
+		out.Centre = centre;
+		out.Normal = normal;
+		out.Radius = radius;
+		out.Depth = radius - distance;
+		return true;
+	}
+
+	// A is the shape, B is the heightfield, and `origin` is B's position --
+	// everything in `hits` is in B's frame.
+	static bool ContactFromField(unsigned int ia, unsigned int ib,
+		const glm::vec3& origin, const FieldHit* hits, int count, Contact3D& out)
+	{
+		if (count <= 0)
+			return false;
+
+		int deepest = 0;
+		for (int i = 1; i < count; i++)
+			if (hits[i].Depth > hits[deepest].Depth)
+				deepest = i;
+
+		glm::vec3 up = hits[deepest].Normal;
+
+		out.A = ia;
+		out.B = ib;
+		// Contacts point from A towards B. The field's normal points up out of
+		// the ground, so the contact normal is its opposite.
+		out.Normal = -up;
+
+		int written = 0;
+		for (int i = 0; i < count && written < 8; i++)
+		{
+			// Re-measured along the adopted normal rather than reused. Same
+			// lesson as the tilted capsule on a box: a point that is not
+			// actually touching still resists approach, so it props the shape
+			// up at whatever angle it happened to be found at.
+			float depth = hits[i].Radius
+				- glm::dot(hits[i].Centre - hits[i].Surface, up);
+
+			if (depth <= 0.0f)
+				continue;
+
+			out.Points[written].Position = origin + hits[i].Surface;
+			out.Points[written].Penetration = depth;
+			written++;
+		}
+
+		if (written == 0)
+			return false;
+
+		out.PointCount = written;
+		out.Penetration = out.Points[0].Penetration;
+		out.Point = out.Points[0].Position;
+
+		for (int i = 1; i < written; i++)
+		{
+			if (out.Points[i].Penetration > out.Penetration)
+			{
+				out.Penetration = out.Points[i].Penetration;
+				out.Point = out.Points[i].Position;
+			}
+		}
+
+		return true;
+	}
+
+	static bool CollideSphereHeightfield(unsigned int ia, const RigidBody3D& a,
+		unsigned int ib, const RigidBody3D& b, Contact3D& out)
+	{
+		if (!b.Field)
+			return false;
+
+		FieldHit hit;
+		if (!SphereOnField(*b.Field, a.Position - b.Position, a.Radius, hit))
+			return false;
+
+		return ContactFromField(ia, ib, b.Position, &hit, 1, out);
+	}
+
+	// The segment is sampled rather than solved against the triangles exactly.
+	//
+	// Spacing is half a cell, which is what makes it safe: the field cannot
+	// carry a feature narrower than a cell, so no bump can hide between two
+	// samples. An exact segment-triangle closest pair would be the honest
+	// version and is a great deal more code for a limb that is a third of a
+	// cell long -- but it is the thing to reach for if a demo ever lays
+	// something long across coarse terrain.
+	static bool CollideCapsuleHeightfield(unsigned int ia, const RigidBody3D& a,
+		unsigned int ib, const RigidBody3D& b, Contact3D& out)
+	{
+		if (!b.Field || b.Field->Empty())
+			return false;
+
+		glm::vec3 worldP, worldQ;
+		a.GetSegment(worldP, worldQ);
+
+		glm::vec3 p = worldP - b.Position;
+		glm::vec3 q = worldQ - b.Position;
+
+		float length = glm::length(q - p);
+		float spacing = std::max(b.Field->CellSize() * 0.5f, 0.01f);
+
+		// HalfHeight 0 is a capsule that is really a sphere; two samples at the
+		// same place would be two identical contact points, which the solver
+		// would treat as twice the support.
+		int samples = length < 1e-6f
+			? 1
+			: glm::clamp((int)std::ceil(length / spacing) + 1, 2, 8);
+
+		FieldHit hits[8];
+		int count = 0;
+
+		for (int i = 0; i < samples; i++)
+		{
+			float t = samples > 1 ? (float)i / (float)(samples - 1) : 0.0f;
+
+			FieldHit hit;
+			if (SphereOnField(*b.Field, p + (q - p) * t, a.Radius, hit))
+				hits[count++] = hit;
+		}
+
+		return ContactFromField(ia, ib, b.Position, hits, count, out);
+	}
+
+	// Corners against the column of terrain each one stands over.
+	//
+	// A box is the one shape here with no radius to work with, so the closest
+	// point on a triangle is the wrong question -- it would answer with a
+	// direction only once the corner is already through the surface. The right
+	// question for a heightfield is the vertical one: what is under this
+	// corner, and is the corner below it.
+	//
+	// The limitation is a box wider than a cell straddling a peak: every corner
+	// can be above ground while the peak pushes through the underside, and
+	// nothing here sees it. Nothing in this project is in that position -- a
+	// foot is 0.22 m across a 0.5 m grid -- and the fix is to add the cell
+	// corners under the box as query points too.
+	static bool CollideBoxHeightfield(unsigned int ia, const RigidBody3D& a,
+		unsigned int ib, const RigidBody3D& b, Contact3D& out)
+	{
+		if (!b.Field || b.Field->Empty())
+			return false;
+
+		glm::vec3 corners[8];
+		ObbOf(a).Corners(corners);
+
+		FieldHit hits[8];
+		int count = 0;
+
+		for (int i = 0; i < 8; i++)
+		{
+			glm::vec3 local = corners[i] - b.Position;
+
+			float height;
+			glm::vec3 normal;
+			if (!b.Field->SurfaceAt(local.x, local.z, height, normal))
+				continue;
+
+			if (local.y >= height)
+				continue;
+
+			FieldHit& hit = hits[count++];
+			hit.Surface = { local.x, height, local.z };
+			hit.Centre = local;
+			hit.Normal = normal;
+			hit.Radius = 0.0f;
+			// The vertical drop turned into a perpendicular one. The factor is
+			// the normal's own y, which is the cosine of the slope -- on the
+			// flat it is 1 and the two measures agree.
+			hit.Depth = (height - local.y) * normal.y;
+		}
+
+		return ContactFromField(ia, ib, b.Position, hits, count, out);
+	}
+
 	static bool Collide(unsigned int i, const RigidBody3D& a, unsigned int j,
 		const RigidBody3D& b, Contact3D& out)
 	{
 		const ColliderShape3D sphere = ColliderShape3D::Sphere;
 		const ColliderShape3D box = ColliderShape3D::Box;
 		const ColliderShape3D capsule = ColliderShape3D::Capsule;
+		const ColliderShape3D field = ColliderShape3D::Heightfield;
+
+		// Two heightfields can only ever be two static bodies, which TestPair
+		// has already dropped. Named anyway so the dispatch below is total.
+		if (a.Shape == field && b.Shape == field)
+			return false;
 
 		// Like-with-like first.
 		if (a.Shape == sphere && b.Shape == sphere)
@@ -684,6 +929,15 @@ namespace Egss {
 		if (a.Shape == capsule && b.Shape == box)
 			return CollideCapsuleBox(i, a, j, b, out);
 
+		if (a.Shape == sphere && b.Shape == field)
+			return CollideSphereHeightfield(i, a, j, b, out);
+
+		if (a.Shape == capsule && b.Shape == field)
+			return CollideCapsuleHeightfield(i, a, j, b, out);
+
+		if (a.Shape == box && b.Shape == field)
+			return CollideBoxHeightfield(i, a, j, b, out);
+
 		// Everything else is one of those with the bodies the other way round.
 		// Run the canonical test and flip the normal, rather than writing each
 		// test twice -- the swapped versions were where the 2D narrowphase
@@ -696,6 +950,12 @@ namespace Egss {
 			hit = CollideCapsuleSphere(j, b, i, a, out);
 		else if (a.Shape == box && b.Shape == capsule)
 			hit = CollideCapsuleBox(j, b, i, a, out);
+		else if (a.Shape == field && b.Shape == sphere)
+			hit = CollideSphereHeightfield(j, b, i, a, out);
+		else if (a.Shape == field && b.Shape == capsule)
+			hit = CollideCapsuleHeightfield(j, b, i, a, out);
+		else if (a.Shape == field && b.Shape == box)
+			hit = CollideBoxHeightfield(j, b, i, a, out);
 
 		if (!hit)
 			return false;
@@ -1101,6 +1361,29 @@ namespace Egss {
 			// loose object that wandered underfoot.
 			if (body.Type == BodyType::Dynamic)
 				continue;
+
+			// Terrain is asked directly rather than through its bounds, which
+			// would report the highest point on the map from anywhere on it.
+			// This is the one collider whose ground answer is *exact* -- a
+			// heightfield is a height as a function of x and z, which is
+			// precisely the question being asked.
+			if (body.Shape == ColliderShape3D::Heightfield)
+			{
+				if (!body.Field)
+					continue;
+
+				float height;
+				glm::vec3 normal;
+				if (!body.Field->SurfaceAt(point.x - body.Position.x,
+					point.z - body.Position.z, height, normal))
+					continue;
+
+				float surface = body.Position.y + height;
+				if (surface <= point.y && surface > best)
+					best = surface;
+
+				continue;
+			}
 
 			glm::vec3 low, high;
 			BodyBounds(body, low, high);

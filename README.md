@@ -720,6 +720,12 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [ ] **A second character, and pushing.** Once one figure balances, the second
       is the same rig with a different driver; shoving is `ApplyImpulseAt`,
       which already works
+- [x] **3D physics: a heightfield collider** — static, never turned, with
+      sphere/capsule/box narrowphase against the triangulated surface and an
+      exact `GroundHeightBelow`. Verified against `tan θ` on a slope to 1.4%
+- [x] **Generated terrain, and a character walking on it** — Map Building is a
+      subclass of Ragdoll rather than a second rig, and the gait needed no
+      changes because it already asked the world where the ground was
 
 - [ ] **Partitioned FFT convolution.** The convolution reverb takes a *sparse*
       response, which is what the ray tracer produces. A dense recorded impulse
@@ -999,6 +1005,167 @@ construction whichever way round it is. Only a file that states its normals can
 be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
+
+### 2026-08-11 (something to stand on, and someone to stand on it)
+
+The character from the Ragdoll demo now walks on the generated map. Two pieces:
+a **heightfield collider** in the engine, and Map Building becoming a *subclass*
+of Ragdoll rather than a second copy of the rig.
+
+#### The collider
+
+`ColliderShape3D::Heightfield` — static only, never turned, since a collider
+that is a height as a function of `(x, z)` stops being one the moment it tilts.
+`EGSS/src/Egss/Physics/Heightfield3D.h` holds the samples and the surface;
+`PhysicsWorld3D` gained a narrowphase case per shape and an exact ground probe.
+
+Every shape reduces to the same thing — a handful of places where it might be
+touching, then one routine that assembles a manifold:
+
+| shape | query points | why |
+| --- | --- | --- |
+| sphere | the centre | closest point on the nearby triangles |
+| capsule | the segment, sampled every half cell | the field cannot hold a feature narrower than a cell, so nothing hides between samples |
+| box | its eight corners, vertically | a box has no radius, so "closest point" only answers once it is already through the surface |
+
+The constraint worth knowing about is that a `Contact3D` carries **one normal
+for all of its points** and terrain does not — two triangles under one foot face
+different ways. So the deepest point's normal is adopted and every other point's
+depth is re-measured along it. One contact *per triangle* was the alternative
+and is wrong here: the solver keys warm starting on the body **pair**, so
+several contacts between the same two bodies would throw each other's impulses
+away every step.
+
+#### It was a different surface than the one being drawn
+
+The terrain answered height queries with **bilinear** interpolation and the
+renderer draws **triangles**. Those are not the same surface. They meet at the
+four corners of a cell and along its diagonal and nowhere else, differing by
+`fx·fz·(h00 − h10 − h01 + h11)`. Measured on this map that reached **1.75 cm** —
+a foot-thickness of hover, invisible in any screenshot.
+
+So `Terrain::HeightAt` now answers from the collider, and the collider walks the
+same triangles in the same winding. One surface, three consumers.
+
+Verified against arithmetic the collider knows nothing about — 15/15:
+
+| | |
+| --- | --- |
+| collider height vs. the mesh's own triangles, 3992 samples off the lattice | worst **0.0000014 m** |
+| collider normal vs. the mesh's face normals | worst **0.000000°** |
+| `GroundHeightBelow` vs. the surface | worst **0.000000000 m** |
+| sphere of radius *r* resting on a plane at *h* | centre at `h + r`, off by 0.005 (the solver's slop, exactly) |
+| block on a 30° slope, μ = 0.7 | holds — `tan 30° = 0.58 < 0.7` |
+| block on a 40° slope | slides |
+| block on a 45° slope for 1.5 s | predicted 2.339 m by `½g(sin θ − μ cos θ)t²`, measured 2.371 — **1.4%** |
+| contact points under a settled foot | **4.00** |
+
+The slope tests are the strongest of these because statics supplies the answer
+and nothing in the solver has ever heard of `tan θ`.
+
+**All three failures on the first run were the measurement.** A block that slid
+at 30° was tilted the wrong way — a rotation of `+θ` about `+x` leans a box the
+opposite way to the normal of a ramp rising with `z`, so it was balanced on one
+edge and would have slid at any friction. And a stubborn `0.0396°` normal error
+printed two normals that were *identical to every digit*: `acos` is
+ill-conditioned at 1, and turns a dot product a few ulps below it into
+`sqrt(2ε) ≈ 0.02°`. Measured as a chord — `2·asin(|a−b|/2)` — it reads zero.
+
+#### Map Building is a subclass, not a second rig
+
+The rig is thirteen bodies, twelve joints, a gait, a balance controller and
+about a hundred and fifty constants that were each measured. A second copy would
+be a second thing to keep tuned. `Ragdoll` grew five hooks — `BuildGround`,
+`SpawnPoint`, `ClearColour`, `SetSceneLighting`, `DrawWorld` — and Map Building
+overrides exactly those.
+
+Nothing in the gait needed touching, and that is a property of the rig rather
+than of the new demo: every question it asks about the ground already went
+through `GroundHeightBelow` instead of assuming a floor at zero.
+
+#### A coordinate bug that only terrain could reveal
+
+The figure stood on the map with its soles **26.4 cm** in the air. The flat demo,
+run as a control, read 0.9 mm — the solver's slop.
+
+`m_KneeAt` and `m_AnkleAt` are stored in the **rig's own frame**, because the
+joint helpers add the origin themselves. Three lines downstream used them as
+world positions: the thigh measured from the hip to a point near the map's
+centre, and the foot targets were computed against ground on the far side of the
+map. With the rig built at the world origin the two frames are the same numbers
+and nothing is wrong. Build it on a hill and the legs reach for somewhere the
+character is not.
+
+It read as a terrain bug for an hour. Corrected, walking 22 m across the map:
+
+| | flat | terrain |
+| --- | --- | --- |
+| planted sole above the surface, worst | 0.0054 m | **0.0461 m** |
+| pelvis off `StandClearance`, worst | 0.0713 m | **0.0723 m** |
+
+The pelvis tracks generated ground exactly as well as it tracks a slab. The sole
+figure is worse on terrain and honestly so: the foot lands flat to the *gait*,
+not to the local slope, so its lowest corner sits above ground on a hillside.
+
+Two things this does not do. Walking off the edge of the map is a real fall —
+the field reports no ground outside its extent on purpose — so Map Building
+rebuilds the scene once the figure is 20 m below the lowest point. And a box
+wider than a cell straddling a peak can have every corner above ground while the
+peak pushes through its underside; nothing here is in that position (a foot is
+0.22 m across a 0.5 m grid) and the fix is to add the cell corners as query
+points too.
+
+### 2026-08-11 (a map you can ask for by number)
+
+First piece of **Map Building**: terrain described by a seed and nothing else.
+Type the same number in and the same map comes back, on any run and in any
+build. `TestEnv/src/Terrain.h` is standalone -- any demo can include it.
+
+Value noise summed over octaves. The part that makes it replicable is that the
+noise is a **hash of the lattice coordinate**, not a random number generator: a
+generator carries state, so the value at a point would depend on how many values
+were drawn before it, and changing the loop order or adding an octave would move
+every height downstream. A hash has no memory of how you arrived.
+
+Checked against things the generator does not itself compute:
+
+| | |
+| --- | --- |
+| same seed twice | `2B46F2A8` and `2B46F2A8` |
+| a different seed | `F48075CF` |
+| the first seed again, after generating others | `2B46F2A8`, unmoved |
+| `HeightAt` against the stored grid | worst **0.000000 m** |
+| mesh vertices against `HeightAt` | worst **0.000000 m** |
+| mesh normals against a numeric gradient | worst **0.03°** |
+
+The last two matter more than they look. `HeightAt` is what the character will
+stand on and the mesh is what gets drawn, and they are built by different code;
+if they disagree, feet hover or sink and nothing in a screenshot would say why.
+The normals are compared against a gradient taken numerically at a different
+step size, so it is a genuine second opinion rather than the same arithmetic
+run twice.
+
+**Both of those checks were weaker than they looked** — see the next entry.
+"Mesh vertices against `HeightAt`" samples only the lattice, where a bilinear
+patch and a pair of triangles agree by construction; off the lattice they
+differed by up to 1.75 cm. And the 0.03° normal figure was `acos` losing
+precision near 1, not an angle: measured as a chord it is zero.
+
+Worth knowing: a 9 m amplitude produced 1.996 m to 6.901 m of actual relief.
+That is not a bug -- summing independent octaves concentrates the result near
+the mean, so the amplitude is the range the field *could* reach rather than the
+one it does.
+
+#### The shader could not light it
+
+The map came out flat and nearly black. The `Physics3D` shader everything else
+shares has a point light with `1 / (1 + 0.015 d²)` attenuation, which is right
+for a scene a few metres across: at 70 m it contributes **1.3%**, so the terrain
+was lit by ambient alone.
+
+Outdoors wants a sun -- a direction, no position, no falloff -- so Map Building
+carries its own shader, with a hemisphere sky term as well. Flat ambient makes
+every slope the same shade, which is the one thing terrain must not do.
 
 ### 2026-08-11 (leaning the right way, a hurdle, hands on the floor, and staying up)
 

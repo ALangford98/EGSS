@@ -22,6 +22,7 @@
 #include "SceneDemo.h"
 #include "Acoustics2DDemo.h"
 #include "Ragdoll.h"
+#include "MapBuilding.h"
 
 struct DemoEntry
 {
@@ -40,7 +41,8 @@ inline const DemoEntry s_Demos[] =
 	{ "Lighting2D (visibility)",      "Lighting",  []() -> DemoLayer* { return new Lighting2D(); } },
 	{ "Scene (entities + components)","Scene",     []() -> DemoLayer* { return new SceneDemo(); } },
 	{ "Acoustics2D (ray-traced sound)","Acoustics", []() -> DemoLayer* { return new Acoustics2DDemo(); } },
-	{ "Ragdoll (jointed humanoid)",   "Ragdoll",   []() -> DemoLayer* { return new Ragdoll(); } }
+	{ "Ragdoll (jointed humanoid)",   "Ragdoll",   []() -> DemoLayer* { return new Ragdoll(); } },
+	{ "Map Building (seeded terrain)","MapBuild",  []() -> DemoLayer* { return new MapBuilding(); } }
 };
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));

@@ -720,6 +720,55 @@ The legs are also driven harder than the rest of the body -- stiffness 40 and
 four times the torque -- because they track an IK target that moves every frame.
 Stiffer is not better: at 90 it oscillates and slides worse than doing nothing.
 
+**Terrain is seeded and replicable** (`TestEnv/src/Terrain.h`, standalone).
+The noise is a **hash of the lattice coordinate**, never a random generator --
+a generator's state would make each height depend on how many were drawn before
+it. `HeightAt` and the mesh are checked against each other to 0.000000 m,
+because one is what a character stands on and the other is what is drawn.
+
+**A heightfield's surface is triangles, not a bilinear patch**, and confusing
+the two is a silent centimetre. They agree at the four corners of a cell and
+along its diagonal and nowhere else, differing by
+`fx*fz*(h00 - h10 - h01 + h11)` -- 1.75 cm on this map. Sampling *on the
+lattice* to check them proves nothing, which is how the first version passed.
+`Terrain::HeightAt` answers from `Egss::Heightfield3D` now so there is one
+surface; keep it that way.
+
+**Terrain contact normals are per triangle and a `Contact3D` has only one.**
+The narrowphase adopts the deepest point's normal and re-measures every other
+point's depth along it. Do not be tempted to emit one contact per triangle
+instead: warm starting is keyed on the body **pair**, so several contacts
+between the same two bodies discard each other's impulses every step.
+
+**A box against a heightfield is tested by its corners, vertically.** Closest-
+point-on-triangle is the wrong question for a shape with no radius -- it only
+yields a direction once the corner is already through the surface. The gap
+this leaves is a box wider than a cell straddling a peak; a foot is 0.22 m
+across a 0.5 m grid, so nothing here is in that position.
+
+**`m_KneeAt` and `m_AnkleAt` are in the rig's own frame, not world.** The
+`ball`/`hinge` helpers in `BuildRagdoll` add `origin` themselves, which is what
+sets the convention. Anything else using them has to add it too -- and because
+the Ragdoll demo builds at the world origin, getting this wrong is invisible
+there and only shows up on terrain, as feet 26 cm in the air and legs reaching
+for the middle of the map.
+
+**Run the flat demo as the control before blaming terrain.** Both of the
+terrain-shaped bugs so far were not terrain bugs. `Ragdoll` on its slab is the
+same code with `origin` at zero, and the numbers it produces (soles 0.0009 m
+above the floor, pelvis exactly at `StandClearance`) are what "right" looks
+like.
+
+**`acos` of a dot product is not how to measure an angle between unit
+vectors.** It is ill-conditioned at 1: two normals identical to every printed
+digit still give `sqrt(2*eps) ~ 0.02 deg`. That reading cost an hour twice now.
+Use the chord -- `2*asin(|a - b| / 2)`.
+
+**A 64 m map cannot be lit by the `Physics3D` shader.** Its point light
+attenuates as `1/(1 + 0.015 d^2)` -- 1.3% at 70 m -- so terrain comes out black.
+Map Building has its own sun-plus-sky shader. If another demo goes outdoor
+scale, it needs the same.
+
 **Reset what a rebuild rebuilds.** Two pieces of state outlived `BuildScene`
 and both were real bugs, not test artefacts. `m_Facing` is only ever written by
 the get-up, so a reset after walking left the rig built facing +z while the gait

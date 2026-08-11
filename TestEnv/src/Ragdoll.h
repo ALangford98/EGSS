@@ -59,7 +59,13 @@ public:
 	};
 
 	Ragdoll()
-		: DemoLayer("Ragdoll"), m_Camera(50.0f, 16.0f / 9.0f, 0.1f, 200.0f)
+		: Ragdoll("Ragdoll")
+	{
+	}
+
+	// For a demo that reuses this rig and wants its own name in the selector.
+	explicit Ragdoll(const std::string& name)
+		: DemoLayer(name), m_Camera(50.0f, 16.0f / 9.0f, 0.1f, 200.0f)
 	{
 	}
 
@@ -326,15 +332,31 @@ public:
 					* (shoulderAt - torso.Position);
 				m_UpperArmLength = glm::length(shoulderAt - elbowAt);
 				m_ForearmLength = glm::length(elbowAt - wristAt);
-				m_ThighLength = glm::length(hipAt - m_KneeAt[side]);
-				m_ShinLength = glm::length(m_KneeAt[side] - m_AnkleAt[side]);
+				// `m_KneeAt` and `m_AnkleAt` are in the **rig's own frame** --
+				// the joint lambdas above add `origin` on the way in, so that is
+				// the convention they are stored in. Everything from here down
+				// is world, so they have to be lifted into it.
+				//
+				// They were not, and it cost an afternoon. With the rig built at
+				// the world origin the two frames are the same numbers and
+				// nothing is wrong; build it anywhere else -- on a hill, say --
+				// and the thigh measures the distance from the hip to a point
+				// near the map's centre, the foot targets are computed against
+				// ground on the far side of the map, and the figure stands there
+				// with its legs reaching for somewhere it is not. It read as a
+				// terrain bug and was a coordinate bug that terrain revealed.
+				glm::vec3 kneeWorld = origin + m_KneeAt[side];
+				glm::vec3 ankleWorld = origin + m_AnkleAt[side];
+
+				m_ThighLength = glm::length(hipAt - kneeWorld);
+				m_ShinLength = glm::length(kneeWorld - ankleWorld);
 
 				// Both feet start planted where they were built.
-				m_AnkleHeight = m_AnkleAt[side].y - m_World.GroundHeightBelow(
-					m_AnkleAt[side] + glm::vec3(0.0f, 1.0f, 0.0f), m_Pelvis);
-				m_Planted[side] = m_AnkleAt[side];
+				m_AnkleHeight = ankleWorld.y - m_World.GroundHeightBelow(
+					ankleWorld + glm::vec3(0.0f, 1.0f, 0.0f), m_Pelvis);
+				m_Planted[side] = ankleWorld;
 				m_Planted[side].y = m_World.GroundHeightBelow(
-					m_AnkleAt[side] + glm::vec3(0.0f, 1.0f, 0.0f), m_Pelvis) + m_AnkleHeight;
+					ankleWorld + glm::vec3(0.0f, 1.0f, 0.0f), m_Pelvis) + m_AnkleHeight;
 				m_SwingFrom[side] = m_Planted[side];
 				m_SwingTo[side] = m_Planted[side];
 				m_Swinging[side] = false;
@@ -380,6 +402,17 @@ public:
 		m_World.VelocityIterations = 16;
 		m_World.PositionIterations = 6;
 
+		BuildGround();
+		BuildRagdoll(SpawnPoint());
+	}
+
+	// The world the character stands in, and the one thing a demo that reuses
+	// this rig is expected to replace. Everything else here -- the gait, the
+	// balance, the get-up -- already asks the world where the ground is rather
+	// than assuming it is at zero, which is what makes swapping this out a
+	// three-line change instead of a rewrite.
+	virtual void BuildGround()
+	{
 		m_World.AddBody(Egss::RigidBody3D::MakeStaticBox(
 			{ 0.0f, -0.5f, 0.0f }, { 8.0f, 0.5f, 8.0f }));
 
@@ -391,8 +424,14 @@ public:
 		// And something smaller to trip over.
 		m_World.AddBody(Egss::RigidBody3D::MakeStaticBox(
 			{ 1.6f, 0.08f, 0.0f }, { 0.3f, 0.08f, 0.3f }));
+	}
 
-		BuildRagdoll({ 0.0f, m_DropHeight, 0.0f });
+	// Where the rig is assembled. On flat ground that is the origin; on terrain
+	// it has to be the surface, because the whole rig is laid out upwards from
+	// this point and a figure built 5 m under a hill starts inside it.
+	virtual glm::vec3 SpawnPoint() const
+	{
+		return { 0.0f, m_DropHeight, 0.0f };
 	}
 
 	void SetMotorsEnabled(bool enabled)
@@ -1028,21 +1067,24 @@ public:
 
 		float alpha = Egss::Application::Get().GetInterpolationAlpha();
 
-		Egss::RenderCommand::SetClearColor({ 0.05f, 0.06f, 0.09f, 1.0f });
+		Egss::RenderCommand::SetClearColor(ClearColour());
 		Egss::RenderCommand::Clear();
 		Egss::RenderCommand::SetDepthTest(true);
 
 		Egss::Renderer::BeginScene(m_Camera);
 
-		m_SceneMaterial->Set("u_LightPosition", glm::vec3(2.0f, 4.0f, 3.0f));
-		m_SceneMaterial->Set("u_LightColor", glm::vec3(1.0f, 0.97f, 0.9f));
-		m_SceneMaterial->Set("u_CameraPosition", m_Camera.GetPosition());
-		m_SceneMaterial->Set("u_AmbientStrength", 0.30f);
+		SetSceneLighting();
+		DrawWorld();
 
 		const auto& bodies = m_World.GetBodies();
 		for (size_t i = 0; i < bodies.size(); i++)
 		{
 			const Egss::RigidBody3D& body = bodies[i];
+
+			// A heightfield has no primitive to stand in for it; whoever put it
+			// in the world draws it, in DrawWorld.
+			if (body.Shape == Egss::ColliderShape3D::Heightfield)
+				continue;
 
 			glm::vec3 position = glm::mix(body.PreviousPosition, body.Position, alpha);
 			glm::quat orientation = glm::slerp(body.PreviousOrientation, body.Orientation, alpha);
@@ -1106,7 +1148,11 @@ public:
 			Egss::RenderCommand::SetDepthTest(false);
 			Egss::Renderer2D::BeginScene(m_Camera);
 
-			const float y = 0.02f;   // just off the floor, or it z-fights
+			// Just off the floor, or it z-fights -- and the floor is wherever
+			// the character is standing, not zero. On flat ground this is the
+			// 0.02 it always was; on terrain the polygon would otherwise be
+			// drawn buried in a hillside.
+			const float y = m_World.GroundHeightBelow(m_Balance.Com, m_Pelvis, -1000.0f) + 0.02f;
 
 			// The support polygon: everywhere the feet actually touch.
 			for (size_t i = 0; i < m_Balance.Support.size(); i++)
@@ -1142,6 +1188,25 @@ public:
 			Egss::RenderCommand::SetDepthTest(true);
 		}
 	}
+
+	// --- What a demo reusing this rig overrides to change the scenery -------
+
+	virtual glm::vec4 ClearColour() const { return { 0.05f, 0.06f, 0.09f, 1.0f }; }
+
+	// A point light a few metres up, which is right for a room-sized scene and
+	// useless outdoors -- its `1/(1 + 0.015 d^2)` falloff leaves anything past
+	// about 40 m lit by ambient alone.
+	virtual void SetSceneLighting()
+	{
+		m_SceneMaterial->Set("u_LightPosition", glm::vec3(2.0f, 4.0f, 3.0f));
+		m_SceneMaterial->Set("u_LightColor", glm::vec3(1.0f, 0.97f, 0.9f));
+		m_SceneMaterial->Set("u_CameraPosition", m_Camera.GetPosition());
+		m_SceneMaterial->Set("u_AmbientStrength", 0.30f);
+	}
+
+	// Geometry that is not a rigid body's collider. Inside the scene, so a
+	// subclass does not have to know how one is begun or ended.
+	virtual void DrawWorld() {}
 
 	void OnDemoEvent(Egss::Event& e) override
 	{
@@ -2656,7 +2721,11 @@ public:
 		return total > 0.0f ? weighted / total : glm::vec3(0.0f);
 	}
 
-private:
+// Protected rather than private because Map Building inherits the whole
+// character from here. Everything below this line is the rig, its gait and its
+// tuning, and there is exactly one copy of it -- see the note at the top of
+// MapBuilding.h for why that demo is a subclass rather than a second rig.
+protected:
 	Egss::PerspectiveCamera m_Camera;
 	Egss::PhysicsWorld3D m_World;
 

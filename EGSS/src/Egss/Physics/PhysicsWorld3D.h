@@ -339,6 +339,9 @@ namespace Egss {
 		// and so reads slightly high. That is the right trade for a ground
 		// probe, where being a centimetre high is invisible and being late is
 		// a character sinking into a step.
+		//
+		// A heightfield is the exception and is asked directly: its bounds are
+		// the whole map, which would report the summit from anywhere on it.
 		float GroundHeightBelow(const glm::vec3& point,
 			BodyHandle ignore = InvalidHandle, float floor = 0.0f) const;
 

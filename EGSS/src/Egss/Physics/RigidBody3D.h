@@ -3,6 +3,7 @@
 #include "egsspch.h"
 #include "Egss/Core.h"
 #include "Egss/Physics/RigidBody2D.h"   // BodyType, shared by both dimensions
+#include "Egss/Physics/Heightfield3D.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -22,7 +23,17 @@ namespace Egss {
 		// Worth having because it is what characters are made of: it has no
 		// corners to catch on a step, and it stands up rather than rolling
 		// away like a sphere.
-		Capsule
+		Capsule,
+		// A grid of heights, described by `Field`. **Static only, and never
+		// turned**: the collider is a function from (x, z) to a height, which
+		// stops being one the moment it is tilted. Nothing enforces that beyond
+		// this comment and `MakeHeightfield`, because a check that costs a
+		// branch per body to catch a mistake made once is a poor trade.
+		//
+		// This is the first collider that is not convex, and the first whose
+		// size has nothing to do with the body's -- a heightfield is usually
+		// the whole world, and its bounds say so.
+		Heightfield
 	};
 
 	// A rigid body in three dimensions.
@@ -97,6 +108,16 @@ namespace Egss {
 		// Half the length of the capsule's *segment*, not of the whole capsule
 		// -- the caps add Radius at each end on top of this.
 		float HalfHeight = 0.5f;
+
+		// The samples a Heightfield collider stands on, centred on Position and
+		// with its heights measured from Position.y.
+		//
+		// Shared rather than held by value because bodies are copied whenever
+		// the world's vector grows, and a 129x129 field is 66 KB of that. It is
+		// const because two bodies may share one field and because the
+		// narrowphase must never be able to move the ground it is testing
+		// against.
+		std::shared_ptr<const Heightfield3D> Field;
 
 		float Restitution = 0.2f;
 		float Friction = 0.4f;
@@ -287,6 +308,24 @@ namespace Egss {
 		{
 			RigidBody3D body = MakeCapsule(position, radius, halfHeight, 0.0f);
 			body.Type = BodyType::Static;
+			return body;
+		}
+
+		// `position` is the centre of the field in x and z, and the height its
+		// samples are measured from. There is no dynamic form: a heightfield
+		// with a mass would have to be turned by an impulse, and a turned
+		// heightfield is not a heightfield.
+		static RigidBody3D MakeHeightfield(const glm::vec3& position,
+			const std::shared_ptr<const Heightfield3D>& field)
+		{
+			RigidBody3D body;
+			body.Shape = ColliderShape3D::Heightfield;
+			body.Type = BodyType::Static;
+			body.Position = position;
+			body.PreviousPosition = position;
+			body.Field = field;
+			body.SetMass(0.0f);
+			body.RecalculateInertia();
 			return body;
 		}
 
