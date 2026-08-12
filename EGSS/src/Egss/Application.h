@@ -42,6 +42,17 @@ namespace Egss {
 		// short or the simulation too slow.
 		inline unsigned int GetFixedStepsLastFrame() const { return m_FixedStepsLastFrame; }
 
+		// Whether `--hide-ui` was given. The engine already uses it to skip the
+		// ImGui pass; a layer needs it for anything else that is an *affordance*
+		// rather than part of the scene.
+		//
+		// The case that asked for this: Map Building draws a preview block under
+		// the cursor, and the cursor is wherever the mouse happens to be. That
+		// made two otherwise identical capture runs produce different PNGs, which
+		// quietly costs a demo the property the whole capture-as-regression-test
+		// habit depends on. A cursor is UI. It goes when the panels go.
+		inline bool IsUIHidden() const { return m_HideUI; }
+
 		// --- Capture ---------------------------------------------------------
 
 		// Write the frame currently being drawn to a PNG.

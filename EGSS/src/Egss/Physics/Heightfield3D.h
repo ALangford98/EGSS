@@ -81,6 +81,21 @@ namespace Egss {
 		// clamped-height ledge stretching to infinity.
 		bool SurfaceAt(float localX, float localZ, float& outHeight, glm::vec3& outNormal) const;
 
+		// The way the ground faces here, smoothed across the lattice rather than
+		// taken from one triangle.
+		//
+		// `SurfaceAt` hands back a *face* normal, which is the truth about the
+		// geometry and is what a contact wants. It is also constant across a
+		// triangle and jumps at every edge, so anything that orients itself to
+		// the ground -- a foot, a placed object, a decal -- snaps every half
+		// metre if it uses one. Central differences over a cell give a normal
+		// that turns continuously as you walk.
+		//
+		// Two normals for one surface, answering different questions. The same
+		// split the terrain generator already makes between shading and
+		// collision.
+		glm::vec3 SmoothNormalAt(float localX, float localZ) const;
+
 		// The nearest point of the surface to `local`, searching only the cells
 		// within `searchRadius` horizontally.
 		//
@@ -94,6 +109,34 @@ namespace Egss {
 		// contact is what the solver is stable on.
 		bool ClosestPoint(const glm::vec3& local, float searchRadius,
 			glm::vec3& outPoint, glm::vec3& outNormal, float& outDepth) const;
+
+		// Where a ray first meets the surface. `direction` must be normalised,
+		// or `outDistance` is measured in units of its length.
+		//
+		// **Walked cell by cell, not sampled along the ray.** Marching a ray in
+		// fixed increments and looking for the step where it crosses the height
+		// is the obvious implementation and it is wrong twice over: too coarse
+		// and it tunnels through ridges, too fine and a 64 m map costs thousands
+		// of samples per cast, and no increment fixes both. A grid the ray
+		// travels through has an exact answer -- the cells it crosses, in order
+		// -- so this steps to the next cell boundary each iteration and tests
+		// only what it actually enters. A cast across the whole map touches the
+		// ~128 cells on its path rather than however many samples were guessed
+		// at, and the first cell holding a hit holds the *nearest* hit, because
+		// the cells arrive in order.
+		//
+		// The ray is clipped to the field's box first, including the band
+		// between `Lowest` and `Highest`. That is what makes an aimed-at-the-sky
+		// cast cheap: it leaves before it walks a single cell.
+		//
+		// The two triangles per cell are the same two `SurfaceAt` and
+		// `ClosestPoint` use, in the same winding -- a third opinion about where
+		// the surface is would put a placed object where the character cannot
+		// stand. The normal comes back facing the ray, so it is the up-facing
+		// one for the overhead cast that placement actually does.
+		bool Raycast(const glm::vec3& origin, const glm::vec3& direction,
+			float maxDistance, float& outDistance,
+			glm::vec3& outPoint, glm::vec3& outNormal) const;
 	};
 
 }

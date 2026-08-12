@@ -1006,6 +1006,248 @@ be tested that way.
 
 Final: 9/9, every mesh in the project wound counter-clockwise seen from outside.
 
+### 2026-08-12 (a ray through the map, and something to put on it)
+
+Map Building has been named for building since it was written and did not do
+any. It does now: **left click puts a block where you are pointing.** The piece
+that was missing was a ray against the heightfield.
+
+#### Walked, not sampled
+
+`Heightfield3D::Raycast` steps from cell boundary to cell boundary and tests
+only the two triangles of each cell it actually enters. The obvious alternative
+— march the ray in fixed increments and look for the step where it crosses the
+height — is wrong twice over: too coarse and it tunnels through ridges, too fine
+and a 64 m map costs thousands of samples a cast, and no increment fixes both.
+A grid the ray travels through has an *exact* answer, and because the cells
+arrive in order the first one holding a hit holds the nearest hit.
+
+The ray is clipped to the field's box first, including the band between `Lowest`
+and `Highest`. That is what makes a cast at the sky cheap, and it is worth the
+line: **0.138 µs aimed at nothing against 18.0 µs traversing the map**, on the
+same field.
+
+Verified against three references that know nothing about cell walking:
+
+| check | worst error |
+| --- | --- |
+| 400 vertical casts vs `SurfaceAt` | 2.7e-6 m |
+| oblique casts vs the analytic ray-plane crossing, 10/25/40° ramps | 3.8e-6 m |
+| the hit normal vs the ramp plane's normal | 1.0e-6 |
+| a grazing cast over ~30 cells vs a 2 mm march | 9.8e-4 m |
+
+...plus the misses, which a raycast gets wrong more often than the hits: at the
+sky, outside the extent, `maxDistance` stopping short, and running flat beneath
+everything. 27 of 27.
+
+One measurement trap. The grazing cast first fired from just above the map's
+*lowest* sample, so it entered the map already underground; the marching
+reference then reported the entry point and the raycast reported the first real
+surface crossing six metres later. They were answering different questions, not
+disagreeing. The test now asserts its own premise — that the ray is above the
+surface where it enters — before trusting the comparison.
+
+#### Placing
+
+A block is remembered as a cell and a base height, not as a body handle.
+`PhysicsWorld3D` has no `RemoveBody` and cannot easily grow one while a handle
+is an index into a vector — removing from the middle shifts every handle after
+it, including the twelve the ragdoll's joints hold. So the record is the truth,
+the bodies are built from it, and undo is a rebuild. That costs the character
+his footing, which is the visible price of not having the engine call.
+
+The hit point is stepped along the hit normal before choosing a cell, so
+pointing at the top of a block stacks and pointing at its side builds outwards.
+Blocks rest on the *highest* terrain under their footprint, and nine samples
+give that exactly rather than approximately: a block is 1 m, the terrain's cells
+are 0.5 m on an aligned grid, so the footprint's corners, midpoints and centre
+are all lattice points and its boundary runs along triangle edges. Measured
+against a 9×9 sweep over sixty blocks, the error was **0.000000 m**. The visible
+consequence is the other way round — a flat-bottomed cube on a slope floats at
+its low corner, up to 0.49 m on this map.
+
+A dropped sphere came to rest 0.0050 m below the top of a six-block stack, which
+is `s_PenetrationSlop` exactly, and is how a placed block was shown to be a real
+collider rather than a mesh.
+
+Placement is settled on a **fixed step** from `Input::GetMousePosition`, not in
+an event handler. The mouse is in the replay stream and events are not, so a
+building session records and replays like a walk does.
+
+#### Two things the measuring turned up
+
+**The broadphase now loses badly in this scene, and building is what triggers
+it.** The grid switches itself on at 200 bodies, and 200 placed blocks crosses
+that. A/B at matched body counts, in Release:
+
+| blocks | bodies | grid | brute force |
+| --- | --- | --- | --- |
+| 100 | 114 | 0.323 ms | 0.240 ms |
+| 200 | 214 | **1.366 ms** | 0.427 ms |
+| 400 | 414 | **1.422 ms** | 0.714 ms |
+
+The engine's own table predicts the grid winning 1.31–1.43× at 203 bodies. Here
+it *loses* 3.2×. The cause is in the same line of output: **29,575 cells**, and
+the heightfield is inserted into every one of them every step, because its
+bounds are the whole 64 m map. The comment on `CellSize` already states the
+failure mode — "much larger and every cell holds everything, which is brute
+force paying rent for a grid" — and a heightfield achieves it from the other
+direction. The fix is to keep heightfields out of the cells and test them
+directly; nothing here needed it enough to justify the change yet, and 1.4 ms is
+still a twelfth of a frame.
+
+**A cursor is UI.** The preview block follows the mouse, and drawing it under
+`--hide-ui` made two otherwise identical capture runs produce different PNGs —
+quietly costing the demo the property the whole capture-as-regression-test habit
+rests on. `Application::IsUIHidden` exists now so a layer can tell, and the
+preview goes when the panels go. Two runs are byte-identical again.
+
+### 2026-08-11 (he could not climb, and it was not friction)
+
+Every measurement of the character on terrain so far had been taken on gentle
+ground — the proof being that the 25° sole clamp never engaged on any heading of
+the map. So the whole range where the gait was *expected* to fail had never been
+looked at, and "he probably slides above 35°" was a guess. It walked him up a
+constant-slope ramp instead, one angle per run. A ramp rather than a steep patch
+of the real map on purpose: a plane is exactly representable by the collider's
+triangles, so nothing is confounded by triangulation error or roughness, and the
+only thing that varies between runs is the angle.
+
+The first run failed at **15°**, where statics says he should hold easily.
+
+#### The bug: a ground probe pinned to where he spawned
+
+`m_RootAnchor.y` is written once when control begins and only ever moved
+*horizontally* afterwards, and `DriveRoot` used it as the origin for the "what
+is under me" probe. Walk uphill and the origin stays behind; once the surface
+rises past it, a probe for ground *below* that point correctly answers that
+there is none, the −1000 sentinel comes back, and the fall test ragdolls a
+character standing on solid ground.
+
+The arithmetic named the spot before the fix went in: spawn ground 1.61 m,
+anchor 2.70 m, and the 15° ramp reaches 2.70 m at z = −9.92. He went down at
+z = −9.92. That is **a hard ceiling of one standing height above wherever he
+spawned, at any angle** — invisible on the flat demo because a floor never
+rises, and invisible on the map because the spawn picks the flattest spot going
+and he had never been walked far enough uphill from it.
+
+The pelvis is the honest origin: it cannot be inside the ground while he is
+standing on it. The foot probes in `PlaceFeet` already lift their own origins a
+metre for exactly this reason — the root probe was the one that did not.
+
+#### Friction never binds on him at all
+
+With that fixed he walks up **40° at a full 1.30 m/s with zero slip**, where a
+dynamic box on the same surface would have been sliding five degrees back. The
+root is kinematic, so the tangential force a slope demands is never asked of a
+contact and the friction cone is never consulted.
+
+Which means the panel line reading "he slides above atan(0.7) = 35°" was a true
+fact about a *box* and a false one about him. It has been corrected in both
+places it appeared.
+
+#### What does limit him: the hip climb rate
+
+The hips may only rise at `m_ClimbRate` = 1.2 m/s, so a sustained climb needs
+`speed · tan θ ≤ m_ClimbRate` — 42.7° walking, and only **16.7° running**. The
+sweep against that formula:
+
+| | predicted ceiling | last angle that holds | first angle that caps |
+| --- | --- | --- | --- |
+| walking, 1.30 m/s | 42.7° | 42° (+19.27 m in 16.5 s) | 43° (+19.75 m = 1.2 × 16.5) |
+| running, 4.00 m/s | 16.7° | 16° (climb 1.147 m/s) | 17° (climb **1.200** m/s) |
+
+Both within a degree, and the capped runs sit exactly on 1.2 m/s rather than
+near it. Past the ceiling the failure is gradual and then sudden: the hips fall
+behind, the pelvis sinks about a metre over ten seconds, and once it dips under
+the surface the probe loses the ground. Clearance at the moment of collapse was
+0.13 m in every single run, which is what says it is one mechanism and not
+several.
+
+#### And whether any of it matters on the map
+
+Not at the shipped amplitude. A census of the 129×129 map says the steepest
+slope on it is **35.0°** — under the 42.7° walk ceiling everywhere — and all
+eight walking bearings survive twenty seconds. 12.8% of it is above the *run*
+ceiling, but running all eight bearings produced no gait failure either: the
+steep patches are too short to accumulate the deficit, and he reaches the edge
+of a 64 m map in eight seconds regardless. Raise the amplitude to 20 m and it
+bites at once — three of four bearings go down inside the map.
+
+So the slope-aware gait that this was meant to justify is **not worth building**
+for this map. The thing that actually needed fixing was a bug.
+
+Three measurement traps, all caught by numbers that were too tidy:
+
+- Predicting the climb rate as `v · sin θ` rather than `v · tan θ`. `m_Speed`
+  drives the *horizontal* forward vector, so the gradient is the right factor.
+  Sin under-reads by 3% at 15° and 23% at 40° — exactly the size of disagreement
+  that gets blamed on the simulation.
+- Five running "failures" at *identical* step 641 having covered 57 m of a 40 m
+  ramp. He ran off the end and fell into the void, which reads exactly like a
+  gait failure in the summary line. Same trap on the real map, where all eight
+  running bearings "failed" at |x| or |z| = 32 — the edge of a 64 m map.
+- A slope census calling a 9 m map **81.3°** steep. `Terrain::NormalAt` took a
+  central difference through `HeightAt`, which answers 0 off the map, so the
+  outermost ring read as a cliff down to sea level. With the ring excluded the
+  answer was 35.0°. `NormalAt` now delegates to `Heightfield3D::SmoothNormalAt`,
+  which clamps its samples inside the field — one implementation instead of two,
+  and the border is no longer a fiction.
+
+### 2026-08-11 (a sole that knows what it is landing on)
+
+The one number the terrain work left worse than its flat control. The gait aimed
+the foot level with **the world**, so on any slope it landed on a heel or a toe
+and only the leading edge touched.
+
+`SolveLeg` was already turning the sole to `angleAxis(m_Facing, up)` — a yaw and
+nothing else. It now composes that with the rotation taking `up` to the ground
+normal at the spot the foot is *going to*, so the foot arrives already matching
+rather than rolling flat once it is down.
+
+The world had to be able to answer the question. `GroundBelow` reports the
+height **and** the normal in one call, deliberately not as a second
+`GroundNormalBelow`: the two have to come from the same body, and two
+independent searches can disagree the moment anything overlaps — a step at the
+foot of a hill — which would lay a foot flat to one surface at the height of
+another.
+
+For a heightfield that normal is a *smoothed* one (`SmoothNormalAt`, central
+differences over a cell), not the face normal the narrowphase uses. A face
+normal is the truth about the geometry and is constant across a triangle, so a
+foot oriented by one snaps every half metre. Two normals for one surface,
+answering different questions — the same split the terrain generator already
+made between shading and collision.
+
+Measured over 16.9 m of walking across generated terrain:
+
+| sole follows slope | mean sole tilt | worst |
+| --- | --- | --- |
+| 0.0 — the old behaviour | 9.91° | 35.28° |
+| 0.5 | 4.91° | 15.90° |
+| 1.0 | **1.96°** | 9.19° |
+
+For comparison the same figure on a flat floor is 1.17°, so conforming gets
+terrain to within a degree of a slab. Standing still on a slope it is 0.14°.
+
+The tilt cap was swept too, and the interesting result is that it is **inert**:
+25°, 35° and 45° give identical numbers to six figures, because nothing on this
+map is steep enough where he walks to reach the clamp. It stays at 25° — inside
+the ankle's 35° cone — as a guard for steeper ground, at no cost here. Below 15°
+it starts to bind and the mean climbs back to 2.25°.
+
+On flat ground the conform is exactly the identity rotation, and the A/B proves
+it: walking and standing on the slab produce **identical** readings with the
+feature on and off, down to the last digit of the run where he walks off the
+edge of the 16 m floor.
+
+One measurement trap worth recording. The first metric was "how far is the
+lowest corner of the sole off the ground", and on the *flat* demo it read
+0.2978 m — which is the demo's own 0.30 m step passing under the footprint, not
+sole flatness at all. A gap measured under a foot is dominated by whatever
+discontinuity the ground has there. The angle between the sole's normal and the
+ground's does not have that problem, and is what the table above reports.
+
 ### 2026-08-11 (something to stand on, and someone to stand on it)
 
 The character from the Ragdoll demo now walks on the generated map. Two pieces:

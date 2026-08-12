@@ -1333,6 +1333,12 @@ public:
 		// every hit is either ignored or a collapse, which is how it used to be.
 		ImGui::SliderFloat("Stagger threshold (N)", &m_StaggerThreshold, 100.0f, 3000.0f);
 		ImGui::SliderFloat("Arm swing", &m_ArmSwing, 0.0f, 1.2f);
+		// TRY: on terrain, take this to 0 and watch the soles go back to being
+		// level with the horizon -- the figure keeps walking, but it lands on a
+		// heel or a toe every step and the mean sole tilt goes from 2 deg to 10.
+		// On flat ground it does nothing at all, by construction.
+		ImGui::SliderFloat("Sole follows slope", &m_SoleToSlope, 0.0f, 1.0f);
+		ImGui::SliderFloat("Max sole tilt (deg)", &m_MaxSoleTilt, 0.0f, 35.0f);
 		ImGui::Text("Gait: %.0f%% of the cycle on the ground, %s",
 			100.0f * m_Duty, m_Duty < 0.5f ? "so it has flight" : "so it has double support");
 		ImGui::SliderFloat("Get up over (s)", &m_GetUpTime, 0.2f, 3.0f);
@@ -1971,6 +1977,28 @@ public:
 		// before it would have hit the riser.
 		glm::vec3 under = m_RootAnchor;
 
+		// Fired from the hips rather than from the anchor, and that is not a
+		// detail. `m_RootAnchor.y` is written once when control begins and only
+		// ever moved *horizontally* afterwards, so walking uphill leaves the
+		// origin behind: once the surface rises past it, a probe for "ground
+		// below this point" correctly answers that there is none, the sentinel
+		// comes back, and the fall test below ragdolls a character who is
+		// standing on solid ground.
+		//
+		// That put a hard ceiling of one standing height on how far he could
+		// climb above wherever he spawned, at any angle. Measured on a 15 degree
+		// ramp: spawn ground 1.61 m, anchor 2.70 m, and he went down at z =
+		// -9.92 -- which is the z where the ramp surface reaches 2.70 m, to the
+		// centimetre. It never showed up on the flat demo because the floor
+		// there never rises, and never showed up on the generated map because
+		// the spawn picks the flattest spot going and he had not yet been walked
+		// far enough uphill from it.
+		//
+		// The pelvis is the honest origin: it cannot be inside the ground while
+		// he is standing on it. The foot probes in PlaceFeet lift their own
+		// origins for the same reason.
+		under.y = pelvis.Position.y;
+
 		// Probed against a floor far below rather than the default zero, so
 		// "there is nothing here" is answerable at all. With the default the
 		// probe reports y = 0 off the edge of the world and the character
@@ -2507,9 +2535,47 @@ public:
 		glm::quat ahead = glm::normalize(shin.Orientation
 			+ 0.5f * dt * spin * shin.Orientation);
 
+		// "Level" means level with **the ground here**, not with the world.
+		//
+		// A sole held flat to the horizon lands on its heel or its toe on any
+		// slope, and only the leading edge touches: measured walking across
+		// generated terrain, the lowest corner of the planted foot sat 4.61 cm
+		// above the surface against 0.54 cm on a flat floor. The foot is asked
+		// about the ground it is *going* to, not the ground it is over, so it
+		// arrives already matching.
 		glm::quat level = glm::angleAxis(m_Facing, glm::vec3(0.0f, 1.0f, 0.0f));
 		m_World.GetJoint(m_AnkleJoint[side]).MotorTargetRotation =
-			glm::normalize(glm::conjugate(ahead) * level);
+			glm::normalize(glm::conjugate(ahead) * ConformToGround(footWorld, side) * level);
+	}
+
+	// The rotation that lays a sole on the slope under `footWorld`.
+	//
+	// Bounded twice over. `m_SoleToSlope` is how much of the slope to follow at
+	// all, and `m_MaxSoleTilt` caps the result -- the ankle is a ball joint on a
+	// 35 degree cone, and a foot commanded past that is a motor pushing against
+	// a limit for the whole stance, which reads as a shudder rather than as a
+	// step.
+	glm::quat ConformToGround(const glm::vec3& footWorld, int side) const
+	{
+		const glm::quat none(1.0f, 0.0f, 0.0f, 0.0f);
+		const glm::vec3 up(0.0f, 1.0f, 0.0f);
+
+		float height = 0.0f;
+		glm::vec3 ground = up;
+
+		// From a metre above, so a target already at ground level still finds
+		// the surface it is sitting on rather than the one below it.
+		if (!m_World.GroundBelow(footWorld + up, height, ground, m_Foot[side], -1000.0f))
+			return none;
+
+		float tilt = std::acos(glm::clamp(ground.y, -1.0f, 1.0f));
+		if (tilt < 1e-4f)
+			return none;
+
+		float share = m_SoleToSlope
+			* glm::clamp(glm::radians(m_MaxSoleTilt) / tilt, 0.0f, 1.0f);
+
+		return glm::slerp(none, RotationBetween(up, ground), share);
 	}
 
 	// ---------------------------------------------------------------------
@@ -3045,6 +3111,11 @@ protected:
 	float m_ArmSwing = 0.42f;         // radians at full stride, about 24 degrees
 	float m_ElbowBend = 0.55f;
 	float m_AnkleHeight = 0.10f;      // ankle joint above the sole
+
+	// How far the sole follows the ground it is landing on, and the most it
+	// will tilt to do it. Both swept -- see the changelog.
+	float m_SoleToSlope = 1.0f;
+	float m_MaxSoleTilt = 25.0f;      // degrees, inside the ankle's 35 deg cone
 	// How far the hips sit below a straight-legged stand. Sets how far forward
 	// a foot can be placed: with leg L and hip height v, the reach is
 	// sqrt(L^2 - v^2), which is zero when the leg is straight.

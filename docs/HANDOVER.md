@@ -410,6 +410,55 @@ look caught immediately.
 - **Cutting too much when editing a demo header** compiles clean, because
   `DemoLayer`'s virtuals have empty defaults. The symptom is a black screen and
   a suspiciously fast `OnUpdate`. Committed work makes this a `git checkout`.
+- **A ground probe's origin has to travel with the thing probing.**
+  `m_RootAnchor.y` is written once when control begins and only ever moved
+  horizontally after, and `DriveRoot` fired the probe from it. Walking uphill
+  left the origin behind, the surface rose past it, and the probe correctly
+  reported no ground *below* a point that was underground — so the fall test
+  ragdolled a character standing on solid ground. It capped him at one standing
+  height above his spawn, on any slope, and hid completely on flat floors and on
+  a map whose spawn picks the flattest spot going. The probe now fires from the
+  pelvis, which cannot be inside the ground while he is standing on it.
+- **Friction does not constrain the character**, only what you drop next to
+  him. His root is kinematic, so a slope never asks a contact for the force that
+  would break: measured, he walks up 40° at full speed with zero slip where a
+  box slides at 35. Do not reach for `atan(mu)` when reasoning about the gait —
+  the limit is `speed · tan θ ≤ m_ClimbRate`, which is 42.7° walking and 16.7°
+  running, both confirmed to within a degree.
+- **A test course has to outlast the thing being tested.** Running at 4 m/s
+  covers 66 m in the measurement window, and on a 40 m ramp five angles
+  "failed" at *identical* step 641 — he had run off the end. Same trap on the
+  64 m map, where every running bearing "failed" at exactly |x| or |z| = 32.
+  Identical failure steps across different conditions means geometry, not
+  physics.
+- **`Terrain::NormalAt` is a central difference, and `HeightAt` answers 0 off
+  the map**, so the outermost ring used to read as a cliff down to sea level —
+  it called a 9 m map 81.3° steep. It delegates to
+  `Heightfield3D::SmoothNormalAt` now, which clamps its samples inside the
+  field. Any per-sample census over a heightfield should still skip the border
+  ring on principle.
+- **Anything drawn that follows the mouse breaks capture reproducibility.** Map
+  Building's preview block did, and two identical capture runs produced
+  different PNGs — which costs a demo the one property that makes a captured
+  frame a regression test. `Application::IsUIHidden()` is the check; a cursor is
+  UI and goes when the panels go. The simulation was never affected, only the
+  picture, which is exactly why it was easy to miss.
+- **The 3D broadphase loses in any scene with a heightfield in it.** The grid
+  turns on at 200 bodies, and its cost is dominated by the terrain body being
+  inserted into all ~29,575 cells every step, because its bounds are the whole
+  map. Measured at 214 bodies: grid 1.366 ms against brute force 0.427 ms, where
+  the engine's own table promises the grid winning 1.31–1.43× at that count.
+  Placing 200 blocks in Map Building is enough to cross it. `UseBroadphase` is
+  the switch, and the paths are bit-identical, so an A/B is always available.
+- **Comparing a raycast against "the first sample under the surface" only works
+  if the ray starts above the surface.** A grazing test ray entered the map
+  already underground; the marching reference reported the entry point and the
+  raycast reported the first real crossing six metres later, and the two were
+  answering different questions. Assert the premise in the test.
+- **`GroundHeightBelow`'s default floor is 0**, and `Ragdoll`'s
+  `m_StandClearance` still takes it. Latent only because the generator puts
+  heights in [0, Amplitude]; the first map with ground below zero gets a wrong
+  standing clearance, and it will look exactly like feet hovering.
 
 ---
 
@@ -752,6 +801,23 @@ sets the convention. Anything else using them has to add it too -- and because
 the Ragdoll demo builds at the world origin, getting this wrong is invisible
 there and only shows up on terrain, as feet 26 cm in the air and legs reaching
 for the middle of the map.
+
+**Ask `GroundBelow` for a height and a normal together, never separately.**
+They have to come from the same body. Two independent searches disagree the
+moment anything overlaps -- a step at the foot of a hill -- and a foot laid
+flat to one surface at the height of another is worse than not conforming.
+
+**A heightfield has two normals and they are not interchangeable.**
+`SurfaceAt` gives the triangle's face normal, which is what a contact wants and
+what jumps at every edge. `SmoothNormalAt` gives central differences over a
+cell, which is what anything *orienting itself* to the ground wants -- a foot
+oriented by a face normal snaps every half metre.
+
+**Do not measure sole flatness as a gap.** The first attempt measured the
+lowest corner of the foot against the ground under it and read 0.2978 m on the
+*flat* demo -- which is that demo's 0.30 m step passing under the footprint. Any
+gap under a foot is dominated by ground discontinuity. Measure the angle between
+the sole's normal and the ground's instead.
 
 **Run the flat demo as the control before blaming terrain.** Both of the
 terrain-shaped bugs so far were not terrain bugs. `Ragdoll` on its slab is the

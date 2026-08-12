@@ -87,6 +87,35 @@ namespace Egss {
 		return true;
 	}
 
+	glm::vec3 Heightfield3D::SmoothNormalAt(float localX, float localZ) const
+	{
+		if (Empty())
+			return { 0.0f, 1.0f, 0.0f };
+
+		float step = CellSize();
+		float half = HalfExtent();
+
+		// Sampled a cell either side, clamped inside the map so the edge slopes
+		// with the ground rather than with the clamp.
+		auto height = [&](float x, float z)
+		{
+			x = glm::clamp(x, -half, half);
+			z = glm::clamp(z, -half, half);
+
+			float value = 0.0f;
+			glm::vec3 ignored;
+			SurfaceAt(x, z, value, ignored);
+			return value;
+		};
+
+		float dx = height(localX + step, localZ) - height(localX - step, localZ);
+		float dz = height(localX, localZ + step) - height(localX, localZ - step);
+
+		// The gradient is (dh/dx, dh/dz) over 2*step; the normal is that negated
+		// with a unit vertical part, scaled through by 2*step.
+		return glm::normalize(glm::vec3(-dx, 2.0f * step, -dz));
+	}
+
 	// The point of triangle abc nearest p, by Voronoi region: the seven cases
 	// are the three vertices, the three edges, and the interior. Written out
 	// rather than solved as a constrained least squares because each case is a
@@ -212,6 +241,207 @@ namespace Egss {
 		}
 
 		return found;
+	}
+
+	// Moller-Trumbore. Solves origin + t*d = a + u*ab + v*ac for (t, u, v) by
+	// Cramer's rule, which is three cross/dot products and one divide -- and,
+	// more usefully, never builds the triangle's plane, so a degenerate triangle
+	// falls out as a near-zero determinant instead of a normalised zero vector.
+	//
+	// Back faces are **not** culled. A heightfield cell viewed from underneath is
+	// still a surface, and a caller probing upwards from inside the terrain
+	// wants to be told where the roof is rather than nothing at all.
+	static bool RayTriangle(const glm::vec3& origin, const glm::vec3& direction,
+		const glm::vec3& a, const glm::vec3& b, const glm::vec3& c, float& outT)
+	{
+		const float epsilon = 1e-8f;
+
+		glm::vec3 ab = b - a;
+		glm::vec3 ac = c - a;
+
+		glm::vec3 pv = glm::cross(direction, ac);
+		float determinant = glm::dot(ab, pv);
+
+		// Parallel to the triangle's plane, or the triangle has no area.
+		if (std::abs(determinant) < epsilon)
+			return false;
+
+		float inverse = 1.0f / determinant;
+
+		glm::vec3 tv = origin - a;
+		float u = glm::dot(tv, pv) * inverse;
+		if (u < 0.0f || u > 1.0f)
+			return false;
+
+		glm::vec3 qv = glm::cross(tv, ab);
+		float v = glm::dot(direction, qv) * inverse;
+		if (v < 0.0f || u + v > 1.0f)
+			return false;
+
+		outT = glm::dot(ac, qv) * inverse;
+		return true;
+	}
+
+	bool Heightfield3D::Raycast(const glm::vec3& origin, const glm::vec3& direction,
+		float maxDistance, float& outDistance,
+		glm::vec3& outPoint, glm::vec3& outNormal) const
+	{
+		if (Empty())
+			return false;
+
+		float half = HalfExtent();
+		float step = CellSize();
+
+		// --- clip the ray to the field's box ---------------------------------
+		//
+		// Including the vertical band, which is the half that earns its keep: a
+		// ray aimed above the terrain leaves here rather than walking the whole
+		// map to discover there was never anything to hit. Padded a little in y
+		// so a cast that grazes the highest sample is not rejected by the last
+		// bit of the float.
+		float enter = 0.0f;
+		float exit = maxDistance;
+
+		const float pad = 1e-3f;
+		glm::vec3 boxMin(-half, Lowest - pad, -half);
+		glm::vec3 boxMax(half, Highest + pad, half);
+
+		for (int axis = 0; axis < 3; axis++)
+		{
+			if (std::abs(direction[axis]) < 1e-8f)
+			{
+				// Running parallel to this pair of planes: either always inside
+				// them or never.
+				if (origin[axis] < boxMin[axis] || origin[axis] > boxMax[axis])
+					return false;
+
+				continue;
+			}
+
+			float inverse = 1.0f / direction[axis];
+			float t1 = (boxMin[axis] - origin[axis]) * inverse;
+			float t2 = (boxMax[axis] - origin[axis]) * inverse;
+
+			if (t1 > t2)
+				std::swap(t1, t2);
+
+			enter = std::max(enter, t1);
+			exit = std::min(exit, t2);
+
+			if (enter > exit)
+				return false;
+		}
+
+		// --- walk the cells the ray crosses ----------------------------------
+
+		glm::vec3 at = origin + direction * enter;
+
+		int cx = glm::clamp((int)std::floor((at.x + half) / step), 0, Resolution - 2);
+		int cz = glm::clamp((int)std::floor((at.z + half) / step), 0, Resolution - 2);
+
+		int stepX = direction.x >= 0.0f ? 1 : -1;
+		int stepZ = direction.z >= 0.0f ? 1 : -1;
+
+		const float infinity = std::numeric_limits<float>::max();
+
+		// How far along the ray the next cell boundary is, and how far apart
+		// consecutive ones are. Both are absolute distances from the *origin*,
+		// not from the entry point, so they stay comparable with `exit`.
+		auto boundary = [&](int cell, int direction_)
+		{
+			return -half + (float)(cell + (direction_ > 0 ? 1 : 0)) * step;
+		};
+
+		float nextX = std::abs(direction.x) < 1e-8f ? infinity
+			: (boundary(cx, stepX) - origin.x) / direction.x;
+		float nextZ = std::abs(direction.z) < 1e-8f ? infinity
+			: (boundary(cz, stepZ) - origin.z) / direction.z;
+
+		float deltaX = std::abs(direction.x) < 1e-8f ? infinity
+			: step / std::abs(direction.x);
+		float deltaZ = std::abs(direction.z) < 1e-8f ? infinity
+			: step / std::abs(direction.z);
+
+		float travelled = enter;
+
+		while (travelled <= exit)
+		{
+			float xLow = -half + (float)cx * step;
+			float zLow = -half + (float)cz * step;
+
+			float h00 = At(cx, cz), h10 = At(cx + 1, cz);
+			float h01 = At(cx, cz + 1), h11 = At(cx + 1, cz + 1);
+
+			glm::vec3 p00(xLow, h00, zLow);
+			glm::vec3 p10(xLow + step, h10, zLow);
+			glm::vec3 p01(xLow, h01, zLow + step);
+			glm::vec3 p11(xLow + step, h11, zLow + step);
+
+			const glm::vec3 corners[2][3] = {
+				{ p00, p01, p10 },
+				{ p10, p01, p11 }
+			};
+
+			const glm::vec3 normals[2] = {
+				glm::normalize(glm::vec3(-(h10 - h00), step, -(h01 - h00))),
+				glm::normalize(glm::vec3(h01 - h11, step, h10 - h11))
+			};
+
+			// Both triangles, nearest wins -- the cell order settles which cell,
+			// but a cell's own two halves have to be compared to each other.
+			float bestT = infinity;
+			int bestTriangle = -1;
+
+			for (int t = 0; t < 2; t++)
+			{
+				float hit = 0.0f;
+				if (!RayTriangle(origin, direction,
+					corners[t][0], corners[t][1], corners[t][2], hit))
+					continue;
+
+				if (hit < 0.0f || hit > exit || hit >= bestT)
+					continue;
+
+				bestT = hit;
+				bestTriangle = t;
+			}
+
+			if (bestTriangle >= 0)
+			{
+				outDistance = bestT;
+				outPoint = origin + direction * bestT;
+
+				// Facing the ray. For the overhead cast that placement does this
+				// is the up-facing normal; for one fired from under the terrain
+				// it is the other one, which is the honest answer to "what did I
+				// hit" in both cases.
+				outNormal = glm::dot(normals[bestTriangle], direction) > 0.0f
+					? -normals[bestTriangle] : normals[bestTriangle];
+
+				return true;
+			}
+
+			// On to the next cell: whichever boundary the ray reaches first.
+			if (nextX < nextZ)
+			{
+				travelled = nextX;
+				nextX += deltaX;
+				cx += stepX;
+			}
+			else
+			{
+				travelled = nextZ;
+				nextZ += deltaZ;
+				cz += stepZ;
+			}
+
+			// Off the grid. A vertical ray gets here at once, both boundaries
+			// being infinitely far away, which is why the loop cannot spin.
+			if (cx < 0 || cx > Resolution - 2 || cz < 0 || cz > Resolution - 2)
+				break;
+		}
+
+		return false;
 	}
 
 }

@@ -124,16 +124,22 @@ public:
 	// what a contact wants; it is also constant across a triangle, so using it
 	// per vertex would light the map as 32768 flat facets. These two normals
 	// describe the same surface and answer different questions.
+	// Delegated rather than differenced here, and that fixed a real edge case.
+	// This used to take its own central difference through `HeightAt`, which
+	// answers 0 for a sample off the map -- so on the outermost ring one of the
+	// two samples was sea level and the whole border came out as a cliff. It is
+	// invisible in a screenshot, because a rim lit as a steep face is exactly
+	// what the edge of a floating slab of terrain looks like anyway; it showed
+	// up when a census of slopes called this 9 m map 81.3 degrees steep, and the
+	// real answer with the ring excluded was 35.0. `SmoothNormalAt` clamps its
+	// samples inside the field, which is the fix, and having one implementation
+	// is the rest of it.
 	glm::vec3 NormalAt(float x, float z) const
 	{
-		float step = Extent / (float)(Resolution - 1);
+		if (!m_Field)
+			return { 0.0f, 1.0f, 0.0f };
 
-		float dx = HeightAt(x + step, z) - HeightAt(x - step, z);
-		float dz = HeightAt(x, z + step) - HeightAt(x, z - step);
-
-		// The gradient is (dh/dx, dh/dz); the normal is that flipped into the
-		// horizontal plane with a unit vertical component.
-		return glm::normalize(glm::vec3(-dx / (2.0f * step), 1.0f, -dz / (2.0f * step)));
+		return m_Field->SmoothNormalAt(x, z);
 	}
 
 	bool Contains(float x, float z) const

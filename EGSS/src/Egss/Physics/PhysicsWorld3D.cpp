@@ -1343,10 +1343,12 @@ namespace Egss {
 		joint.UpperLimit = std::max(lower, upper);
 	}
 
-	float PhysicsWorld3D::GroundHeightBelow(const glm::vec3& point,
-		BodyHandle ignore, float floor) const
+	bool PhysicsWorld3D::GroundBelow(const glm::vec3& point,
+		float& outHeight, glm::vec3& outNormal, BodyHandle ignore, float floor) const
 	{
 		float best = floor;
+		glm::vec3 bestNormal(0.0f, 1.0f, 0.0f);
+		bool found = false;
 
 		for (unsigned int i = 0; i < m_Bodies.size(); i++)
 		{
@@ -1372,15 +1374,20 @@ namespace Egss {
 				if (!body.Field)
 					continue;
 
-				float height;
-				glm::vec3 normal;
+				float local = 0.0f;
+				glm::vec3 face(0.0f, 1.0f, 0.0f);
 				if (!body.Field->SurfaceAt(point.x - body.Position.x,
-					point.z - body.Position.z, height, normal))
+					point.z - body.Position.z, local, face))
 					continue;
 
-				float surface = body.Position.y + height;
+				float surface = body.Position.y + local;
 				if (surface <= point.y && surface > best)
+				{
 					best = surface;
+					bestNormal = body.Field->SmoothNormalAt(
+						point.x - body.Position.x, point.z - body.Position.z);
+					found = true;
+				}
 
 				continue;
 			}
@@ -1394,10 +1401,35 @@ namespace Egss {
 			// Below the point, and the highest such surface wins -- a step on
 			// a floor should report the step.
 			if (high.y <= point.y && high.y > best)
+			{
 				best = high.y;
+				// The bounds' top face, which is the surface this probe
+				// reported. Level whatever the body is, because that is what an
+				// axis-aligned box's lid is.
+				bestNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+				found = true;
+			}
 		}
 
-		return best;
+		if (!found)
+			return false;
+
+		outHeight = best;
+		outNormal = bestNormal;
+		return true;
+	}
+
+	// Kept as its own entry point because most callers only want the height,
+	// and because its "nothing under you" answer is the floor rather than a
+	// failure -- which is the behaviour a stand height wants and a foot
+	// orientation does not.
+	float PhysicsWorld3D::GroundHeightBelow(const glm::vec3& point,
+		BodyHandle ignore, float floor) const
+	{
+		float height = floor;
+		glm::vec3 normal(0.0f, 1.0f, 0.0f);
+
+		return GroundBelow(point, height, normal, ignore, floor) ? height : floor;
 	}
 
 	float PhysicsWorld3D::GetWorstJointSeparation() const

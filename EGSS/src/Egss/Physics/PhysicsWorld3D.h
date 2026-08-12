@@ -345,6 +345,23 @@ namespace Egss {
 		float GroundHeightBelow(const glm::vec3& point,
 			BodyHandle ignore = InvalidHandle, float floor = 0.0f) const;
 
+		// The same query, also reporting which way that surface faces. False if
+		// nothing is under the point, in which case neither output is written.
+		//
+		// One call rather than a second `GroundNormalBelow`, because the height
+		// and the normal have to come from the **same body**. Two independent
+		// searches can disagree the moment anything overlaps -- a step at the
+		// foot of a hill -- and a foot laid flat to one surface at the height of
+		// another is worse than not conforming at all.
+		//
+		// For a heightfield the normal is the smoothed one, not the face normal
+		// of the triangle: callers of this are orienting something to the
+		// ground, and a face normal makes that snap at every triangle edge.
+		// Anything wanting the true geometry is asking the narrowphase, not
+		// this.
+		bool GroundBelow(const glm::vec3& point, float& outHeight, glm::vec3& outNormal,
+			BodyHandle ignore = InvalidHandle, float floor = 0.0f) const;
+
 		// The worst anchor separation across every joint, in world units. The
 		// number to watch: sequential impulses do not solve a chain exactly,
 		// and this says by how much they are missing.
