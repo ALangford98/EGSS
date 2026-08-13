@@ -100,6 +100,59 @@ namespace Egss {
 			outMax = body.Position + glm::vec3(half, body.Field->Highest, half);
 			return;
 		}
+		else if (body.Shape == ColliderShape3D::Compound)
+		{
+			// The union of the children's world boxes. Each child is
+			// axis-aligned in the *body's* frame, so a turned compound needs the
+			// same corner sweep a turned box does.
+			if (!body.Children || body.Children->empty())
+			{
+				outMin = body.Position;
+				outMax = body.Position;
+				return;
+			}
+
+			outMin = glm::vec3(std::numeric_limits<float>::max());
+			outMax = glm::vec3(-std::numeric_limits<float>::max());
+
+			glm::mat3 rotation = glm::mat3_cast(body.Orientation);
+
+			for (const CompoundChild& child : *body.Children)
+			{
+				// The extent of a rotated box along each world axis is the
+				// absolute rotation applied to its half extents -- the same
+				// identity `ObbOf` relies on.
+				glm::vec3 centre = body.Position + rotation * child.Offset;
+				glm::mat3 magnitude(
+					glm::abs(rotation[0]), glm::abs(rotation[1]), glm::abs(rotation[2]));
+				glm::vec3 reach = magnitude * child.HalfExtents;
+
+				outMin = glm::min(outMin, centre - reach);
+				outMax = glm::max(outMax, centre + reach);
+			}
+
+			return;
+		}
+		else if (body.Shape == ColliderShape3D::Sdf)
+		{
+			// The field's whole box. Unlike the heightfield's, these bounds
+			// genuinely do contain the collider -- there is no "solid below the
+			// surface" that the bounds fail to describe, because a distance
+			// field's inside is inside the box.
+			if (!body.Voxels || body.Voxels->Empty())
+			{
+				outMin = body.Position;
+				outMax = body.Position;
+				return;
+			}
+
+			glm::vec3 span = glm::vec3(body.Voxels->Size() - glm::ivec3(1))
+				* body.Voxels->VoxelSize();
+
+			outMin = body.Position + body.Voxels->Origin();
+			outMax = outMin + span;
+			return;
+		}
 		else
 		{
 			// The 3D form of the trap 2D already fell into: a turned box
@@ -900,6 +953,229 @@ namespace Egss {
 		return ContactFromField(ia, ib, b.Position, hits, count, out);
 	}
 
+	// --- Signed distance fields ---------------------------------------------
+	//
+	// The same three tests as the heightfield above, and all three are shorter,
+	// because a distance field answers directly what the heightfield has to
+	// search for. `SampleDistance` *is* how deep a point is and `SampleNormal`
+	// *is* which way the surface faces, so there is no closest-point search, no
+	// vertical special case, and no assumption that the ground is single-valued
+	// in y -- which is the whole reason for having it.
+	//
+	// `FieldHit` and `ContactFromField` are reused unchanged. A hit is a point,
+	// a surface, a normal and a depth whichever kind of field produced it, and
+	// the manifold-assembly problem -- one normal per contact, depths
+	// re-measured along it -- is identical.
+
+	// A sphere of `radius` about `centre`, both in the field's frame.
+	static bool SphereOnSdf(const VoxelField3D& field, const glm::vec3& centre,
+		float radius, FieldHit& out)
+	{
+		float distance = field.SampleDistance(centre);
+
+		// Negative once the centre is inside, so this is the same one-line test
+		// the heightfield version makes and needs no second case for "under".
+		if (distance >= radius)
+			return false;
+
+		glm::vec3 normal = field.SampleNormal(centre);
+
+		out.Surface = centre - normal * distance;
+		out.Centre = centre;
+		out.Normal = normal;
+		out.Radius = radius;
+		out.Depth = radius - distance;
+		return true;
+	}
+
+	static bool CollideSphereSdf(unsigned int ia, const RigidBody3D& a,
+		unsigned int ib, const RigidBody3D& b, Contact3D& out)
+	{
+		if (!b.Voxels || b.Voxels->Empty())
+			return false;
+
+		FieldHit hit;
+		if (!SphereOnSdf(*b.Voxels, a.Position - b.Position, a.Radius, hit))
+			return false;
+
+		return ContactFromField(ia, ib, b.Position, &hit, 1, out);
+	}
+
+	// Sampled along the segment, like the heightfield capsule. Spacing is half a
+	// voxel for the same reason it is half a cell there: the field cannot carry
+	// a feature narrower than a voxel, so nothing can hide between two samples.
+	static bool CollideCapsuleSdf(unsigned int ia, const RigidBody3D& a,
+		unsigned int ib, const RigidBody3D& b, Contact3D& out)
+	{
+		if (!b.Voxels || b.Voxels->Empty())
+			return false;
+
+		glm::vec3 worldP, worldQ;
+		a.GetSegment(worldP, worldQ);
+
+		glm::vec3 p = worldP - b.Position;
+		glm::vec3 q = worldQ - b.Position;
+
+		float length = glm::length(q - p);
+		float spacing = glm::max(b.Voxels->VoxelSize() * 0.5f, 0.01f);
+
+		int samples = length < 1e-6f
+			? 1
+			: glm::clamp((int)std::ceil(length / spacing) + 1, 2, 8);
+
+		FieldHit hits[8];
+		int count = 0;
+
+		for (int i = 0; i < samples; i++)
+		{
+			float t = samples > 1 ? (float)i / (float)(samples - 1) : 0.0f;
+
+			FieldHit hit;
+			if (SphereOnSdf(*b.Voxels, p + (q - p) * t, a.Radius, hit))
+				hits[count++] = hit;
+		}
+
+		return ContactFromField(ia, ib, b.Position, hits, count, out);
+	}
+
+	// Corners against the field, and unlike the heightfield version this asks
+	// the honest question: a corner has no radius, so it is touching exactly
+	// when its distance is negative, in whatever direction the surface happens
+	// to face. The heightfield has to ask a *vertical* question instead, and
+	// pays for it with a hole -- a box wider than a cell straddling a peak. This
+	// has no such case, because a distance is not measured along an axis.
+	//
+	// What it does share is the limitation that only corners are queried: a face
+	// resting across a spike narrower than the box still sees nothing. The fix
+	// is the same one the heightfield's comment names -- add the field's own
+	// lattice points under the box as query points.
+	static bool CollideBoxSdf(unsigned int ia, const RigidBody3D& a,
+		unsigned int ib, const RigidBody3D& b, Contact3D& out)
+	{
+		if (!b.Voxels || b.Voxels->Empty())
+			return false;
+
+		glm::vec3 corners[8];
+		ObbOf(a).Corners(corners);
+
+		FieldHit hits[8];
+		int count = 0;
+
+		for (int i = 0; i < 8; i++)
+		{
+			glm::vec3 local = corners[i] - b.Position;
+
+			// Radius zero, so `SphereOnSdf` reduces to "is this point inside",
+			// which is what a corner is asking.
+			FieldHit hit;
+			if (SphereOnSdf(*b.Voxels, local, 0.0f, hit))
+				hits[count++] = hit;
+		}
+
+		return ContactFromField(ia, ib, b.Position, hits, count, out);
+	}
+
+	// --- Compounds ----------------------------------------------------------
+	//
+	// A compound is tested by turning each of its children into a box body in
+	// world space and running the box tests that already exist. Nothing new is
+	// written about how a box meets a sphere or a distance field, which is the
+	// point: those took a long time to get right and there is one copy of each.
+	//
+	// The children are what merging costs. A `Contact3D` carries **one normal**
+	// -- the solver's warm starting is keyed on the body pair, so several
+	// contacts between the same two bodies would discard each other's impulses
+	// every step -- so the child manifolds have to become one. The deepest
+	// point's normal is adopted and every other point re-measured along it,
+	// which is exactly what `ContactFromField` does for terrain triangles and
+	// for the same reason. Debris resting on flat ground has one normal anyway;
+	// a lump wedged in a corner gets the plane of whichever child is deepest.
+
+	// A child as a body of its own, in world space.
+	static RigidBody3D ChildAsBox(const RigidBody3D& body, const CompoundChild& child)
+	{
+		RigidBody3D box = body;
+		box.Shape = ColliderShape3D::Box;
+		box.HalfExtents = child.HalfExtents;
+		box.Position = body.Position + body.Orientation * child.Offset;
+		box.Children.reset();
+		return box;
+	}
+
+	// Merges the points of `from` into `into`, along `into`'s normal.
+	static void MergeContact(Contact3D& into, const Contact3D& from, bool first)
+	{
+		if (first)
+		{
+			into = from;
+			return;
+		}
+
+		// Deeper wins the normal, for the whole manifold.
+		if (from.Penetration > into.Penetration)
+		{
+			glm::vec3 keptNormal = from.Normal;
+
+			// Everything already collected, re-measured along the new normal.
+			// A point that was deep against one child's face is shallower
+			// against another's, and using its old depth would prop the body up
+			// at an angle nothing is actually touching at.
+			float scale = glm::dot(into.Normal, keptNormal);
+			for (int i = 0; i < into.PointCount; i++)
+				into.Points[i].Penetration *= glm::max(scale, 0.0f);
+
+			into.Normal = keptNormal;
+			into.Penetration = from.Penetration;
+			into.Point = from.Point;
+		}
+
+		for (int i = 0; i < from.PointCount && into.PointCount < 8; i++)
+		{
+			float depth = from.Points[i].Penetration
+				* glm::max(glm::dot(from.Normal, into.Normal), 0.0f);
+
+			if (depth <= 0.0f)
+				continue;
+
+			into.Points[into.PointCount].Position = from.Points[i].Position;
+			into.Points[into.PointCount].Penetration = depth;
+			into.PointCount++;
+		}
+	}
+
+	static bool Collide(unsigned int i, const RigidBody3D& a, unsigned int j,
+		const RigidBody3D& b, Contact3D& out);
+
+	// `a` is the compound. Every child against `b`, merged.
+	static bool CollideCompound(unsigned int ia, const RigidBody3D& a,
+		unsigned int ib, const RigidBody3D& b, Contact3D& out)
+	{
+		if (!a.Children || a.Children->empty())
+			return false;
+
+		bool any = false;
+
+		for (const CompoundChild& child : *a.Children)
+		{
+			RigidBody3D box = ChildAsBox(a, child);
+
+			Contact3D contact;
+			if (!Collide(ia, box, ib, b, contact))
+				continue;
+
+			MergeContact(out, contact, !any);
+			any = true;
+		}
+
+		if (any)
+		{
+			out.A = ia;
+			out.B = ib;
+		}
+
+		return any;
+	}
+
 	static bool Collide(unsigned int i, const RigidBody3D& a, unsigned int j,
 		const RigidBody3D& b, Contact3D& out)
 	{
@@ -907,10 +1183,34 @@ namespace Egss {
 		const ColliderShape3D box = ColliderShape3D::Box;
 		const ColliderShape3D capsule = ColliderShape3D::Capsule;
 		const ColliderShape3D field = ColliderShape3D::Heightfield;
+		const ColliderShape3D sdf = ColliderShape3D::Sdf;
+		const ColliderShape3D compound = ColliderShape3D::Compound;
 
-		// Two heightfields can only ever be two static bodies, which TestPair
-		// has already dropped. Named anyway so the dispatch below is total.
-		if (a.Shape == field && b.Shape == field)
+		// Compounds first, and recursively: a compound against a compound
+		// expands the first into children, and each of those lands here again
+		// against the second, which expands in turn. Two levels, then ordinary
+		// box tests -- no special case for the pair.
+		if (a.Shape == compound)
+			return CollideCompound(i, a, j, b, out);
+
+		if (b.Shape == compound)
+		{
+			// Canonical order, then flipped, the same way every other mixed pair
+			// is handled below.
+			if (!CollideCompound(j, b, i, a, out))
+				return false;
+
+			out.Normal = -out.Normal;
+			std::swap(out.A, out.B);
+			return true;
+		}
+
+		// Two fields of any kind can only ever be two static bodies, which
+		// TestPair has already dropped. Named anyway so the dispatch is total.
+		bool aIsField = a.Shape == field || a.Shape == sdf;
+		bool bIsField = b.Shape == field || b.Shape == sdf;
+
+		if (aIsField && bIsField)
 			return false;
 
 		// Like-with-like first.
@@ -942,6 +1242,15 @@ namespace Egss {
 		if (a.Shape == box && b.Shape == field)
 			return CollideBoxHeightfield(i, a, j, b, out);
 
+		if (a.Shape == sphere && b.Shape == sdf)
+			return CollideSphereSdf(i, a, j, b, out);
+
+		if (a.Shape == capsule && b.Shape == sdf)
+			return CollideCapsuleSdf(i, a, j, b, out);
+
+		if (a.Shape == box && b.Shape == sdf)
+			return CollideBoxSdf(i, a, j, b, out);
+
 		// Everything else is one of those with the bodies the other way round.
 		// Run the canonical test and flip the normal, rather than writing each
 		// test twice -- the swapped versions were where the 2D narrowphase
@@ -960,6 +1269,12 @@ namespace Egss {
 			hit = CollideCapsuleHeightfield(j, b, i, a, out);
 		else if (a.Shape == field && b.Shape == box)
 			hit = CollideBoxHeightfield(j, b, i, a, out);
+		else if (a.Shape == sdf && b.Shape == sphere)
+			hit = CollideSphereSdf(j, b, i, a, out);
+		else if (a.Shape == sdf && b.Shape == capsule)
+			hit = CollideCapsuleSdf(j, b, i, a, out);
+		else if (a.Shape == sdf && b.Shape == box)
+			hit = CollideBoxSdf(j, b, i, a, out);
 
 		if (!hit)
 			return false;
@@ -1461,6 +1776,91 @@ namespace Egss {
 					best = surface;
 					bestNormal = body.Field->SmoothNormalAt(
 						point.x - body.Position.x, point.z - body.Position.z);
+					found = true;
+				}
+
+				continue;
+			}
+
+			// A distance field is asked by marching down it. There is no
+			// closed-form "height at (x, z)" here and there cannot be -- that
+			// question only has one answer when the ground is single-valued,
+			// which is exactly the restriction this collider exists to lift. So
+			// the honest answer is the *first* surface at or below the point,
+			// which is what somebody standing under an arch is standing on.
+			if (body.Shape == ColliderShape3D::Sdf)
+			{
+				if (!body.Voxels || body.Voxels->Empty())
+					continue;
+
+				glm::vec3 local = point - body.Position;
+
+				glm::vec3 low, high;
+				BodyBounds(body, low, high);
+				if (point.x < low.x || point.x > high.x || point.z < low.z || point.z > high.z)
+					continue;
+
+				// Sphere tracing: the field says how far it is safe to step, so
+				// stepping by it can never pass through a surface. That is the
+				// same Lipschitz property the sparse storage leans on, and it is
+				// what makes this terminate rather than creep down by a fixed
+				// increment chosen by guesswork.
+				const float voxel = body.Voxels->VoxelSize();
+				const float floorLocal = body.Voxels->Origin().y;
+
+				// Capped for the same reason the raycast's step is: an
+				// unallocated chunk reads `Far`, which is a sentinel and not a
+				// distance, and a single step of it leaves the field.
+				const float maximumStep = (float)VoxelField3D::ChunkSize * voxel;
+
+				float y = local.y;
+				float distance = body.Voxels->SampleDistance({ local.x, y, local.z });
+
+				// Already underground: the surface is at the point itself.
+				float crossing = y;
+				bool hit = distance <= 0.0f;
+
+				for (int step = 0; !hit && step < 512 && y > floorLocal; step++)
+				{
+					// Never less than a fraction of a voxel, or a ray running
+					// parallel to a wall inches down forever.
+					y -= glm::clamp(distance, voxel * 0.25f, maximumStep);
+
+					float next = body.Voxels->SampleDistance({ local.x, y, local.z });
+					if (next <= 0.0f)
+					{
+						// Bisect the last interval. Ten halvings of a voxel is
+						// well under a millimetre, and the alternative -- taking
+						// the step's end -- reports the ground up to a whole
+						// step too low.
+						float above = y + glm::clamp(distance, voxel * 0.25f, maximumStep);
+						float below = y;
+
+						for (int i = 0; i < 10; i++)
+						{
+							float middle = (above + below) * 0.5f;
+							if (body.Voxels->SampleDistance({ local.x, middle, local.z }) <= 0.0f)
+								below = middle;
+							else
+								above = middle;
+						}
+
+						crossing = above;
+						hit = true;
+						break;
+					}
+
+					distance = next;
+				}
+
+				if (!hit)
+					continue;
+
+				float surface = body.Position.y + crossing;
+				if (surface <= point.y && surface > best)
+				{
+					best = surface;
+					bestNormal = body.Voxels->SampleNormal({ local.x, crossing, local.z });
 					found = true;
 				}
 

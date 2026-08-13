@@ -105,6 +105,14 @@ lost to that before the in-engine path existed. Now:
 ./TestEnv --demo Physics --lockstep --hide-ui --capture shots/a.png --capture-step 240
 ```
 
+**A capture or a replay opens no window.** `--capture` and `--play` mean nobody
+is watching, and a window that maps takes the keyboard off whatever the machine
+is actually being used for — a one-second capture still lands in the middle of a
+sentence. Add `--show-window` to watch one happen, or `--hide-window` to silence
+any other run. A hidden window renders identically: the back buffer belongs to
+the driver, not the compositor, and captures taken both ways are byte-identical
+across four demos.
+
 The second form is **bit-reproducible** — two runs produce byte-identical PNGs,
 verified. Three things are load-bearing and each was measured:
 
@@ -134,8 +142,20 @@ Input is sampled per *fixed step*, so the frame rate it was recorded at does not
 matter, and the file names its own scene. All six demos are step-deterministic;
 keep them that way — **anything that moves belongs in `OnFixedUpdate`, not
 `OnUpdate`**. Three demos violated that and could not reproduce themselves run
-to run, let alone under replay. What is *not* recorded is ImGui slider state,
-which reaches the simulation without going through input: record from defaults.
+to run, let alone under replay.
+
+**Panel state is recorded too, for parameters a demo registers.** One line per
+slider that reaches the simulation:
+
+```cpp
+RegisterParam("Gravity", &m_Gravity);   // in the demo's constructor
+```
+
+Sampled per fixed step beside the input and written back on playback, so a
+session recorded while the sliders moved replays as itself. Unregistered knobs
+are unchanged — that is the point, since a colour or a camera angle changes the
+picture rather than the run. If a replay diverges, ask first whether the knob
+that moved is registered.
 
 ### The self-test pattern
 

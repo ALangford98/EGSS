@@ -25,10 +25,19 @@ namespace Egss {
 	// 60 Hz that is a 16 ms press. Doom had the same property for the same
 	// reason and nobody minded.
 	//
-	// What is *not* captured, and would desynchronise a replay if it changed
-	// mid-recording: ImGui slider values, which mutate simulation parameters
-	// directly rather than going through input. Record from defaults, or
-	// expect divergence from the moment a slider moves.
+	// **Slider values are captured too**, which they were not until version 2 of
+	// the format. An ImGui slider writes a variable directly, so nothing about
+	// moving "Gravity" mid-session went through `Input` and nothing about it was
+	// recorded -- the file was a truthful record of the input and a description
+	// of a different simulation. A demo now registers the parameters that reach
+	// its world (`Egss::ReplayParams`), and those are sampled per fixed step
+	// beside the input and written back on playback.
+	//
+	// What is still not captured is anything nobody registered, which is
+	// deliberate: a colour or a camera angle changes the picture rather than the
+	// run, and recording it would make replays differ for reasons that do not
+	// matter. If a replay diverges, the first question is whether the knob that
+	// moved is registered.
 	class EGSS_API Replay
 	{
 	public:

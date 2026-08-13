@@ -115,6 +115,33 @@ namespace Egss {
 			glDisable(GL_DEPTH_TEST);
 	}
 
+	void OpenGLRendererAPI::SetPolygonMode(PolygonMode mode)
+	{
+		// GL_FRONT_AND_BACK is the only face argument the core profile accepts;
+		// asking for one side is a deprecated form that errors rather than
+		// doing half the job.
+		GLenum which = GL_FILL;
+
+		switch (mode)
+		{
+		case PolygonMode::Line:  which = GL_LINE;  break;
+		case PolygonMode::Point: which = GL_POINT; break;
+		default: break;
+		}
+
+		glPolygonMode(GL_FRONT_AND_BACK, which);
+	}
+
+	void OpenGLRendererAPI::SetPointSize(float size)
+	{
+		// **Program point size stays off.** Enabling it hands the size to the
+		// vertex shader's `gl_PointSize`, and a shader that never writes one
+		// leaves it undefined -- which came out as points too small to see, and
+		// looked like the points were not being drawn at all.
+		glDisable(GL_PROGRAM_POINT_SIZE);
+		glPointSize(size);
+	}
+
 	void OpenGLRendererAPI::SetBackfaceCulling(bool enabled)
 	{
 		if (enabled)

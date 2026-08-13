@@ -89,12 +89,18 @@ namespace Egss {
 		//                         the window is mapping, steps do not
 		// --lockstep              one fixed step per frame, ignoring real time
 		// --hide-ui               no demo panels, so nothing in shot is timing
+		// --show-window           put a window up even for a capture or replay
+		// --hide-window           run with no window at all
 		//
 		// Together these make an unattended run produce one image and stop,
 		// which is the whole point: a capture nobody has to watch for. Add
 		// --lockstep and the image is the *same* image every run, which is
 		// what turns it into a test rather than an anecdote.
 		void ParseCommandLine();
+
+		// Read before the window is created, unlike everything above. See the
+		// definition -- an unattended run gets no window unless it asks for one.
+		static bool WantsHiddenWindow();
 	private:
 		bool OnWindowClose(WindowCloseEvent& e);
 		bool OnWindowResize(WindowResizeEvent& e);

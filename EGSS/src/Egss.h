@@ -9,6 +9,7 @@
 #include "Egss/Debug/Instrumentor.h"
 #include "Egss/Debug/ScreenCapture.h"
 #include "Egss/Debug/Replay.h"
+#include "Egss/Debug/ReplayParams.h"
 #include "Egss/ImGui/ImGuiLayer.h"
 
 #include "Egss/Input.h"
@@ -26,6 +27,11 @@
 #include "Egss/Audio/AudioEngine.h"
 #include "Egss/Audio/Acoustics2D.h"
 #include "Egss/Audio/Acoustics3D.h"
+
+#include "Egss/Voxel/VoxelField3D.h"
+#include "Egss/Voxel/MarchingCubes.h"
+#include "Egss/Voxel/VoxelIslands.h"
+#include "Egss/Voxel/VoxelStress.h"
 
 // SCENE ******************
 

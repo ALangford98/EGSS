@@ -32,7 +32,20 @@ namespace Egss {
 		EGSS_CORE_ASSERT(!s_Instance, "Application already exists");
 		s_Instance = this;
 
-		m_Window = std::unique_ptr<Window>(Window::Create());
+		// Visibility has to be decided *here*, before the window exists, which
+		// is why it is read straight off the command line rather than waiting
+		// for ParseCommandLine below. A window hint only applies at creation,
+		// and creating it visible to hide it a moment later is a window that
+		// still flashed up and still took the keyboard.
+		WindowProps props;
+		props.Visible = !WantsHiddenWindow();
+
+		// Said out loud, because "the demo did not appear" is otherwise
+		// indistinguishable from a crash on startup.
+		if (!props.Visible)
+			EGSS_CORE_INFO("No window: unattended run (--show-window to watch it)");
+
+		m_Window = std::unique_ptr<Window>(Window::Create(props));
 		m_Window->SetEventCallback(EGSS_BIND_EVENT_FN(Application::OnEvent));
 
 		Renderer::Init();
@@ -60,6 +73,48 @@ namespace Egss {
 	const std::vector<std::string>& Application::GetCommandLine()
 	{
 		return s_CommandLine;
+	}
+
+	// Whether this run should put a window on the screen.
+	//
+	// **An unattended run is hidden by default.** `--capture` and `--play` are
+	// the two flags that mean "nobody is watching this": one is a screenshot
+	// script, the other a replay. Both used to map a window and seize the
+	// keyboard, which is merely untidy on an idle machine and genuinely
+	// disruptive on one somebody is working at -- a capture that takes a second
+	// still lands in the middle of a sentence.
+	//
+	// A hidden window renders exactly the same: the back buffer belongs to the
+	// driver, not to the compositor, and `ReadFramebufferRGBA` reads GL_BACK
+	// before the swap either way. Verified rather than assumed -- captures taken
+	// hidden and visible hash identically.
+	//
+	// Both directions are overridable, because the default is a guess about
+	// intent: `--show-window` to watch a capture happen, `--hide-window` to run
+	// anything else quietly.
+	bool Application::WantsHiddenWindow()
+	{
+		bool automated = false;
+
+		for (size_t i = 1; i < s_CommandLine.size(); i++)
+		{
+			const std::string& argument = s_CommandLine[i];
+
+			// Explicit wins over inferred, in both directions, and is checked
+			// first so the order of the flags never matters.
+			if (argument == "--show-window")
+				return false;
+			if (argument == "--hide-window")
+				return true;
+
+			// The value-taking flags: a bare `--capture` with nothing after it
+			// captures nothing, so it should not hide anything either.
+			if ((argument == "--capture" || argument == "--play")
+				&& i + 1 < s_CommandLine.size())
+				automated = true;
+		}
+
+		return automated;
 	}
 
 	void Application::ParseCommandLine()

@@ -8,6 +8,17 @@
 
 namespace Egss {
 
+	// How a triangle is filled in. Debug views want the other two: `Line` shows
+	// which vertices the mesher joined to which, and `Point` shows where it put
+	// them -- both invisible under a shaded surface, and both the first thing
+	// worth looking at when a mesh comes out wrong.
+	enum class PolygonMode
+	{
+		Fill = 0,
+		Line,
+		Point
+	};
+
 	enum class BlendMode
 	{
 		// Straight alpha: what is drawn later covers what is underneath.
@@ -79,6 +90,14 @@ namespace Egss {
 		// for free. Off by default: it is only safe once *all* geometry in the
 		// pass is wound consistently, and one flipped model shows up as holes.
 		virtual void SetBackfaceCulling(bool enabled) = 0;
+
+		// Applies to everything drawn until it is set back. `Line` and `Point`
+		// are debug states: they are cheap to set and expensive to forget, so a
+		// caller that sets one is responsible for putting Fill back.
+		virtual void SetPolygonMode(PolygonMode mode) = 0;
+
+		// Size of a point in pixels, for PolygonMode::Point and DrawPoints.
+		virtual void SetPointSize(float size) = 0;
 
 		// Reads a rectangle of whatever framebuffer is currently bound back
 		// into CPU memory, as tightly packed RGBA8. `out` needs room for

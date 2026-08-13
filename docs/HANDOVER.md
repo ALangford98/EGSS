@@ -443,6 +443,135 @@ look caught immediately.
   frame a regression test. `Application::IsUIHidden()` is the check; a cursor is
   UI and goes when the panels go. The simulation was never affected, only the
   picture, which is exactly why it was easy to miss.
+- **`glPointSize` does nothing while `GL_PROGRAM_POINT_SIZE` is enabled.** The
+  size comes from the vertex shader's `gl_PointSize` instead, and a shader that
+  never writes one leaves it undefined — which showed up as points not being
+  drawn at all rather than as points one pixel wide. `SetPointSize` disables it.
+- **A walking capsule is dynamic with its rotation thrown away.** Being dynamic
+  is what makes it fall, climb and get shoved; being a dynamic capsule is what
+  makes it topple the instant it touches anything off-centre. The Voxel demo
+  resets the orientation and zeroes the angular velocity every step. Set the
+  horizontal velocity outright rather than applying a force, or the player
+  accelerates for a second after each key press and slides for a second after
+  letting go.
+- **A rigid body's position has to be its centre of mass.** Put it anywhere else
+  and gravity applies a torque that should not exist. `VoxelIsland` carries
+  `Centre` (mass) *and* `BoxCentre` (the middle of the extents) for exactly this:
+  a single oriented box body goes at `BoxCentre`, a `Compound` goes at `Centre`
+  with its children offset from there. For a symmetric piece they coincide, which
+  is why getting it wrong would pass every simple test.
+- **A compound's inertia tensor is not diagonal**, and it is easy to make it so
+  by accident. Each child contributes `I + m(d·d E − d⊗d)` about the body origin,
+  and the outer-product term is the off-diagonal part — drop it and a body
+  tumbles about the wrong axes, which reads as a solver bug. Checked against a
+  hand-worked `Ixy = −3` for two boxes on a diagonal.
+- **A moment belongs only to a section that is the sole path to ground.** A
+  section that is one of several parallel routes carries a *share* of the load,
+  and giving that share the whole lever over-reads it by exactly the number of
+  routes — one face gets `6M/s³` where the n-face section it belongs to gets
+  `6M/(n s³)`. That is why lone connections used to outrank every real section,
+  get broken first and sever nothing. `VoxelStress` blocks a section and walks
+  for an anchor to decide; **it only does so when the answer could change the
+  verdict**, since the test can only lower a stress, and without that guard every
+  section in the field pays for a flood fill (the suite ran past ten minutes).
+- **A Jacobi sweep can return a reflection, not a rotation.** `VoxelIsland`'s
+  oriented box checks the determinant and flips an axis; a body built from a
+  reflection is inside out. And the box is centred on the piece's *extents*, not
+  its centre of mass — those differ for anything asymmetric, and centring on the
+  mass leaves the box hanging off one side.
+- **Region-bounding the stress analysis does not work**, which is worth knowing
+  because it is the obvious optimisation and it was on the roadmap. A section's
+  stress depends on the load routed through it, and that load comes from
+  everything above — outside any box drawn round the edit as well as inside.
+  Truncating the region truncates the load. What does work: cache solidity into
+  a flat array (the pass asked `field.Solid` seven times per voxel, and each ask
+  is a clamp, three divisions, three remainders and a pointer chase), and break
+  several independent sections per analysis rather than one.
+- **`VoxelField3D::Far` is a sentinel, not a distance.** An unallocated chunk
+  reads 1000, meaning "nothing near" — so anything that *steps by the value*
+  leaves the map in one bound. Sphere tracing did exactly that and reported a
+  miss over a hillside it was pointed at; `GroundBelow`'s downward march had the
+  same hole. Both cap their step at one chunk now, which is always safe because a
+  chunk is uniform across its extent. **No analytic test could have found this**
+  — a field small enough to write a test around has surface in every chunk, and
+  the sparse path only exists at map scale.
+- **A structural strength has to clear the terrain's own weight.** A column of
+  density rho fails under itself past `sigma / (rho g)`; at 180 kPa that is
+  13.1 m, and the voxel map's tallest ground is 15 m, so it collapsed before
+  being touched. Check `sigma / (rho g)` against the map's height before blaming
+  the model.
+- **Fade a subtracted field towards +big, never towards zero.** Subtraction is
+  `max(A, -B)`. Fading a cave out near the surface by scaling its *value* down
+  gives `max(ground, 0)`, which clamps every interior sample to exactly zero and
+  drags the surface to wherever the fade starts. It meshes as a terraced
+  hillside and reads as a marching-cubes artefact. It is not one.
+- **Shapes meant to join have to overlap, at both ends.** A column from y = 3 to
+  9, ground ending at 3, cap starting at 9: at exactly y = 3 and y = 9 both
+  fields are zero, zero is not solid, and the column touches neither. The flood
+  fill correctly reported a floating cap on an intact pillar, twice, for two
+  different planes.
+- **Voxel counting measures the shape shrunk by half a voxel on every face.** A
+  4 x 2 x 4 m box at 0.5 m holds 7 x 3 x 7 = 147 lattice points, not 8 x 4 x 8 —
+  so `VoxelIsland::Volume` under-reports a small piece's mass by roughly its
+  surface area times half a voxel, and washes out for large ones.
+- **`yaw = 0` points along +x** in `PerspectiveCamera`, not -z. A demo placed on
+  the +z side with yaw 0 looks past its own scene, which reads as a generation
+  bug.
+- **`y - h(x, z)` is not a distance field.** Its gradient has length
+  `sqrt(1 + |grad h|^2)`, so it changes *faster* than a distance — which is the
+  dangerous direction: sphere tracing steps by the stored value and would
+  overshoot the surface, and `VoxelField3D`'s sparse chunks would drop chunks
+  that contained one. Divide by that length for the first-order true distance.
+  Any generator that builds an SDF from a height function needs this.
+- **The same error at two different conditions is arithmetic, not physics.** The
+  rolling-sphere check came out 100.21% high at 15 degrees *and* 100.21% high at
+  25, implying an inertia of −0.3007 both times. Exactly twice the right answer:
+  the sphere was pre-settled for thirty steps, so it was already moving when the
+  clock started, and `s = at²/2` only holds from rest. Measure a velocity
+  difference and the starting state stops mattering.
+- **Check that a tangent is tangent.** The same test first reported a *negative*
+  acceleration downhill, because the "downhill" vector had a dot product of
+  −2 sin θ cos θ with the surface normal and so projected the vertical drop into
+  the distance travelled.
+- **A ball on any interesting surface rolls away.** Comparing two colliders by
+  dropping a sphere on each and comparing where it stopped compares how far it
+  rolled. One had left the 16 m map and was 83 m below the world. Ask the
+  colliders directly, or use a box.
+- **An identical failure count across two resolutions is the test, not the code
+  -- until you measure which.** The marching-cubes manifold check failed with
+  *exactly* 168 bad edges at both 0.5 m and 0.25 m voxels, on meshes of 1,304 and
+  5,240 triangles. It was 30 lattice points sitting exactly on the surface
+  (radius 3 lands on both lattices, so both contain the same integer solutions of
+  x²+y²+z²=9), each collapsing triangles to zero area. The mesher drops those
+  now. Note the count was a real defect *reported by a broken metric* -- the
+  right move was to measure what the 168 were, not to change either one blind.
+- **A voxel field must be Lipschitz** -- one voxel of travel may change the
+  stored distance by at most one voxel. `VoxelField3D`'s sparse chunks decide a
+  chunk is entirely rock or air by checking it is more than a voxel from any
+  surface, which is only sound under that assumption. Fill it with an arbitrary
+  density function instead of a distance and chunks will be dropped that
+  contained surface.
+- **Mesh chunks with a one-cell overlap.** A chunk's last cell reads the first
+  lattice plane of its neighbour; without it every chunk boundary is a crack. The
+  manifold check catches it, a screenshot does not.
+- **A replay only reproduces the sliders a demo registered.** `RegisterParam` in
+  the demo's constructor, one line per knob that reaches the simulation; anything
+  unregistered keeps this build's default and the replay will differ from the
+  recording for a reason no picture explains. Physics2D and Physics3D are
+  adopted; the rest are not yet. If a replay diverges, ask what moved before
+  suspecting the simulation.
+- **Registration order is load-bearing at both ends.** Recording writes the
+  parameter table at `StartRecording`, so it must run *after* the demos are
+  built — it used not to, and wrote a table with nothing in it. Playback starts
+  in the `Application` constructor, before any demo exists, so it resolves names
+  to indices on the first step instead; resolving them at load reports every
+  parameter missing.
+- **`--capture` and `--play` open no window**, because an unattended run that
+  maps one steals the keyboard from whatever the machine is being used for.
+  `--show-window` to watch one, `--hide-window` for anything else. If a demo
+  "does not start", check the log for `No window: unattended run` before
+  suspecting a crash. Rendering is unaffected — the back buffer is the driver's,
+  not the compositor's, and hidden and visible captures are byte-identical.
 - **Anything drawn from the cursor breaks capture reproducibility, and Cube3D
   had it too.** `ReadHoveredEntity` picks from the mouse and `DrawSelectionBox`
   drew a wireframe round the result with no `IsUIHidden` guard, so a captured
@@ -516,9 +645,14 @@ before, and "a component with no system" was the phrase used to decline it.
 
 `README.md` has the full roadmap (18 items). The clusters:
 
-**Renderer debt** — what is left here is recording ImGui panel state into the
-replay format. Multi-viewport ImGui is done, behind `--viewports` and off by
-default; the load-bearing part is the GL context save/restore around
+**Renderer debt** — **this cluster is now empty.** Recording ImGui panel state
+into the replay format was the last of it: a demo registers the parameters that
+reach its simulation (`RegisterParam`, one line per slider), the recorder samples
+them per fixed step beside the input, and format version 2 carries a named table
+plus tagged chunks. Verified by recording a session whose sliders move mid-run
+and replaying it to a byte-identical frame, against a control with nothing
+registered that diverges. Multi-viewport ImGui is done, behind `--viewports` and
+off by default; the load-bearing part is the GL context save/restore around
 `RenderPlatformWindowsDefault` in `ImGuiLayer::End`, without which the screen
 capture reads an undocked panel's window instead of the scene. `ShaderLibrary`
 is done; the texture
@@ -1020,7 +1154,98 @@ clear optimum with falls on both sides, and roll gain matters more than pitch.
 After stepping comes a second character, which is the same rig with a different
 driver. Convex hulls are the remaining shape, and would reuse `Sat3D`.
 
-**Acoustics**, the most recently active area — partitioned FFT convolution (for
+**Voxel terrain**, the newest area and the one being built in pieces. Piece one
+is done: `VoxelField3D` (chunked SDF, negative inside, material per voxel) and
+`MarchingCubes`, verified against 4πr² and (4/3)πr³ to 0.22% and 0.41% at 0.25 m
+voxels, with closed-manifold topology and seamless chunks. **Nothing consumes it
+yet, on purpose** — terrain you fall through is not a demo, so it lands with the
+collider in piece two.
+
+The intended shape, so the pieces are not built at cross purposes: **the field is
+the collider**, not its triangles. Marching cubes is for the eye only. That keeps
+slivers out of the narrowphase and reuses the arrangement `Heightfield3D` already
+proves works — a field queried locally rather than turned into geometry first.
+
+**Piece two is done too**: `ColliderShape3D::Sdf`, sphere/capsule/box against the
+field directly. Bodies rest at exactly one slop; a rolling sphere reports
+`I/mr² = 0.4102` against a solid sphere's 0.4 at two angles, which is the body's
+inertia arriving through the contact solver; and the same terrain built as a
+heightfield and as a distance field agrees on where the ground is to
+**0.00009 m** over 121 off-lattice points. `GroundBelow` marches the column with
+sphere tracing rather than answering in closed form, because "the height at
+(x, z)" only has one answer when the ground is single-valued — under an arch it
+correctly reports the floor from inside and the roof from above.
+
+`FieldHit` and `ContactFromField` are shared with the heightfield unchanged, and
+should stay that way: the manifold problem is identical and it is the part that
+was hard to get right.
+
+**Piece three is done**: the **Voxel terrain** demo — 3D-noise generation,
+chunked meshing, digging with `EditSphere`, and severed rock handed to the solver.
+Edits are local (1 chunk inside one, 2 across a seam, 0 for a miss), the island
+conservation law holds exactly (19,208 attached + 147 in the island = 19,355
+before), and cutting a capped pillar's neck frees exactly the cap.
+
+Two approximations to know about. **An island becomes one box** — `Sat3D` is
+convex-only, so a long thin slab rests at an angle a real one would not; its
+*mesh* is the true surface, so the picture and the collider disagree by design
+until convex decomposition exists. And **`Volume` is voxel count times voxel
+volume**, which under-reports small pieces.
+
+**Piece four is done**: `VoxelStress`. Load is routed to the anchors along the
+connections, each carries the centre of mass of what passes through it, and
+coplanar connections are grouped into **sections** judged as `W/A + M r / I`.
+Grouping is what makes it statics — judged face by face, a wide neck resists
+bending no better than a narrow one.
+
+Verified against two formulas it does not contain. A cantilever's root stress
+`3 rho g L^2 / h`: the residual is **exactly `1 + s/L`**, one voxel of length,
+asserted as a law rather than bounded as a tolerance, and the thickness sweep is
+*constant* across 3/5/7/9 layers, which says the thickness dependence is exact.
+That only holds because each face gets its own extent (`A s^2/12` by the parallel
+axis theorem, plus a half-voxel on the outer fibre); without it the model reads
+low by `n/(n+1)`. And a column's height limit `sigma/(rho g)`: stands to 14 m,
+fails from 15, predicted 14.56.
+
+**Cost is settled**: 20.87 ms a pass (solidity cached into a flat array) and
+**29 ms an edit** against the original 180, because `Relieve` breaks several
+independent sections from one analysis instead of running an analysis per break.
+Region-bounding was the plan and does not work — see the trap above.
+
+**The full path is verified end to end**: undermine a propped ledge, three
+sections fail, a 3,607-voxel island comes away past the cliff face, meshes, falls
+and lands. That is the demo's own sequence, which had never run before.
+
+**Sections are judged by a cut test rather than a threshold.** Bending belongs
+only to a section that is the sole path to ground — blocked, walked, and checked
+for an anchor — so `MinSectionLinks` is back to 1 and a genuine single-voxel neck
+is judged on its merits. Every earlier result survives it unchanged.
+
+**A severed piece is a compound of boxes**, from greedy growing over its voxels —
+an L of 2,695 voxels comes out as 2 boxes that tile it exactly, where one box
+round it is 60% air. `ColliderShape3D::Compound` reuses every existing box test by
+turning a child into a box body in world space, and merges the child manifolds
+the way terrain triangles are merged, because a contact still carries one normal.
+`VoxelIsland` also carries an oriented box (principal axes, 79% rock against an
+axis-aligned 27%) for callers that want one shape rather than several.
+
+**The voxel list is empty.** What is left is not voxel work: the compound's
+single-normal manifold is the same compromise the heightfield makes, and a lump
+wedged in a corner gets the plane of whichever child is deepest.
+
+Still true: the strength must clear the map's own self-weight or the terrain
+collapses untouched — 500 kPa for the demo's 15 m terrain, where 180 kPa does
+not.
+
+The original tension design read: per-connection load *with a
+moment term*, so length matters and one connection cannot hold a mountain — which
+is the gap in Teardown's pure-connectivity model. Checkable against the cantilever
+root stress 3ρgL²/h. Two constraints already known from measurements elsewhere in
+this project: `Sat3D` is convex-only so a severed overhang needs decomposing or
+approximating with boxes, and the broadphase table says a few hundred loose
+bodies is where the cost starts to bite, so islands need a minimum size.
+
+**Acoustics** — partitioned FFT convolution (for
 dense recorded impulses); more bands with per-material curves. **Per-band
 scattering** is the natural follow-on now that scattering exists: it needs one
 ray per band, since a ray carries three energy packets but only one direction.

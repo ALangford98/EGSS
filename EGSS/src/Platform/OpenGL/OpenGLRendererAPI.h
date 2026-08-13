@@ -21,6 +21,8 @@ namespace Egss {
 		void SetBlendMode(BlendMode mode) override;
 		void SetDepthTest(bool enabled) override;
 		void SetBackfaceCulling(bool enabled) override;
+		void SetPolygonMode(PolygonMode mode) override;
+		void SetPointSize(float size) override;
 
 		void ReadPixels(unsigned int x, unsigned int y, unsigned int width,
 			unsigned int height, unsigned char* out) override;

@@ -23,6 +23,7 @@
 #include "Acoustics2DDemo.h"
 #include "Ragdoll.h"
 #include "MapBuilding.h"
+#include "VoxelTerrain.h"
 
 struct DemoEntry
 {
@@ -42,7 +43,8 @@ inline const DemoEntry s_Demos[] =
 	{ "Scene (entities + components)","Scene",     []() -> DemoLayer* { return new SceneDemo(); } },
 	{ "Acoustics2D (ray-traced sound)","Acoustics", []() -> DemoLayer* { return new Acoustics2DDemo(); } },
 	{ "Ragdoll (jointed humanoid)",   "Ragdoll",   []() -> DemoLayer* { return new Ragdoll(); } },
-	{ "Map Building (seeded terrain)","MapBuild",  []() -> DemoLayer* { return new MapBuilding(); } }
+	{ "Map Building (seeded terrain)","MapBuild",  []() -> DemoLayer* { return new MapBuilding(); } },
+	{ "Voxel terrain (dig it out)",   "Voxel",     []() -> DemoLayer* { return new VoxelTerrain(); } }
 };
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));
@@ -127,9 +129,22 @@ inline void PushAllDemos(Egss::Application& app)
 {
 	SelectDemoFromCommandLine();
 
+	for (int i = 0; i < s_DemoCount; i++)
+	{
+		DemoLayer* demo = s_Demos[i].Create();
+		demo->SetDemoId(i);
+		app.PushLayer(demo);
+	}
+
 	// Recording starts here rather than in the engine, because the header
 	// stamps which scene is being recorded and only the sandbox knows that.
 	// After selection, so the number written is the one actually used.
+	//
+	// And **after the demos are built**, which used not to matter and now does:
+	// a recording writes a table of the parameters it carries, and a demo
+	// registers those from its constructor. Starting the recording first wrote a
+	// file that named no parameters and then recorded none of them -- a valid
+	// recording of a session whose sliders did nothing.
 	const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
 	for (size_t i = 1; i + 1 < arguments.size(); i++)
 	{
@@ -138,12 +153,5 @@ inline void PushAllDemos(Egss::Application& app)
 			Egss::Replay::StartRecording(arguments[i + 1], g_ActiveDemo, app.GetFixedTimestep());
 			break;
 		}
-	}
-
-	for (int i = 0; i < s_DemoCount; i++)
-	{
-		DemoLayer* demo = s_Demos[i].Create();
-		demo->SetDemoId(i);
-		app.PushLayer(demo);
 	}
 }

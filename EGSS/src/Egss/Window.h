@@ -11,11 +11,23 @@ namespace Egss {
 		std::string Title;
 		unsigned int Width;
 		unsigned int Height;
-		
+
+		// Whether the window is mapped at all.
+		//
+		// A hidden window still has a GL context and still renders -- the back
+		// buffer belongs to the driver, not to the compositor -- so a capture
+		// taken from one is byte-identical to a capture taken from a visible
+		// window. What it does not do is appear on somebody's screen and take
+		// their keyboard, which is the entire point: an automated run happening
+		// while the machine is being used for something else should not steal
+		// focus mid-sentence. See `Application::WantsHiddenWindow`.
+		bool Visible = true;
+
 		WindowProps(const std::string& t = "Every Game Starts Somewhere",
 			unsigned int w = 1280,
-			unsigned int h = 720)
-			: Title(t), Width(w), Height(h)
+			unsigned int h = 720,
+			bool visible = true)
+			: Title(t), Width(w), Height(h), Visible(visible)
 		{
 		}
 	};

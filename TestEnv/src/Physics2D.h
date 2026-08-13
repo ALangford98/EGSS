@@ -23,6 +23,17 @@ public:
 	Physics2D()
 		: DemoLayer("Physics2D"), m_Camera(-1.6f, 1.6f, -0.9f, 0.9f)
 	{
+		// The panel's simulation knobs, so a session recorded while they were
+		// moved replays as the session that was recorded. Everything here feeds
+		// the world or what is spawned into it; the drawing and audio sliders
+		// beside them deliberately do not, because they change the picture
+		// rather than the physics.
+		RegisterParam("Gravity", &m_Gravity);
+		RegisterParam("Bounciness", &m_Bounciness);
+		RegisterParam("Spawn rate", &m_SpawnRate);
+		RegisterParam("Max bodies", &m_MaxBodies);
+		RegisterParam("Spawn crates", &m_SpawnCrates);
+		RegisterParam("Allow sleeping", &m_World.AllowSleeping);
 	}
 
 	void OnDemoAttach() override
@@ -346,7 +357,6 @@ public:
 
 	void OnDemoUpdate(Egss::Timestep ts) override
 	{
-
 		m_FrameTime = ts.GetMilliseconds();
 
 		// The world stores each body's position at the start of the step, so

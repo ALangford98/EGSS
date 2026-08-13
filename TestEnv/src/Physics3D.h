@@ -25,6 +25,17 @@ public:
 	Physics3D()
 		: DemoLayer("Physics3D"), m_Camera(50.0f, 16.0f / 9.0f, 0.1f, 200.0f)
 	{
+		// The same set as Physics2D, for the same reason: these reach the world
+		// and a session recorded while they moved has to replay as itself.
+		//
+		// The prefix keeps them apart from Physics2D's -- both demos have a
+		// "Gravity", and a recording that confused the two would put a 2D
+		// slider's value into a 3D world.
+		RegisterParam("Gravity", &m_Gravity);
+		RegisterParam("Bounciness", &m_Bounciness);
+		RegisterParam("Spawn rate", &m_SpawnRate);
+		RegisterParam("Max bodies", &m_MaxBodies);
+		RegisterParam("Allow sleeping", &m_World.AllowSleeping);
 	}
 
 	void OnDemoAttach() override

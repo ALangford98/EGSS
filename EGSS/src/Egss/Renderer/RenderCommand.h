@@ -62,6 +62,16 @@ namespace Egss {
 			s_RendererAPI->SetDepthTest(enabled);
 		}
 
+		inline static void SetPolygonMode(PolygonMode mode)
+		{
+			s_RendererAPI->SetPolygonMode(mode);
+		}
+
+		inline static void SetPointSize(float size)
+		{
+			s_RendererAPI->SetPointSize(size);
+		}
+
 		inline static void SetBackfaceCulling(bool enabled)
 		{
 			s_RendererAPI->SetBackfaceCulling(enabled);

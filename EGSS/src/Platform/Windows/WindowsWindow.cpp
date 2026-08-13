@@ -53,6 +53,12 @@ namespace Egss {
 		glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
 #endif
 
+		// Hinted rather than hidden afterwards, so an unattended run never maps
+		// the window at all. Creating it visible and calling glfwHideWindow
+		// leaves a frame or two where it is on screen and holding the keyboard,
+		// which is exactly the flicker this exists to remove.
+		glfwWindowHint(GLFW_VISIBLE, props.Visible ? GLFW_TRUE : GLFW_FALSE);
+
 		m_Window = glfwCreateWindow((int)props.Width, (int)props.Height, m_Data.Title.c_str(), nullptr, nullptr);
 		glfwMakeContextCurrent(m_Window);
 

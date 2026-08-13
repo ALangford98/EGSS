@@ -56,6 +56,37 @@ public:
 	void SetDemoId(DemoId id) { m_DemoId = id; }
 	DemoId GetDemoId() const { return m_DemoId; }
 
+	// --- Replayable parameters --------------------------------------------
+	//
+	// **One line per slider that reaches the simulation.** A recording captures
+	// what a person does through the keyboard and mouse; an ImGui slider is
+	// neither, so moving one used to desynchronise every replay of that session
+	// silently. Register the variable and the recorder samples it per fixed step
+	// and the player writes it back. See `Egss::ReplayParams`.
+	//
+	// Names are prefixed with the demo's own, because "Gravity" belongs to
+	// Physics2D *and* to Physics3D and a recording that confused the two would
+	// replay one demo's slider into another's world.
+	//
+	// Only register what the *simulation* reads. A colour, a "show colliders"
+	// checkbox or a camera angle changes what you see and not what happens, and
+	// recording those would make a replay fail to match for reasons that do not
+	// matter -- while adding entries to every file.
+	void RegisterParam(const std::string& name, float* value)
+	{
+		Egss::ReplayParams::RegisterFloat(GetName() + "/" + name, value);
+	}
+
+	void RegisterParam(const std::string& name, int* value)
+	{
+		Egss::ReplayParams::RegisterInt(GetName() + "/" + name, value);
+	}
+
+	void RegisterParam(const std::string& name, bool* value)
+	{
+		Egss::ReplayParams::RegisterBool(GetName() + "/" + name, value);
+	}
+
 	bool IsActive() const { return m_DemoId == g_ActiveDemo; }
 
 	// --- Override these instead of the Layer ones -------------------------

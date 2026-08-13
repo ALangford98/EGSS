@@ -4,6 +4,7 @@
 #include "Egss/Core.h"
 #include "Egss/Physics/RigidBody2D.h"   // BodyType, shared by both dimensions
 #include "Egss/Physics/Heightfield3D.h"
+#include "Egss/Voxel/VoxelField3D.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -33,7 +34,39 @@ namespace Egss {
 		// This is the first collider that is not convex, and the first whose
 		// size has nothing to do with the body's -- a heightfield is usually
 		// the whole world, and its bounds say so.
-		Heightfield
+		Heightfield,
+		// Several boxes rigidly fixed together, described by `Children`, each
+		// axis-aligned in the body's own frame.
+		//
+		// **This is how a concave shape is simulated by a convex solver.**
+		// `Sat3D` needs convex, and a rock broken off a cliff is not -- so it is
+		// approximated by a set of boxes that between them fill it. Each box is
+		// convex, the set is not, and every existing box test is reused by
+		// treating a child as a box body in world space.
+		//
+		// The cost is that the manifold still carries **one normal**, the same
+		// compromise a heightfield makes: several children touching different
+		// surfaces have the deepest one's normal adopted and the rest
+		// re-measured along it. A lump resting on flat ground -- which is what
+		// debris does -- has one normal anyway.
+		Compound,
+		// A signed distance field, described by `Voxels`. Static and never
+		// turned, on the same terms as Heightfield.
+		//
+		// The difference that matters: a heightfield is a *function* of x and z
+		// and so is single-valued in y, which is why it can never hold an
+		// overhang, a cave or an arch. A distance field is a volume and holds
+		// all three. Everything else about it is cheaper -- the stored value is
+		// already the depth of a point, and the field's gradient is already the
+		// surface normal, so the narrowphase does no searching at all.
+		Sdf
+	};
+
+	// One box of a Compound collider, in the body's own frame.
+	struct EGSS_API CompoundChild
+	{
+		glm::vec3 Offset = { 0.0f, 0.0f, 0.0f };
+		glm::vec3 HalfExtents = { 0.5f, 0.5f, 0.5f };
 	};
 
 	// A rigid body in three dimensions.
@@ -118,6 +151,19 @@ namespace Egss {
 		// narrowphase must never be able to move the ground it is testing
 		// against.
 		std::shared_ptr<const Heightfield3D> Field;
+
+		// The signed distance field an Sdf collider is made of, on the same
+		// terms as Field above.
+		//
+		// A separate member rather than a variant, because the two answer
+		// different questions and the narrowphase never has to ask which kind it
+		// is holding -- Shape already says.
+		std::shared_ptr<const VoxelField3D> Voxels;
+
+		// The boxes a Compound collider is made of. Shared for the same reason
+		// the fields are: a decomposed rock can be a few hundred of them, and a
+		// body is copied every time the world's vector grows.
+		std::shared_ptr<const std::vector<CompoundChild>> Children;
 
 		float Restitution = 0.2f;
 		float Friction = 0.4f;
@@ -229,6 +275,69 @@ namespace Egss {
 					diagonal = { xx, yy, xx };
 				}
 			}
+			else if (Shape == ColliderShape3D::Compound)
+			{
+				// The one shape whose tensor is not diagonal, and the reason the
+				// members below are full matrices rather than three numbers.
+				//
+				// Each child contributes its own box tensor about its own centre,
+				// carried to the body's origin by the parallel axis theorem:
+				// `I + m (d.d E - d (x) d)`. The outer-product term is what makes
+				// the result off-diagonal, and dropping it -- which is easy to do
+				// by writing only the diagonal -- gives a body that tumbles about
+				// the wrong axes and looks like a solver bug.
+				//
+				// Mass is shared between children by volume, so a decomposition
+				// into unequal boxes weighs them correctly.
+				InertiaLocal = glm::mat3(0.0f);
+
+				float total = 0.0f;
+				if (Children)
+					for (const CompoundChild& child : *Children)
+						total += 8.0f * child.HalfExtents.x * child.HalfExtents.y
+							* child.HalfExtents.z;
+
+				if (Children && total > 0.0f)
+				{
+					for (const CompoundChild& child : *Children)
+					{
+						float volume = 8.0f * child.HalfExtents.x * child.HalfExtents.y
+							* child.HalfExtents.z;
+						float m = mass * volume / total;
+
+						glm::vec3 size = child.HalfExtents * 2.0f;
+						glm::vec3 own = (m / 12.0f) * glm::vec3(
+							size.y * size.y + size.z * size.z,
+							size.x * size.x + size.z * size.z,
+							size.x * size.x + size.y * size.y);
+
+						glm::mat3 tensor(0.0f);
+						for (int axis = 0; axis < 3; axis++)
+							tensor[axis][axis] = own[axis];
+
+						const glm::vec3& d = child.Offset;
+						float dd = glm::dot(d, d);
+
+						for (int r = 0; r < 3; r++)
+						{
+							for (int c = 0; c < 3; c++)
+							{
+								float shift = (r == c ? dd : 0.0f) - d[r] * d[c];
+								tensor[c][r] += m * shift;
+							}
+						}
+
+						InertiaLocal += tensor;
+					}
+				}
+
+				InverseInertiaLocal = glm::determinant(InertiaLocal) > 1e-12f
+					? glm::inverse(InertiaLocal)
+					: glm::mat3(0.0f);
+
+				UpdateInertiaWorld();
+				return;
+			}
 			else
 			{
 				float value = 0.4f * mass * Radius * Radius;
@@ -324,6 +433,53 @@ namespace Egss {
 			body.Position = position;
 			body.PreviousPosition = position;
 			body.Field = field;
+			body.SetMass(0.0f);
+			body.RecalculateInertia();
+			return body;
+		}
+
+		// A body made of boxes. `children` are in the body's frame, and the mass
+		// is shared between them by volume -- so a long thin piece and a squat
+		// one of the same mass get different tensors, which is the whole point
+		// of not using one box round the lot.
+		static RigidBody3D MakeCompound(const glm::vec3& position,
+			const std::shared_ptr<const std::vector<CompoundChild>>& children,
+			float mass = 1.0f)
+		{
+			RigidBody3D body;
+			body.Shape = ColliderShape3D::Compound;
+			body.Position = position;
+			body.PreviousPosition = position;
+			body.Children = children;
+			body.SetMass(mass);
+			body.RecalculateInertia();
+			return body;
+		}
+
+		// A signed distance field as a collider: the same idea as the
+		// heightfield above, with the single-valued-in-y restriction removed. It
+		// is what an overhang, a cave and an arch need, and what a heightfield
+		// cannot express at all.
+		//
+		// **The field is collided against directly, never its triangles.** The
+		// marching-cubes surface is for the eye; a distance field already
+		// answers what the narrowphase asks -- the value is the depth and the
+		// gradient is the normal -- and does it without ever handing the solver
+		// one of the long thin triangles that isosurface extraction produces.
+		//
+		// Static only, for the same reason a heightfield is: `Position` places
+		// the field's origin, and a rotated distance field would need every
+		// query transformed into its frame. Not hard, and not needed until
+		// something wants a spinning cave.
+		static RigidBody3D MakeSdf(const glm::vec3& position,
+			const std::shared_ptr<const VoxelField3D>& voxels)
+		{
+			RigidBody3D body;
+			body.Shape = ColliderShape3D::Sdf;
+			body.Type = BodyType::Static;
+			body.Position = position;
+			body.PreviousPosition = position;
+			body.Voxels = voxels;
 			body.SetMass(0.0f);
 			body.RecalculateInertia();
 			return body;
