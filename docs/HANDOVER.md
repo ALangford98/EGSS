@@ -443,13 +443,38 @@ look caught immediately.
   frame a regression test. `Application::IsUIHidden()` is the check; a cursor is
   UI and goes when the panels go. The simulation was never affected, only the
   picture, which is exactly why it was easy to miss.
-- **The 3D broadphase loses in any scene with a heightfield in it.** The grid
-  turns on at 200 bodies, and its cost is dominated by the terrain body being
-  inserted into all ~29,575 cells every step, because its bounds are the whole
-  map. Measured at 214 bodies: grid 1.366 ms against brute force 0.427 ms, where
-  the engine's own table promises the grid winning 1.31–1.43× at that count.
-  Placing 200 blocks in Map Building is enough to cross it. `UseBroadphase` is
-  the switch, and the paths are bit-identical, so an A/B is always available.
+- **Anything drawn from the cursor breaks capture reproducibility, and Cube3D
+  had it too.** `ReadHoveredEntity` picks from the mouse and `DrawSelectionBox`
+  drew a wireframe round the result with no `IsUIHidden` guard, so a captured
+  frame depended on where the mouse was left — found because the same demo
+  hashed differently in two sessions with nothing in the renderer changed. Map
+  Building's preview block was the same bug. **A hover is a cursor and a cursor
+  is UI.** If a capture hash moves and no drawing code changed, check for
+  anything that reads `Input::GetMousePosition` before suspecting the renderer.
+- **A room assembled from slabs leaks at every joint that does not overlap**, and
+  none of the ways to get it wrong look like geometry mistakes from the outside.
+  Building Cube3D's enclosure failed three times: walls sized to the floor's
+  *scale* rather than half of it stood six metres clear of its edge (241 of 256
+  rays escaped, which reads as a short tail); walls sized correctly to the floor
+  put the camera, and so the listener, outside the room (0 paths from 3,042
+  bounces, which reads as a dead room); walls butted up to the floor instead of
+  overlapping left a 0.2 m slot round the base (27 of 256). `RaysEscaped` is the
+  number that tells you which, and it is on the panel.
+- **A broadphase cost that does not scale with the body count is not being paid
+  for the bodies.** The 3D grid cost 1.847 / 1.859 / 1.951 ms at 117 / 217 / 417
+  bodies with terrain in the scene — eleven times brute force, and *flat*. The
+  flatness is what named the cause: 29,575 cells, paid for whatever is in them.
+  Fixed in two parts, and the ratio alone would have hidden the second — taking
+  the terrain body out of the cells got 217 bodies to 0.256 ms, which still lost
+  to brute force's 0.208 ms, because the terrain was still setting the grid's
+  extent. Both halves are the same defect: **a heightfield's bounds are the whole
+  map.** See `m_Oversized`.
+- **`BroadphaseMinBodies` cannot be tuned from one scene.** After that fix the
+  arena wins from ~36 bodies where it needed 123 before, and it is tempting to
+  drop the constant. Terrain does not win until past 200 and dips to 0.74× at 67
+  bodies on the way, because the terrain body is a candidate for everything
+  whatever the broadphase does, so the grid has nothing to reject and pays for
+  the rebuild anyway. It stays at 200; measure both curves before touching it.
 - **Comparing a raycast against "the first sample under the surface" only works
   if the ray starts above the surface.** A grazing test ray entered the map
   already underground; the marching reference reported the entry point and the
@@ -540,6 +565,20 @@ order-dependent), which is what makes `UseBroadphase` a real A/B and what makes
 it safe to switch on automatically. It does switch automatically:
 `BroadphaseMinBodies = 200`, because below ~120 bodies the grid measurably
 *loses* — 3x slower at 13 bodies.
+
+**Bodies too large to bucket are kept out of the cells**, and out of the grid's
+extent — `m_Oversized`, switchable via `BroadphaseExcludeOversized`, and
+bit-identical either way (28 checks, three scene families, including joints and
+sleeping). Without it a heightfield went into all 29,575 cells every step *and*
+sized the grid from the map rather than from what stood on it, which made the
+grid eleven times slower than no broadphase in a scene it switched itself on for.
+The rule is a cost comparison — out once the cells a body spans exceed the body
+count — rather than a shape test, so it catches a wide static floor too.
+
+**No demo reaches the grid on default settings**: Physics3D caps at 90 bodies and
+Map Building needs ~185 blocks placed by hand. Anything about this code has to be
+measured in a scene built for it, and a demo capture will not show a regression
+here.
 
 **Capsules are in**: segment-with-a-radius along the body's own y axis, with a
 closed-form inertia tensor checked against its sphere and thin-rod limits.
@@ -981,11 +1020,40 @@ clear optimum with falls on both sides, and roll gain matters more than pitch.
 After stepping comes a second character, which is the same rig with a different
 driver. Convex hulls are the remaining shape, and would reuse `Sat3D`.
 
-**Acoustics**, the most recently active area — 3D acoustics (`Acoustics2D` is
-2D because `Raycast` is); partitioned FFT convolution (for dense recorded
-impulses); more bands with per-material curves. **Per-band scattering** is the
-natural follow-on now that scattering exists: it needs one ray per band, since
-a ray carries three energy packets but only one direction.
+**Acoustics**, the most recently active area — partitioned FFT convolution (for
+dense recorded impulses); more bands with per-material curves. **Per-band
+scattering** is the natural follow-on now that scattering exists: it needs one
+ray per band, since a ray carries three energy packets but only one direction.
+
+**3D acoustics is done.** `Acoustics3D` traces the *scene* through `Raycast3D`,
+so the room is the geometry you can see and there is no second set of collision
+boxes to keep in step — the same `Visible` flag hides a wall from the eye and the
+ear. Verified in a shoebox against formulas the tracer does not contain: mean
+free path within **0.40%** of 4V/S, RT60 within **9%** of Eyring at absorptions
+0.10/0.20/0.35, 13 of 13 checks. The 2D footprint of the same room over-predicts
+the mean free path by **1.73×** and RT60 by **1.69×**, and the 1.73 is the ratio
+of π·A/P to 4V/S reproduced to three figures.
+
+Everything dimension-independent is shared from `Acoustics.h` /
+`AcousticsInternal.h` — the tail statistics, the impulse taps, Eyring. Only ray
+spreading, the diffuse draw and the cast differ. **`Acoustics2D` was proven
+byte-identical across that refactor** (every scalar to nine figures, echogram sum
+and centroid, every reflection and tap, two settings); pin it the same way before
+touching the shared code again.
+
+Three things about 3D that are not just 2D with a z: rays spread on a
+golden-angle spiral rather than a lat/long grid, which would crowd the poles and
+so over-sample the floor and ceiling; diffuse bounces come from a
+cosine-weighted hemisphere, not a uniform one; and the frame for that draw picks
+its helper axis *away* from the normal, or a floor and a ceiling — the two
+surfaces 3D adds — cross two parallel vectors and get a zero-length basis.
+
+`Acoustics3D` indexes `PerBodyAbsorption` and `PerBodyScattering` by `EntityId`
+rather than by a physics body handle. Same shape, different namespace.
+
+**Build a traced room out of slabs, never one hollow box** — a ray starting
+inside a box gets a hit at distance zero, so a source in a single-box room never
+gets anywhere.
 
 ### Known approximations, stated so they are not mistaken for bugs
 
@@ -1014,7 +1082,17 @@ a ray carries three energy packets but only one direction.
   number was recorded without its windows, which is what made it impossible to
   compare against.
 - 2D acoustics overstates reverb time: a real room's floor and ceiling are half
-  its reflecting area.
+  its reflecting area. **Now measured rather than asserted** — on one room, 2D
+  gives RT60 1.397 s against 3D's 0.828 s, a factor of 1.69. Use `Acoustics3D`
+  when the answer matters.
+- **`Acoustics3D` bounces sound off a mesh's bounds, not its triangles**, because
+  that is what `Raycast3D` tests. For rooms, which are made of walls, the bounds
+  *are* the geometry; for a sphere or a torus they are not, and it will sound like
+  the box around it.
+- The traced-vs-Eyring bias in 3D is **one-sided and grows with absorption**:
+  +2.8% at 0.10, +5.1% at 0.20, +8.9% at 0.35, with full scattering on. Same
+  cause as the 2D bias — a bounce is heard by the listener regardless of which way
+  it was heading — so treat 10% as the accuracy of the method.
 - **A corridor needs far more rays than the demo's slider allows.** With the
   blocked-off corridor on and the listener in its dead end, RT60 reads 1.21 s at
   128 rays and 1.99 s at 8192 — few rays ever find the mouth, so its share of

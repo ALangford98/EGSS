@@ -457,6 +457,28 @@ namespace Egss {
 		// here rather than at break-even so the switch only happens where it
 		// is really a gain.
 		//
+		// **Kept at 200 after the oversized rule moved one of those curves and
+		// not the other**, which is the whole reason this is still 200. Three
+		// runs a count, speedup over brute force:
+		//
+		//                    arena           terrain with blocks on it
+		//      26 bodies     0.98 - 1.02x      27   0.89 - 0.97x
+		//      46            1.03 - 1.15       37   0.82 - 0.92
+		//      66            1.22 - 1.28       67   0.74 - 0.85
+		//      86            1.35 - 1.37      117   0.92 - 1.05
+		//     126            1.53 - 1.65      217   1.20 - 1.32
+		//     166            2.07 - 2.13
+		//
+		// The arena now wins from about 36 bodies, where it used to need 123.
+		// Terrain still does not win until past 200 -- and it gets *worse*
+		// before it gets better, because the terrain body is a candidate for
+		// every other body whatever the broadphase does (see m_Oversized), so
+		// the grid has nothing to reject there and pays for the rebuild anyway.
+		// Lowering this to suit the arena would put the terrain scene back to
+		// 0.74x, which is a milder version of the bug the rule just fixed.
+		// Raising the ceiling for terrain means giving a heightfield bounds
+		// that describe the solid under the surface, not the surface.
+		//
 		// Safe to switch on automatically precisely because the two paths are
 		// bit-identical -- see the note on sorting in GenerateContacts. If they
 		// disagreed, the simulation would change the moment a body count
@@ -465,6 +487,16 @@ namespace Egss {
 		// Set to 0 to force the grid on regardless, which is what an A/B
 		// measurement wants.
 		unsigned int BroadphaseMinBodies = 200;
+
+		// Keep bodies too large to be worth bucketing out of the cells -- see
+		// the note on m_Oversized for the rule and what it costs to get wrong.
+		//
+		// Switchable for the same reason UseBroadphase is: the rule was worth a
+		// 2.1 ms to 0.15 ms saving in a scene with terrain in it, and a claim
+		// like that is only worth anything while it can still be re-measured.
+		// Both settings are bit-identical to brute force, so this is a pure
+		// cost switch as well.
+		bool BroadphaseExcludeOversized = true;
 
 		// Cells want to be about the size of a typical body. Much smaller and
 		// one body spans many cells; much larger and every cell holds
@@ -475,6 +507,10 @@ namespace Egss {
 		float CellSize = 1.0f;
 
 		unsigned int GetBroadphaseCellCount() const { return (unsigned int)m_Cells.size(); }
+		// Bodies too large to be worth bucketing -- see m_Oversized. Watch this
+		// alongside the cell count: a grid that is mostly one body's footprint
+		// is a grid paying for a body it can never reject.
+		unsigned int GetBroadphaseOversizedCount() const { return (unsigned int)m_Oversized.size(); }
 		// Pairs the narrowphase was actually asked about this step. The number
 		// to watch: against n(n-1)/2 it says what the grid saved.
 		unsigned int GetBroadphaseCandidates() const { return m_Candidates; }
@@ -549,6 +585,48 @@ namespace Egss {
 		std::vector<unsigned int> m_QueryStamp;
 		unsigned int m_QueryCounter = 0;
 		unsigned int m_Candidates = 0;
+
+		// Bodies deliberately left out of the cells. A heightfield's bounds are
+		// the whole map, so bucketing one means stamping a single body into
+		// every cell in the grid, every step -- 29,575 of them on the 64 m map,
+		// and every one of those is a push into a vector that was emptied a
+		// moment ago, so it allocates. Measured, that alone made the grid
+		// *eleven times slower* than brute force in a scene it was
+		// automatically switching itself on for.
+		//
+		// The rule is a cost comparison rather than a shape test, because the
+		// shape is not what is wrong: stamping a body into C cells costs C
+		// pushes and buys the rejection of at most C pairs, so a body is kept
+		// out once C exceeds the body count. That catches a large static floor
+		// for the same reason it catches terrain.
+		//
+		// **They are still tested, just not bucketed** -- every query adds the
+		// oversized bodies as candidates unconditionally, which loses nothing
+		// for a body that was in all the cells anyway, and keeps this a pure
+		// bookkeeping change: the pairs handed to the narrowphase are exactly
+		// the ones brute force would hand it, in the same order.
+		//
+		// A bounds test in front of that would reject a few more pairs and was
+		// deliberately not written: a heightfield collides like a solid volume
+		// extending downwards, while its bounds describe only the band between
+		// Lowest and Highest, so a body under the map would stop being ejected.
+		// Fix the bounds first if this is ever wanted.
+		std::vector<unsigned int> m_Oversized;
+		// 1 for a body the grid is not holding, so a query knows not to walk
+		// cells it was never put in.
+		std::vector<unsigned char> m_OutsideCells;
+
+		// Every body's world bounds, computed once per rebuild. Classifying,
+		// sizing the grid and bucketing all three need them, and the query then
+		// needs the *same* ones -- a body looked for in cells it was not put in
+		// is a body the narrowphase never sees.
+		struct BodyBoundsCache
+		{
+			glm::vec3 Min = glm::vec3(0.0f);
+			glm::vec3 Max = glm::vec3(0.0f);
+		};
+
+		std::vector<BodyBoundsCache> m_Bounds;
 
 		// One body's candidate partners, gathered then sorted. A member rather
 		// than a local so the allocation is reused across steps.

@@ -1,6 +1,7 @@
 #include "egsspch.h"
-#include "Egss/Audio/Acoustics2D.h"
+#include "Egss/Audio/Acoustics3D.h"
 #include "Egss/Audio/AcousticsInternal.h"
+#include "Egss/Physics/Raycast3D.h"
 #include "Egss/Debug/Instrumentor.h"
 
 #include <glm/gtc/constants.hpp>
@@ -11,45 +12,89 @@ namespace Egss {
 
 		using namespace AcousticsDetail;
 
-		// Mirror about the surface normal. The tangential part of the
-		// direction survives, the normal part flips.
-		glm::vec2 Reflect(const glm::vec2& direction, const glm::vec2& normal)
+		// Mirror about the surface normal -- the same expression as in 2D, one
+		// component wider.
+		glm::vec3 Reflect(const glm::vec3& direction, const glm::vec3& normal)
 		{
 			return direction - 2.0f * glm::dot(direction, normal) * normal;
 		}
 
-		// A direction drawn from Lambert's cosine law about the normal, which
-		// is what a surface rough compared with the wavelength sends back
-		// regardless of which way the sound arrived.
+		// An orthonormal frame with `normal` as its third axis.
 		//
-		// In 2D the law is pdf(theta) = cos(theta)/2 over the half-circle
-		// either side of the normal. Its CDF is (sin(theta) + 1)/2, so
-		// inverting it is just theta = asin(2u - 1) -- one call, no rejection
-		// loop, and every sample lands in the correct half-circle by
-		// construction rather than by being retried until it does.
-		//
-		// Drawing uniformly over the half-circle instead is the obvious thing
-		// and is wrong: it sends far too much energy along the wall, which
-		// lengthens the mean free path and with it the decay.
-		glm::vec2 CosineDirection(const glm::vec2& normal, float u)
+		// The helper axis is chosen away from the normal rather than fixed: with
+		// a fixed (0,1,0), a floor or a ceiling -- the two surfaces 3D exists to
+		// add -- would take a cross product of two parallel vectors and get a
+		// zero-length basis, which is a diffuse bounce that goes nowhere.
+		void Basis(const glm::vec3& normal, glm::vec3& outU, glm::vec3& outV)
 		{
-			float theta = std::asin(glm::clamp(2.0f * u - 1.0f, -1.0f, 1.0f));
+			glm::vec3 helper = (std::fabs(normal.x) < 0.9f)
+				? glm::vec3(1.0f, 0.0f, 0.0f)
+				: glm::vec3(0.0f, 1.0f, 0.0f);
 
-			// Rotate the normal by theta. The normal already points back out
-			// of the surface, so this cannot aim into it.
-			float c = std::cos(theta), s = std::sin(theta);
-			return { normal.x * c - normal.y * s, normal.x * s + normal.y * c };
+			outU = glm::normalize(glm::cross(normal, helper));
+			outV = glm::cross(normal, outU);
+		}
+
+		// A direction drawn from Lambert's cosine law about the normal.
+		//
+		// In 3D the law is pdf proportional to cos(theta) over the hemisphere,
+		// and the standard inversion is the concentric-disc one: draw a point on
+		// the unit disc with radius sqrt(u1), then lift it onto the hemisphere.
+		// The height sqrt(1 - u1) is what makes the distribution cosine rather
+		// than uniform, and it is the whole difference -- a uniform hemisphere
+		// sends too much energy along the wall, lengthening the mean free path
+		// and with it the decay. The 2D tracer has the same trap in its own
+		// form.
+		//
+		// Two random numbers here against one in 2D, which is why the scatter
+		// stream is drawn from in a fixed order rather than on demand.
+		glm::vec3 CosineDirection(const glm::vec3& normal, float u1, float u2)
+		{
+			float radius = std::sqrt(glm::clamp(u1, 0.0f, 1.0f));
+			float phi = glm::two_pi<float>() * u2;
+			float height = std::sqrt(glm::max(0.0f, 1.0f - u1));
+
+			glm::vec3 u, v;
+			Basis(normal, u, v);
+
+			return glm::normalize(u * (radius * std::cos(phi))
+				+ v * (radius * std::sin(phi))
+				+ normal * height);
+		}
+
+		// `count` directions spread as evenly over the sphere as a closed form
+		// can manage -- the golden-angle spiral.
+		//
+		// A latitude/longitude grid is the obvious alternative and is wrong: it
+		// crowds rays at the poles, so a room's floor and ceiling get sampled
+		// several times as densely as its walls, which is exactly the bias 3D
+		// acoustics exists to remove.
+		//
+		// Offset by half a step in both parameters, so no ray has an exactly
+		// zero component. In a rectangular room a ray confined to a coordinate
+		// plane stays confined to it forever under specular reflection, and
+		// behaves unlike every other ray -- the same reason the 2D tracer
+		// offsets its first angle.
+		glm::vec3 SphereDirection(int index, int count)
+		{
+			const float goldenAngle = glm::pi<float>() * (3.0f - std::sqrt(5.0f));
+
+			float y = 1.0f - 2.0f * ((float)index + 0.5f) / (float)count;
+			float radius = std::sqrt(glm::max(0.0f, 1.0f - y * y));
+			float phi = ((float)index + 0.5f) * goldenAngle;
+
+			return { radius * std::cos(phi), y, radius * std::sin(phi) };
 		}
 
 	}
 
-	AcousticsResult Acoustics2D::Trace(const PhysicsWorld2D& world,
-		const glm::vec2& source, const glm::vec2& listener,
-		const AcousticsSettings& settings, std::vector<TracedRay>* debugRays)
+	AcousticsResult3D Acoustics3D::Trace(const Scene& scene,
+		const glm::vec3& source, const glm::vec3& listener,
+		const AcousticsSettings& settings, std::vector<TracedRay3D>* debugRays)
 	{
-		EGSS_PROFILE_SCOPE("Acoustics2D::Trace");
+		EGSS_PROFILE_SCOPE("Acoustics3D::Trace");
 
-		AcousticsResult result;
+		AcousticsResult3D result;
 		AcousticsDetail::Bins bins;
 
 		const float epsilon = settings.SurfaceEpsilon;
@@ -57,37 +102,20 @@ namespace Egss {
 		const int rayCount = glm::max(settings.RayCount, 1);
 
 		AcousticsDetail::Rng rng(settings.ScatterSeed);
-		auto unit = [&rng]() { return rng.Unit(); };
 
 		// --- The direct sound ---------------------------------------------
-		glm::vec2 toListener = listener - source;
+		glm::vec3 toListener = listener - source;
 		result.DirectDistance = glm::length(toListener);
 
 		if (result.DirectDistance > 1e-5f)
 		{
-			glm::vec2 direction = toListener / result.DirectDistance;
-
-			// Graded rather than yes/no: five rays spread across the listener,
-			// so a source half behind a pillar reads half blocked instead of
-			// flickering between clear and silent as either one moves.
-			const int probes = 5;
-			const float spread = 0.35f;
-			glm::vec2 perpendicular(-direction.y, direction.x);
-
-			int blocked = 0;
-			for (int i = 0; i < probes; i++)
-			{
-				float offset = ((float)i / (float)(probes - 1) - 0.5f) * 2.0f * spread;
-				glm::vec2 target = listener + perpendicular * offset;
-				glm::vec2 delta = target - source;
-				float distance = glm::length(delta);
-
-				if (world.Raycast(source, delta / distance, distance - epsilon).Hit)
-					blocked++;
-			}
-
-			result.Occlusion = (float)blocked / (float)probes;
-			result.DirectPathClear = (blocked == 0);
+			// Graded, and already written: `Raycast3D::Occlusion` spreads its
+			// probes over a disc facing the line, which is the 3D form of the
+			// five-across-the-listener spread the 2D tracer does by hand. Using
+			// it rather than repeating it also means a source half behind a
+			// pillar reads the same here as it does to a 3D emitter.
+			result.Occlusion = Raycast3D::Occlusion(scene, source, listener);
+			result.DirectPathClear = (result.Occlusion <= 0.0f);
 		}
 
 		// --- The echogram -------------------------------------------------
@@ -119,13 +147,9 @@ namespace Egss {
 
 		for (int i = 0; i < rayCount; i++)
 		{
-			// Evenly spread, offset by half a step so the first ray is not
-			// axis-aligned -- an axis-aligned ray in a rectangular room hits
-			// the corner exactly and behaves unlike every other ray.
-			float angle = glm::two_pi<float>() * ((float)i + 0.5f) / (float)rayCount;
-			glm::vec2 direction(std::cos(angle), std::sin(angle));
+			glm::vec3 direction = SphereDirection(i, rayCount);
+			glm::vec3 origin = source;
 
-			glm::vec2 origin = source;
 			// One packet per band. They start equal and diverge as they bounce,
 			// which is the whole point: after a dozen surfaces the treble
 			// packet is a fraction of the bass one.
@@ -136,7 +160,7 @@ namespace Egss {
 			float energy = energyPerRay;   // broadband, for the summary figures
 			float travelled = 0.0f;
 
-			TracedRay debug;
+			TracedRay3D debug;
 			if (debugRays)
 				debug.Points.push_back(source);
 
@@ -146,13 +170,13 @@ namespace Egss {
 				if (remaining <= 0.0f)
 					break;
 
-				RaycastHit hit = world.Raycast(origin, direction, remaining);
+				RaycastHit3D hit = Raycast3D::Against(scene, origin, direction, remaining);
 				if (!hit.Hit)
 				{
 					// Running out of path budget is not the same as leaving the
 					// room, and counting it as an escape makes a sealed room
 					// look leaky. One more cast, unbounded, tells them apart.
-					bool escaped = !world.Raycast(origin, direction,
+					bool escaped = !Raycast3D::Against(scene, origin, direction,
 						settings.MaxPathLength * 4.0f).Hit;
 
 					if (escaped)
@@ -180,14 +204,16 @@ namespace Egss {
 				if (debugRays)
 					debug.Points.push_back(hit.Point);
 
-				// Energy left after this surface takes its share.
-				float absorption = AbsorptionFor(settings, hit.Body);
+				// Energy left after this surface takes its share. Indexed by
+				// entity here rather than by body handle -- same vectors, the
+				// scene's namespace.
+				float absorption = AbsorptionFor(settings, hit.Entity);
 				bins.AbsorptionWeighted += (double)absorption * (double)energy;
 				bins.AbsorptionWeight += (double)energy;
 				energy *= (1.0f - absorption);
 
 				float bandAbsorption[AcousticBandCount];
-				BandAbsorptionFor(settings, hit.Body, bandAbsorption);
+				BandAbsorptionFor(settings, hit.Entity, bandAbsorption);
 
 				for (int band = 0; band < AcousticBandCount; band++)
 				{
@@ -198,17 +224,18 @@ namespace Egss {
 
 				// Off the surface before doing anything else, or the next cast
 				// starts inside the wall it just hit.
-				glm::vec2 surfacePoint = hit.Point + hit.Normal * epsilon;
+				glm::vec3 surfacePoint = hit.Point + hit.Normal * epsilon;
 
 				// --- Can the listener hear this bounce? ---
-				glm::vec2 hitToListener = listener - surfacePoint;
+				glm::vec3 hitToListener = listener - surfacePoint;
 				float listenerDistance = glm::length(hitToListener);
 
 				if (listenerDistance > 1e-5f)
 				{
-					glm::vec2 toL = hitToListener / listenerDistance;
+					glm::vec3 toL = hitToListener / listenerDistance;
 
-					if (!world.Raycast(surfacePoint, toL, listenerDistance - epsilon).Hit)
+					if (!Raycast3D::Against(scene, surfacePoint, toL,
+						listenerDistance - epsilon).Hit)
 					{
 						float pathLength = travelled + listenerDistance;
 						float delay = pathLength / speed;
@@ -218,8 +245,7 @@ namespace Egss {
 						{
 							AcousticsDetail::RecordArrival(result, bins, bin,
 								energy, bandEnergy, listenerDistance,
-								settings.MinDistance,
-								glm::vec3(-toL, 0.0f), pathLength, bounce);
+								settings.MinDistance, -toL, pathLength, bounce);
 						}
 					}
 				}
@@ -246,16 +272,25 @@ namespace Egss {
 				if (!anyLeft)
 					break;
 
-				// Scatter or mirror, decided per bounce rather than by
-				// splitting the ray in two. One ray that goes diffuse a
-				// fraction s of the time carries the same energy in each
-				// direction as two rays weighted s and 1-s, and it keeps the
-				// cost of a trace independent of how rough the room is.
-				float scattering = ScatteringFor(settings, hit.Body);
+				// Scatter or mirror, decided per bounce rather than by splitting
+				// the ray in two. One ray that goes diffuse a fraction s of the
+				// time carries the same energy in each direction as two rays
+				// weighted s and 1-s, and it keeps the cost of a trace
+				// independent of how rough the room is.
+				float scattering = ScatteringFor(settings, hit.Entity);
 
-				if (scattering > 0.0f && unit() < scattering)
+				// Both draws happen whichever way the branch goes, so the
+				// stream advances by the same amount either way: a trace's
+				// randomness then does not depend on how many surfaces happened
+				// to be rough, which is what makes two traces of the same room
+				// comparable.
+				float pick = rng.Unit();
+				float u1 = rng.Unit();
+				float u2 = rng.Unit();
+
+				if (scattering > 0.0f && pick < scattering)
 				{
-					direction = CosineDirection(hit.Normal, unit());
+					direction = CosineDirection(hit.Normal, u1, u2);
 					result.BouncesScattered++;
 				}
 				else
@@ -280,7 +315,7 @@ namespace Egss {
 		for (const AcousticsDetail::Candidate& candidate :
 			AcousticsDetail::EarlyReflections(result, settings, binSeconds))
 		{
-			ReflectionPath path;
+			ReflectionPath3D path;
 			path.Delay = (float)candidate.Bin * binSeconds;
 			// Energy back to amplitude.
 			path.Gain = std::sqrt(candidate.Energy);
@@ -288,9 +323,8 @@ namespace Egss {
 			path.PathLength = bins.PathLength[candidate.Bin] / candidate.Energy;
 
 			glm::vec3 direction = bins.Direction[candidate.Bin];
-			float length = glm::length(glm::vec2(direction));
-			path.Direction = (length > 1e-6f)
-				? glm::vec2(direction) / length : glm::vec2(0.0f);
+			float length = glm::length(direction);
+			path.Direction = (length > 1e-6f) ? direction / length : glm::vec3(0.0f);
 
 			result.Reflections.push_back(path);
 		}
@@ -298,7 +332,7 @@ namespace Egss {
 		// Back into time order: a delay line reads taps in the order they
 		// arrive, and it reads better in a debug panel.
 		std::sort(result.Reflections.begin(), result.Reflections.end(),
-			[](const ReflectionPath& a, const ReflectionPath& b) { return a.Delay < b.Delay; });
+			[](const ReflectionPath3D& a, const ReflectionPath3D& b) { return a.Delay < b.Delay; });
 
 		return result;
 	}

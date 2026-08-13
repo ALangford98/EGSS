@@ -11,6 +11,7 @@
 // Things marked TRY: are deliberate places to experiment.
 
 #include <Egss.h>
+
 #include <cstring>
 #include <imgui.h>
 
@@ -248,6 +249,92 @@ public:
 		}
 
 		m_Selected = m_Spinner;
+
+		BuildEnclosure();
+	}
+
+	// Four walls and a ceiling, hidden unless asked for.
+	//
+	// **Off by default on purpose**, so this demo looks and captures exactly as
+	// it did. It exists because the acoustics needed a consumer that is actually
+	// a room: traced with the enclosure off, 255 of 256 rays escape, the late
+	// energy is 0.00000 and there is no tail to hear -- correctly, an open floor
+	// under an open sky has no reverb. That is worth being able to see rather
+	// than read, which is why the toggle shows the number.
+	//
+	// Slabs rather than one hollow box, because a ray that starts inside a box
+	// gets a hit at distance zero -- see `Acoustics3D`.
+	void BuildEnclosure()
+	{
+		m_Enclosure.clear();
+
+		// **The room has to contain the listener, and the listener is the
+		// camera**, which starts at z = 6. Sizing the walls to the visible floor
+		// -- a unit cube scaled by 12, so it spans -6..6 -- put the camera
+		// exactly on the wall, and the trace found 0 paths from 3,072 bounces: a
+		// sealed room with the ear outside it. Before that, walls at 12 stood six
+		// metres clear of the floor's edge and 241 of 256 rays escaped through
+		// the gap. Neither failure looks like a geometry mistake from the
+		// outside; one reads as a dead room and the other as a short tail.
+		const float half = 10.0f;
+		const float height = 8.0f;
+		const float thickness = 0.4f;
+
+		auto wall = [this](const char* name, const glm::vec3& position,
+			const glm::vec3& scale)
+		{
+			Egss::Entity entity = m_Scene.CreateEntity(name);
+
+			auto* transform = entity.Get<Egss::TransformComponent>();
+			transform->Position = position;
+			transform->Scale = scale;
+
+			Egss::MeshComponent mesh;
+			mesh.Geometry = m_Primitives[0];
+			mesh.Color = { 0.40f, 0.42f, 0.48f, 1.0f };
+			mesh.Visible = m_ShowEnclosure;
+			entity.Add<Egss::MeshComponent>(mesh);
+
+			m_Enclosure.push_back(entity.GetId());
+		};
+
+		// The walls run from under the floor pan to above the ceiling, rather
+		// than from the floor's surface to the ceiling's. Butting them up to the
+		// floor left a 0.2 m slot right around the base -- 27 of 256 rays found
+		// it, which is the whole difficulty with a room assembled from slabs:
+		// overlap the joints or the joints are holes.
+		const float pan = -1.7f;                    // floor pan's underside
+		const float top = -1.1f + height;
+		const float span = top - pan;
+		const float mid = (top + pan) * 0.5f;
+
+		wall("Wall -X", { -half, mid, 0.0f }, { thickness, span, half * 2.0f });
+		wall("Wall +X", { half, mid, 0.0f }, { thickness, span, half * 2.0f });
+		wall("Wall -Z", { 0.0f, mid, -half }, { half * 2.0f, span, thickness });
+		wall("Wall +Z", { 0.0f, mid, half }, { half * 2.0f, span, thickness });
+		wall("Ceiling", { 0.0f, -1.1f + height, 0.0f },
+			{ half * 2.0f, thickness, half * 2.0f });
+
+		// The room is wider than the visible floor, so it needs its own. Sat just
+		// underneath the real one -- top face flush with the real floor's
+		// underside -- so the two never fight over the same pixels when both are
+		// showing.
+		wall("Floor pan", { 0.0f, -1.5f, 0.0f },
+			{ half * 2.0f, thickness, half * 2.0f });
+	}
+
+	// `Visible` is what the raycast tests, so hiding the enclosure really does
+	// remove it from the room -- the same flag serves the eye and the ear, which
+	// is the whole advantage of tracing the scene rather than a second set of
+	// collision boxes.
+	void SetEnclosureVisible(bool visible)
+	{
+		for (Egss::EntityId entity : m_Enclosure)
+			if (auto* mesh = m_Scene.GetComponent<Egss::MeshComponent>(entity))
+				mesh->Visible = visible;
+
+		// The room changed, so the last trace describes a different one.
+		m_LastTraceListener = glm::vec3(1e9f);
 	}
 
 	// Loads whatever is in the path box. A failure logs and leaves the current
@@ -465,9 +552,155 @@ public:
 			m_Rotation += fixedStep * 35.0f;
 	}
 
+	// ---------------------------------------------------------------------
+	// Acoustics
+	//
+	// The room the sound bounces off is the scene's own meshes -- there is no
+	// second set of boxes to keep in step, because `Raycast3D` casts against
+	// what is drawn. See `Acoustics3D`.
+	//
+	// **One trace drives the global reverb, and it is the nearest emitter's.**
+	// A tail is a property of the room rather than of a source, so tracing both
+	// emitters would spend twice the time to average two answers to the same
+	// question. Where the source *does* matter is the early reflections, and
+	// those are applied to the traced voice alone -- the other emitter keeps its
+	// occlusion and its direct sound and no echoes, which is audible if you go
+	// looking and cheap enough to be worth it.
+	// ---------------------------------------------------------------------
+	void UpdateAcoustics(const Egss::AudioListener& listener)
+	{
+		if (!m_ApplyAcoustics)
+		{
+			if (m_AcousticsApplied)
+			{
+				// Put the mixer back the way it was found, or turning this off
+				// leaves the last traced room ringing behind everything.
+				Egss::AudioEngine::ClearReverbImpulse();
+				Egss::AudioEngine::SetReverb(Egss::ReverbSettings());
+
+				for (int i = 0; i < 2; i++)
+					if (Egss::AudioEngine::IsPlaying(m_Emitters[i]))
+						Egss::AudioEngine::SetVoiceReflections(m_Emitters[i], nullptr, 0);
+
+				m_AcousticsApplied = false;
+			}
+			return;
+		}
+
+		// Nearest emitter wins: it is the one whose early reflections are loud
+		// enough to place, and the one a listener would say they are standing
+		// near.
+		int nearest = 0;
+		float nearestDistance = std::numeric_limits<float>::max();
+		for (int i = 0; i < 2; i++)
+		{
+			float distance = glm::length(m_EmitterPositions[i] - listener.Position);
+			if (distance < nearestDistance)
+			{
+				nearestDistance = distance;
+				nearest = i;
+			}
+		}
+
+		// Tracing is milliseconds of work and sound does not move fast enough
+		// for a frame of staleness to be audible, so it happens when the
+		// geometry has actually changed -- the same rule the 2D demo follows.
+		float moved = glm::length(listener.Position - m_LastTraceListener)
+			+ glm::length(m_EmitterPositions[nearest] - m_LastTraceSource);
+
+		if (moved > m_RetraceDistance || nearest != m_TracedEmitter || !m_AcousticsApplied)
+		{
+			EGSS_PROFILE_SCOPE("Cube3D::Acoustics3D");
+
+			Egss::AcousticsSettings settings;
+			settings.RayCount = m_AcousticRays;
+			settings.Absorption = m_AcousticAbsorption;
+			settings.Scattering = m_AcousticScattering;
+			// Must match the emitters' own MinDistance, or a reflection's gain
+			// and the direct sound's attenuation are on two different scales and
+			// the echoes come out systematically loud or quiet.
+			settings.MinDistance = m_EmitterMinDistance;
+
+			auto before = std::chrono::steady_clock::now();
+			m_Acoustics = Egss::Acoustics3D::Trace(m_Scene,
+				m_EmitterPositions[nearest], listener.Position, settings);
+			m_TraceMilliseconds = (float)std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - before).count();
+
+			m_LastTraceListener = listener.Position;
+			m_LastTraceSource = m_EmitterPositions[nearest];
+			m_TracedEmitter = nearest;
+
+			ApplyAcousticsToMixer(listener, nearest);
+			m_AcousticsApplied = true;
+		}
+	}
+
+	void ApplyAcousticsToMixer(const Egss::AudioListener& listener, int emitter)
+	{
+		// --- Early reflections, on the traced voice only ---
+		m_AcousticTaps.clear();
+
+		if (Egss::AudioEngine::IsPlaying(m_Emitters[emitter]))
+		{
+			// A pan needs a left and a right, and in 3D those come from the
+			// listener rather than from the world: the arrival direction is a
+			// world vector, and which ear hears it depends on which way the
+			// camera is facing. Projecting onto the listener's own right axis is
+			// the whole conversion -- in 2D this was `Direction.x`, which only
+			// worked because that listener never turned.
+			glm::vec3 right = glm::normalize(glm::cross(listener.Forward, listener.Up));
+
+			for (const Egss::ReflectionPath3D& path : m_Acoustics.Reflections)
+			{
+				Egss::AudioReflection tap;
+				tap.Delay = path.Delay;
+				tap.Gain = path.Gain * m_ReflectionGain;
+				tap.Pan = glm::clamp(glm::dot(path.Direction, right), -1.0f, 1.0f);
+				m_AcousticTaps.push_back(tap);
+			}
+
+			Egss::AudioEngine::SetVoiceReflections(m_Emitters[emitter],
+				m_AcousticTaps.data(), (unsigned int)m_AcousticTaps.size());
+		}
+
+		// The other emitter gets no echoes rather than stale ones.
+		int other = 1 - emitter;
+		if (Egss::AudioEngine::IsPlaying(m_Emitters[other]))
+			Egss::AudioEngine::SetVoiceReflections(m_Emitters[other], nullptr, 0);
+
+		// --- The tail ---
+		if (m_UseConvolution)
+		{
+			Egss::ImpulseSettings impulse;
+			// Starts where the discrete early reflections stop, or the first
+			// 80 ms would be heard twice.
+			impulse.StartSeconds = 0.08f;
+			impulse.Gain = m_TailGain;
+
+			m_AcousticImpulse = Egss::Acoustics::BuildImpulseTaps(m_Acoustics, impulse);
+			Egss::AudioEngine::SetReverbImpulse(m_AcousticImpulse.data(),
+				(unsigned int)m_AcousticImpulse.size());
+		}
+		else
+		{
+			Egss::AudioEngine::ClearReverbImpulse();
+			m_AcousticImpulse.clear();
+		}
+
+		// The parametric reverb is told *about* the room; the convolution one is
+		// given it. Both are driven from the same trace.
+		Egss::ReverbSettings reverb;
+		reverb.RoomSize = glm::clamp(m_Acoustics.ReverbTime / 2.0f, 0.1f, 0.95f);
+		reverb.Wet = glm::clamp(m_Acoustics.LateEnergyRatio * m_WetScale, 0.0f, 0.9f);
+		reverb.Damping = glm::clamp(m_Acoustics.MeanAbsorption * 1.5f, 0.1f, 0.9f);
+		reverb.Width = 1.0f;
+
+		Egss::AudioEngine::SetReverb(reverb);
+	}
+
 	void OnDemoUpdate(Egss::Timestep ts) override
 	{
-
 		m_FrameTime = ts.GetMilliseconds();
 
 		glm::vec3 previousCameraPosition = m_PreviousCameraPosition;
@@ -519,6 +752,8 @@ public:
 					Egss::AudioEngine::SetVoiceOcclusion(m_Emitters[i], 0.0f);
 			}
 		}
+
+		UpdateAcoustics(listener);
 
 		// The spinner's rotation is a property of the entity now, not a global
 		// the draw loop reaches for. Advanced on the fixed step -- see
@@ -694,6 +929,17 @@ public:
 		// Dragging a gizmo handle must not re-pick, or the first frame of a
 		// drag would select whatever is behind the handle.
 		if (ImGui::GetIO().WantCaptureMouse || m_DragAxis >= 0)
+			return;
+
+		// **A hover is a cursor, and a cursor is UI.** Without this the hovered
+		// entity gets a wireframe box drawn round it under --hide-ui, so the
+		// captured frame depends on wherever the mouse happened to be left --
+		// which quietly costs the demo the one property that makes a capture a
+		// regression test. Found by a Cube3D capture hashing differently between
+		// two sessions with nothing in the renderer changed. Map Building's
+		// preview block had the same bug and the same fix; m_Selected is not
+		// mouse-derived, so its box stays.
+		if (Egss::Application::Get().IsUIHidden())
 			return;
 
 		auto [mouseX, mouseY] = Egss::Input::GetMousePosition();
@@ -1362,6 +1608,64 @@ public:
 			ImGui::SliderInt("Occlusion rays", &m_OcclusionRays, 1, 17);
 		}
 
+		ImGui::Separator();
+		ImGui::Checkbox("Acoustics (traced room)", &m_ApplyAcoustics);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Rays from the nearest emitter, bouncing off the scene's own\n"
+				"meshes, collected into an energy-vs-time histogram -- which is\n"
+				"the room's impulse response, coarsely sampled. Early arrivals\n"
+				"become discrete echoes on the voice; the tail drives the reverb.\n"
+				"Verified against Eyring and 4V/S in a shoebox: mean free path\n"
+				"to 0.4%%, RT60 to within 9%% across three absorptions.\n"
+				"The same room traced in 2D over-predicts RT60 by 1.69x, because\n"
+				"a floor and a ceiling are half a room's reflecting area.");
+
+		if (m_ApplyAcoustics)
+		{
+			if (ImGui::Checkbox("Enclose the scene", &m_ShowEnclosure))
+				SetEnclosureVisible(m_ShowEnclosure);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Four walls and a ceiling. Off, this is an open floor under\n"
+					"an open sky: nearly every ray escapes, the late energy is zero\n"
+					"and there is correctly no tail -- only the floor's early\n"
+					"reflections. On, there is a room, and the escaped count and\n"
+					"the RT60 below both say so.\n"
+					"The same Visible flag hides them from the eye and from the\n"
+					"ear, because the tracer casts against the scene you can see.");
+
+			ImGui::Text("%d of %d rays escaped%s", m_Acoustics.RaysEscaped,
+				m_AcousticRays,
+				m_Acoustics.RaysEscaped > m_AcousticRays / 2
+					? "  -- not a room, so no tail" : "");
+
+			ImGui::Text("RT60 %.2f s (%s)   mean free path %.2f m",
+				m_Acoustics.ReverbTime,
+				m_Acoustics.ReverbTimeMeasured ? "traced" : "Eyring fallback",
+				m_Acoustics.MeanFreePath);
+			ImGui::Text("bands: low %.2f  mid %.2f  high %.2f s",
+				m_Acoustics.BandReverbTime[0], m_Acoustics.BandReverbTime[1],
+				m_Acoustics.BandReverbTime[2]);
+			ImGui::Text("%d paths, %d bounces (%d diffuse), late/direct %.5f",
+				m_Acoustics.PathsFound, m_Acoustics.BouncesTraced,
+				m_Acoustics.BouncesScattered, m_Acoustics.LateEnergyRatio);
+			ImGui::Text("emitter %d, %.2f ms a trace, %zu echoes, %zu impulse taps",
+				m_TracedEmitter, m_TraceMilliseconds,
+				m_AcousticTaps.size(), m_AcousticImpulse.size());
+
+			ImGui::Checkbox("Convolution tail", &m_UseConvolution);
+			ImGui::SliderInt("Acoustic rays", &m_AcousticRays, 32, 1024);
+			ImGui::SliderFloat("Absorption", &m_AcousticAbsorption, 0.0f, 0.9f);
+			ImGui::SliderFloat("Scattering", &m_AcousticScattering, 0.0f, 1.0f);
+			ImGui::SliderFloat("Echo gain", &m_ReflectionGain, 0.0f, 2.0f);
+			ImGui::SliderFloat("Tail gain", &m_TailGain, 0.0f, 2.0f);
+			ImGui::SliderFloat("Wet scale", &m_WetScale, 0.0f, 2.0f);
+
+			// The trace is cached until something moves, so a slider drag has to
+			// invalidate it or the panel appears to do nothing.
+			if (ImGui::IsAnyItemActive())
+				m_LastTraceListener = glm::vec3(1e9f);
+		}
+
 		if (ImGui::SliderFloat("Emitter range", &m_EmitterMaxDistance, 1.0f, 40.0f))
 			StartEmitters();
 		if (ImGui::SliderFloat("Doppler", &m_DopplerFactor, 0.0f, 8.0f))
@@ -1417,6 +1721,43 @@ private:
 	float m_EmitterMaxDistance = 12.0f;
 	float m_DopplerFactor = 2.0f;
 	bool m_ShowEmitters = true;
+
+	// --- Acoustics ---
+	std::vector<Egss::EntityId> m_Enclosure;
+	bool m_ShowEnclosure = false;
+
+	bool m_ApplyAcoustics = true;
+	bool m_AcousticsApplied = false;
+	bool m_UseConvolution = true;
+
+	// Far fewer than the 2,048 the shoebox check uses. Rays spread over a
+	// sphere rather than a circle, so 3D wants more of them for the same
+	// variance -- but this is a demo scene of a handful of objects with no
+	// ceiling, and its tail is short and quiet enough that the difference is
+	// not audible. Raise it if the reverb ever sounds grainy.
+	int m_AcousticRays = 256;
+	float m_AcousticAbsorption = 0.18f;
+	// A little, because a demo scene of loose cubes on an open floor has no
+	// large flat surfaces to comb, and because 0 is the setting that makes a
+	// specular tracer's tail a comb.
+	float m_AcousticScattering = 0.25f;
+
+	float m_ReflectionGain = 0.7f;
+	float m_TailGain = 0.8f;
+	float m_WetScale = 0.35f;
+
+	// Half a metre of movement before it is worth tracing again. Sound arrives
+	// at 343 m/s; a listener who has shuffled 40 cm is in the same room.
+	float m_RetraceDistance = 0.5f;
+
+	glm::vec3 m_LastTraceListener = glm::vec3(1e9f);
+	glm::vec3 m_LastTraceSource = glm::vec3(1e9f);
+	int m_TracedEmitter = -1;
+	float m_TraceMilliseconds = 0.0f;
+
+	Egss::AcousticsResult3D m_Acoustics;
+	std::vector<Egss::AudioReflection> m_AcousticTaps;
+	std::vector<Egss::ReverbTap> m_AcousticImpulse;
 
 	bool m_ShowGrid = true;
 

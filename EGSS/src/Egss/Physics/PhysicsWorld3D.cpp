@@ -77,13 +77,17 @@ namespace Egss {
 		}
 		else if (body.Shape == ColliderShape3D::Heightfield)
 		{
-			// The whole map, which for the broadphase grid means the terrain
-			// body lands in every cell it can reach and rejects nothing. That
-			// is honest -- the ground really is a candidate for everything
-			// standing on it -- but it also means a world with terrain sets the
-			// grid's extent from the map rather than from the bodies in it. If
-			// a demo ever puts a few hundred bodies on a large heightfield,
-			// this is the line to come back to.
+			// The whole map. A demo did then put a few hundred bodies on a
+			// large heightfield, and both halves of what that costs are now
+			// handled in the broadphase rather than here: the body is kept out
+			// of the cells instead of being stamped into all 29,575 of them,
+			// and it no longer sizes the grid. See the note on m_Oversized.
+			//
+			// These bounds still describe the *surface*, the band between
+			// Lowest and Highest, while the narrowphase treats everything below
+			// the surface as inside the collider and ejects it. That
+			// disagreement is why the broadphase cannot use a bounds test to
+			// reject terrain pairs, and it is the line to come back to.
 			if (!body.Field || body.Field->Empty())
 			{
 				outMin = body.Position;
@@ -1029,6 +1033,8 @@ namespace Egss {
 	{
 		m_GridDirty = false;
 		m_Cells.clear();
+		m_Oversized.clear();
+		m_OutsideCells.assign(m_Bodies.size(), 0);
 		m_GridWidth = 0;
 		m_GridHeight = 0;
 		m_GridDepth = 0;
@@ -1036,18 +1042,67 @@ namespace Egss {
 		if (m_Bodies.empty())
 			return;
 
-		glm::vec3 worldMin(std::numeric_limits<float>::max());
-		glm::vec3 worldMax(-std::numeric_limits<float>::max());
+		m_GridCellSize = std::max(CellSize, 0.01f);
+		m_Bounds.resize(m_Bodies.size());
 
-		for (const RigidBody3D& body : m_Bodies)
+		// Bounds and classification first, because the extent below is built
+		// from the bodies that are actually going into cells.
+		//
+		// The cell span is estimated from the body's own size rather than read
+		// off a CellRange, which is what makes that ordering possible: how many
+		// cells a body covers depends on where the grid's origin falls only to
+		// within one cell per axis, so its size answers the question before the
+		// grid exists. An upper bound, deliberately -- being one cell out either
+		// way cannot matter to a threshold that terrain clears by two orders of
+		// magnitude.
+		for (unsigned int i = 0; i < m_Bodies.size(); i++)
 		{
-			glm::vec3 boundsMin, boundsMax;
-			BodyBounds(body, boundsMin, boundsMax);
-			worldMin = glm::min(worldMin, boundsMin);
-			worldMax = glm::max(worldMax, boundsMax);
+			BodyBounds(m_Bodies[i], m_Bounds[i].Min, m_Bounds[i].Max);
+
+			glm::vec3 size = m_Bounds[i].Max - m_Bounds[i].Min;
+			double spanned =
+				(double)((int)(size.x / m_GridCellSize) + 2) *
+				(double)((int)(size.y / m_GridCellSize) + 2) *
+				(double)((int)(size.z / m_GridCellSize) + 2);
+
+			// Past this size the bucketing costs more than the pair tests it
+			// saves, and the body is tested directly instead -- see the note on
+			// m_Oversized. A heightfield is always on this side of the line.
+			if (BroadphaseExcludeOversized && spanned > (double)m_Bodies.size())
+			{
+				m_Oversized.push_back(i);
+				m_OutsideCells[i] = 1;
+			}
 		}
 
-		m_GridCellSize = std::max(CellSize, 0.01f);
+		glm::vec3 worldMin(std::numeric_limits<float>::max());
+		glm::vec3 worldMax(-std::numeric_limits<float>::max());
+		bool any = false;
+
+		// **Only the bodies being bucketed set the extent.** A heightfield left
+		// in here sizes the grid from the map rather than from what is standing
+		// on it -- 29,575 cells to hold the few hundred that are occupied, on
+		// the 64 m map -- and an empty cell is not free, because the array is
+		// rebuilt every step. That was worth 0.256 ms against brute force's
+		// 0.208 ms at 217 bodies: still losing, with the terrain already out of
+		// the cells. Sizing the grid to the bodies in it took the same scene to
+		// 0.056 ms.
+		for (unsigned int i = 0; i < m_Bodies.size(); i++)
+		{
+			if (m_OutsideCells[i])
+				continue;
+
+			worldMin = glm::min(worldMin, m_Bounds[i].Min);
+			worldMax = glm::max(worldMax, m_Bounds[i].Max);
+			any = true;
+		}
+
+		// Nothing left to bucket -- a world of nothing but terrain. The grid
+		// stays unbuilt and every row falls through to brute force, which for
+		// one body is the right answer anyway.
+		if (!any)
+			return;
+
 		m_GridOrigin = worldMin;
 
 		glm::vec3 span = worldMax - worldMin;
@@ -1072,11 +1127,11 @@ namespace Egss {
 
 		for (unsigned int i = 0; i < m_Bodies.size(); i++)
 		{
-			glm::vec3 boundsMin, boundsMax;
-			BodyBounds(m_Bodies[i], boundsMin, boundsMax);
+			if (m_OutsideCells[i])
+				continue;
 
 			int x0, y0, z0, x1, y1, z1;
-			CellRange(boundsMin, boundsMax, x0, y0, z0, x1, y1, z1);
+			CellRange(m_Bounds[i].Min, m_Bounds[i].Max, x0, y0, z0, x1, y1, z1);
 
 			// A body large relative to the cell lands in several -- the floor
 			// in the demo spans most of the grid -- which is what makes the
@@ -1112,17 +1167,24 @@ namespace Egss {
 
 		for (unsigned int i = 0; i < m_Bodies.size(); i++)
 		{
-			if (useGrid)
+			// A body the grid is not holding has no cells to walk, so its own
+			// row is brute force -- which is also the cheapest thing it could
+			// be, since walking the cells it covers is exactly the cost it was
+			// taken out of the grid to avoid.
+			bool viaCells = useGrid && !m_OutsideCells[i];
+
+			if (viaCells)
 			{
 				// Only bodies sharing a cell with this one can touch it.
 				m_QueryCounter++;
 				m_Neighbours.clear();
 
-				glm::vec3 boundsMin, boundsMax;
-				BodyBounds(m_Bodies[i], boundsMin, boundsMax);
-
+				// The bounds the rebuild classified and bucketed this body on,
+				// rather than a second BodyBounds. They have to be the same
+				// bounds or a body is looked for in cells it was not put in,
+				// and nothing has moved since -- the rebuild runs from here.
 				int x0, y0, z0, x1, y1, z1;
-				CellRange(boundsMin, boundsMax, x0, y0, z0, x1, y1, z1);
+				CellRange(m_Bounds[i].Min, m_Bounds[i].Max, x0, y0, z0, x1, y1, z1);
 
 				for (int z = z0; z <= z1; z++)
 				{
@@ -1145,6 +1207,19 @@ namespace Egss {
 							}
 						}
 					}
+				}
+
+				// The bodies the grid is not holding. No cell walk can turn one
+				// up, and the terrain has to be a candidate for everything
+				// standing on it in any case -- which is what being in every
+				// cell was achieving, at the price of being put in every cell.
+				for (unsigned int k : m_Oversized)
+				{
+					if (k <= i)
+						continue;
+
+					m_QueryStamp[k] = m_QueryCounter;
+					m_Neighbours.push_back(k);
 				}
 
 				// Sorted so the pairs are tested in ascending j -- exactly the
