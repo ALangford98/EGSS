@@ -37,6 +37,13 @@ namespace Egss {
 		// file with no materials at all produces.
 		std::string Material;
 
+		// glTF's answer to the same question. It numbers its materials and its
+		// names are optional and need not be unique, so a name cannot stand in
+		// for the index -- two materials called "" are two materials. Both
+		// fields are here because neither format's answer can express the
+		// other's; -1 means "this loader does not work that way".
+		int MaterialIndex = -1;
+
 		unsigned int FirstIndex = 0;
 		unsigned int IndexCount = 0;
 	};

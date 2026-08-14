@@ -109,6 +109,20 @@ namespace Egss {
 		MeshData data;
 		std::string error;
 
+		// Deliberately *not* routed to GltfLoader. A Mesh is one vertex array;
+		// a glTF is a tree of nodes, and flattening one into the other would
+		// throw away the hierarchy, the materials and the placements -- which
+		// is the entire reason to have used glTF. Better to say so than to
+		// hand back a heap of triangles that is technically the right shape.
+		size_t dot = path.find_last_of('.');
+		std::string extension = dot == std::string::npos ? "" : path.substr(dot);
+		if (extension == ".gltf" || extension == ".glb")
+		{
+			EGSS_CORE_ERROR("Mesh::Load cannot load '{0}': a glTF is a scene, not a mesh. "
+				"Use GltfLoader::Load and build a Mesh per GltfModel::Meshes entry.", path);
+			return nullptr;
+		}
+
 		if (!ObjLoader::Load(path, data, error))
 		{
 			EGSS_CORE_ERROR("Mesh::Load failed: {0}", error);

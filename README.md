@@ -1016,6 +1016,94 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-14 (glTF 2.0: JSON, accessors, hierarchy, materials, both containers)
+
+`.obj` is a bag of triangles. glTF carries a **node tree**, **real materials**,
+and its vertices as **binary** rather than as decimal text that has to be
+re-parsed and re-rounded. All three are now read.
+
+**A JSON parser, written rather than vendored** (`Egss/Json.h`). glTF is the
+only thing in the engine that needs JSON and it uses a plain subset; a
+general-purpose library would be tens of thousands of lines on every TU that
+touched a model, and another submodule on a project where a missing submodule is
+already the most confusing way for a fresh clone to fail. ~430 lines, recursive
+descent, depth-capped at 200 so `[[[[[...` off disk is a parse error rather than
+a stack overflow. Objects keep members in file order and look up by linear scan —
+glTF objects have a handful of keys each, and the one place that would matter,
+thousands of accessors, is indexed by position rather than by name.
+
+One API detail earned its place: `operator[](int)` exists alongside the `size_t`
+and `const char*` overloads because `v[0]` is otherwise **ambiguous** — a literal
+`0` is both an int and a null pointer constant, so it matches the string overload
+just as well. Loader code is nothing but `v["meshes"][0]`.
+
+**The accessor machinery is the load-bearing part.** An accessor says "count
+elements of this type, starting here"; a bufferView says "this window of that
+buffer, with this stride". Element *i* lives at
+`buffer + view.byteOffset + accessor.byteOffset + i * stride`, where stride is
+the view's `byteStride` if it has one and the element's own size if not. Using
+the element size when a stride is present is *the* classic glTF bug: interleaved
+data reads position, then the normal as the next position, and the model
+collapses to a smear.
+
+Also implemented: sparse accessors (ignoring the override list gives a model that
+loads, draws, and is quietly wrong — the worst of the three), normalised integer
+attributes with the two different signed/unsigned formulas, triangle strips and
+fans, primitives with no indices, and the `.glb` container.
+
+**62 checks, and they passed on the first run — which is exactly when to distrust
+them.** So each was confirmed to be capable of failing: six deliberate bugs were
+injected into the loader (ignore `byteStride`; quaternion in wxyz; matrix read
+row-major; normalise by 65536; never flip strip winding; skip sparse) and every
+one was caught by the check aimed at it — 12 failures, 50 passes. `interleaved
+position 0` correctly kept passing under the stride mutation, because element 0
+sits at offset 0 either way. A suite that cannot fail is not evidence.
+
+The checks that pin down conventions rather than arithmetic:
+
+- **90° about +y takes +x to −z.** That single fact fixes both the quaternion
+  component order (glTF writes xyzw, glm's constructor takes wxyz) and the
+  parent-before-child multiplication.
+- **65535 normalises to exactly 1**, and 32767 to 32767/65535 — checked tightly
+  enough that dividing by 65536 fails, which is the off-by-one everyone writes.
+- **A .glb and a .gltf of the same model produce byte-identical geometry.**
+
+**The demo, and a claim that turned out to be false.** `Model` draws a jointed
+figure that is **one 24-vertex cube** referenced by twenty nodes — 840 bytes of
+geometry for a whole figure, where an .obj would be eleven baked copies with no
+way to tell which was an arm. It loads `figure.gltf` (external `.bin` and `.png`)
+and `figure.glb` (everything inside, texture included) and compares them in the
+panel.
+
+The normal matrix was commented "not optional here: the torso is scaled
+1.0 × 1.4 × 0.55". Substituting the plain model matrix produced a
+**byte-identical capture**. The comment was wrong, and the reason is arithmetic:
+each world transform is `R·S` — rotations on the parents, a diagonal scale on the
+leaf — and for diagonal `S`, `(R·S)⁻ᵀ = R·S⁻¹`. Both send the cube's axis-aligned
+normal `e_x` along `R·e_x`, differing only in length, and the shader normalises.
+A shear, or normals not aligned with the scale axes, would separate them; a box
+under an axis-aligned scale cannot. The inverse transpose stays, because it is
+right in general — but the comment now says what was measured.
+
+Two smaller things fell out. `Texture2D::CreateFromMemory` had to exist because a
+`.glb`'s PNG never was a file; the shared upload path picked up
+`glPixelStorei(GL_UNPACK_ALIGNMENT, 1)`, without which a 3-channel texture whose
+width is not a multiple of 4 shears diagonally. And a fully metallic surface with
+no environment to reflect renders **black** — which looks like a broken material
+rather than the correct answer to an ill-posed question — so the demo's shader
+reflects a two-colour hemisphere standing in for sky and ground. It is a cheat,
+labelled as one.
+
+`Mesh::Load` deliberately **refuses** `.gltf`, with a message pointing at
+`GltfLoader`. A Mesh is one vertex array; flattening a scene into one would throw
+away the hierarchy, the materials and the placements, which is the entire reason
+to have used glTF.
+
+Not done, and a separate piece: **skinning and animation**. They are the reason
+to want glTF next, and joints, weights and samplers have nowhere to be played
+back to until something poses a skeleton — a parser filling structures nothing
+reads is the "component with no system" this project declines to build.
+
 ### 2026-08-14 (mouse look, and the arrow keys it caught)
 
 `Window` grew `SetCursorCaptured` / `IsCursorCaptured`, implemented on both

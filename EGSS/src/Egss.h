@@ -12,6 +12,7 @@
 #include "Egss/Debug/ReplayParams.h"
 #include "Egss/ImGui/ImGuiLayer.h"
 
+#include "Egss/Json.h"
 #include "Egss/Input.h"
 #include "Egss/KeyCodes.h"
 #include "Egss/MouseButtonCodes.h"
@@ -64,6 +65,7 @@
 #include "Egss/Renderer/Mesh.h"
 #include "Egss/Renderer/ObjLoader.h"
 #include "Egss/Renderer/MtlLoader.h"
+#include "Egss/Renderer/GltfLoader.h"
 #include "Egss/Renderer/Camera.h"
 #include "Egss/Renderer/OrthographicCamera.h"
 #include "Egss/Renderer/PerspectiveCamera.h"

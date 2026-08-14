@@ -244,6 +244,31 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **A test suite that passes on the first run has not been tested.** The glTF
+  loader's 62 checks all passed immediately, which is exactly when to distrust
+  them. Six deliberate bugs were injected — ignore `byteStride`, quaternion in
+  wxyz order, matrix read row-major, normalise by 65536, never flip strip
+  winding, skip sparse accessors — and every one was caught by the check aimed
+  at it. Do this whenever a suite comes up green first time; it costs one build
+  and it is the difference between evidence and decoration.
+- **glTF: the stride is on the bufferView, not implied by the element.** Element
+  *i* is at `buffer + view.byteOffset + accessor.byteOffset + i * stride`, and
+  `stride` is `byteStride` when present. Using the element size instead reads
+  position, then the *normal* as the next position, and an interleaved model
+  collapses into a smear. Real exporters write interleaved buffers, so a loader
+  that only ever saw de-interleaved test files will look correct until the first
+  file from Blender.
+- **glTF component orders that are wrong-but-valid.** Quaternions are stored
+  **xyzw**; glm's constructor takes **wxyz**. Matrices are **column-major**,
+  which is glm's order too — read row-major you get the transpose. Both mistakes
+  produce a transform that is still a transform, so nothing fails and the model
+  merely appears somewhere unexpected. Pin them with a fact from outside the
+  code: a 90° rotation about +y takes +x to −z.
+- **The inverse transpose can be invisible and still be right.** For a world
+  transform `R·S` with diagonal `S` and axis-aligned normals, `(R·S)⁻ᵀ = R·S⁻¹`
+  and both give the same direction once normalised — measured byte-identical on
+  the Model demo. It is still the correct matrix for a shear or for normals that
+  are not aligned to the scale axes; just do not claim a box demonstrates it.
 - **Which way does yaw go?** `PerspectiveCamera::GetForward` is
   `(cos yaw·cos pitch, sin pitch, sin yaw·cos pitch)` and `GetRight` is
   `cross(forward, up)`, so **increasing yaw turns right**. The voxel demo's
