@@ -18,6 +18,11 @@ namespace Egss {
 		return new OpenGLTexture2D(handle, width, height);
 	}
 
+	Texture2D* Texture2D::CreateFromMemory(const unsigned char* data, unsigned int size, const std::string& name)
+	{
+		return new OpenGLTexture2D(data, size, name);
+	}
+
 	Texture2D* Texture2D::Create(unsigned int width, unsigned int height)
 	{
 		return new OpenGLTexture2D(width, height);
@@ -53,6 +58,29 @@ namespace Egss {
 			return;
 		}
 
+		UploadDecoded(data, width, height, channels, path);
+	}
+
+	OpenGLTexture2D::OpenGLTexture2D(const unsigned char* memory, unsigned int size, const std::string& name)
+	{
+		int width, height, channels;
+		stbi_set_flip_vertically_on_load(1);
+		stbi_uc* data = stbi_load_from_memory(memory, (int)size, &width, &height, &channels, 0);
+
+		if (!data)
+		{
+			EGSS_CORE_ERROR("Could not decode image '{0}': {1}", name, stbi_failure_reason());
+			return;
+		}
+
+		UploadDecoded(data, width, height, channels, name);
+	}
+
+	// Takes ownership of `pixels` -- both callers hand it stb_image's buffer
+	// and neither needs it again once it is on the GPU.
+	void OpenGLTexture2D::UploadDecoded(unsigned char* pixels, int width, int height,
+		int channels, const std::string& name)
+	{
 		m_Width = width;
 		m_Height = height;
 
@@ -68,8 +96,8 @@ namespace Egss {
 		}
 		else
 		{
-			EGSS_CORE_ERROR("Unsupported channel count {0} in '{1}'", channels, path);
-			stbi_image_free(data);
+			EGSS_CORE_ERROR("Unsupported channel count {0} in '{1}'", channels, name);
+			stbi_image_free(pixels);
 			return;
 		}
 
@@ -82,9 +110,14 @@ namespace Egss {
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
-		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_Width, m_Height, m_DataFormat, GL_UNSIGNED_BYTE, data);
+		// stb_image packs rows tightly; the default unpack alignment of 4
+		// reads past the end of each row of a 3-channel image whose width is
+		// not a multiple of 4, which shears the image diagonally.
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_Width, m_Height, m_DataFormat, GL_UNSIGNED_BYTE, pixels);
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 
-		stbi_image_free(data);
+		stbi_image_free(pixels);
 	}
 
 	// Borrowed: the handle belongs to whoever created it -- a framebuffer,

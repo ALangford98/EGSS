@@ -23,6 +23,13 @@ namespace Egss {
 	public:
 		static Texture2D* Create(const std::string& path);
 
+		// Decodes an image already sitting in memory rather than on disk --
+		// a .glb's images are embedded in the same binary as the geometry, so
+		// there is never a path to hand to Create(). `name` is only for
+		// logging; it does not have to be a real path.
+		static Texture2D* CreateFromMemory(const unsigned char* data,
+			unsigned int size, const std::string& name);
+
 		// Blank texture for uploading pixel data directly, used for solid
 		// colours and font atlases.
 		static Texture2D* Create(unsigned int width, unsigned int height);
