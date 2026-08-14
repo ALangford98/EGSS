@@ -47,6 +47,18 @@ namespace Egss {
 		virtual void SetVSync(bool enabled) = 0;
 		virtual bool IsVSync() const = 0;
 
+		// Hide the cursor and stop it hitting the edges of the screen, which is
+		// what a first-person look needs: an ordinary cursor runs out of desk
+		// halfway through a turn and the view stops with it. Captured, the
+		// position reported by Input becomes an unbounded virtual coordinate,
+		// so a delta between two samples is a delta however far you turn.
+		//
+		// Deliberately not something a demo turns on for itself and leaves on.
+		// ImGui reads the same cursor, so a captured cursor means no panels and
+		// no way to click anything -- it has to be under the user's thumb.
+		virtual void SetCursorCaptured(bool captured) = 0;
+		virtual bool IsCursorCaptured() const = 0;
+
 		// Escape hatch for platform code (input polling, ImGui backends).
 		virtual void* GetNativeWindow() const = 0;
 

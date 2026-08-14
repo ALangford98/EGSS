@@ -1016,6 +1016,62 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-14 (mouse look, and the arrow keys it caught)
+
+`Window` grew `SetCursorCaptured` / `IsCursorCaptured`, implemented on both
+platforms as `glfwSetInputMode(GLFW_CURSOR, ...)`. A captured cursor is hidden
+and unbounded, which is the whole point: an ordinary cursor runs out of desk
+halfway through a turn and takes the view with it. Raw motion is enabled
+alongside it where the backend supports it, so the turn is the pointer the mouse
+sent rather than the pointer after the desktop's acceleration curve — that curve
+is tuned for hitting menu items and makes a slow turn feel sticky. GLFW only
+permits raw motion while the cursor is disabled, so the two are set together.
+
+In the voxel demo, **Tab** captures and **Esc** or Tab releases. The look runs in
+`OnFixedUpdate` off `Input::GetMousePosition`, not off a mouse-moved event: the
+replay stream carries the cursor position per step and carries no events, so a
+look done with the mouse replays exactly like one done with the arrows. The
+recorded round trip was checked — record 200 steps, replay them, and the capture
+hashes match each other and the direct run.
+
+Two details that are easy to get wrong and were:
+
+- The step that turns capture on has **no previous position to subtract**, and
+  capturing moves the cursor, so the first delta would be wherever the pointer
+  happened to be sitting. Exactly one sample is skipped.
+- A **replay must not grab the cursor**. Nobody is watching a playback, and a run
+  that steals the pointer while the machine is being used is the same problem the
+  hidden window was added to solve. The logical mode follows the recorded Tab
+  presses; the hardware capture is guarded on `Input::IsPlayingBack()`.
+
+**The sign test found a pre-existing bug.** Rather than re-derive the two
+subtractions in `Look` — which would only have proved they were typed twice — the
+temporary test turned the camera and compared the result against `GetRight()`,
+a vector the look code never touches. It failed on the first run:
+
+```
+[FAIL] mouse right turns toward the camera's right
+```
+
+`GetForward` is `(cos yaw·cos pitch, sin pitch, sin yaw·cos pitch)`, so at yaw 0
+forward is `+x` and `GetRight() = cross(forward, up)` is `+z`… which makes
+**increasing** yaw a turn to the right. The new mouse code had it backwards — and
+so did the arrow keys, which had been in the demo since it was written. Left
+arrow turned the camera right. Nobody noticed because the fix is to press the
+other key. Both are corrected, and the test was extended to cover the arrows so
+the two input paths cannot disagree again.
+
+The independent check in the same test: 100 px at 0.1 deg/px is 10° of *heading*,
+but the angle between the two forward vectors at −29° pitch is smaller. The
+spherical law of cosines predicts **8.744°** and the camera produced **8.744°**,
+to the 0.01° tolerance — arithmetic the camera knows nothing about agreeing with
+what it actually did.
+
+Sensitivity is a registered replay parameter, because it scales the recorded
+deltas: a session recorded after moving that slider only replays as itself if the
+slider moves again on playback. All three configs build clean; Voxel, Physics,
+Terrain and Cube3D captures are unchanged and still byte-identical run to run.
+
 ### 2026-08-03 (inside-out geometry, found by looking)
 
 Reported from the demo: the beacon and the sphere were showing their **inner

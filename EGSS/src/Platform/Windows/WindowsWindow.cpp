@@ -196,4 +196,19 @@ namespace Egss {
 		return m_Data.VSync;
 	}
 
+	void WindowsWindow::SetCursorCaptured(bool captured)
+	{
+		if (m_Data.CursorCaptured == captured)
+			return;
+
+		glfwSetInputMode(m_Window, GLFW_CURSOR, captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+
+		// See LinuxWindow: raw motion is the mouse before the desktop's
+		// acceleration curve, and is only legal while the cursor is disabled.
+		if (glfwRawMouseMotionSupported())
+			glfwSetInputMode(m_Window, GLFW_RAW_MOUSE_MOTION, captured ? GLFW_TRUE : GLFW_FALSE);
+
+		m_Data.CursorCaptured = captured;
+	}
+
 }

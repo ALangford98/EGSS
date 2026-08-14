@@ -196,4 +196,22 @@ namespace Egss {
 		return m_Data.VSync;
 	}
 
+	void LinuxWindow::SetCursorCaptured(bool captured)
+	{
+		if (m_Data.CursorCaptured == captured)
+			return;
+
+		glfwSetInputMode(m_Window, GLFW_CURSOR, captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+
+		// Raw motion is the pointer the mouse actually sent, before the desktop
+		// applied its acceleration curve. Wanted here because that curve is
+		// tuned for hitting menu items, and it makes a slow turn feel sticky.
+		// Only legal while the cursor is disabled, and not supported on every
+		// backend -- both of which GLFW enforces, so ask first.
+		if (glfwRawMouseMotionSupported())
+			glfwSetInputMode(m_Window, GLFW_RAW_MOUSE_MOTION, captured ? GLFW_TRUE : GLFW_FALSE);
+
+		m_Data.CursorCaptured = captured;
+	}
+
 }

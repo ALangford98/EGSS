@@ -23,6 +23,9 @@ namespace Egss {
 		void SetVSync(bool enabled) override;
 		bool IsVSync() const override;
 
+		void SetCursorCaptured(bool captured) override;
+		inline bool IsCursorCaptured() const override { return m_Data.CursorCaptured; }
+
 		inline void* GetNativeWindow() const override { return m_Window; }
 	private:
 		virtual void Init(const WindowProps& props);
@@ -36,6 +39,7 @@ namespace Egss {
 			std::string Title;
 			unsigned int Width, Height;
 			bool VSync;
+			bool CursorCaptured = false;
 
 			EventCallbackFn EventCallback;
 		};

@@ -244,6 +244,15 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **Which way does yaw go?** `PerspectiveCamera::GetForward` is
+  `(cos yaw·cos pitch, sin pitch, sin yaw·cos pitch)` and `GetRight` is
+  `cross(forward, up)`, so **increasing yaw turns right**. The voxel demo's
+  arrow keys had it backwards from the day they were written — left arrow
+  turned the camera right — and nobody noticed, because the fix is to press the
+  other key. A sign is 50/50, so it will not be caught by reading it back; turn
+  the camera and check the new forward against `GetRight()`, which is a vector
+  the look code does not touch. Note also that yaw 0 looks along **+x**, not
+  −z, which is why the demos start at −90.
 - **Depth, in 2D.** `glm::ortho(-1, 1)` makes **higher z nearer**, and at equal
   z the depth test rejects the later fragment — so the **first** thing drawn
   wins, the opposite of painter's order. This caused three separate bugs,

@@ -48,6 +48,10 @@ public:
 		RegisterParam("Tension", &m_Tension);
 		RegisterParam("First person", &m_FirstPerson);
 		RegisterParam("Walk speed", &m_WalkSpeed);
+		// Registered because it scales the recorded mouse deltas, so a session
+		// recorded after moving this slider only replays as itself if the
+		// slider moves again on playback.
+		RegisterParam("Sensitivity", &m_Sensitivity);
 		RegisterParam("Rock strength", &m_StrengthKilo);
 	}
 
@@ -511,18 +515,90 @@ private:
 		m_World.Step(step);
 	}
 
-	// Shared by both modes: on foot you still look with the arrows.
+	// Shared by both modes: the arrows always turn, and Tab hands the mouse to
+	// the camera instead of to the panels.
+	//
+	// All of this is in the fixed step, mouse included, for the usual reason:
+	// the replay stream carries the cursor position per step, so a look done
+	// with the mouse replays exactly like one done with the arrows. Deltas are
+	// taken between two *sampled* positions rather than from an event, because
+	// events are not in the stream.
 	void Look(Egss::Timestep step)
 	{
 		float dt = step;
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))  m_Yaw += m_LookRate * dt;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) m_Yaw -= m_LookRate * dt;
+		// Tab captures, Escape releases -- Escape because a captured cursor is
+		// a mode you can get stuck in, and the key everyone tries first should
+		// be the way out.
+		bool toggle = Egss::Input::IsKeyPressed(EGSS_KEY_TAB);
+		if (toggle && !m_WasToggling)
+			SetMouseLook(!m_MouseLook);
+		else if (m_MouseLook && Egss::Input::IsKeyPressed(EGSS_KEY_ESCAPE))
+			SetMouseLook(false);
+
+		m_WasToggling = toggle;
+
+		auto [mouseX, mouseY] = Egss::Input::GetMousePosition();
+
+		if (m_MouseLook)
+		{
+			// The step that turns it on has no previous position to subtract --
+			// and capturing the cursor moves it, so the first delta would be
+			// wherever the pointer happened to be sitting. Skip exactly one.
+			if (m_MouseSampled)
+			{
+				// Yaw grows to the *right*: forward is
+				// (cos yaw, ., sin yaw) and GetRight is cross(forward, up),
+				// which works out as +x at yaw 0. Worth stating because the
+				// arrow keys had it backwards until a test compared the turn
+				// against that basis vector instead of against itself.
+				m_Yaw += (mouseX - m_LastMouseX) * m_Sensitivity;
+				// Screen y grows downward, so pushing the mouse away is a
+				// negative delta and has to raise the pitch.
+				m_Pitch -= (mouseY - m_LastMouseY) * m_Sensitivity;
+			}
+
+			m_MouseSampled = true;
+		}
+
+		m_LastMouseX = mouseX;
+		m_LastMouseY = mouseY;
+
+		// These two were the wrong way round: left arrow turned the camera
+		// right. Nobody noticed because the fix is to press the other key.
+		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))  m_Yaw -= m_LookRate * dt;
+		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) m_Yaw += m_LookRate * dt;
 		if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))    m_Pitch += m_LookRate * dt;
 		if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))  m_Pitch -= m_LookRate * dt;
 
 		m_Pitch = glm::clamp(m_Pitch, -85.0f, 85.0f);
 		m_Camera.SetRotation(m_Yaw, m_Pitch);
+	}
+
+	// The logical mode and the hardware cursor are set together here and
+	// nowhere else, so they cannot drift apart -- but they are still two
+	// things. A replay drives the mode from the recorded Tab presses and must
+	// *not* grab the cursor: nobody is watching a playback, and a run that
+	// steals the pointer while the machine is being used is the exact problem
+	// the hidden window was added to solve.
+	void SetMouseLook(bool on)
+	{
+		m_MouseLook = on;
+		m_MouseSampled = false;
+
+		if (!Egss::Input::IsPlayingBack())
+			Egss::Application::Get().GetWindow().SetCursorCaptured(on);
+	}
+
+	// Said in both modes, because a captured cursor is a state you can get
+	// stuck in and the way out is not guessable from the picture.
+	void MouseLookHelp()
+	{
+		if (m_MouseLook)
+			ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f),
+				"Mouse look ON -- Esc or Tab releases the cursor");
+		else
+			ImGui::TextDisabled("Tab captures the mouse to look");
 	}
 
 	void MoveCamera(Egss::Timestep step)
@@ -542,6 +618,13 @@ private:
 
 		if (glm::length(move) > 1e-4f)
 			m_Camera.SetPosition(m_Camera.GetPosition() + glm::normalize(move) * m_Speed * dt);
+	}
+
+	// Switching away with the cursor captured would leave the next demo with a
+	// pointer it never asked for and no way to give it back.
+	void OnDemoDeactivated() override
+	{
+		SetMouseLook(false);
 	}
 
 	void OnDemoUpdate(Egss::Timestep ts) override
@@ -630,6 +713,7 @@ private:
 		{
 			ImGui::Text("WASD walk   Space jump   arrows look");
 			ImGui::Text("Left click digs, right click adds");
+			MouseLookHelp();
 			ImGui::Text("%s, eye at %.2f m", m_Grounded ? "on the ground" : "in the air",
 				m_Camera.GetPosition().y);
 			ImGui::SliderFloat("Walk speed", &m_WalkSpeed, 1.0f, 12.0f);
@@ -647,7 +731,13 @@ private:
 		{
 			ImGui::Text("WASD move   Q/E down/up   arrows look");
 			ImGui::Text("Space or left click digs, F or right click adds");
+			MouseLookHelp();
 		}
+
+		// Always shown, never hidden behind the mouse-look flag: while mouse
+		// look is on the cursor is captured, so that is precisely when you
+		// cannot reach a slider to change it.
+		ImGui::SliderFloat("Sensitivity", &m_Sensitivity, 0.02f, 0.5f);
 
 		ImGui::Separator();
 		ImGui::Checkbox("Wireframe", &m_ShowWireframe);
@@ -775,6 +865,17 @@ private:
 	float m_Pitch = -29.0f;
 	float m_Speed = 14.0f;
 	float m_LookRate = 70.0f;
+
+	// Off at startup, and it has to be: capturing the cursor the moment the
+	// demo appears takes the pointer off whatever else is on screen.
+	bool m_MouseLook = false;
+	bool m_WasToggling = false;
+	bool m_MouseSampled = false;
+	float m_LastMouseX = 0.0f;
+	float m_LastMouseY = 0.0f;
+	// Degrees per pixel. 0.1 is the usual starting point and puts a 180 turn
+	// at about half a mousepad.
+	float m_Sensitivity = 0.1f;
 
 	std::shared_ptr<Egss::VoxelField3D> m_Field;
 	std::map<size_t, std::shared_ptr<Egss::Mesh>> m_Chunks;
