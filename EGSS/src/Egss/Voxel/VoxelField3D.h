@@ -132,6 +132,24 @@ namespace Egss {
 		void Fill(const std::function<float(const glm::vec3&)>& sdf,
 			unsigned char material = 1);
 
+		// The same per-voxel logic as Fill, scoped to one chunk -- what makes
+		// lazy, distance-driven generation possible without evaluating (or
+		// even declaring the content of) the whole field upfront. A
+		// coordinate outside ChunkCount() is a no-op.
+		//
+		// Marks nothing dirty, the same as Fill does not -- a demo that calls
+		// Fill still has to call MarkAllDirty itself before the first mesh.
+		// One thing Fill does not have to account for: this chunk's low-x/
+		// low-y/low-z neighbours, if they are already meshed, each read one
+		// plane of *this* chunk for their own seam overlap (see ChunkRange).
+		// Filling a chunk that was previously unallocated changes that whole
+		// plane, so a caller streaming chunks in has to mark this chunk *and*
+		// those three neighbours dirty, not just this one, or the seam keeps
+		// the old (empty) surface until something else disturbs it.
+		void FillChunk(const glm::ivec3& chunk,
+			const std::function<float(const glm::vec3&)>& sdf,
+			unsigned char material = 1);
+
 		// Allocated chunks, and the total. For checking that the sparse storage
 		// is actually sparse rather than assuming it.
 		size_t AllocatedChunks() const;
@@ -209,6 +227,10 @@ namespace Egss {
 
 		Chunk& ChunkFor(int x, int y, int z, int& outLocalX, int& outLocalY, int& outLocalZ);
 		const Chunk& ChunkFor(int x, int y, int z, int& outLocalX, int& outLocalY, int& outLocalZ) const;
+
+		// The body of Fill's triple loop, shared with FillChunk.
+		void FillOneChunk(int cx, int cy, int cz,
+			const std::function<float(const glm::vec3&)>& sdf, unsigned char material);
 
 		glm::ivec3 m_Size = { 0, 0, 0 };
 		glm::ivec3 m_Chunks = { 0, 0, 0 };
