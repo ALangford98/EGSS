@@ -69,6 +69,7 @@
 #include "Egss/Renderer/Camera.h"
 #include "Egss/Renderer/OrthographicCamera.h"
 #include "Egss/Renderer/PerspectiveCamera.h"
+#include "Egss/Renderer/Frustum.h"
 
 // ENTRY POINT ************
 
