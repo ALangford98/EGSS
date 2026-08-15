@@ -4,6 +4,7 @@
 namespace Egss {
 
 	Renderer::SceneData* Renderer::s_SceneData = new Renderer::SceneData;
+	Renderer::Statistics Renderer::s_Stats;
 
 	void Renderer::Init()
 	{
@@ -40,6 +41,9 @@ namespace Egss {
 
 		vertexArray->Bind();
 		RenderCommand::DrawIndexed(vertexArray);
+
+		s_Stats.DrawCalls++;
+		s_Stats.TriangleCount += vertexArray->GetIndexBuffer()->GetCount() / 3;
 	}
 
 	void Renderer::Submit(const std::shared_ptr<Shader>& shader,
@@ -68,6 +72,9 @@ namespace Egss {
 
 		vertexArray->Bind();
 		RenderCommand::DrawIndexed(vertexArray);
+
+		s_Stats.DrawCalls++;
+		s_Stats.TriangleCount += vertexArray->GetIndexBuffer()->GetCount() / 3;
 	}
 
 	void Renderer::Submit(const std::shared_ptr<Material>& material,
@@ -99,6 +106,19 @@ namespace Egss {
 		vertexArray->Bind();
 		RenderCommand::DrawIndexed(vertexArray, submeshes[submesh].IndexCount,
 			submeshes[submesh].FirstIndex);
+
+		s_Stats.DrawCalls++;
+		s_Stats.TriangleCount += submeshes[submesh].IndexCount / 3;
+	}
+
+	Renderer::Statistics Renderer::GetStats()
+	{
+		return s_Stats;
+	}
+
+	void Renderer::ResetStats()
+	{
+		s_Stats = Statistics();
 	}
 
 	ShaderLibrary& Renderer::GetShaderLibrary()

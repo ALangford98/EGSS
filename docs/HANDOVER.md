@@ -244,6 +244,12 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **A changelog entry can describe work that was never committed.** The glTF
+  entry stated `Texture2D::CreateFromMemory` "had to exist" and that the
+  `GL_UNPACK_ALIGNMENT` fix was in; neither was in the diff, only in the prose.
+  It surfaced only once `ModelDemo.h` — itself fully written but never added to
+  `DemoRegistry.h`, so it built and was invisible — got wired in and failed to
+  compile. Trust the build over the changelog when picking work back up.
 - **A test suite that passes on the first run has not been tested.** The glTF
   loader's 62 checks all passed immediately, which is exactly when to distrust
   them. Six deliberate bugs were injected — ignore `byteStride`, quaternion in

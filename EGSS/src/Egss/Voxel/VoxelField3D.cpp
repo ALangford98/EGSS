@@ -154,87 +154,99 @@ namespace Egss {
 		return length > 1e-12f ? gradient / length : glm::vec3(0.0f, 1.0f, 0.0f);
 	}
 
+	void VoxelField3D::FillOneChunk(int cx, int cy, int cz,
+		const std::function<float(const glm::vec3&)>& sdf, unsigned char material)
+	{
+		const float band = SparseBandVoxels * m_VoxelSize;
+
+		Chunk& chunk = m_Storage[ChunkIndexOf(cx, cy, cz)];
+
+		// Evaluated once into a scratch buffer, because deciding whether the
+		// chunk is worth allocating needs every sample anyway -- and calling
+		// the generator twice for the same point is the sort of thing that
+		// is free until the generator is five octaves of noise.
+		const size_t count = (size_t)ChunkSize * ChunkSize * ChunkSize;
+		std::vector<float> values(count);
+
+		bool allSolid = true;
+		bool allAir = true;
+
+		for (int lz = 0; lz < ChunkSize; lz++)
+		{
+			for (int ly = 0; ly < ChunkSize; ly++)
+			{
+				for (int lx = 0; lx < ChunkSize; lx++)
+				{
+					int x = cx * ChunkSize + lx;
+					int y = cy * ChunkSize + ly;
+					int z = cz * ChunkSize + lz;
+
+					// Outside the field: clamped, so the padding in the last
+					// chunk repeats the border rather than asking the
+					// generator about somewhere that is not part of the
+					// world.
+					glm::vec3 position = PositionOf(
+						glm::min(x, m_Size.x - 1),
+						glm::min(y, m_Size.y - 1),
+						glm::min(z, m_Size.z - 1));
+
+					float distance = sdf(position);
+					values[IndexInChunk(lx, ly, lz)] = distance;
+
+					allSolid = allSolid && distance < -band;
+					allAir = allAir && distance > band;
+				}
+			}
+		}
+
+		if (allAir)
+		{
+			chunk.Distance.clear();
+			chunk.Material.clear();
+			chunk.Uniform = Far;
+			chunk.UniformMaterial = 0;
+			return;
+		}
+
+		if (allSolid)
+		{
+			chunk.Distance.clear();
+			chunk.Material.clear();
+			chunk.Uniform = -Far;
+			chunk.UniformMaterial = material;
+			return;
+		}
+
+		chunk.Distance = std::move(values);
+		chunk.Material.assign(count, 0);
+
+		for (size_t i = 0; i < count; i++)
+			chunk.Material[i] = chunk.Distance[i] < 0.0f ? material : 0;
+	}
+
 	void VoxelField3D::Fill(const std::function<float(const glm::vec3&)>& sdf,
 		unsigned char material)
 	{
 		if (m_Storage.empty() || !sdf)
 			return;
 
-		const float band = SparseBandVoxels * m_VoxelSize;
-
 		for (int cz = 0; cz < m_Chunks.z; cz++)
-		{
 			for (int cy = 0; cy < m_Chunks.y; cy++)
-			{
 				for (int cx = 0; cx < m_Chunks.x; cx++)
-				{
-					Chunk& chunk = m_Storage[ChunkIndexOf(cx, cy, cz)];
+					FillOneChunk(cx, cy, cz, sdf, material);
+	}
 
-					// Evaluated once into a scratch buffer, because deciding
-					// whether the chunk is worth allocating needs every sample
-					// anyway -- and calling the generator twice for the same
-					// point is the sort of thing that is free until the
-					// generator is five octaves of noise.
-					const size_t count = (size_t)ChunkSize * ChunkSize * ChunkSize;
-					std::vector<float> values(count);
+	void VoxelField3D::FillChunk(const glm::ivec3& chunk,
+		const std::function<float(const glm::vec3&)>& sdf, unsigned char material)
+	{
+		if (m_Storage.empty() || !sdf)
+			return;
 
-					bool allSolid = true;
-					bool allAir = true;
+		if (chunk.x < 0 || chunk.y < 0 || chunk.z < 0
+			|| chunk.x >= m_Chunks.x || chunk.y >= m_Chunks.y || chunk.z >= m_Chunks.z)
+			return;
 
-					for (int lz = 0; lz < ChunkSize; lz++)
-					{
-						for (int ly = 0; ly < ChunkSize; ly++)
-						{
-							for (int lx = 0; lx < ChunkSize; lx++)
-							{
-								int x = cx * ChunkSize + lx;
-								int y = cy * ChunkSize + ly;
-								int z = cz * ChunkSize + lz;
-
-								// Outside the field: clamped, so the padding in
-								// the last chunk repeats the border rather than
-								// asking the generator about somewhere that is
-								// not part of the world.
-								glm::vec3 position = PositionOf(
-									glm::min(x, m_Size.x - 1),
-									glm::min(y, m_Size.y - 1),
-									glm::min(z, m_Size.z - 1));
-
-								float distance = sdf(position);
-								values[IndexInChunk(lx, ly, lz)] = distance;
-
-								allSolid = allSolid && distance < -band;
-								allAir = allAir && distance > band;
-							}
-						}
-					}
-
-					if (allAir)
-					{
-						chunk.Distance.clear();
-						chunk.Material.clear();
-						chunk.Uniform = Far;
-						chunk.UniformMaterial = 0;
-						continue;
-					}
-
-					if (allSolid)
-					{
-						chunk.Distance.clear();
-						chunk.Material.clear();
-						chunk.Uniform = -Far;
-						chunk.UniformMaterial = material;
-						continue;
-					}
-
-					chunk.Distance = std::move(values);
-					chunk.Material.assign(count, 0);
-
-					for (size_t i = 0; i < count; i++)
-						chunk.Material[i] = chunk.Distance[i] < 0.0f ? material : 0;
-				}
-			}
-		}
+		FillOneChunk(chunk.x, chunk.y, chunk.z, sdf, material);
 	}
 
 	bool VoxelField3D::Raycast(const glm::vec3& origin, const glm::vec3& direction,

@@ -675,9 +675,15 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [x] **Multi-viewport ImGui** — done, behind `--viewports` /
       `ImGuiLayer::EnableViewports`. Off by default: every undocked panel is a
       real OS window with its own GL context
-- [ ] **`.gltf` loading.** `.obj` carries geometry and nothing else — no
-      hierarchy, no skinning, no PBR parameters. glTF is where those live, and
-      is the format worth supporting second
+- [x] **`.gltf` loading** — a written-not-vendored JSON parser, the accessor
+      machinery (stride, sparse overrides, normalised integers, both container
+      formats), a node hierarchy that composes, and materials with textures.
+      Verified by mutation: 62 checks passed first try, six deliberate bugs
+      injected, all six caught. The Model demo shows a jointed figure built
+      from one 24-vertex cube referenced by twenty nodes
+- [ ] **glTF: skinning and animation.** Joints, weights and samplers have
+      nowhere to be played back to until something poses a skeleton — parsing
+      them now would be a component with no system
 - [ ] **Gizmo: rotate and scale handles.** Translate works; rotation rings and
       scale boxes are the same picking maths applied to different geometry
 - [ ] **Physics: joints, and shapes beyond boxes and circles.** Rotation is
@@ -1015,6 +1021,24 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-14 (the Model demo, actually reachable)
+
+The previous entry described a finished loader and a working demo; the demo
+was fully written and never wired into `TestEnv/src/DemoRegistry.h`, so it
+built, existed as a header nobody included, and was invisible — exactly the
+"no demo, no enum entry, no compile error" failure the registry file's own
+comment warns about. Worse, that entry's claim that `Texture2D::CreateFromMemory`
+"had to exist" was aspirational: the declaration and implementation were never
+added, so the moment the demo *was* wired in, it failed to compile.
+
+Both are fixed. `CreateFromMemory` decodes with `stbi_load_from_memory` and
+shares an `UploadDecoded` helper with the path constructor, which is also
+where the missing `glPixelStorei(GL_UNPACK_ALIGNMENT, 1)` landed — the
+previous entry claimed that fix too, on a texture that happens to be 64 px
+wide and so was never actually exercised by it. Verified: both containers
+still agree byte for byte in the panel, and a Debug and a Release capture of
+the demo at step 60 are **MD5-identical**.
 
 ### 2026-08-14 (glTF 2.0: JSON, accessors, hierarchy, materials, both containers)
 

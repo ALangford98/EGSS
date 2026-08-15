@@ -88,6 +88,24 @@ namespace Egss {
 			// the surface as inside the collider and ejects it. That
 			// disagreement is why the broadphase cannot use a bounds test to
 			// reject terrain pairs, and it is the line to come back to.
+			//
+			// Confirmed inert rather than assumed so: RebuildGrid always
+			// classifies the heightfield as m_Oversized (a whole map's cell
+			// span dwarfs any body count), so it is brute-forced against every
+			// body regardless of these bounds -- the Y range computed here is
+			// never actually read. And even a body found impossibly far below
+			// the surface would not be ejected violently if it were read:
+			// CorrectPositions clamps per-step correction to s_MaxCorrection
+			// regardless of depth, and the velocity side (RestitutionBias)
+			// comes from approach velocity, not penetration. So this cannot
+			// explode; it is a latent inconsistency, not a live hazard.
+			//
+			// The fix, whenever a broadphase optimisation wants to trust these
+			// bounds: report outMin.y as unbounded downward (a large negative
+			// sentinel, not `Lowest`), matching what the narrowphase already
+			// treats as solid, rather than trying to give the narrowphase a
+			// floor it does not have. The ground is supposed to extend
+			// downward forever; the bounds are what is lying about it.
 			if (!body.Field || body.Field->Empty())
 			{
 				outMin = body.Position;

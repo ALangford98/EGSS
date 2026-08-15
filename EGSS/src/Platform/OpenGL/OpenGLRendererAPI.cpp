@@ -115,6 +115,11 @@ namespace Egss {
 			glDisable(GL_DEPTH_TEST);
 	}
 
+	void OpenGLRendererAPI::SetDepthWrite(bool enabled)
+	{
+		glDepthMask(enabled ? GL_TRUE : GL_FALSE);
+	}
+
 	void OpenGLRendererAPI::SetPolygonMode(PolygonMode mode)
 	{
 		// GL_FRONT_AND_BACK is the only face argument the core profile accepts;
@@ -142,25 +147,25 @@ namespace Egss {
 		glPointSize(size);
 	}
 
-	void OpenGLRendererAPI::SetBackfaceCulling(bool enabled)
+	void OpenGLRendererAPI::SetCullFace(CullFace face)
 	{
-		if (enabled)
-		{
-			glEnable(GL_CULL_FACE);
-			// GL's default: counter-clockwise is the front. Every primitive and
-			// every asset agrees with it, so nothing needs glFrontFace.
-			//
-			// That claim used to be here untested, and was false: CreateSphere
-			// and three of the four models were wound inside-out. Culling then
-			// removes the near surface and shows you the far one's interior.
-			// It has since been checked per triangle, which is the only way
-			// this is worth asserting -- see the changelog entry for how.
-			glCullFace(GL_BACK);
-		}
-		else
+		if (face == CullFace::None)
 		{
 			glDisable(GL_CULL_FACE);
+			return;
 		}
+
+		glEnable(GL_CULL_FACE);
+
+		// GL's default: counter-clockwise is the front. Every primitive and
+		// every asset agrees with it, so nothing needs glFrontFace.
+		//
+		// That claim used to be here untested, and was false: CreateSphere
+		// and three of the four models were wound inside-out. Culling then
+		// removes the near surface and shows you the far one's interior. It
+		// has since been checked per triangle, which is the only way this is
+		// worth asserting -- see the changelog entry for how.
+		glCullFace(face == CullFace::Front ? GL_FRONT : GL_BACK);
 	}
 
 	void OpenGLRendererAPI::SetBlendMode(BlendMode mode)
@@ -207,6 +212,28 @@ namespace Egss {
 		// already GL_BACK, which before the swap holds the frame just drawn.
 		glReadPixels((GLint)x, (GLint)y, (GLsizei)width, (GLsizei)height,
 			GL_RGBA, GL_UNSIGNED_BYTE, out);
+	}
+
+	void OpenGLRendererAPI::BeginGpuTimer()
+	{
+		if (m_GpuQuery == 0)
+			glGenQueries(1, &m_GpuQuery);
+
+		glBeginQuery(GL_TIME_ELAPSED, m_GpuQuery);
+	}
+
+	double OpenGLRendererAPI::EndGpuTimerMs()
+	{
+		glEndQuery(GL_TIME_ELAPSED);
+
+		// Blocking -- see the note on RendererAPI::EndGpuTimerMs. Correct
+		// only because this is a one-off diagnostic and never runs every
+		// frame; a real profiler would double-buffer two query objects and
+		// read last frame's result instead of this frame's.
+		GLuint64 nanoseconds = 0;
+		glGetQueryObjectui64v(m_GpuQuery, GL_QUERY_RESULT, &nanoseconds);
+
+		return (double)nanoseconds / 1.0e6;
 	}
 
 }

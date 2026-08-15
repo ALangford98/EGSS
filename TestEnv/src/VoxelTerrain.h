@@ -655,14 +655,14 @@ private:
 			// to triangles facing away, and culling them leaves a wireframe
 			// with holes in exactly the places worth looking at.
 			Egss::RenderCommand::SetPolygonMode(Egss::PolygonMode::Line);
-			Egss::RenderCommand::SetBackfaceCulling(false);
+			Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
 
 			m_Material->Set("u_Color", glm::vec4(0.85f, 0.90f, 0.80f, 1.0f));
 			for (const auto& entry : m_Chunks)
 				Egss::Renderer::Submit(m_Material, entry.second, glm::mat4(1.0f));
 
 			Egss::RenderCommand::SetPolygonMode(Egss::PolygonMode::Fill);
-			Egss::RenderCommand::SetBackfaceCulling(true);
+			Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
 		}
 
 		// **And where it put them.** Drawn after the surface and without depth

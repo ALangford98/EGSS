@@ -59,6 +59,21 @@ namespace Egss {
 		static ShaderLibrary& GetShaderLibrary();
 
 		inline static RendererAPI::API GetAPI() { return RendererAPI::GetAPI(); }
+
+		// Renderer2D has had this since the batcher; the 3D path submits
+		// immediately and had nothing counting it, so there was no number to
+		// point at when asking what a change in draw calls or triangles cost.
+		// Reset is the caller's job, same as Renderer2D::ResetStats -- a demo
+		// resets once at the top of its own update and reads the total after
+		// its own submissions, not the renderer's.
+		struct EGSS_API Statistics
+		{
+			unsigned int DrawCalls = 0;
+			unsigned int TriangleCount = 0;
+		};
+
+		static Statistics GetStats();
+		static void ResetStats();
 	private:
 		// Per-scene state captured at BeginScene. A real renderer would batch
 		// submissions here rather than drawing immediately.
@@ -68,6 +83,7 @@ namespace Egss {
 		};
 
 		static SceneData* s_SceneData;
+		static Statistics s_Stats;
 	};
 
 }

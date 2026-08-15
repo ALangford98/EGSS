@@ -62,6 +62,11 @@ namespace Egss {
 			s_RendererAPI->SetDepthTest(enabled);
 		}
 
+		inline static void SetDepthWrite(bool enabled)
+		{
+			s_RendererAPI->SetDepthWrite(enabled);
+		}
+
 		inline static void SetPolygonMode(PolygonMode mode)
 		{
 			s_RendererAPI->SetPolygonMode(mode);
@@ -72,9 +77,21 @@ namespace Egss {
 			s_RendererAPI->SetPointSize(size);
 		}
 
-		inline static void SetBackfaceCulling(bool enabled)
+		inline static void SetCullFace(CullFace face)
 		{
-			s_RendererAPI->SetBackfaceCulling(enabled);
+			s_RendererAPI->SetCullFace(face);
+		}
+
+		inline static void BeginGpuTimer()
+		{
+			s_RendererAPI->BeginGpuTimer();
+		}
+
+		// Blocks -- see the note on RendererAPI::EndGpuTimerMs before using
+		// this anywhere that runs every frame.
+		inline static double EndGpuTimerMs()
+		{
+			return s_RendererAPI->EndGpuTimerMs();
 		}
 
 		// Bottom-up RGBA8 rows from the bound framebuffer. See RendererAPI.

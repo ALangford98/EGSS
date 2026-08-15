@@ -20,18 +20,27 @@ namespace Egss {
 		void SetLineWidth(float width) override;
 		void SetBlendMode(BlendMode mode) override;
 		void SetDepthTest(bool enabled) override;
-		void SetBackfaceCulling(bool enabled) override;
+		void SetDepthWrite(bool enabled) override;
+		void SetCullFace(CullFace face) override;
 		void SetPolygonMode(PolygonMode mode) override;
 		void SetPointSize(float size) override;
 
 		void ReadPixels(unsigned int x, unsigned int y, unsigned int width,
 			unsigned int height, unsigned char* out) override;
 
+		void BeginGpuTimer() override;
+		double EndGpuTimerMs() override;
+
 		unsigned int GetMaxTextureSlots() const override { return m_MaxTextureSlots; }
 	private:
 		// Queried once in Init rather than per call: glGet round-trips to the
 		// driver, and this cannot change for the life of the context.
 		unsigned int m_MaxTextureSlots = 16;
+
+		// Lazily created on first use rather than in Init, since most runs
+		// never ask for a GPU time and a query object is one more thing to
+		// leak track of for nothing.
+		unsigned int m_GpuQuery = 0;
 	};
 
 }
