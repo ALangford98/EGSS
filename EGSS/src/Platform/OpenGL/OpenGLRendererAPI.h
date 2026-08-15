@@ -20,7 +20,8 @@ namespace Egss {
 		void SetLineWidth(float width) override;
 		void SetBlendMode(BlendMode mode) override;
 		void SetDepthTest(bool enabled) override;
-		void SetBackfaceCulling(bool enabled) override;
+		void SetDepthWrite(bool enabled) override;
+		void SetCullFace(CullFace face) override;
 		void SetPolygonMode(PolygonMode mode) override;
 		void SetPointSize(float size) override;
 

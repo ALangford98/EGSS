@@ -776,11 +776,11 @@ public:
 		// Safe here because every mesh -- primitives and .obj alike -- is wound
 		// counter-clockwise. Off again before the debug lines, which are not
 		// closed geometry and would half disappear.
-		Egss::RenderCommand::SetBackfaceCulling(m_BackfaceCulling);
+		Egss::RenderCommand::SetCullFace(m_BackfaceCulling ? Egss::CullFace::Back : Egss::CullFace::None);
 
 		RenderMeshes();
 
-		Egss::RenderCommand::SetBackfaceCulling(false);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
 
 		// Debug lines under a perspective camera. Renderer2D::BeginScene takes
 		// any Camera, so the line batch works here exactly as it does in 2D --

@@ -19,6 +19,18 @@ namespace Egss {
 		Point
 	};
 
+	// Which winding direction a draw discards. Back is the ordinary case --
+	// see SetCullFace. Front is what an inverted-hull outline wants: draw
+	// the mesh again, scaled out slightly, in a flat colour, and only the
+	// faces that would normally be the *far* side of the model survive,
+	// seen from inside a slightly larger shell around it.
+	enum class CullFace
+	{
+		None = 0,
+		Back,
+		Front
+	};
+
 	enum class BlendMode
 	{
 		// Straight alpha: what is drawn later covers what is underneath.
@@ -85,11 +97,22 @@ namespace Egss {
 		// it overlaps the first.
 		virtual void SetDepthTest(bool enabled) = 0;
 
-		// Discards triangles wound away from the camera, which for a closed
-		// mesh is every face on its far side -- roughly half the fragments,
-		// for free. Off by default: it is only safe once *all* geometry in the
+		// Whether a draw *updates* the depth buffer, independent of whether it
+		// is tested against it. A transparent surface wants both on for the
+		// test and off for the write: tested, so opaque geometry already drawn
+		// still occludes it correctly; not written, so a second transparent
+		// surface behind it is not wrongly rejected by the first one's own
+		// depth. Left on, two overlapping transparent surfaces draw in
+		// whichever order the depth buffer prefers rather than the order they
+		// were submitted, which for a blend is visibly wrong.
+		virtual void SetDepthWrite(bool enabled) = 0;
+
+		// Discards triangles wound toward `face`, which for a closed mesh
+		// wound consistently is every triangle facing that way -- roughly half
+		// the fragments, for free, when `face` is Back. `None` is the default:
+		// culling either direction is only safe once *all* geometry in the
 		// pass is wound consistently, and one flipped model shows up as holes.
-		virtual void SetBackfaceCulling(bool enabled) = 0;
+		virtual void SetCullFace(CullFace face) = 0;
 
 		// Applies to everything drawn until it is set back. `Line` and `Point`
 		// are debug states: they are cheap to set and expensive to forget, so a
