@@ -23,22 +23,15 @@ own work between sessions and sometimes while a reply is being written. Assume
 any git state you did not just observe is stale — check `git log` and
 `git status` rather than trusting an earlier message.
 
-**Do commit finished work to the isolated worktree branch.** That is where
-handover happens:
-
-```sh
-git log -p main..worktree-<name>      # review
-git merge worktree-<name>             # or cherry-pick, or drop
-```
+**Work directly in the local checkout, not an isolated worktree branch.**
+Earlier this used a `worktree-<name>` branch for handover, reviewed with
+`git log -p main..worktree-<name>` and merged in later — that's gone. The
+owner wants to run, test, and push from the same tree a session edits, with
+no merge step between. Do not call `EnterWorktree`.
 
 Commit in logical units and let the messages carry the reasoning, the same way
 the changelog does. Do not fabricate granular history — if a change was
 genuinely developed as one thing, it is one commit.
-
-This replaced handing work over as patch files, which went stale the moment the
-owner applied one and had to be rebuilt by hand against their working tree. The
-branch outlives the worktree directory, so committing is also what stops work
-being lost when the session ends.
 
 Never `git stash` in a shared checkout, and never `reset --hard` anywhere
 without checking which repository the command will actually run in — a `cd` in
