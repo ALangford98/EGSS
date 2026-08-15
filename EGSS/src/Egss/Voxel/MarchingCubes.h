@@ -42,8 +42,25 @@ namespace Egss {
 		// for the same reason `Heightfield3D` has both a face normal and a
 		// smooth one: a face normal is constant across a triangle and makes a
 		// smooth surface look faceted at exactly the scale of the lattice.
+		//
+		// `stride` reads every `stride`-th lattice point instead of every one,
+		// so a cell spans `stride` voxels and the mesh comes out coarser --
+		// the same field, fewer triangles, for a chunk far enough away that
+		// the difference is not worth the vertices. Corner reads still go
+		// through `DistanceAt`, which clamps, so a stride that does not
+		// evenly divide the range just clips the last partial cell rather
+		// than reading outside the field.
+		//
+		// **Chunks of different strides do not stitch.** A stride-2 chunk's
+		// lattice does not share corners with a stride-1 neighbour's, so
+		// there is a seam at that boundary -- proper transition cells
+		// (transvoxel-style) would close it and are not implemented. Keep a
+		// stride change away from the camera, where the gap is a few pixels
+		// wide at most, and treat this as a known limitation rather than a
+		// bug: see the OpenWorld demo's LOD banding for how it is kept out
+		// of view in practice.
 		static MeshData Mesh(const VoxelField3D& field,
-			const glm::ivec3& min, const glm::ivec3& max);
+			const glm::ivec3& min, const glm::ivec3& max, int stride = 1);
 
 		static MeshData Mesh(const VoxelField3D& field)
 		{

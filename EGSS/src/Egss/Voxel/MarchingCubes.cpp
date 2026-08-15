@@ -329,30 +329,33 @@ namespace Egss {
 	}
 
 	MeshData MarchingCubes::Mesh(const VoxelField3D& field,
-		const glm::ivec3& min, const glm::ivec3& max)
+		const glm::ivec3& min, const glm::ivec3& max, int stride)
 	{
 		MeshData data;
 
 		if (field.Empty())
 			return data;
 
+		stride = glm::max(stride, 1);
+
 		// Cells, not lattice points: a cell at (x,y,z) reads lattice points up
-		// to (x+1,y+1,z+1), so the last cell starts one short of the far edge.
+		// to (x+stride,y+stride,z+stride), so the last cell starts one stride
+		// short of the far edge.
 		glm::ivec3 from = glm::max(min, glm::ivec3(0));
 		glm::ivec3 to = glm::min(max, field.Size() - glm::ivec3(1));
 
-		for (int z = from.z; z < to.z; z++)
+		for (int z = from.z; z < to.z; z += stride)
 		{
-			for (int y = from.y; y < to.y; y++)
+			for (int y = from.y; y < to.y; y += stride)
 			{
-				for (int x = from.x; x < to.x; x++)
+				for (int x = from.x; x < to.x; x += stride)
 				{
 					float corner[8];
 					int index = 0;
 
 					for (int c = 0; c < 8; c++)
 					{
-						const glm::ivec3& offset = s_Corners[c];
+						const glm::ivec3& offset = s_Corners[c] * stride;
 						corner[c] = field.DistanceAt(x + offset.x, y + offset.y, z + offset.z);
 
 						// Inside is negative, and the bit set means inside.
@@ -386,10 +389,11 @@ namespace Egss {
 							? da / denominator
 							: 0.5f;
 
-						glm::vec3 pa = field.PositionOf(x + s_Corners[a].x,
-							y + s_Corners[a].y, z + s_Corners[a].z);
-						glm::vec3 pb = field.PositionOf(x + s_Corners[b].x,
-							y + s_Corners[b].y, z + s_Corners[b].z);
+						glm::ivec3 offsetA = s_Corners[a] * stride;
+						glm::ivec3 offsetB = s_Corners[b] * stride;
+
+						glm::vec3 pa = field.PositionOf(x + offsetA.x, y + offsetA.y, z + offsetA.z);
+						glm::vec3 pb = field.PositionOf(x + offsetB.x, y + offsetB.y, z + offsetB.z);
 
 						vertex[e] = pa + (pb - pa) * glm::clamp(t, 0.0f, 1.0f);
 					}
