@@ -25,6 +25,7 @@
 #include "MapBuilding.h"
 #include "VoxelTerrain.h"
 #include "ModelDemo.h"
+#include "OpenWorld.h"
 
 struct DemoEntry
 {
@@ -46,7 +47,8 @@ inline const DemoEntry s_Demos[] =
 	{ "Ragdoll (jointed humanoid)",   "Ragdoll",   []() -> DemoLayer* { return new Ragdoll(); } },
 	{ "Map Building (seeded terrain)","MapBuild",  []() -> DemoLayer* { return new MapBuilding(); } },
 	{ "Voxel terrain (dig it out)",   "Voxel",     []() -> DemoLayer* { return new VoxelTerrain(); } },
-	{ "Model (glTF hierarchy + textures)", "Model", []() -> DemoLayer* { return new ModelDemo(); } }
+	{ "Model (glTF hierarchy + textures)", "Model", []() -> DemoLayer* { return new ModelDemo(); } },
+	{ "Open World (streaming islands)", "OpenWorld", []() -> DemoLayer* { return new OpenWorld(); } }
 };
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));
