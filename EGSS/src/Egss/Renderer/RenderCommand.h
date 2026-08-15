@@ -82,6 +82,18 @@ namespace Egss {
 			s_RendererAPI->SetCullFace(face);
 		}
 
+		inline static void BeginGpuTimer()
+		{
+			s_RendererAPI->BeginGpuTimer();
+		}
+
+		// Blocks -- see the note on RendererAPI::EndGpuTimerMs before using
+		// this anywhere that runs every frame.
+		inline static double EndGpuTimerMs()
+		{
+			return s_RendererAPI->EndGpuTimerMs();
+		}
+
 		// Bottom-up RGBA8 rows from the bound framebuffer. See RendererAPI.
 		inline static void ReadPixels(unsigned int x, unsigned int y, unsigned int width,
 			unsigned int height, unsigned char* out)

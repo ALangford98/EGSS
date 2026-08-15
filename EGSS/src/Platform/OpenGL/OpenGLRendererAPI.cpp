@@ -214,4 +214,26 @@ namespace Egss {
 			GL_RGBA, GL_UNSIGNED_BYTE, out);
 	}
 
+	void OpenGLRendererAPI::BeginGpuTimer()
+	{
+		if (m_GpuQuery == 0)
+			glGenQueries(1, &m_GpuQuery);
+
+		glBeginQuery(GL_TIME_ELAPSED, m_GpuQuery);
+	}
+
+	double OpenGLRendererAPI::EndGpuTimerMs()
+	{
+		glEndQuery(GL_TIME_ELAPSED);
+
+		// Blocking -- see the note on RendererAPI::EndGpuTimerMs. Correct
+		// only because this is a one-off diagnostic and never runs every
+		// frame; a real profiler would double-buffer two query objects and
+		// read last frame's result instead of this frame's.
+		GLuint64 nanoseconds = 0;
+		glGetQueryObjectui64v(m_GpuQuery, GL_QUERY_RESULT, &nanoseconds);
+
+		return (double)nanoseconds / 1.0e6;
+	}
+
 }

@@ -40,6 +40,7 @@ public:
 		RegisterParam("Culling", &m_Culling);
 		RegisterParam("First person", &m_FirstPerson);
 		RegisterParam("Chunks per step", &m_ChunksPerStep);
+		RegisterParam("Textured", &m_Textured);
 	}
 
 	void OnDemoAttach() override
@@ -436,6 +437,13 @@ public:
 		m_Material->Set("u_SkyColor", glm::vec3(0.5f, 0.6f, 0.75f));
 		m_Material->Set("u_Ambient", 0.35f);
 		m_Material->Set("u_Color", glm::vec4(0.42f, 0.46f, 0.34f, 1.0f));
+		m_Material->Set("u_Textured", m_Textured ? 1 : 0);
+
+		// Opt-in and blocking -- see RendererAPI::EndGpuTimerMs. Only around
+		// the terrain pass, since that is the one whose cost the texture
+		// toggle actually changes.
+		if (m_MeasureGpu)
+			Egss::RenderCommand::BeginGpuTimer();
 
 		m_ChunksDrawn = 0;
 		for (const auto& [key, entry] : m_Chunks)
@@ -447,6 +455,9 @@ public:
 			m_ChunksDrawn++;
 		}
 
+		if (m_MeasureGpu)
+			m_LastGpuMs = Egss::RenderCommand::EndGpuTimerMs();
+
 		// Water: tested against the depth already in the buffer (so terrain
 		// above sea level still occludes it) but not written to it, so it
 		// does not wrongly reject whatever renders behind it -- there is
@@ -456,6 +467,7 @@ public:
 		Egss::RenderCommand::SetDepthWrite(false);
 
 		m_Material->Set("u_Color", glm::vec4(0.10f, 0.28f, 0.42f, 0.55f));
+		m_Material->Set("u_Textured", 0);
 		Egss::Renderer::Submit(m_Material, m_Water, glm::mat4(1.0f));
 
 		Egss::RenderCommand::SetDepthWrite(true);
@@ -502,10 +514,17 @@ public:
 			uniform mat4 u_Transform;
 
 			out vec3 v_Normal;
+			out vec2 v_TexCoord;
 
 			void main()
 			{
 				v_Normal = mat3(u_Transform) * a_Normal;
+				// World-space planar, from MarchingCubes -- see the comment
+				// where it is generated. Spatially varying rather than
+				// per-vertex-fixed is what makes a texture-cost comparison
+				// honest: constant UVs would sample the same texel over
+				// and over, which the cache makes artificially cheap.
+				v_TexCoord = a_TexCoord;
 				gl_Position = u_ViewProjection * u_Transform * vec4(a_Position, 1.0);
 			}
 		)";
@@ -515,27 +534,37 @@ public:
 			layout(location = 0) out vec4 color;
 
 			in vec3 v_Normal;
+			in vec2 v_TexCoord;
 
 			uniform vec4 u_Color;
 			uniform vec3 u_SunDirection;
 			uniform vec3 u_SunColor;
 			uniform vec3 u_SkyColor;
 			uniform float u_Ambient;
+			uniform int u_Textured;
+			uniform sampler2D u_BaseColourMap;
 
 			void main()
 			{
+				vec4 base = u_Color;
+				if (u_Textured == 1)
+					base *= texture(u_BaseColourMap, v_TexCoord);
+
 				vec3 n = normalize(v_Normal);
 
 				float sun = max(dot(n, -u_SunDirection), 0.0);
 				float sky = 0.5 + 0.5 * n.y;
 
-				vec3 lit = u_Color.rgb * (u_Ambient + sun * u_SunColor + sky * u_SkyColor * 0.35);
-				color = vec4(lit, u_Color.a);
+				vec3 lit = base.rgb * (u_Ambient + sun * u_SunColor + sky * u_SkyColor * 0.35);
+				color = vec4(lit, base.a);
 			}
 		)";
 
 		m_Shader.reset(Egss::Shader::Create("OpenWorldSun", vertexSrc, fragmentSrc));
 		m_Material = Egss::Material::Create(m_Shader);
+
+		m_GroundTexture.reset(Egss::Texture2D::Create("assets/models/checker.png"));
+		m_Material->SetTexture("u_BaseColourMap", m_GroundTexture);
 	}
 
 	// --- Panel ------------------------------------------------------------
@@ -560,6 +589,15 @@ public:
 			m_Field->ChunkCount().x * m_Field->ChunkCount().y * m_Field->ChunkCount().z);
 		ImGui::Text("%zu chunks meshed, %d drawn this frame", m_Chunks.size(), m_ChunksDrawn);
 		ImGui::Text("%u draw calls, %u triangles", m_Stats.DrawCalls, m_Stats.TriangleCount);
+
+		ImGui::Separator();
+		ImGui::Checkbox("Textured ground", &m_Textured);
+		ImGui::Checkbox("Measure terrain GPU time", &m_MeasureGpu);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Blocks the CPU on the GPU's result every frame --\n"
+				"a diagnostic for A/B comparison, not something to leave on.");
+		if (m_MeasureGpu)
+			ImGui::Text("terrain pass: %.3f ms GPU", m_LastGpuMs);
 
 		ImGui::End();
 	}
@@ -611,6 +649,11 @@ public:
 
 	std::shared_ptr<Egss::Shader> m_Shader;
 	std::shared_ptr<Egss::Material> m_Material;
+	std::shared_ptr<Egss::Texture2D> m_GroundTexture;
+	bool m_Textured = true;
+
+	bool m_MeasureGpu = false;
+	double m_LastGpuMs = 0.0;
 
 	Egss::PhysicsWorld3D m_World;
 	Egss::PhysicsWorld3D::BodyHandle m_Walker = 0;

@@ -122,6 +122,22 @@ namespace Egss {
 		// Size of a point in pixels, for PolygonMode::Point and DrawPoints.
 		virtual void SetPointSize(float size) = 0;
 
+		// GPU time elapsed between Begin and End, in milliseconds --
+		// GL_TIME_ELAPSED, not a timestamp difference, so it needs no
+		// synchronisation between the CPU's and GPU's clocks.
+		//
+		// **EndGpuTimerMs blocks** until the query result is ready, which
+		// serialises the CPU behind the GPU for that scope. Instrumentor's
+		// CPU scopes cost nothing to leave in and run every frame; this is
+		// the opposite; it exists for a one-off "how expensive is this
+		// draw" question, answered once, not for a permanent per-frame
+		// profiling pass. A caller that wraps every frame in this has
+		// turned off the overlap between CPU and GPU work that a real
+		// pipeline depends on, and will see frame times get worse because
+		// of the measurement, not the thing it is measuring.
+		virtual void BeginGpuTimer() = 0;
+		virtual double EndGpuTimerMs() = 0;
+
 		// Reads a rectangle of whatever framebuffer is currently bound back
 		// into CPU memory, as tightly packed RGBA8. `out` needs room for
 		// width * height * 4 bytes.
