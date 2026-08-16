@@ -1599,6 +1599,17 @@ namespace Egss {
 		if (JointSuppressesContact(i, j))
 			return;
 
+		// A body carried by another has to stop colliding with its carrier.
+		// The general case is the same one as the elbow: two bodies that are
+		// *meant* to occupy the same space, where a contact is not information
+		// about the world but an artefact of how they are attached.
+		//
+		// Without it, a kinematic object held inside a dynamic one shoves it
+		// without being shoved back -- measured at 80.7 m in five seconds for
+		// a tool held inside a walking character.
+		if (a.IgnoreCollisionWith == (int)j || b.IgnoreCollisionWith == (int)i)
+			return;
+
 		Contact3D contact;
 		if (!Collide(i, a, j, b, contact))
 			return;

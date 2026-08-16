@@ -31,6 +31,7 @@
 
 #include "Egss/Voxel/VoxelField3D.h"
 #include "Egss/Voxel/MarchingCubes.h"
+#include "Egss/Voxel/MarchingTetrahedra.h"
 #include "Egss/Voxel/VoxelIslands.h"
 #include "Egss/Voxel/VoxelStress.h"
 

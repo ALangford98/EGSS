@@ -170,6 +170,14 @@ namespace Egss {
 		float GravityScale = 1.0f;
 
 		bool Awake = true;
+
+		// One body this one does not collide with, by handle, or -1.
+		//
+		// Deliberately a single handle rather than layers or a mask: the case
+		// that exists is "this object is being carried by that one", and it is
+		// one pair. A mask system would be a component with no system -- see
+		// the note in CLAUDE.md -- until something needs more than a pair.
+		int IgnoreCollisionWith = -1;
 		float SleepTimer = 0.0f;
 
 		void SetMass(float mass) { InverseMass = mass > 0.0f ? 1.0f / mass : 0.0f; }

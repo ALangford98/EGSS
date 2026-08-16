@@ -275,6 +275,41 @@ look caught immediately.
   and both give the same direction once normalised — measured byte-identical on
   the Model demo. It is still the correct matrix for a shear or for normals that
   are not aligned to the scale axes; just do not claim a box demonstrates it.
+- **"Different seed, different output" only proves *some* seed dependence.** The
+  tree generator hashes the seed into both a branch's azimuth and its lean.
+  Replacing the seed with a constant in the azimuth left the check passing,
+  because the lean still varied. A single end-to-end difference test cannot say
+  which seeded parameter is dead; catching that needs one check per parameter,
+  varying it alone.
+- **A predictor that assumes one body per patch of ground.** "Every fragment
+  rests at `Height + half`" is right for scattered rocks and wrong the moment
+  they can pile up -- eight pieces from one boulder land in a heap, and a piece
+  resting on another piece is correctly higher than the terrain under it. It
+  read as a physics failure (4 of 7) and was a test failure. Check that nothing
+  has sunk *through* the surface instead; that survives stacking.
+- **A subdivided face needs subdivided *edges*.** The transition cell subdivides
+  the face towards a finer neighbour and leaves the four side faces coarse --
+  so along their shared edge one side has several sub-edges and the other has
+  one, and the cell's own boundary stops being a closed surface. It opened more
+  holes than it closed at 1:2 (362 to 368) while closing some at 1:4 (296 to
+  246). Any subdivision scheme has to be per edge, with each face triangulated
+  to respect which of its edges are split, and that cascades into neighbours.
+  This is what transvoxel's tables encode; it is not a few lines of subdivision.
+- **Geometric coincidence is not topological agreement.** Making a fine and a
+  coarse chunk agree on the *values* along their shared face makes both compute
+  the same contour line -- and still leaves 274 edges used once, down from 296.
+  The fine side splits that line into collinear segments, one per sub-edge it
+  crosses; the coarse side has one. Those intermediate vertices are T-junctions:
+  no visible crack, not a closed manifold. If the requirement is watertightness
+  rather than "looks fine", the coarse side has to gain the same vertices --
+  which is what a transition cell is, and why matching values is only half of it.
+- **Area and volume cannot see a topology error.** A deliberately bowtied quad
+  in the tetrahedron mesher produced *identical* surface area (452.19) and
+  enclosed volume (903.99) to the correct mesh -- same four points, connected
+  wrongly -- while leaving 42,594 edges used once and 13,515 used more than
+  twice. Geometric totals are blind to connectivity. When the property that
+  matters is watertightness, count edge uses; every edge of a closed surface is
+  used by exactly two triangles, and `3F = 2E` is a free cross-check.
 - **The LOD seam is a step, not a crack.** Chunks on different marching-cubes
   strides do not disagree by a hairline: the coarse lattice cuts corners, so on
   a convex surface it meshes *systematically lower* and leaves a solid terrace
@@ -289,6 +324,55 @@ look caught immediately.
   nothing. Same for `sample`, `filter`, `input`, `output`, `active`. When a
   shader edit produces an inexplicable frame, read the log first: it said
   `unexpected FLAT` on the line in question while the picture said only "white".
+- **Sphere tracing and a sparse field do not mix.** `VoxelField3D::Raycast`
+  steps by the field value, and an unallocated chunk reads `Far` (1000 m) -- so
+  a ray starting in sparse air steps out of the world and returns no hit. It
+  bites the moment anything raycasts from more than a chunk above the surface;
+  a ray 3 m over an island read 1000 at its origin and 1.86 one metre lower.
+  Skipping the sentinel by hand does not fix it either, because interpolation
+  near an allocated chunk's boundary mixes in the neighbour's 1000. Short rays
+  should march (half a voxel is eighteen samples over 4.5 m). The real fix is
+  for Raycast to skip uniform chunks by asking the field, not by reading a
+  magic number.
+- **A first-person body has to agree with the camera's own height.** The
+  viewmodel torso was built 0.72 m from hip to shoulder against a real 0.45, so
+  its chest sat above the eye and first person rendered as a solid wall. Eyes
+  are about 0.22 m above the shoulders and 0.67 above the hips; anything hung
+  off the head has to be measured against those or the camera ends up inside
+  the mesh. The head is skipped in first person for the same reason, and with
+  culling off its interior would otherwise fill the frame.
+- **A kinematic body overlapping a dynamic one is catastrophic, not marginal.**
+  Kinematic shoves dynamic and is never shoved back, so a held object inside the
+  player threw them **80.7 m in five seconds**. Shrinking its collider only got
+  it to 13.2 -- a tiny box inside a capsule still makes a contact. Use
+  `RigidBody3D::IgnoreCollisionWith`, which sits next to the joint suppression
+  and means the same thing: two bodies meant to occupy the same space, where a
+  contact is an artefact of the attachment rather than information.
+- **Zero drift can mean the test never reproduced the bug.** The first shove
+  test measured 0.0000 m before *and* after the fix, because that particular
+  arrangement did not overlap. Reproduce the failure deliberately -- put the
+  body inside the player -- before believing a fix. And a residual is not a
+  residual until a control says what it should have been: 1.18 m of drift while
+  holding looked like leftover shove until empty hands from the same state gave
+  3.90 m.
+- **A guard in the caller is not a rule.** `TryPickUp` relied on its only
+  caller to check whether the player's hands were full, and a test calling it
+  directly happily took a second tool. "You can carry one thing" is the rule the
+  whole tool design rests on; it belongs where it can be enforced, not where it
+  happens to be convenient.
+- **A test that drives the collaborators itself never checks the wiring.** The
+  wave float test set `Cfg.WaterLevel` from the wave function inside its own
+  loop, so it verified buoyancy and waves *as a pair* while a mutation making
+  the demo pass a flat sea level sailed through all eight checks. Anything a
+  test supplies for the production code is a thing it has stopped testing; add
+  one step through the real update path and assert the value arrived.
+- **A mutation that survives may have mutated the wrong line.** `body.Type =
+  BodyType::Dynamic;` occurs in both the rock-release and the tree-felling path,
+  and a first-occurrence string replace hit the one the running suite does not
+  exercise -- reporting a clean 15/15 for a mutation that had changed nothing
+  relevant. Before concluding a suite has a gap, check the diff actually landed
+  where you aimed it; match on unique surrounding context, not on a line that
+  reads like several others.
 - **A sphere collider rolls forever.** Scenery rocks spawned as spheres landed
   exactly where predicted and then crept downhill — 3.69 to 3.10 over 300 steps —
   rolled into the sea, down the seabed, and eventually so far inside the SDF that

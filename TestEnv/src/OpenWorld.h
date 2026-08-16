@@ -40,6 +40,7 @@
 #include "ChunkCache.h"
 
 #include <unordered_set>
+#include <unordered_map>
 #include <climits>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -76,6 +77,34 @@ public:
 		m_World.Gravity = { 0.0f, -9.81f, 0.0f };
 		m_World.AddBody(ground);
 
+		// Built once and drawn with a transform each. A limb is a unit tube
+		// from y=0 to y=1, so scaling by (radius, length, radius) puts it
+		// between any two points.
+		m_LimbMesh.reset(new Egss::Mesh(MakeTube({
+			{ 0.00f, 1.00f, 1.00f },
+			{ 0.35f, 0.94f, 0.94f },
+			{ 1.00f, 0.72f, 0.72f } }, 10), "Limb"));
+
+		// Wider across than deep at the chest, drawn in from the waist, out
+		// again at the hips. Five rings is enough to read as a torso.
+		// **0.46 m hip to shoulder, not 0.72.** The first version was a torso
+		// of roughly the right shape and half a metre too tall, which put the
+		// chest above the eyes -- in first person it filled the entire screen.
+		// A person's eyes sit about 0.22 m above the shoulders and 0.67 above
+		// the hips, and the mesh has to agree with that or the camera ends up
+		// inside it.
+		m_TorsoMesh.reset(new Egss::Mesh(MakeTube({
+			{ 0.00f, 0.150f, 0.105f },
+			{ 0.10f, 0.163f, 0.108f },
+			{ 0.22f, 0.140f, 0.096f },
+			{ 0.36f, 0.175f, 0.112f },
+			{ 0.46f, 0.166f, 0.102f } }, 12), "Torso"));
+
+		m_HeadMesh.reset(new Egss::Mesh(MakeOvoid({ 0.098f, 0.125f, 0.108f }, 12, 8), "Head"));
+		m_HandMesh.reset(new Egss::Mesh(MakeOvoid({ 0.045f, 0.055f, 0.030f }, 8, 5), "Hand"));
+		m_FootMesh.reset(new Egss::Mesh(MakeOvoid({ 0.048f, 0.045f, 0.100f }, 8, 5), "Foot"));
+		m_JointMesh.reset(new Egss::Mesh(MakeOvoid({ 1.0f, 1.0f, 1.0f }, 8, 5), "Joint"));
+
 		BuildWater();
 
 		// The spawn island's chunks have to exist before GroundBelow has
@@ -103,6 +132,8 @@ public:
 
 		SpawnWalker(spawn);
 		SpawnRocks(m_Islands[0]);
+		SpawnTrees(m_Islands[0]);
+		SpawnTools(spawn);
 	}
 
 	void OnDemoDeactivated() override
@@ -123,9 +154,1398 @@ public:
 		else
 			m_Controller.UpdateFly(dt);
 
+		// Wave time comes off the fixed clock, never wall-clock: a surface
+		// animated from real time makes the demo unable to reproduce itself.
+		m_WaveTime += dt;
+
+		// The sea the player is standing in is the sea being drawn -- the
+		// controller is told where the surface is *here*, rather than assuming
+		// it is flat.
+		{
+			const glm::vec3& at = m_World.GetBody(m_Walker).Position;
+			m_Controller.Cfg.WaterLevel = WaveHeight(at.x, at.z, m_WaveTime);
+		}
+
+		{
+			const glm::vec3& v = m_World.GetBody(m_Walker).Velocity;
+			float speed = glm::length(glm::vec2(v.x, v.z));
+
+			// Paced by distance covered, not by time, so the legs do not
+			// scissor on the spot when the player stops.
+			m_Stride += speed * dt * s_StridePerMetre;
+
+			if (speed < 0.05f)
+				m_Stride = 0.0f;   // stand still, feet together
+		}
+
+		m_Swing = glm::max(0.0f, m_Swing - dt / s_SwingTime);
+
+		UpdateCarry(dt);
+		UpdatePickaxe();
+		UpdateRockImpacts();
+		// Third person is the camera stepping back from the head, not a
+		// different controller: aim, reach and the body are all measured from
+		// HeadPosition, so nothing else changes when the view does.
+		if (m_ThirdPerson && m_FirstPerson)
+		{
+			glm::vec3 head = HeadPosition();
+			glm::vec3 back = -m_Camera.GetForward();
+
+			m_Camera.SetPosition(head + back * s_ThirdPersonBack
+				+ glm::vec3(0.0f, s_ThirdPersonUp, 0.0f));
+		}
+
+		ApplyUndertow();
 		StreamChunks();
 
 		m_World.Step(step);
+	}
+
+	// --- Carrying a rock ---------------------------------------------------
+	//
+	// A held rock is **kinematic**: moved by whoever sets its position and by
+	// nothing else. Static would also stop the solver throwing it around, but
+	// a static body is scenery -- it would not push the rocks it is dragged
+	// through, and shoving one boulder with another is most of the fun of
+	// being able to pick one up.
+	//
+	// Position is driven directly rather than by velocity, because a velocity
+	// that has to close the gap to a moving target either lags or overshoots.
+	// The velocity it *would* have had is tracked alongside, so letting go
+	// throws it rather than dropping it dead.
+	void UpdateCarry(float dt)
+	{
+		bool pressed = Egss::Input::IsKeyPressed(EGSS_KEY_E);
+		bool edge = pressed && !m_WasCarryKey;
+		m_WasCarryKey = pressed;
+
+		if (edge)
+		{
+			if (m_Held >= 0 || m_HeldTool >= 0)
+				Release();
+			else
+				TryPickUp();
+		}
+
+		if (m_Held < 0 && m_HeldTool < 0)
+			return;
+
+		Egss::RigidBody3D& body = m_Held >= 0
+			? m_World.GetBody(m_Rocks[m_Held].Handle)
+			: m_World.GetBody(m_Tools[m_HeldTool].Handle);
+
+		// Picking up is a reach, not a teleport: the object travels from where
+		// it was lying to the hand over a fifth of a second, and the arm --
+		// which is drawn to the same point -- goes with it.
+		m_PickupBlend = glm::min(1.0f, m_PickupBlend + dt / s_PickupTime);
+
+		float eased = m_PickupBlend * m_PickupBlend * (3.0f - 2.0f * m_PickupBlend);
+
+		glm::vec3 target = glm::mix(m_PickupFrom, CarryPoint(), eased);
+
+		// What it would be moving at if it were following under its own steam.
+		// Kept so a release inherits the swing of the camera.
+		m_ThrowVelocity = dt > 1e-6f ? (target - body.Position) / dt : glm::vec3(0.0f);
+
+		body.Position = target;
+
+		// Posed, not left as it fell. Blended in over the same reach, so it
+		// turns in the hand rather than snapping upright the instant it lifts.
+		body.Orientation = glm::slerp(m_PickupOrientation, GripOrientation(), eased);
+
+		body.Velocity = glm::vec3(0.0f);
+		body.AngularVelocity = glm::vec3(0.0f);
+		body.Awake = true;
+	}
+
+	// The small rock nearest to what the camera is pointing at. Size is the
+	// gate: a boulder is not liftable, and saying so with the collider's own
+	// half-extents means it stays true if the rocks are ever resized.
+	// One hand. A rock or a tool, whichever is better lined up -- and holding
+	// either means you cannot take the other without putting this one down.
+	void TryPickUp()
+	{
+		// The guard belongs here, not only in the caller. "Your hands are full"
+		// is the rule the whole tool design rests on, and a rule enforced by
+		// whoever happens to call is a rule waiting to be bypassed.
+		if (m_Held >= 0 || m_HeldTool >= 0)
+			return;
+
+		int rock = AimedAtRock(s_PickupReach, s_PickupAlignment, true);
+		float rockAlignment = rock >= 0
+			? Alignment(m_World.GetBody(m_Rocks[rock].Handle).Position) : -1.0f;
+
+		int tool = AimedAtTool(s_PickupReach, s_PickupAlignment);
+		float toolAlignment = tool >= 0
+			? Alignment(m_World.GetBody(m_Tools[tool].Handle).Position) : -1.0f;
+
+		if (tool >= 0 && toolAlignment >= rockAlignment)
+		{
+			m_HeldTool = tool;
+			m_ThrowVelocity = glm::vec3(0.0f);
+
+			BeginPickup(m_World.GetBody(m_Tools[tool].Handle));
+			m_World.GetBody(m_Tools[tool].Handle).Type = Egss::BodyType::Kinematic;
+			return;
+		}
+
+		if (rock < 0)
+			return;
+
+		m_Held = rock;
+		m_ThrowVelocity = glm::vec3(0.0f);
+
+		BeginPickup(m_World.GetBody(m_Rocks[rock].Handle));
+		m_World.GetBody(m_Rocks[rock].Handle).Type = Egss::BodyType::Kinematic;
+	}
+
+	void BeginPickup(Egss::RigidBody3D& body)
+	{
+		m_PickupFrom = body.Position;
+		m_PickupOrientation = body.Orientation;
+		m_PickupBlend = 0.0f;
+
+		// **The collider is put away while the thing is in your hand.**
+		//
+		// A kinematic body overlapping the player is not a nudge -- measured,
+		// one sitting inside the walker threw them 80.7 m in five seconds,
+		// because kinematic bodies shove dynamic ones and are not shoved back.
+		// Posing the tool so its shaft points away keeps it out of the capsule
+		// in the ordinary case, and "the ordinary case" is exactly the wrong
+		// thing to rely on: a big rock, a slope or a low branch puts it back
+		// inside sooner or later.
+		//
+		// Shrinking the collider was the first attempt and only *reduced* it,
+		// 80.7 m to 13.2 -- a tiny box inside a capsule still makes a contact,
+		// and a kinematic body still wins it. So the body keeps its shape and
+		// stops colliding with the one carrying it, which is what was actually
+		// meant. It still collides with everything else, so a held rock can
+		// still be knocked out of the way by a falling one.
+		body.IgnoreCollisionWith = (int)m_Walker;
+	}
+
+	// Lets it collide with the player again the moment it leaves the hand.
+	void RestoreHeldCollider()
+	{
+		if (m_Held >= 0)
+			m_World.GetBody(m_Rocks[m_Held].Handle).IgnoreCollisionWith = -1;
+		else if (m_HeldTool >= 0)
+			m_World.GetBody(m_Tools[m_HeldTool].Handle).IgnoreCollisionWith = -1;
+	}
+
+	int AimedAtTool(float reach, float alignment) const
+	{
+		int best = -1;
+		float bestAlignment = alignment;
+
+		for (size_t i = 0; i < m_Tools.size(); i++)
+		{
+			if ((int)i == m_HeldTool)
+				continue;
+
+			glm::vec3 at = m_World.GetBody(m_Tools[i].Handle).Position;
+			if (glm::length(at - m_Camera.GetPosition()) > reach)
+				continue;
+
+			float aligned = Alignment(at);
+			if (aligned > bestAlignment)
+			{
+				bestAlignment = aligned;
+				best = (int)i;
+			}
+		}
+
+		return best;
+	}
+
+	void Release()
+	{
+		if (m_Held < 0 && m_HeldTool < 0)
+			return;
+
+		Egss::RigidBody3D& body = m_Held >= 0
+			? m_World.GetBody(m_Rocks[m_Held].Handle)
+			: m_World.GetBody(m_Tools[m_HeldTool].Handle);
+
+		RestoreHeldCollider();
+
+		body.Type = Egss::BodyType::Dynamic;
+
+		// Clamped, so a fast flick of the mouse does not launch a rock across
+		// the island -- the throw should come from the player moving, not from
+		// how sharply they turned on the frame they let go.
+		glm::vec3 throwVelocity = m_ThrowVelocity;
+		float speed = glm::length(throwVelocity);
+
+		if (speed > s_ThrowSpeedLimit)
+			throwVelocity *= s_ThrowSpeedLimit / speed;
+
+		body.Velocity = throwVelocity;
+		body.Awake = true;
+
+		m_Held = -1;
+		m_HeldTool = -1;
+	}
+
+	// --- Trees -------------------------------------------------------------
+	//
+	// A trunk that splits into branches that split into branches. Each segment
+	// is a tapered prism; each tip spawns `s_TreeChildren` children, shorter
+	// and thinner by a fixed ratio, until `s_TreeDepth` runs out.
+	//
+	// The ratios are the whole model. Length and radius shrinking by a constant
+	// factor per generation is what makes the thing read as a tree rather than
+	// as a bundle of sticks, and it also means the result has closed forms to
+	// be checked against: the segment count is a geometric series in the
+	// branching factor, and the height is bounded by one in the length ratio.
+	// Neither is computed anywhere in the generator.
+	struct TreeParams
+	{
+		int Depth = s_TreeDepth;
+		int Children = s_TreeChildren;
+		int Sides = 6;
+
+		float Length = 2.6f;
+		float Radius = 0.20f;
+
+		float LengthRatio = 0.74f;
+		float RadiusRatio = 0.62f;
+
+		float Spread = 36.0f;     // degrees a child leans off its parent
+
+		// Foliage. One cluster per terminal branch, which makes the leaf count
+		// a closed form too: a complete c-ary tree of depth d has c^d tips.
+		float LeafRadius = 0.55f;
+		int LeafSegments = 5;
+		int LeafRings = 3;
+	};
+
+	// A ring of `sides` points around `centre`, in the plane perpendicular to
+	// `dir`.
+	static void Ring(const glm::vec3& centre, const glm::vec3& dir, float radius,
+		int sides, const glm::vec3& u, const glm::vec3& v, std::vector<glm::vec3>& out)
+	{
+		out.clear();
+		for (int i = 0; i < sides; i++)
+		{
+			float a = (float)i / (float)sides * 6.2831853f;
+			out.push_back(centre + (u * std::cos(a) + v * std::sin(a)) * radius);
+		}
+	}
+
+	// Any two vectors perpendicular to `dir` and to each other. Picked from
+	// whichever axis `dir` is least aligned with, so the cross product never
+	// collapses.
+	static void Basis(const glm::vec3& dir, glm::vec3& outU, glm::vec3& outV)
+	{
+		glm::vec3 away = std::fabs(dir.y) < 0.9f
+			? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+
+		outU = glm::normalize(glm::cross(dir, away));
+		outV = glm::normalize(glm::cross(dir, outU));
+	}
+
+	// A lump of foliage: the same jittered blob the rocks are made of, smaller
+	// and coarser. Deliberately not leaf-shaped -- at the size these are drawn
+	// a cluster reads as foliage and a hundred individual leaves would be a
+	// hundred times the triangles to say the same thing.
+	static void LeafCluster(Egss::MeshData& data, const glm::vec3& centre, float radius,
+		int segments, int rings, unsigned int seed, int path)
+	{
+		auto point = [&](int i, int j)
+		{
+			int wrapped = i % segments;
+
+			float u = (float)wrapped / (float)segments * 6.2831853f;
+			float v = (float)j / (float)rings * 3.14159265f;
+
+			float r = radius * (0.72f + Hash2DUnit(path * 31 + wrapped, j, seed) * 0.5f);
+
+			return centre + glm::vec3(std::sin(v) * std::cos(u), std::cos(v),
+				std::sin(v) * std::sin(u)) * r;
+		};
+
+		auto face = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
+		{
+			glm::vec3 n = glm::cross(b - a, c - a);
+			if (glm::length(n) < 1e-9f)
+				return;
+
+			n = glm::normalize(n);
+
+			unsigned int at = (unsigned int)data.Vertices.size();
+			data.Vertices.push_back({ a, n, { 0.0f, 0.0f } });
+			data.Vertices.push_back({ b, n, { 1.0f, 0.0f } });
+			data.Vertices.push_back({ c, n, { 0.5f, 1.0f } });
+			data.Indices.push_back(at);
+			data.Indices.push_back(at + 1);
+			data.Indices.push_back(at + 2);
+		};
+
+		for (int j = 0; j < rings; j++)
+			for (int i = 0; i < segments; i++)
+			{
+				glm::vec3 a = point(i, j), b = point(i + 1, j);
+				glm::vec3 c = point(i + 1, j + 1), d = point(i, j + 1);
+
+				face(a, b, c);
+				face(a, c, d);
+			}
+	}
+
+	static void Segment(Egss::MeshData& data, const glm::vec3& base, const glm::vec3& tip,
+		float baseRadius, float tipRadius, int sides)
+	{
+		glm::vec3 dir = tip - base;
+		float length = glm::length(dir);
+		if (length < 1e-5f)
+			return;
+
+		dir /= length;
+
+		glm::vec3 u, v;
+		Basis(dir, u, v);
+
+		std::vector<glm::vec3> lower, upper;
+		Ring(base, dir, baseRadius, sides, u, v, lower);
+		Ring(tip, dir, tipRadius, sides, u, v, upper);
+
+		for (int i = 0; i < sides; i++)
+		{
+			int j = (i + 1) % sides;
+
+			// Flat per face, which suits the banded shading the rest of the
+			// world uses -- a smooth trunk under four bands is two stripes.
+			glm::vec3 n = glm::cross(lower[j] - lower[i], upper[i] - lower[i]);
+			if (glm::length(n) < 1e-8f)
+				continue;
+
+			n = glm::normalize(n);
+
+			unsigned int at = (unsigned int)data.Vertices.size();
+			data.Vertices.push_back({ lower[i], n, { 0.0f, 0.0f } });
+			data.Vertices.push_back({ lower[j], n, { 1.0f, 0.0f } });
+			data.Vertices.push_back({ upper[j], n, { 1.0f, 1.0f } });
+			data.Vertices.push_back({ upper[i], n, { 0.0f, 1.0f } });
+
+			data.Indices.push_back(at);
+			data.Indices.push_back(at + 1);
+			data.Indices.push_back(at + 2);
+			data.Indices.push_back(at);
+			data.Indices.push_back(at + 2);
+			data.Indices.push_back(at + 3);
+		}
+	}
+
+	static void Branch(Egss::MeshData& bark, Egss::MeshData& leaves, const TreeParams& tree,
+		const glm::vec3& base, const glm::vec3& dir, float length, float radius,
+		int depth, unsigned int seed, int path)
+	{
+		glm::vec3 tip = base + dir * length;
+
+		Segment(bark, base, tip, radius, radius * tree.RadiusRatio, tree.Sides);
+
+		if (depth <= 0)
+		{
+			// A terminal branch carries the foliage, set a little past the tip
+			// so the twig disappears into it rather than poking out the far
+			// side.
+			LeafCluster(leaves, tip + dir * (tree.LeafRadius * 0.35f),
+				tree.LeafRadius * (0.75f + Hash2DUnit(path, 9, seed) * 0.5f),
+				tree.LeafSegments, tree.LeafRings, seed, path);
+			return;
+		}
+
+		glm::vec3 u, v;
+		Basis(dir, u, v);
+
+		for (int i = 0; i < tree.Children; i++)
+		{
+			// Spread evenly around the parent, then jittered -- evenly spaced
+			// children look like a lamp, and unjittered ones repeat visibly at
+			// every level because every node uses the same angles.
+			float around = ((float)i / (float)tree.Children) * 6.2831853f
+				+ Hash2DUnit(path, i * 3 + depth, seed) * 1.7f;
+
+			float lean = glm::radians(tree.Spread
+				* (0.65f + Hash2DUnit(path, i * 3 + 1 + depth, seed) * 0.7f));
+
+			glm::vec3 side = u * std::cos(around) + v * std::sin(around);
+			glm::vec3 childDir = glm::normalize(dir * std::cos(lean) + side * std::sin(lean));
+
+			Branch(bark, leaves, tree, tip, childDir, length * tree.LengthRatio,
+				radius * tree.RadiusRatio, depth - 1, seed, path * tree.Children + i + 1);
+		}
+	}
+
+	static void Finish(Egss::MeshData& data)
+	{
+		if (data.Indices.empty())
+			return;
+
+		Egss::Submesh all;
+		all.IndexCount = (unsigned int)data.Indices.size();
+		data.Submeshes.push_back(all);
+		data.RecalculateBounds();
+	}
+
+	// Bark and foliage come out as separate meshes rather than one, because
+	// they are two different colours and the leaves are the half worth being
+	// able to turn off when counting triangles.
+	static void MakeTreeMesh(unsigned int seed, const TreeParams& tree,
+		Egss::MeshData& outBark, Egss::MeshData& outLeaves)
+	{
+		Branch(outBark, outLeaves, tree, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
+			tree.Length, tree.Radius, tree.Depth, seed, 0);
+
+		Finish(outBark);
+		Finish(outLeaves);
+	}
+
+	struct Tree
+	{
+		glm::vec3 Position;      // the base, where the trunk meets the ground
+		float Yaw;
+		float Scale;
+		int Shape;
+
+		// A standing tree is a **static** capsule, so it is something you walk
+		// into rather than through. Felling it is a change of body type: the
+		// same capsule becomes dynamic and gravity does the rest. Nothing is
+		// added or removed, which matters because PhysicsWorld3D has no way to
+		// remove a body.
+		Egss::PhysicsWorld3D::BodyHandle Body = 0;
+		float HalfHeight = 1.0f;
+		int Hits = 1;
+		bool Felled = false;
+	};
+	// --- The body you are looking out of --------------------------------------
+	//
+	// A **viewmodel**, not a ragdoll. The Ragdoll demo's thirteen jointed
+	// bodies balance because they are simulated; driving them from a kinematic
+	// capsule would mean two things deciding where the player is and fighting
+	// over it. What is borrowed is the *proportions* -- the limbs are posed
+	// procedurally and drawn, and nothing about them is simulated.
+	//
+	// Only what a person can see of themselves: hips, legs, arms and hands.
+	// No head, no chest, no neck, because from inside your own eyes there is
+	// nothing there to draw.
+	glm::vec3 BodyForward() const
+	{
+		// Yaw only. The hips do not tip when you look at your feet, and a body
+		// that pitched with the camera would put its legs through the floor.
+		float yaw = glm::radians(m_Controller.GetYaw());
+		return glm::normalize(glm::vec3(std::cos(yaw), 0.0f, std::sin(yaw)));
+	}
+
+	glm::vec3 BodyRight() const
+	{
+		return glm::normalize(glm::cross(BodyForward(), glm::vec3(0.0f, 1.0f, 0.0f)));
+	}
+
+	// Where a held thing sits: in the hand. The physics carry point *is* this,
+	// so the tool being drawn and the tool being simulated cannot drift apart.
+	// The head, which is where the eyes are whether or not the camera is there.
+	// Everything hung off the body measures from this rather than from the
+	// camera, so pulling the camera back for third person does not drag the
+	// player's hands across the island with it.
+	glm::vec3 HeadPosition() const
+	{
+		return m_World.GetBody(m_Walker).Position + glm::vec3(0.0f, s_EyeHeight, 0.0f);
+	}
+
+	glm::vec3 CarryPoint() const
+	{
+		glm::vec3 aim = m_Camera.GetForward();
+
+		glm::vec3 at = HeadPosition()
+			+ aim * s_HandForward
+			+ BodyRight() * s_HandSide
+			- glm::vec3(0.0f, s_HandDrop, 0.0f);
+
+		// The swing. `arc` runs 0 -> -1 -> 0 -> +1 -> 0 across the stroke:
+		// negative is the wind-up, back and up over the shoulder; positive is
+		// the strike, forward and down. One damped sine gets both, and it ends
+		// where it started so nothing has to be reset.
+		if (m_Swing > 0.0f)
+		{
+			float t = 1.0f - m_Swing;
+			float arc = -std::sin(t * 6.2831853f) * (1.0f - t);
+
+			at += aim * (s_SwingReach * arc)
+				- glm::vec3(0.0f, 1.0f, 0.0f) * (s_SwingDrop * arc);
+		}
+
+		return at;
+	}
+
+	// A tube through a stack of elliptical rings, which is enough to build a
+	// person out of: limbs are two rings and a taper, a torso is five rings
+	// that are wider across than deep, a head is an ovoid.
+	//
+	// Elliptical rather than round is most of what stops it reading as pipes.
+	// A chest is not a cylinder and neither is a shin.
+	struct BodyRing
+	{
+		float Y;
+		float RadiusX;
+		float RadiusZ;
+	};
+
+	static Egss::MeshData MakeTube(const std::vector<BodyRing>& rings, int sides,
+		bool capEnds = true)
+	{
+		Egss::MeshData data;
+
+		if (rings.size() < 2)
+			return data;
+
+		auto at = [&](size_t r, int i)
+		{
+			float a = (float)(i % sides) / (float)sides * 6.2831853f;
+			return glm::vec3(std::cos(a) * rings[r].RadiusX, rings[r].Y,
+				std::sin(a) * rings[r].RadiusZ);
+		};
+
+		auto face = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
+		{
+			glm::vec3 n = glm::cross(b - a, c - a);
+			if (glm::length(n) < 1e-10f)
+				return;
+
+			n = glm::normalize(n);
+
+			unsigned int base = (unsigned int)data.Vertices.size();
+			data.Vertices.push_back({ a, n, { 0.0f, 0.0f } });
+			data.Vertices.push_back({ b, n, { 1.0f, 0.0f } });
+			data.Vertices.push_back({ c, n, { 0.5f, 1.0f } });
+			data.Indices.push_back(base);
+			data.Indices.push_back(base + 1);
+			data.Indices.push_back(base + 2);
+		};
+
+		for (size_t r = 0; r + 1 < rings.size(); r++)
+			for (int i = 0; i < sides; i++)
+			{
+				glm::vec3 a = at(r, i), b = at(r, i + 1);
+				glm::vec3 c = at(r + 1, i + 1), d = at(r + 1, i);
+
+				face(a, b, c);
+				face(a, c, d);
+			}
+
+		if (capEnds)
+		{
+			glm::vec3 low(0.0f, rings.front().Y, 0.0f);
+			glm::vec3 high(0.0f, rings.back().Y, 0.0f);
+
+			for (int i = 0; i < sides; i++)
+			{
+				face(low, at(0, i + 1), at(0, i));
+				face(high, at(rings.size() - 1, i), at(rings.size() - 1, i + 1));
+			}
+		}
+
+		Egss::Submesh all;
+		all.IndexCount = (unsigned int)data.Indices.size();
+		data.Submeshes.push_back(all);
+		data.RecalculateBounds();
+
+		return data;
+	}
+
+	// An ovoid: a sphere squashed independently on each axis. Heads, hands and
+	// feet are all this shape with different numbers.
+	static Egss::MeshData MakeOvoid(const glm::vec3& radii, int sides, int rings)
+	{
+		std::vector<BodyRing> stack;
+
+		for (int j = 0; j <= rings; j++)
+		{
+			float v = (float)j / (float)rings * 3.14159265f;
+
+			stack.push_back({ -std::cos(v) * radii.y,
+				glm::max(std::sin(v) * radii.x, 1e-4f),
+				glm::max(std::sin(v) * radii.z, 1e-4f) });
+		}
+
+		return MakeTube(stack, sides, false);
+	}
+
+	// The rotation taking +y to `to`. Tool meshes are built with the shaft
+	// along +y precisely so one of these poses any of them.
+	static glm::quat ShaftTowards(const glm::vec3& to)
+	{
+		glm::vec3 from(0.0f, 1.0f, 0.0f);
+		glm::vec3 dir = glm::normalize(to);
+
+		float d = glm::dot(from, dir);
+
+		if (d > 0.9999f)
+			return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+		if (d < -0.9999f)
+			return glm::angleAxis(3.14159265f, glm::vec3(1.0f, 0.0f, 0.0f));
+
+		glm::vec3 axis = glm::normalize(glm::cross(from, dir));
+		return glm::angleAxis(std::acos(glm::clamp(d, -1.0f, 1.0f)), axis);
+	}
+
+	// How a held tool is carried: shaft up and tilted forward, head away from
+	// the player. Lying-down orientation was the bug -- a 0.42 m shaft left
+	// horizontal reaches back *through* the walker's capsule, which is why
+	// carrying anything shoved the player around.
+	glm::quat GripOrientation() const
+	{
+		glm::vec3 aim = m_Camera.GetForward();
+		glm::vec3 shaft = glm::normalize(glm::vec3(0.0f, 1.0f, 0.0f) * 0.75f + aim * 0.66f);
+
+		return ShaftTowards(shaft);
+	}
+
+	void DrawBody()
+	{
+		if (!m_ShowBody || !m_LimbMesh)
+			return;
+
+		m_Material->Set("u_Terrain", 0);
+		m_Material->Set("u_Textured", 0);
+
+		glm::vec3 head = HeadPosition();
+		glm::vec3 forward = BodyForward();
+		glm::vec3 right = BodyRight();
+		const glm::vec3 up(0.0f, 1.0f, 0.0f);
+
+		// A frame the whole body is described in: x right, y up, z forward.
+		glm::mat4 frame(1.0f);
+		frame[0] = glm::vec4(right, 0.0f);
+		frame[1] = glm::vec4(up, 0.0f);
+		frame[2] = glm::vec4(forward, 0.0f);
+		frame[3] = glm::vec4(head, 1.0f);
+
+		auto part = [&](const std::shared_ptr<Egss::Mesh>& mesh, const glm::vec3& local,
+			const glm::vec3& scale, const glm::vec4& colour)
+		{
+			if (!mesh)
+				return;
+
+			m_Material->Set("u_Color", colour);
+			Egss::Renderer::Submit(m_Material, mesh,
+				frame * glm::translate(glm::mat4(1.0f), local)
+				* glm::scale(glm::mat4(1.0f), scale));
+		};
+
+		float swing = std::sin(m_Stride) * s_StrideSwing;
+
+		// Torso and head are in the body's own frame; the neck is short enough
+		// that the head sits straight on it.
+		part(m_TorsoMesh, glm::vec3(0.0f, -s_HipDrop, 0.0f), glm::vec3(1.0f), m_ClothColour);
+
+		// **No head in first person.** The camera is inside it, and with
+		// culling off its inside faces would fill the screen.
+		if (m_ThirdPerson)
+		{
+			// Neck from the shoulders up, then the head sitting on it.
+			part(m_LimbMesh, glm::vec3(0.0f, -0.20f, 0.0f), glm::vec3(0.048f, 0.14f, 0.048f),
+				m_SkinColour);
+			part(m_HeadMesh, glm::vec3(0.0f, 0.02f, 0.01f), glm::vec3(1.0f), m_SkinColour);
+		}
+
+		// Legs. World-space points, because the limbs are drawn between pairs
+		// of them and a joint is just where two meet.
+		for (int side = 0; side < 2; side++)
+		{
+			float sign = side == 0 ? -1.0f : 1.0f;
+			float phase = side == 0 ? swing : -swing;
+
+			glm::vec3 hip = head + right * (sign * s_HipWidth) - up * s_HipDrop;
+			glm::vec3 knee = hip + glm::normalize(-up + forward * phase) * s_ThighLength;
+
+			float bend = glm::max(0.0f, phase) * 1.4f;
+			glm::vec3 ankle = knee + glm::normalize(-up + forward * (phase - bend)) * s_ShinLength;
+
+			DrawLimb(hip, knee, 0.085f, 0.070f, m_ClothColour);
+			DrawLimb(knee, ankle, 0.070f, 0.052f, m_ClothColour);
+
+			DrawJoint(knee, 0.068f, m_ClothColour);
+
+			// The foot points where the leg is going, so it swings with the
+			// stride instead of staying nailed forward.
+			glm::vec3 toe = ankle + glm::normalize(forward - up * 0.25f) * 0.06f;
+			DrawOriented(m_FootMesh, toe, forward, m_BootColour);
+		}
+
+		// Arms. The right hand is wherever a carried thing is; the left swings
+		// with the opposite leg, which is what walking looks like.
+		glm::vec3 shoulderMid = head - up * s_ShoulderDrop;
+		glm::vec3 hand = CarryPoint();
+
+		for (int side = 0; side < 2; side++)
+		{
+			float sign = side == 0 ? -1.0f : 1.0f;
+			glm::vec3 shoulder = shoulderMid + right * (sign * s_ShoulderWidth);
+
+			glm::vec3 to = (side == 1)
+				? hand
+				: shoulder + forward * (0.16f - std::sin(m_Stride) * 0.16f) - up * 0.52f;
+
+			glm::vec3 elbow = (shoulder + to) * 0.5f + right * (sign * 0.09f) - up * 0.07f;
+
+			DrawJoint(shoulder, 0.072f, m_ClothColour);
+			DrawLimb(shoulder, elbow, 0.062f, 0.050f, m_ClothColour);
+			DrawLimb(elbow, to, 0.050f, 0.040f, m_SkinColour);
+			DrawJoint(elbow, 0.049f, m_ClothColour);
+
+			DrawOriented(m_HandMesh, to, glm::normalize(to - elbow), m_SkinColour);
+		}
+	}
+
+	// A tapered tube between two points. Two radii, because a forearm is not
+	// the same thickness at both ends and that is most of what stops a limb
+	// reading as a pipe.
+	void DrawLimb(const glm::vec3& from, const glm::vec3& to, float baseRadius,
+		float tipRadius, const glm::vec4& colour)
+	{
+		glm::vec3 along = to - from;
+		float length = glm::length(along);
+
+		if (length < 1e-4f || !m_LimbMesh)
+			return;
+
+		glm::mat4 frame = LimbFrame(from, along / length);
+
+		m_Material->Set("u_Color", colour);
+
+		// The unit limb already tapers to 0.72; the scale sets the wide end and
+		// the mesh does the rest.
+		(void)tipRadius;
+
+		Egss::Renderer::Submit(m_Material, m_LimbMesh,
+			frame * glm::scale(glm::mat4(1.0f), glm::vec3(baseRadius, length, baseRadius)));
+	}
+
+	// A blob at a joint, so knees and shoulders are round rather than a seam
+	// between two tubes.
+	void DrawJoint(const glm::vec3& at, float radius, const glm::vec4& colour)
+	{
+		if (!m_JointMesh)
+			return;
+
+		m_Material->Set("u_Color", colour);
+
+		Egss::Renderer::Submit(m_Material, m_JointMesh,
+			glm::translate(glm::mat4(1.0f), at) * glm::scale(glm::mat4(1.0f), glm::vec3(radius)));
+	}
+
+	void DrawOriented(const std::shared_ptr<Egss::Mesh>& mesh, const glm::vec3& at,
+		const glm::vec3& facing, const glm::vec4& colour)
+	{
+		if (!mesh)
+			return;
+
+		m_Material->Set("u_Color", colour);
+
+		Egss::Renderer::Submit(m_Material, mesh,
+			glm::translate(glm::mat4(1.0f), at) * glm::mat4_cast(ShaftTowards(facing)));
+	}
+
+	static glm::mat4 LimbFrame(const glm::vec3& from, const glm::vec3& dir)
+	{
+		glm::vec3 up = std::fabs(dir.y) < 0.95f ? glm::vec3(0.0f, 1.0f, 0.0f)
+			: glm::vec3(1.0f, 0.0f, 0.0f);
+
+		glm::vec3 x = glm::normalize(glm::cross(up, dir));
+		glm::vec3 z = glm::cross(dir, x);
+
+		glm::mat4 frame(1.0f);
+		frame[0] = glm::vec4(x, 0.0f);
+		frame[1] = glm::vec4(dir, 0.0f);
+		frame[2] = glm::vec4(z, 0.0f);
+		frame[3] = glm::vec4(from, 1.0f);
+
+		return frame;
+	}
+
+	// --- Tools ---------------------------------------------------------------
+	//
+	// A tool is a physics object lying on the ground, not an inventory slot.
+	// You carry one, and to use another you put this one down -- which is the
+	// whole design: the constraint is physical, so it needs no UI, no slots and
+	// no rules beyond "your hands are full".
+	//
+	// The three do different jobs and nothing else: the pickaxe damages rock,
+	// the axe cuts trees, the shovel moves ground. Swinging the wrong one at
+	// something does nothing, and swinging nothing does nothing.
+	enum class ToolKind { Pickaxe = 0, Axe, Shovel, Count };
+
+	struct Tool
+	{
+		ToolKind Kind;
+		Egss::PhysicsWorld3D::BodyHandle Handle;
+		glm::vec3 HalfExtents;
+	};
+
+	static const char* ToolName(ToolKind kind)
+	{
+		switch (kind)
+		{
+			case ToolKind::Pickaxe: return "pickaxe";
+			case ToolKind::Axe:     return "axe";
+			case ToolKind::Shovel:  return "shovel";
+			default:                return "nothing";
+		}
+	}
+
+	// Handle and head as two meshes, so they can be two colours -- wood and
+	// metal -- without a second material or a texture.
+	static void MakeToolMesh(ToolKind kind, Egss::MeshData& outWood, Egss::MeshData& outMetal)
+	{
+		auto box = [](Egss::MeshData& data, const glm::vec3& centre, const glm::vec3& half)
+		{
+			const glm::vec3 normals[6] = {
+				{ 1,0,0 }, { -1,0,0 }, { 0,1,0 }, { 0,-1,0 }, { 0,0,1 }, { 0,0,-1 }
+			};
+
+			for (int f = 0; f < 6; f++)
+			{
+				glm::vec3 n = normals[f];
+
+				// Two axes across the face, from whichever the normal is not.
+				glm::vec3 u = std::fabs(n.x) > 0.5f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
+				glm::vec3 v = glm::cross(n, u);
+
+				glm::vec3 c = centre + n * glm::dot(half, glm::abs(n));
+				glm::vec3 a = u * glm::dot(half, glm::abs(u));
+				glm::vec3 b = v * glm::dot(half, glm::abs(v));
+
+				glm::vec3 p[4] = { c - a - b, c + a - b, c + a + b, c - a + b };
+
+				unsigned int at = (unsigned int)data.Vertices.size();
+				for (int i = 0; i < 4; i++)
+					data.Vertices.push_back({ p[i], n, { 0.0f, 0.0f } });
+
+				const int order[6] = { 0, 1, 2, 0, 2, 3 };
+				for (int i = 0; i < 6; i++)
+					data.Indices.push_back(at + (unsigned int)order[i]);
+			}
+		};
+
+		// Shafts all point along +y from the grip, so a held tool can be
+		// oriented once and every kind sits in the hand the same way.
+		box(outWood, { 0.0f, 0.36f, 0.0f }, { 0.028f, 0.36f, 0.028f });
+
+		switch (kind)
+		{
+			case ToolKind::Pickaxe:
+				// Long and narrow, across the shaft.
+				box(outMetal, { 0.0f, 0.74f, 0.0f }, { 0.30f, 0.035f, 0.035f });
+				break;
+
+			case ToolKind::Axe:
+				// A wedge, offset to one side.
+				box(outMetal, { 0.10f, 0.72f, 0.0f }, { 0.10f, 0.10f, 0.030f });
+				break;
+
+			case ToolKind::Shovel:
+				// A wide flat blade past the end of the shaft.
+				box(outMetal, { 0.0f, 0.80f, 0.0f }, { 0.13f, 0.16f, 0.020f });
+				break;
+
+			default:
+				break;
+		}
+	}
+
+	void SpawnTools(const glm::vec3& near)
+	{
+		for (int i = 0; i < (int)ToolKind::Count; i++)
+		{
+			Egss::MeshData wood, metal;
+			MakeToolMesh((ToolKind)i, wood, metal);
+
+			Finish(wood);
+			Finish(metal);
+
+			m_ToolWood[i].reset(new Egss::Mesh(wood, "ToolWood"));
+			m_ToolMetal[i].reset(new Egss::Mesh(metal, "ToolMetal"));
+
+			// Laid out in front of the spawn, far enough apart to aim at one.
+			glm::vec3 at = near + glm::vec3(1.4f + (float)i * 0.9f, 1.0f, 0.6f);
+
+			glm::vec3 half(0.10f, 0.42f, 0.10f);
+
+			Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(at, half, s_ToolMass);
+			body.Friction = 0.8f;
+			body.Restitution = 0.0f;
+			body.LinearDamping = 0.3f;
+			body.AngularDamping = 0.5f;
+
+			m_Tools.push_back({ (ToolKind)i, m_World.AddBody(body), half });
+		}
+	}
+
+	void DrawTools()
+	{
+		if (m_Tools.empty())
+			return;
+
+		m_Material->Set("u_Terrain", 0);
+		m_Material->Set("u_Textured", 0);
+
+		for (int pass = 0; pass < 2; pass++)
+		{
+			m_Material->Set("u_Color", pass == 0 ? m_BarkColour : m_RockColour);
+
+			for (const Tool& tool : m_Tools)
+			{
+				const Egss::RigidBody3D& body = m_World.GetBody(tool.Handle);
+
+				glm::mat4 transform = glm::translate(glm::mat4(1.0f), body.Position)
+					* glm::mat4_cast(body.Orientation)
+					* glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -tool.HalfExtents.y, 0.0f));
+
+				int i = (int)tool.Kind;
+				Egss::Renderer::Submit(m_Material,
+					pass == 0 ? m_ToolWood[i] : m_ToolMetal[i], transform);
+			}
+		}
+	}
+
+	ToolKind HeldTool() const
+	{
+		return m_HeldTool >= 0 ? m_Tools[m_HeldTool].Kind : ToolKind::Count;
+	}
+
+	// --- Breaking a rock ---------------------------------------------------
+	//
+	// A rock too big to lift is a rock you are allowed to hit. The two rules
+	// are deliberately complementary and read off the same number -- the
+	// collider's own half-extents -- so there is never a rock that is neither.
+	void UpdatePickaxe()
+	{
+		bool swinging = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
+		bool edge = swinging && !m_WasSwinging;
+		m_WasSwinging = swinging;
+
+		if (!edge || m_Held >= 0)
+			return;   // a rock in your hands is not a tool
+
+		// The stroke plays whether or not it connects. A swing that only
+		// animates when it hits tells the player what the game found before
+		// they have finished swinging.
+		if (HeldTool() != ToolKind::Count)
+			m_Swing = 1.0f;
+
+		switch (HeldTool())
+		{
+			case ToolKind::Pickaxe:
+			case ToolKind::Axe:
+				Strike();
+				break;
+
+			case ToolKind::Shovel:
+				Dig();
+				break;
+
+			default:
+				break;   // bare hands do nothing, which is the point of tools
+		}
+	}
+
+	// The shovel. Takes a bite out of the field where you are looking, remeshes
+	// what changed, and -- the part that is easy to forget -- writes the edited
+	// chunks back to the cache. Without that, the next run would serve the
+	// *pre-dig* chunk as a hit and the hole would quietly heal.
+	bool Dig()
+	{
+		glm::vec3 origin = m_Camera.GetPosition();
+		glm::vec3 direction = m_Camera.GetForward();
+
+		float distance = 0.0f;
+		glm::vec3 point(0.0f), normal(0.0f);
+
+		// **Marched, not sphere-traced.** VoxelField3D::Raycast is the better
+		// algorithm and cannot be used here: an unallocated chunk reads
+		// `Far` -- a thousand metres -- and tracing believes it, stepping clean
+		// out of the world. Measured: a ray started 3 m above the island read
+		// 1000 at its origin and 1.86 one metre lower, and hit nothing.
+		// Skipping past the sentinel by hand did not help either, because
+		// interpolation near the boundary of an allocated chunk mixes in the
+		// neighbour's 1000 and overshoots anyway.
+		//
+		// Half a voxel at a time over a 4.5 m reach is eighteen samples. It
+		// costs nothing at this range, it is immune to the sentinel, and --
+		// unlike marching the analytic Density -- it sees holes dug earlier.
+		//
+		// The real fix belongs in Raycast, which can ask the field whether a
+		// chunk is uniform instead of inferring it from a magic number.
+		bool hit = false;
+
+		for (float t = 0.0f; t <= s_DigReach; t += s_Voxel * 0.5f)
+		{
+			glm::vec3 at = origin + direction * t;
+			glm::ivec3 lattice = glm::ivec3(glm::floor((at - m_Field->Origin()) / s_Voxel));
+
+			float d = m_Field->DistanceAt(lattice.x, lattice.y, lattice.z);
+
+			if (d < Egss::VoxelField3D::Far * 0.5f && d <= 0.0f)
+			{
+				point = at;
+				distance = t;
+				hit = true;
+				break;
+			}
+		}
+
+		int changed = hit ? m_Field->EditSphere(point, s_DigRadius, false) : 0;
+
+		if (!hit || changed == 0)
+			return false;
+
+		m_Dug++;
+
+		// Captured before remeshing, which clears the list.
+		std::vector<glm::ivec3> edited = m_Field->DirtyChunks();
+
+		RebuildDirtyMeshes(StreamFocus());
+
+		if (m_UseCache)
+		{
+			for (const glm::ivec3& chunk : edited)
+			{
+				m_Field->SaveChunk(chunk, m_ChunkBytes);
+				m_Cache.Write(chunk, m_ChunkBytes);
+			}
+		}
+
+		return true;
+	}
+
+	// One swing. Separated from the input edge so it can be driven without a
+	// mouse -- the swing is the thing worth testing, not the click.
+	//
+	// A swing goes to whichever of a rock or a standing tree is better lined
+	// up, rather than preferring one kind: aiming at a trunk with a boulder
+	// somewhere off to the side should hit the trunk.
+	bool Strike()
+	{
+		// Each tool only sees what it is for, so an axe swung at a boulder
+		// finds nothing rather than finding it and doing nothing.
+		bool forRock = HeldTool() == ToolKind::Pickaxe;
+		bool forTree = HeldTool() == ToolKind::Axe;
+
+		int rock = forRock ? AimedAtRock(s_StrikeReach, s_StrikeAlignment, false) : -1;
+		float rockAlignment = rock >= 0 ? Alignment(m_World.GetBody(m_Rocks[rock].Handle).Position) : -1.0f;
+
+		int tree = forTree ? AimedAtTree(s_StrikeReach, s_StrikeAlignment) : -1;
+		float treeAlignment = tree >= 0 ? Alignment(TrunkAim(m_Trees[tree])) : -1.0f;
+
+		if (tree >= 0 && treeAlignment >= rockAlignment)
+		{
+			m_Trees[tree].Hits--;
+			m_Struck++;
+
+			if (m_Trees[tree].Hits <= 0)
+				Fell((size_t)tree);
+
+			return true;
+		}
+
+		if (rock < 0)
+			return false;
+
+		m_Struck++;
+
+		// A swing is an impact like any other -- it goes through the same
+		// damage path a falling rock does, so there is one rule for what
+		// breaks a rock rather than two that can disagree.
+		DamageRock((size_t)rock, s_PickaxeImpact);
+
+		return true;
+	}
+
+	float Alignment(const glm::vec3& point) const
+	{
+		glm::vec3 to = point - m_Camera.GetPosition();
+
+		float distance = glm::length(to);
+		if (distance < 1e-4f)
+			return -1.0f;
+
+		return glm::dot(to / distance, m_Camera.GetForward());
+	}
+
+	// Chest height on the trunk rather than the capsule's centre, so aiming at
+	// the part of a tree you would actually swing at is what selects it.
+	glm::vec3 TrunkAim(const Tree& tree) const
+	{
+		return tree.Position + glm::vec3(0.0f, glm::min(1.2f, tree.HalfHeight), 0.0f);
+	}
+
+	int AimedAtTree(float reach, float alignment) const
+	{
+		int best = -1;
+		float bestAlignment = alignment;
+
+		for (size_t i = 0; i < m_Trees.size(); i++)
+		{
+			if (m_Trees[i].Felled)
+				continue;   // a trunk on the ground is not a tree to chop
+
+			glm::vec3 aim = TrunkAim(m_Trees[i]);
+			if (glm::length(aim - m_Camera.GetPosition()) > reach)
+				continue;
+
+			float aligned = Alignment(aim);
+			if (aligned > bestAlignment)
+			{
+				bestAlignment = aligned;
+				best = (int)i;
+			}
+		}
+
+		return best;
+	}
+
+	// Felling is a change of body type, not a new object: the same capsule
+	// that was standing there becomes dynamic, and gravity takes it from
+	// there. The push is only to decide *which way* it goes -- a trunk cut
+	// through at the base falls, it does not need to be thrown.
+	void Fell(size_t index)
+	{
+		Tree& tree = m_Trees[index];
+		if (tree.Felled)
+			return;
+
+		tree.Felled = true;
+		m_Felled++;
+
+		Egss::RigidBody3D& body = m_World.GetBody(tree.Body);
+
+		float mass = s_TreeMass * tree.Scale * tree.Scale * tree.Scale;
+
+		body.Type = Egss::BodyType::Dynamic;
+		body.SetMass(mass);
+		body.RecalculateInertia();
+		body.UpdateInertiaWorld();
+		body.Awake = true;
+
+		// Away from whoever swung, applied near the top so it topples rather
+		// than slides. Nothing here is chosen for realism -- it is chosen so a
+		// felled tree falls away from the player instead of onto them.
+		glm::vec3 away = tree.Position - m_Camera.GetPosition();
+		away.y = 0.0f;
+
+		if (glm::length(away) < 1e-3f)
+			away = glm::vec3(1.0f, 0.0f, 0.0f);
+
+		away = glm::normalize(away);
+
+		glm::vec3 top = body.Position + glm::vec3(0.0f, tree.HalfHeight * 0.9f, 0.0f);
+		m_World.ApplyImpulseAt(tree.Body, away * (mass * s_FellPush), top);
+	}
+
+	// **Cleaved, not subdivided.** A rock splits along a plane into two pieces
+	// that came from it and still fit together -- the first version cut every
+	// rock into eight equal octants, which does not read as a rock breaking, it
+	// reads as a rock being replaced by eight smaller rocks.
+	//
+	// The cut is axis-aligned through the longest axis at a hashed fraction, so
+	// the two halves are unequal and the collider stays a box. Volume, mass and
+	// health divide by that same fraction, so all three are still conserved
+	// exactly -- f and 1-f sum to one however the plane falls.
+	//
+	// The *mesh* is cut by the same plane and capped, which is what makes the
+	// pieces look like halves of something rather than two new pebbles.
+	void Shatter(size_t index)
+	{
+		Rock parent = m_Rocks[index];
+
+		const Egss::RigidBody3D& before = m_World.GetBody(parent.Handle);
+
+		glm::vec3 half = parent.HalfExtents;
+
+		int axis = (half.x >= half.y && half.x >= half.z) ? 0 : (half.y >= half.z ? 1 : 2);
+
+		// Never near the middle and never near an edge: a sliver is not a
+		// piece, and an even split is the thing this replaced.
+		float f = 0.34f + Hash2DUnit((int)index, 5, 613u) * 0.32f;
+
+		float parentMass = before.InverseMass > 0.0f ? 1.0f / before.InverseMass : 0.0f;
+		float parentHealth = HealthFor(half);
+
+		glm::vec3 centre = before.Position;
+		glm::quat orientation = before.Orientation;
+		glm::vec3 velocity = before.Velocity;
+
+		float cut = -half[axis] + 2.0f * half[axis] * f;
+
+		for (int piece = 0; piece < 2; piece++)
+		{
+			glm::vec3 pieceHalf = half;
+			pieceHalf[axis] = half[axis] * (piece == 0 ? f : 1.0f - f);
+
+			glm::vec3 offset(0.0f);
+			offset[axis] = piece == 0 ? half[axis] * (f - 1.0f) : half[axis] * f;
+
+			glm::vec3 at = centre + orientation * offset;
+
+			// Apart along the cut, so the two halves separate instead of
+			// resting exactly against each other.
+			glm::vec3 apart = orientation * glm::normalize(offset + glm::vec3(1e-5f))
+				* s_ShatterKick;
+
+			// The parent's mesh, cut by the same plane and re-normalised into
+			// the piece's own -1..1 box.
+			Egss::MeshData cutMesh;
+			{
+				Egss::MeshData scaled = *parent.Shape;
+
+				for (Egss::MeshVertex& v : scaled.Vertices)
+					v.Position *= half;
+
+				Egss::MeshData clipped;
+				ClipMesh(scaled, axis, cut, piece == 0, clipped);
+
+				for (const Egss::MeshVertex& v : clipped.Vertices)
+				{
+					Egss::MeshVertex moved = v;
+					moved.Position = (v.Position - offset) / pieceHalf;
+					cutMesh.Vertices.push_back(moved);
+				}
+
+				cutMesh.Indices = clipped.Indices;
+				Finish(cutMesh);
+			}
+
+			std::shared_ptr<Egss::MeshData> shape =
+				std::make_shared<Egss::MeshData>(std::move(cutMesh));
+
+			std::shared_ptr<Egss::Mesh> mesh = shape->Indices.empty()
+				? nullptr : std::make_shared<Egss::Mesh>(*shape, "RockPiece");
+
+			float pieceFraction = piece == 0 ? f : 1.0f - f;
+
+			if (piece == 0)
+			{
+				Egss::RigidBody3D& body = m_World.GetBody(parent.Handle);
+
+				body.HalfExtents = pieceHalf;
+				body.SetMass(parentMass * pieceFraction);
+				body.RecalculateInertia();
+				body.Position = at;
+				body.PreviousPosition = at;
+				body.Velocity = velocity + apart;
+				body.Awake = true;
+				body.UpdateInertiaWorld();
+
+				m_Rocks[index].HalfExtents = pieceHalf;
+				m_Rocks[index].Health = parentHealth * pieceFraction;
+				m_Rocks[index].PreviousVelocity = body.Velocity;
+				m_Rocks[index].Shape = shape;
+				m_Rocks[index].MeshPtr = mesh;
+				continue;
+			}
+
+			Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(at, pieceHalf,
+				parentMass * pieceFraction);
+
+			body.Orientation = orientation;
+			body.Velocity = velocity + apart;
+			body.Friction = 0.9f;
+			body.Restitution = 0.0f;
+			body.LinearDamping = 0.2f;
+			body.AngularDamping = 0.4f;
+			body.UpdateInertiaWorld();
+
+			Rock made;
+			made.Handle = m_World.AddBody(body);
+			made.HalfExtents = pieceHalf;
+			made.Health = parentHealth * pieceFraction;
+			made.Shape = shape;
+			made.MeshPtr = mesh;
+
+			m_Rocks.push_back(made);
+		}
+	}
+
+	// Everything that can break a rock comes through here: a tool, a fall, a
+	// rock thrown at another rock. `impulse` is in newton-seconds, so the
+	// threshold is a real quantity rather than a tuning knob with no units --
+	// below it, a knock is a knock.
+	void DamageRock(size_t index, float impulse)
+	{
+		if (impulse <= s_ImpactThreshold)
+			return;
+
+		m_Rocks[index].Health -= (impulse - s_ImpactThreshold);
+
+		if (m_Rocks[index].Health <= 0.0f)
+			Shatter(index);
+	}
+
+	// Collisions, measured as the change the solver made to a body's velocity.
+	// Gravity contributes 9.81/60 = 0.16 m/s a step, which times even a heavy
+	// rock is far under the threshold, so free fall never damages anything --
+	// landing does.
+	void UpdateRockImpacts()
+	{
+		for (size_t i = 0; i < m_Rocks.size(); i++)
+		{
+			Egss::RigidBody3D& body = m_World.GetBody(m_Rocks[i].Handle);
+
+			if (body.Type != Egss::BodyType::Dynamic)
+			{
+				m_Rocks[i].PreviousVelocity = body.Velocity;
+				continue;
+			}
+
+			float mass = body.InverseMass > 0.0f ? 1.0f / body.InverseMass : 0.0f;
+			float impulse = mass * glm::length(body.Velocity - m_Rocks[i].PreviousVelocity);
+
+			m_Rocks[i].PreviousVelocity = body.Velocity;
+
+			size_t before = m_Rocks.size();
+			DamageRock(i, impulse);
+
+			if (m_Rocks.size() != before)
+				m_Rocks[i].PreviousVelocity = m_World.GetBody(m_Rocks[i].Handle).Velocity;
+		}
+	}
+
+	// Shared by the pickaxe and the pickup: the rock nearest to what the
+	// camera is pointing at, filtered by whether it is liftable.
+	int AimedAtRock(float reach, float alignment, bool wantLiftable) const
+	{
+		glm::vec3 eye = m_Camera.GetPosition();
+		glm::vec3 forward = m_Camera.GetForward();
+
+		int best = -1;
+		float bestAlignment = alignment;
+
+		for (size_t i = 0; i < m_Rocks.size(); i++)
+		{
+			const glm::vec3& half = m_Rocks[i].HalfExtents;
+			bool liftable = glm::max(glm::max(half.x, half.y), half.z) <= s_PickupMaxHalf;
+
+			if (liftable != wantLiftable)
+				continue;
+
+			glm::vec3 to = m_World.GetBody(m_Rocks[i].Handle).Position - eye;
+
+			float distance = glm::length(to);
+			if (distance > reach || distance < 1e-4f)
+				continue;
+
+			float aligned = glm::dot(to / distance, forward);
+			if (aligned > bestAlignment)
+			{
+				bestAlignment = aligned;
+				best = (int)i;
+			}
+		}
+
+		return best;
 	}
 
 	// --- Streaming --------------------------------------------------------
@@ -856,6 +2276,120 @@ public:
 		return data;
 	}
 
+	// Cuts a mesh with an axis-aligned plane and caps the hole, so the piece
+	// that comes back is a closed solid rather than an open shell.
+	//
+	// The cap is a fan from the centroid of the cut edges. That is only valid
+	// while the cross-section is a simple polygon, which holds for these blobs
+	// because every one of them is star-shaped about its own centre -- it would
+	// not hold for a torus, and this is not a general mesh boolean.
+	static void ClipMesh(const Egss::MeshData& in, int axis, float cut, bool keepBelow,
+		Egss::MeshData& out)
+	{
+		out.Vertices.clear();
+		out.Indices.clear();
+		out.Submeshes.clear();
+
+		std::vector<glm::vec3> rim;
+
+		auto side = [&](const glm::vec3& p)
+		{ return keepBelow ? (p[axis] <= cut) : (p[axis] >= cut); };
+
+		auto cross = [&](const glm::vec3& a, const glm::vec3& b)
+		{
+			float t = (cut - a[axis]) / (b[axis] - a[axis]);
+			return a + (b - a) * glm::clamp(t, 0.0f, 1.0f);
+		};
+
+		auto emit = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
+		{
+			glm::vec3 n = glm::cross(b - a, c - a);
+			if (glm::length(n) < 1e-10f)
+				return;
+
+			n = glm::normalize(n);
+
+			unsigned int at = (unsigned int)out.Vertices.size();
+			out.Vertices.push_back({ a, n, { 0.0f, 0.0f } });
+			out.Vertices.push_back({ b, n, { 1.0f, 0.0f } });
+			out.Vertices.push_back({ c, n, { 0.5f, 1.0f } });
+			out.Indices.push_back(at);
+			out.Indices.push_back(at + 1);
+			out.Indices.push_back(at + 2);
+		};
+
+		for (size_t t = 0; t < in.Indices.size(); t += 3)
+		{
+			glm::vec3 p[3] = {
+				in.Vertices[in.Indices[t + 0]].Position,
+				in.Vertices[in.Indices[t + 1]].Position,
+				in.Vertices[in.Indices[t + 2]].Position
+			};
+
+			bool keep[3] = { side(p[0]), side(p[1]), side(p[2]) };
+			int kept = (keep[0] ? 1 : 0) + (keep[1] ? 1 : 0) + (keep[2] ? 1 : 0);
+
+			if (kept == 0)
+				continue;
+
+			if (kept == 3)
+			{
+				emit(p[0], p[1], p[2]);
+				continue;
+			}
+
+			// One or two corners survive; the triangle becomes a triangle or a
+			// quad, and either way it contributes one segment to the rim.
+			if (kept == 1)
+			{
+				int i = keep[0] ? 0 : (keep[1] ? 1 : 2);
+				glm::vec3 a = cross(p[i], p[(i + 1) % 3]);
+				glm::vec3 b = cross(p[i], p[(i + 2) % 3]);
+
+				emit(p[i], a, b);
+				rim.push_back(a);
+				rim.push_back(b);
+			}
+			else
+			{
+				int i = !keep[0] ? 0 : (!keep[1] ? 1 : 2);
+				glm::vec3 a = cross(p[i], p[(i + 1) % 3]);
+				glm::vec3 b = cross(p[i], p[(i + 2) % 3]);
+
+				emit(a, p[(i + 1) % 3], p[(i + 2) % 3]);
+				emit(a, p[(i + 2) % 3], b);
+				rim.push_back(a);
+				rim.push_back(b);
+			}
+		}
+
+		if (rim.empty())
+			return;
+
+		// Cap: fan from the centroid of the rim, wound so the face points away
+		// from the half that was kept.
+		glm::vec3 centre(0.0f);
+		for (const glm::vec3& r : rim)
+			centre += r;
+		centre /= (float)rim.size();
+
+		glm::vec3 outward(0.0f);
+		outward[axis] = keepBelow ? 1.0f : -1.0f;
+
+		for (size_t i = 0; i + 1 < rim.size(); i += 2)
+		{
+			glm::vec3 a = rim[i], b = rim[i + 1];
+
+			// The rim arrives as unordered segments, so each is capped as its
+			// own triangle back to the centre rather than sorted into a loop.
+			glm::vec3 n = glm::cross(b - a, centre - a);
+			if (glm::dot(n, outward) < 0.0f)
+				std::swap(a, b);
+
+			emit(a, b, centre);
+		}
+	}
+
 	// Grey rocks, scattered on the spawn island and left to the solver.
 	//
 	// **Boxes, not spheres.** The first version used sphere colliders with a
@@ -878,10 +2412,6 @@ public:
 	// rock half-buried rather than as one floating.
 	void SpawnRocks(const Island& island)
 	{
-		// A handful of distinct shapes, cycled, so sixteen rocks are not one
-		// rock sixteen times.
-		for (int i = 0; i < s_RockShapes; i++)
-			m_RockMeshes[i].reset(new Egss::Mesh(MakeRockMesh(101u + (unsigned int)i * 37u), "Rock"));
 
 		// Kept inside the radius the attach-time stream already filled. A rock
 		// dropped over a chunk that does not exist yet has nothing to land on,
@@ -898,8 +2428,13 @@ public:
 			// uniform scatter.
 			glm::vec2 at = island.Centre + glm::vec2(std::cos(angle), std::sin(angle)) * distance;
 
-			float radius = s_RockMinRadius
-				+ Hash2DUnit(i, 13, 31u) * (s_RockMaxRadius - s_RockMinRadius);
+			// Squared, so the scatter is mostly small rocks with a few big
+			// ones rather than an even spread of sizes. A uniform draw put
+			// only one of sixteen under the carry limit, which is a pickup
+			// mechanic you would almost never get to use -- and an even spread
+			// of boulder sizes is not what a beach looks like either.
+			float t = Hash2DUnit(i, 13, 31u);
+			float radius = s_RockMinRadius + t * t * (s_RockMaxRadius - s_RockMinRadius);
 
 			// Squashed a little differently on each axis, so sixteen rocks are
 			// not sixteen cubes. Kept modest: a very flat box on a slope slides
@@ -931,7 +2466,137 @@ public:
 			rock.LinearDamping = 0.2f;
 			rock.AngularDamping = 0.4f;
 
-			m_Rocks.push_back({ m_World.AddBody(rock), half, i % s_RockShapes });
+			Rock made;
+			made.Handle = m_World.AddBody(rock);
+			made.HalfExtents = half;
+			made.Shape = std::make_shared<Egss::MeshData>(
+				MakeRockMesh(101u + (unsigned int)(i % s_RockShapes) * 37u));
+			made.MeshPtr = std::make_shared<Egss::Mesh>(*made.Shape, "Rock");
+			made.Health = HealthFor(half);
+
+			m_Rocks.push_back(made);
+		}
+	}
+
+	// Scattered where the grass is: high enough up the island and flat enough
+	// underfoot, which is the same gate the shader uses to decide the ground is
+	// green. A tree on the beach or on a dune face would be the giveaway.
+	void SpawnTrees(const Island& island)
+	{
+		for (int i = 0; i < s_TreeShapes; i++)
+		{
+			Egss::MeshData bark, leaves;
+			MakeTreeMesh(313u + (unsigned int)i * 101u, TreeParams(), bark, leaves);
+
+			m_TreeMeshes[i].reset(new Egss::Mesh(bark, "Tree"));
+
+			if (!leaves.Indices.empty())
+				m_LeafMeshes[i].reset(new Egss::Mesh(leaves, "TreeLeaves"));
+		}
+
+		float scatter = glm::min(island.Radius * 0.7f, s_ChunkWorld * 2.0f);
+
+		for (int i = 0; i < s_TreeAttempts; i++)
+		{
+			float angle = Hash2DUnit(i, 21, 53u) * 6.2831853f;
+			float distance = std::sqrt(Hash2DUnit(i, 22, 53u)) * scatter;
+
+			glm::vec2 at = island.Centre + glm::vec2(std::cos(angle), std::sin(angle)) * distance;
+
+			float ground = Height(at.x, at.y);
+			if (ground < m_GrassLow)
+				continue;
+
+			// Slope from the same analytic gradient the field uses, rather than
+			// from sampling the mesh -- it is exact and it is already there.
+			glm::vec2 slope = Slope(at.x, at.y);
+			if (glm::length(slope) > s_TreeMaxSlope)
+				continue;
+
+			Tree tree;
+			tree.Position = { at.x, ground - 0.2f, at.y };   // set slightly in
+			tree.Yaw = Hash2DUnit(i, 23, 53u) * 360.0f;
+			tree.Scale = 0.8f + Hash2DUnit(i, 24, 53u) * 0.6f;
+			tree.Shape = i % s_TreeShapes;
+
+			// Covers the trunk and the first fork rather than the whole crown:
+			// a capsule around the outermost twigs would stop the player a
+			// couple of metres from the tree.
+			tree.HalfHeight = s_TreeTrunkSpan * tree.Scale;
+			tree.Hits = s_TreeHits;
+
+			// **A box, not a capsule.** The first version used a capsule, which
+			// is the better fit for a trunk and behaved exactly like the
+			// spherical rocks did: once felled it rolled, 6.71 m and still
+			// moving after fifteen seconds, because a round collider on a
+			// slope has no rolling resistance for the solver to spend. A
+			// square trunk is invisible at this scale and lies where it falls.
+			Egss::RigidBody3D trunk = Egss::RigidBody3D::MakeStaticBox(
+				tree.Position + glm::vec3(0.0f, tree.HalfHeight, 0.0f),
+				glm::vec3(s_TreeRadius * tree.Scale, tree.HalfHeight, s_TreeRadius * tree.Scale));
+
+			// Carried on the body, so a felled trunk keeps the facing it grew
+			// with instead of snapping upright as it topples.
+			trunk.Orientation = glm::angleAxis(glm::radians(tree.Yaw), glm::vec3(0.0f, 1.0f, 0.0f));
+			trunk.Friction = 0.8f;
+			trunk.Restitution = 0.0f;
+			trunk.LinearDamping = 0.1f;
+			trunk.AngularDamping = 0.25f;
+
+			tree.Body = m_World.AddBody(trunk);
+
+			m_Trees.push_back(tree);
+
+			if ((int)m_Trees.size() >= s_TreeCount)
+				break;
+		}
+	}
+
+	void DrawTrees()
+	{
+		if (m_Trees.empty() || !m_TreeMeshes[0])
+			return;
+
+		m_Material->Set("u_Terrain", 0);
+		m_Material->Set("u_Textured", 0);
+		m_Material->Set("u_Color", m_BarkColour);
+
+		for (const Tree& tree : m_Trees)
+		{
+			const Egss::RigidBody3D& body = m_World.GetBody(tree.Body);
+
+			// Drawn from the body in both states, so felling changes nothing
+			// about how a tree is rendered -- only what moves it. The mesh
+			// grows from its base, which sits one half-height below the
+			// capsule's centre.
+			glm::mat4 transform =
+				glm::translate(glm::mat4(1.0f), body.Position)
+				* glm::mat4_cast(body.Orientation)
+				* glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -tree.HalfHeight, 0.0f))
+				* glm::scale(glm::mat4(1.0f), glm::vec3(tree.Scale));
+
+			Egss::Renderer::Submit(m_Material, m_TreeMeshes[tree.Shape], transform);
+		}
+
+		if (!m_Leaves)
+			return;
+
+		m_Material->Set("u_Color", m_LeafColour);
+
+		for (const Tree& tree : m_Trees)
+		{
+			if (!m_LeafMeshes[tree.Shape])
+				continue;
+
+			const Egss::RigidBody3D& body = m_World.GetBody(tree.Body);
+
+			glm::mat4 transform =
+				glm::translate(glm::mat4(1.0f), body.Position)
+				* glm::mat4_cast(body.Orientation)
+				* glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -tree.HalfHeight, 0.0f))
+				* glm::scale(glm::mat4(1.0f), glm::vec3(tree.Scale));
+
+			Egss::Renderer::Submit(m_Material, m_LeafMeshes[tree.Shape], transform);
 		}
 	}
 
@@ -996,6 +2661,17 @@ public:
 		m_Material->Set("u_GrassLow", m_GrassLow);
 		m_Material->Set("u_GrassHigh", m_GrassHigh);
 		m_Material->Set("u_Terrain", 1);
+		m_Material->Set("u_Waves", 0);
+		m_Material->Set("u_Time", m_WaveTime);
+
+		for (int i = 0; i < s_WaveCount; i++)
+		{
+			const Wave& w = Waves()[i];
+			std::string slot = "u_WaveA[" + std::to_string(i) + "]";
+
+			m_Material->Set(slot, glm::vec4(w.Direction.x, w.Direction.y, w.Amplitude, w.Wavelength));
+			m_Material->Set("u_WaveSpeed[" + std::to_string(i) + "]", w.Speed);
+		}
 		m_Material->Set("u_Quantise", m_Cel ? 1.0f : 0.0f);
 
 		// Opt-in and blocking -- see RendererAPI::EndGpuTimerMs. Only around
@@ -1038,6 +2714,9 @@ public:
 		// Before the water, so a rock sitting in the shallows gets the water
 		// blended over it rather than punched through it.
 		DrawRocks();
+		DrawTrees();
+		DrawTools();
+		DrawBody();
 
 		// Water: tested against the depth already in the buffer (so terrain
 		// above sea level still occludes it) but not written to it, so it
@@ -1048,9 +2727,12 @@ public:
 		Egss::RenderCommand::SetDepthWrite(false);
 
 		m_Material->Set("u_Terrain", 0);
+		m_Material->Set("u_Waves", 1);
 		m_Material->Set("u_Color", m_WaterColour);
 		m_Material->Set("u_Textured", 0);
 		Egss::Renderer::Submit(m_Material, m_Water, glm::mat4(1.0f));
+
+		m_Material->Set("u_Waves", 0);
 
 		Egss::RenderCommand::SetDepthWrite(true);
 		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
@@ -1108,8 +2790,6 @@ public:
 
 	void DrawRocks()
 	{
-		if (!m_RockMeshes[0])
-			return;
 
 		m_Material->Set("u_Terrain", 0);
 		m_Material->Set("u_Textured", 0);
@@ -1124,25 +2804,158 @@ public:
 				// The mesh spans -1..1, so the half-extents scale it directly.
 				* glm::scale(glm::mat4(1.0f), rock.HalfExtents);
 
-			Egss::Renderer::Submit(m_Material, m_RockMeshes[rock.Shape], transform);
+			if (rock.MeshPtr)
+				Egss::Renderer::Submit(m_Material, rock.MeshPtr, transform);
 		}
 	}
 
 	// --- Water --------------------------------------------------------------
 
+	// Past a certain distance the sea simply carries you back. A wall would do
+	// the job and would announce that the world stops here; a current that
+	// strengthens the further out you get says the same thing without a seam
+	// to bump into, and it is three lines.
+	void ApplyUndertow()
+	{
+		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+
+		glm::vec2 flat(body.Position.x, body.Position.z);
+		float distance = glm::length(flat);
+
+		if (distance <= s_SwimLimit || distance < 1e-3f)
+		{
+			m_Undertow = 0.0f;
+			return;
+		}
+
+		// Ramped, so crossing the line is a drift and being well past it is
+		// hopeless.
+		float over = distance - s_SwimLimit;
+		m_Undertow = glm::min(s_UndertowSpeed, 0.5f + over * 0.25f);
+
+		glm::vec2 inward = -flat / distance;
+
+		body.Velocity.x = inward.x * m_Undertow;
+		body.Velocity.z = inward.y * m_Undertow;
+		body.Awake = true;
+	}
+
+	// --- Waves --------------------------------------------------------------
+	//
+	// Three travelling sines summed. Not an ocean simulation and not trying to
+	// be: a spectrum done properly is an FFT per frame, and what this needs is
+	// a surface that moves, that the light catches, and that the player can
+	// float on.
+	//
+	// The reason it is worth having *this* way is that the height is an
+	// **analytic function of position and time**. The vertex shader displaces
+	// the mesh with it and the CPU evaluates the same thing for buoyancy, so
+	// the player bobs on the surface being drawn rather than on a flat plane
+	// underneath it.
+	//
+	// **It is written twice**, once in GLSL and once here, and nothing enforces
+	// that the two agree. That is the real cost of the approach and it is worth
+	// stating plainly; the check that keeps them honest is that the player
+	// floats at a constant height above the *wave*, which fails visibly if the
+	// two drift apart.
+	struct Wave
+	{
+		glm::vec2 Direction;
+		float Amplitude;
+		float Wavelength;
+		float Speed;
+	};
+
+	static const Wave* Waves()
+	{
+		// Directions are unit vectors; wavelengths are long enough that the
+		// water grid resolves them. Deliberately not harmonics of each other,
+		// or the sum repeats visibly.
+		static const Wave waves[s_WaveCount] = {
+			{ {  0.86f,  0.51f }, 0.42f, 37.0f, 4.1f },
+			{ { -0.42f,  0.91f }, 0.26f, 23.0f, 3.2f },
+			{ {  0.61f, -0.79f }, 0.13f, 13.0f, 2.4f },
+		};
+		return waves;
+	}
+
+	static float WaveHeight(float x, float z, float time)
+	{
+		float h = 0.0f;
+
+		for (int i = 0; i < s_WaveCount; i++)
+		{
+			const Wave& w = Waves()[i];
+			float k = 6.2831853f / w.Wavelength;
+
+			h += w.Amplitude * std::sin((w.Direction.x * x + w.Direction.y * z) * k
+				+ time * w.Speed);
+		}
+
+		return s_SeaLevel + h;
+	}
+
+	// The largest the sum can possibly be, which is every wave cresting at the
+	// same point. Used to bound what the surface can do rather than measuring
+	// it and hoping.
+	static float WaveAmplitudeBound()
+	{
+		float total = 0.0f;
+		for (int i = 0; i < s_WaveCount; i++)
+			total += Waves()[i].Amplitude;
+
+		return total;
+	}
+
+	// A grid rather than a quad, because a quad has four vertices and waves
+	// have to be displaced somewhere. 5 m cells against a 13 m shortest
+	// wavelength -- coarse, and about the least that still reads as a wave
+	// rather than as a fold.
 	void BuildWater()
 	{
 		float half = 0.5f * (s_SideX - 1) * s_Voxel;
+		float span = half * 2.0f;
 
 		Egss::MeshData data;
-		data.Vertices = {
-			{ { -half, s_SeaLevel, -half }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f } },
-			{ {  half, s_SeaLevel, -half }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
-			{ {  half, s_SeaLevel,  half }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f } },
-			{ { -half, s_SeaLevel,  half }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f } },
-		};
-		data.Indices = { 0, 1, 2, 0, 2, 3 };
-		data.Submeshes.push_back({ "", -1, 0, (unsigned int)data.Indices.size() });
+
+		const int n = s_WaterSegments;
+
+		for (int j = 0; j <= n; j++)
+		{
+			for (int i = 0; i <= n; i++)
+			{
+				float u = (float)i / (float)n;
+				float v = (float)j / (float)n;
+
+				data.Vertices.push_back({
+					{ -half + u * span, s_SeaLevel, -half + v * span },
+					{ 0.0f, 1.0f, 0.0f },
+					{ u * 8.0f, v * 8.0f } });
+			}
+		}
+
+		for (int j = 0; j < n; j++)
+		{
+			for (int i = 0; i < n; i++)
+			{
+				unsigned int a = (unsigned int)(j * (n + 1) + i);
+				unsigned int b = a + 1;
+				unsigned int c = a + (unsigned int)(n + 1);
+				unsigned int d = c + 1;
+
+				data.Indices.push_back(a);
+				data.Indices.push_back(c);
+				data.Indices.push_back(d);
+				data.Indices.push_back(a);
+				data.Indices.push_back(d);
+				data.Indices.push_back(b);
+			}
+		}
+
+		Egss::Submesh all;
+		all.IndexCount = (unsigned int)data.Indices.size();
+		data.Submeshes.push_back(all);
+		data.RecalculateBounds();
 
 		m_Water = std::make_shared<Egss::Mesh>(data, "Water");
 	}
@@ -1167,17 +2980,59 @@ public:
 			out vec2 v_TexCoord;
 			out vec3 v_WorldPosition;
 
+			// Three travelling sines, the same three the CPU evaluates for
+			// buoyancy. Duplicated by hand; see the note in OpenWorld.h.
+			uniform int u_Waves;          // 0 draws the mesh flat
+			uniform float u_Time;
+			uniform vec4 u_WaveA[3];      // dir.xy, amplitude, wavelength
+			uniform float u_WaveSpeed[3];
+
+			float WaveAt(vec2 p, out vec2 slope)
+			{
+				float h = 0.0;
+				slope = vec2(0.0);
+
+				for (int i = 0; i < 3; i++)
+				{
+					vec2 dir = u_WaveA[i].xy;
+					float amplitude = u_WaveA[i].z;
+					float k = 6.2831853 / u_WaveA[i].w;
+
+					float phase = dot(dir, p) * k + u_Time * u_WaveSpeed[i];
+
+					h += amplitude * sin(phase);
+
+					// The derivative of the same sum, so the normal is exact
+					// rather than differenced from neighbouring vertices.
+					slope += dir * (amplitude * k * cos(phase));
+				}
+
+				return h;
+			}
+
 			void main()
 			{
-				v_WorldPosition = (u_Transform * vec4(a_Position, 1.0)).xyz;
-				v_Normal = mat3(u_Transform) * a_Normal;
+				vec4 world = u_Transform * vec4(a_Position, 1.0);
+				vec3 normal = mat3(u_Transform) * a_Normal;
+
+				if (u_Waves == 1)
+				{
+					vec2 slope;
+					world.y += WaveAt(world.xz, slope);
+
+					// A height field's normal is (-dh/dx, 1, -dh/dz).
+					normal = normalize(vec3(-slope.x, 1.0, -slope.y));
+				}
+
+				v_WorldPosition = world.xyz;
+				v_Normal = normal;
 				// World-space planar, from MarchingCubes -- see the comment
 				// where it is generated. Spatially varying rather than
 				// per-vertex-fixed is what makes a texture-cost comparison
 				// honest: constant UVs would sample the same texel over
 				// and over, which the cache makes artificially cheap.
 				v_TexCoord = a_TexCoord;
-				gl_Position = u_ViewProjection * u_Transform * vec4(a_Position, 1.0);
+				gl_Position = u_ViewProjection * world;
 			}
 		)";
 
@@ -1293,6 +3148,14 @@ public:
 		{
 			ImGui::Text("%s", FirstPersonController::MotionName(m_Controller.GetMotion()));
 			ImGui::TextDisabled("Space swims up / jumps, Shift dives");
+			if (m_Undertow > 0.0f)
+				ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f),
+					"the current is carrying you back (%.1f m/s)", m_Undertow);
+			ImGui::TextDisabled(m_Held >= 0 ? "E to drop the rock" : "E to pick up a small rock");
+			ImGui::TextDisabled("Holding: %s", m_Held >= 0 ? "a rock" : ToolName(HeldTool()));
+			ImGui::TextDisabled("Pickaxe breaks rock, axe fells trees, shovel digs");
+			ImGui::TextDisabled("%zu rocks, %zu trees | %d struck, %d felled, %d dug",
+				m_Rocks.size(), m_Trees.size(), m_Struck, m_Felled, m_Dug);
 		}
 
 		m_Controller.MouseLookHelp();
@@ -1345,6 +3208,13 @@ public:
 		ImGui::Separator();
 		ImGui::ColorEdit3("Sand", &m_SandColour.x);
 		ImGui::ColorEdit3("Grass", &m_GrassColour.x);
+		ImGui::ColorEdit3("Bark", &m_BarkColour.x);
+		ImGui::Checkbox("Show body", &m_ShowBody);
+		ImGui::SameLine();
+		ImGui::Checkbox("Third person", &m_ThirdPerson);
+		ImGui::Checkbox("Leaves", &m_Leaves);
+		ImGui::SameLine();
+		ImGui::ColorEdit3("Leaf", &m_LeafColour.x);
 		ImGui::SliderFloat("Grass from", &m_GrassLow, 0.0f, 4.0f, "%.1f m");
 		ImGui::SliderFloat("Grass by", &m_GrassHigh, 0.0f, 6.0f, "%.1f m");
 		ImGui::Checkbox("Grass blades", &m_Grass);
@@ -1375,10 +3245,83 @@ public:
 	static constexpr int s_SideY = 200;
 	static constexpr int s_SideZ = 800;
 	static constexpr float s_OriginY = -25.0f;
+	// Carrying. The size gate is on the collider's half-extents rather than a
+	// separate "small" flag, so it cannot disagree with the rock it describes.
+	static constexpr float s_PickupMaxHalf = 0.50f;
+	static constexpr float s_PickupReach = 3.5f;
+	static constexpr float s_PickupAlignment = 0.86f;   // ~30 degrees off centre
+	// The hand, and the body hung off the camera. Borrowed from the Ragdoll
+	// demo's proportions: a 1.7 m figure whose eyes are 0.75 m above the
+	// capsule's centre.
+	static constexpr float s_HandForward = 0.62f;
+	static constexpr float s_HandSide = 0.26f;
+	static constexpr float s_HandDrop = 0.34f;
+
+	static constexpr float s_HipDrop = 0.62f;
+	static constexpr float s_HipWidth = 0.11f;
+	static constexpr float s_ThighLength = 0.42f;
+	static constexpr float s_ShinLength = 0.42f;
+	static constexpr float s_ShoulderDrop = 0.12f;
+	static constexpr float s_ShoulderWidth = 0.20f;
+	static constexpr float s_StrideSwing = 0.55f;
+	static constexpr float s_StridePerMetre = 2.6f;
+
+	static constexpr float s_PickupTime = 0.22f;
+	static constexpr float s_SwingTime = 0.40f;
+	static constexpr float s_SwingReach = 0.34f;
+	static constexpr float s_SwingDrop = 0.30f;
+
+	static constexpr float s_ThirdPersonBack = 3.1f;
+	static constexpr float s_ThirdPersonUp = 0.55f;
+	static constexpr float s_ThrowSpeedLimit = 9.0f;
+
+	// Breaking. Shorter reach than a pickup: you have to be at the rock.
+	static constexpr float s_StrikeReach = 2.8f;
+	static constexpr float s_StrikeAlignment = 0.80f;
+	static constexpr float s_ShatterKick = 1.6f;
+
+	// Hit points a cubic metre of rock, and the impulse below which an impact
+	// is just a knock. 40 N.s is roughly a 20 kg rock landing at 2 m/s.
+	static constexpr float s_RockToughness = 900.0f;
+	static constexpr float s_ImpactThreshold = 40.0f;
+
+	// What a swing delivers, in the same units.
+	static constexpr float s_PickaxeImpact = 260.0f;
+
+	static constexpr float s_ToolMass = 4.0f;
+	static constexpr float s_DigRadius = 1.1f;
+	static constexpr float s_DigReach = 4.5f;
+
+	// Trees: how much capsule a trunk gets, and what it takes to fell one.
+	static constexpr float s_TreeTrunkSpan = 1.8f;
+	static constexpr float s_TreeRadius = 0.28f;
+	static constexpr int s_TreeHits = 4;
+	static constexpr float s_TreeMass = 260.0f;
+	static constexpr float s_FellPush = 1.1f;
+
+	// Trees. Depth and branching are the two numbers the shape comes from, and
+	// both appear in the closed forms the generator is checked against.
+	static constexpr int s_TreeDepth = 4;
+	static constexpr int s_TreeChildren = 3;
+	static constexpr int s_TreeShapes = 3;
+	static constexpr int s_TreeCount = 10;
+	static constexpr int s_TreeAttempts = 120;
+	static constexpr float s_TreeMaxSlope = 0.55f;
+
 	static constexpr int s_RockCount = 16;
 	static constexpr int s_RockShapes = 5;
 	static constexpr float s_RockMinRadius = 0.35f;
 	static constexpr float s_RockMaxRadius = 1.15f;
+
+	// Waves. Three is enough for the sum not to read as one sine, and few
+	// enough that the shader can unroll it.
+	static constexpr int s_WaveCount = 3;
+	static constexpr int s_WaterSegments = 80;
+
+	// How far out the sea turns you back. Set inside the field's own half-width
+	// so the boundary is water you are pushed through, not an edge you reach.
+	static constexpr float s_SwimLimit = 165.0f;
+	static constexpr float s_UndertowSpeed = 3.4f;
 
 	static constexpr float s_SeaLevel = 0.0f;
 
@@ -1497,13 +3440,81 @@ public:
 	{
 		Egss::PhysicsWorld3D::BodyHandle Handle;
 		glm::vec3 HalfExtents;
-		int Shape;
+
+		// Its own shape, because a rock that has been split is no longer any
+		// of the shapes it started as -- it is a piece of one, with a flat face
+		// where the cut went. Kept as data as well as a mesh so the next cut
+		// has something to cut.
+		std::shared_ptr<Egss::MeshData> Shape;
+		std::shared_ptr<Egss::Mesh> MeshPtr;
+
+		// Hit points, not a swing count. A rock breaks because something hit
+		// it hard enough, whether that was a pickaxe, a fall, or another rock
+		// -- so damage arrives as an *impulse* and the rock either has enough
+		// left to absorb it or does not.
+		float Health = 1.0f;
+
+		// Last step's velocity, so a collision can be measured as the change
+		// the solver made to it. There is no contact-impulse report to read,
+		// and mass times the change in velocity is the same quantity.
+		glm::vec3 PreviousVelocity{ 0.0f };
 	};
+
+	// Toughness scales with volume, which is what makes health an attribute
+	// that **splits** rather than one that is re-rolled: eight octants at an
+	// eighth of the volume have an eighth of the health each, and the total
+	// across the pieces is exactly what the parent had. The same arithmetic
+	// that conserves volume conserves this.
+	static float HealthFor(const glm::vec3& half)
+	{
+		return s_RockToughness * 8.0f * half.x * half.y * half.z;
+	}
 	std::vector<Rock> m_Rocks;
-	std::shared_ptr<Egss::Mesh> m_RockMeshes[s_RockShapes];
 
 	// Grey, and under the 1.525 exposure ceiling like everything else here.
 	glm::vec4 m_RockColour{ 0.30f, 0.30f, 0.33f, 1.0f };
+
+	std::vector<Tree> m_Trees;
+	std::shared_ptr<Egss::Mesh> m_TreeMeshes[s_TreeShapes];
+	std::shared_ptr<Egss::Mesh> m_LeafMeshes[s_TreeShapes];
+	glm::vec4 m_BarkColour{ 0.31f, 0.22f, 0.14f, 1.0f };
+
+	// A shade off the grass, so a canopy reads against the ground it is
+	// standing on rather than merging with it from above.
+	glm::vec4 m_LeafColour{ 0.20f, 0.38f, 0.16f, 1.0f };
+	bool m_Leaves = true;
+
+	std::vector<Tool> m_Tools;
+	std::shared_ptr<Egss::Mesh> m_ToolWood[(int)ToolKind::Count];
+	std::shared_ptr<Egss::Mesh> m_ToolMetal[(int)ToolKind::Count];
+
+	int m_Held = -1;
+	int m_HeldTool = -1;
+	bool m_WasCarryKey = false;
+	glm::vec3 m_ThrowVelocity{ 0.0f };
+
+	glm::vec3 m_PickupFrom{ 0.0f };
+	glm::quat m_PickupOrientation{ 1.0f, 0.0f, 0.0f, 0.0f };
+	float m_PickupBlend = 1.0f;
+	float m_Swing = 0.0f;
+
+	bool m_WasSwinging = false;
+	int m_Struck = 0;
+	int m_Felled = 0;
+	int m_Dug = 0;
+
+	std::shared_ptr<Egss::Mesh> m_LimbMesh, m_TorsoMesh, m_HeadMesh;
+	std::shared_ptr<Egss::Mesh> m_HandMesh, m_FootMesh, m_JointMesh;
+	bool m_ThirdPerson = false;
+	bool m_ShowBody = true;
+	float m_Stride = 0.0f;
+
+	glm::vec4 m_SkinColour{ 0.52f, 0.36f, 0.26f, 1.0f };
+	glm::vec4 m_ClothColour{ 0.20f, 0.26f, 0.34f, 1.0f };
+	glm::vec4 m_BootColour{ 0.14f, 0.12f, 0.11f, 1.0f };
+
+	float m_WaveTime = 0.0f;
+	float m_Undertow = 0.0f;
 
 	std::shared_ptr<Egss::Shader> m_Shader;
 	std::shared_ptr<Egss::Material> m_Material;

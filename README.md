@@ -1035,6 +1035,557 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-16 (a whole body, and a camera that steps back from it)
+
+The body was boxes and half a person. It is now a **whole figure built from
+elliptical tubes**: a torso that widens at the chest and draws in at the waist,
+tapered limbs, ovoid head, hands and feet, and blobs at the shoulders and knees
+so a joint is round rather than a seam between two tubes.
+
+Elliptical rather than round is most of what stops it reading as plumbing -- a
+chest is not a cylinder and neither is a shin. One generator does all of it: a
+tube through a stack of rings, each with its own two radii. A limb is two rings
+and a taper, a torso is five, a head is an ovoid, which is the same generator
+with rings following a sine.
+
+**A first/third person toggle.** Third person is the camera stepping back from
+the head, not a different controller. That works because everything hung off the
+body -- the hands, the carry point, the aim -- was moved to measure from
+`HeadPosition()` rather than from the camera. Pulling the camera back would
+otherwise have dragged the player's hands three metres across the island with
+it.
+
+The head is skipped in first person, because the camera is inside it and with
+back-face culling off its interior would fill the screen.
+
+**Which is exactly what the torso then did.** The first torso was the right
+shape and half a metre too tall -- 0.72 m hip to shoulder against a real 0.45 --
+so its chest sat *above* the eyes and first person was a wall of navy blue. A
+person's eyes are about 0.22 m above the shoulders and 0.67 above the hips, and
+a mesh has to agree with that or the camera ends up inside it. Caught by looking
+at the capture, which is the only reason the numbers got checked.
+
+Still rough, and worth naming rather than leaving to be discovered: the legs are
+a little long against the torso, the arms are thin, and there is no lean or
+head-turn -- the figure faces its yaw squarely whatever the camera is doing.
+
+
+### 2026-08-16 (a grip, a swing, and the shove that was not what it looked like)
+
+**Held things are posed now.** A tool kept the orientation it was lying in, so a
+0.42 m shaft stayed horizontal in the hand. Tool meshes are built with the shaft
+along +y precisely so one rotation poses any of them, and it is slerped in over
+the reach so the tool turns in the hand rather than snapping upright.
+
+**Picking up is a reach.** The object travels from where it was lying to the
+hand over a fifth of a second, eased, and the arm is drawn to the same point --
+so the arm reaches down, takes it, and brings it up, because the hand *is* the
+carry point.
+
+**Using it is a stroke.** One damped sine gives the whole swing: `arc` runs
+0 -> -1 -> 0 -> +1 -> 0, where negative is the wind-up back over the shoulder
+and positive is the strike forward and down. It ends where it started, so
+nothing has to be reset. The stroke plays whether or not it connects -- a swing
+that only animates on a hit tells the player what the game found before they
+have finished swinging.
+
+**And the shove, which took three attempts and was worth all of them.**
+
+The first guess was the orientation: a horizontal shaft reaches back into the
+walker's capsule. Plausible, and the test said **0.0000 m** of drift both before
+and after -- proving nothing, because that arrangement happened not to overlap.
+
+So the mechanism was tested directly instead, by putting the held body *inside*
+the player. That threw them **80.7 m in five seconds**. Kinematic bodies shove
+dynamic ones and are not shoved back, and overlap is not a nudge.
+
+Shrinking the collider to a point while held only got it to 13.2 m -- a tiny box
+inside a capsule still makes a contact, and a kinematic body still wins it. What
+was actually meant was "this object does not collide with the one carrying it",
+so `RigidBody3D` gained **`IgnoreCollisionWith`**, one handle, checked beside the
+existing joint suppression -- which is the same idea: two bodies meant to occupy
+the same space, where a contact is an artefact of how they are attached rather
+than information about the world. A single handle rather than layers or a mask,
+because one pair is the case that exists.
+
+That took it to **0.25 m**, and the held object still collides with everything
+else, so a falling rock can still knock one out of your hand.
+
+The last measurement needed a control. Holding drifted 1.18 m over five seconds,
+which looks like a residual until you measure the same disturbed state with
+*empty hands* and get **3.90 m** -- the walker settling on a slope after being
+teleported, nothing to do with what it was holding. A number is not a residual
+until something says what it should have been.
+
+
+### 2026-08-16 (rocks that cleave, and a body to look down at)
+
+**The split was wrong and is now a split.** A rock used to break into eight
+equal octants, which does not read as a rock breaking -- it reads as a rock
+being replaced by eight smaller rocks. It now **cleaves**: one axis-aligned
+plane through the longest axis at a hashed fraction, into two unequal pieces
+that came from it and still fit together.
+
+The *mesh* is cut by the same plane and the hole is capped, which is the part
+that makes the pieces look like halves of something. Verified against the thing
+that matters:
+
+```
+volume 1.08451 -> 0.64779 + 0.43672
+mass   271.128 -> 161.949 + 109.180
+health 976.062 -> 583.015 + 393.047
+shape volume 0.41859 -> 0.27517 + 0.14343   (0.00%)
+```
+
+The last line is the strongest: the two cut meshes together are exactly the mesh
+that was cut, nothing lost and nothing duplicated. Both pieces come back with
+**zero open edges**, so the cap closed them -- an uncapped cut would look right
+from outside and be a shell.
+
+Conservation survives the change of scheme because it never depended on the
+scheme: f and 1-f sum to one however the plane falls, the same way eight eighths
+did. The pieces are deliberately unequal, measured at 1.48x, because equal parts
+is the thing this replaced.
+
+The cap is a fan from the centroid of the cut rim, which is valid only while the
+cross-section is a simple polygon. That holds for these blobs because each is
+star-shaped about its own centre. It is not a general mesh boolean and the
+comment says so.
+
+**A first-person body.** A *viewmodel*, not a ragdoll: the Ragdoll demo's
+thirteen jointed bodies balance because they are simulated, and driving them
+from a kinematic capsule would put two things in charge of where the player is.
+What is borrowed is the proportions. Hips, thighs, shins, boots, arms and hands,
+posed procedurally -- and nothing above the ribs, because from inside your own
+eyes there is no head to draw.
+
+The gait is paced by **distance covered rather than time**, so the legs do not
+scissor on the spot when you stop, and the knee bends only on the leg swinging
+forward, which is the difference between walking and marching.
+
+The piece that makes it more than decoration: the hand *is* the carry point.
+`CarryPoint()` returns where the hand is, so the tool being drawn and the tool
+being simulated are the same object in the same place and cannot drift apart.
+
+Still rough: at a level pitch you see almost none of it, which is correct --
+your own hips are under the camera and outside the frustum -- but it means the
+body only reads when you look down. Real viewmodels cheat the limbs forward for
+exactly this reason, and this one does not yet.
+
+
+### 2026-08-16 (tools you carry, and rocks that break on impact)
+
+**Rocks have hit points now, and damage arrives as an impulse.** A swing, a
+fall, and one rock thrown at another all go through the same path, so there is
+one rule for what breaks a rock rather than two that can disagree. Below the
+threshold -- 40 N.s, about a 20 kg rock landing at 2 m/s -- a knock is a knock.
+
+Toughness is **toughness times volume**, which is what makes health an attribute
+that *splits* rather than one that is re-rolled: eight octants at an eighth of
+the volume carry an eighth of the health each, and the total across the pieces
+is exactly what the parent had. Measured **976.062 to 976.062**, the same
+arithmetic that already conserved volume and mass.
+
+That also gives swings-to-break a closed form. A rock of 1.0845 m^3 has 976.1
+health and a swing does 260 - 40 = 220, so `ceil(976.1 / 220)` = 5 swings.
+Measured: 5.
+
+**Three tools, and no inventory.** A tool is a physics object lying on the
+ground. You carry one, and to use another you put this one down -- the
+constraint is physical, so it needs no UI, no slots and no rules beyond "your
+hands are full". A rock counts as a full hand too.
+
+The pickaxe damages rock, the axe cuts trees, the shovel moves ground, and each
+only *sees* what it is for: an axe swung at a boulder finds nothing rather than
+finding it and doing nothing. Bare hands do nothing at all, which is the point
+of having tools.
+
+Digging writes the edited chunks **back to the cache**. Without that the next
+run would serve the pre-dig chunk as a hit and the hole would quietly heal --
+the caveat flagged when the cache was built, now closed.
+
+Fifteen checks, four mutations, all caught.
+
+**The shovel found a real engine bug.** `VoxelField3D::Raycast` sphere-traces,
+and an unallocated chunk reads `Far` -- a thousand metres. Tracing believes it
+and steps clean out of the world. Measured: a ray started 3 m above the island
+read **1000 at its origin and 1.86 one metre lower**, and hit nothing. The
+algorithm's own comment warns about exactly this ("with a value that overstates
+how far the surface is, a step jumps straight over it"); the sparse sentinel is
+the worst possible overstatement.
+
+Two attempted fixes failed and were instructive. Skipping a whole chunk on
+seeing the sentinel overshot -- it put the ray 5 m under a surface 3 m down, and
+tracing from inside rock finds nothing. Skipping a voxel at a time got past the
+origin and still missed, because interpolation near the boundary of an allocated
+chunk mixes in the neighbour's 1000. The dig now **marches** at half a voxel:
+eighteen samples over a 4.5 m reach, immune to the sentinel, and -- unlike
+marching the analytic density -- it sees holes dug earlier.
+
+The proper fix belongs in `Raycast`, which can ask the field whether a chunk is
+uniform instead of inferring it from a magic number. Not done here.
+
+**Not done: the first-person body.** The ragdoll rig for visible arms, hands and
+legs is the largest piece of the request and is untouched -- it wants its own
+pass rather than a rushed one at the end of this.
+
+
+### 2026-08-16 (waves, and a sea that turns you back)
+
+Three travelling sines summed, displacing a tessellated water grid in the vertex
+shader. Not an ocean simulation and not trying to be -- a spectrum done properly
+is an FFT a frame, and what this needs is a surface that moves, that catches the
+light, and that the player can float on.
+
+What makes it worth doing this way rather than with a scrolling texture is that
+the height is an **analytic function of position and time**. The shader displaces
+the mesh with it, the CPU evaluates the same thing for buoyancy, and the normal
+comes from the derivative of the same sum rather than from differencing
+neighbours. **It is written twice**, once in GLSL and once in C++, and nothing
+enforces that the two agree -- that is the real cost of the approach and it is
+stated in the code rather than hidden.
+
+Wave time comes off the **fixed clock**. A surface animated from wall-clock time
+would make the demo unable to reproduce itself, which is the one thing this
+project will not trade.
+
+**The boundary.** Past 165 m the sea simply carries you back, with a current that
+strengthens the further out you get. A wall would do the job and would announce
+that the world stops here; a current says the same thing with nothing to bump
+into, and it is about ten lines. Checked from four directions: all four return.
+
+Nine checks, and the wave arithmetic came out exact:
+
+```
+peak |height| 0.8099 m against the amplitude sum 0.8100, mean 0.000008
+```
+
+The mean matters as much as the peak -- waves that averaged above zero would be
+a sea level quietly rising.
+
+**The float does not track the surface, and should not.** The measured lag is
+0.585 m, and the arithmetic says why: the surface's peak vertical speed is the
+sum of amplitude times angular speed, 0.42(4.1) + 0.26(3.2) + 0.13(2.4) = **2.87
+m/s**, against a swimmer capped at 2.2 m/s. It physically cannot keep up with the
+fastest part of a crest. The bound was therefore set from the model rather than
+guessed: it must not fall a whole wave behind, so the limit is the amplitude sum.
+
+Two test failures on the way, both mine. The float test first placed the player
+at (60, 60), which is 85 m out and lands *inside* the island ring -- it measured
+a man standing on sand and reported no bobbing. And a first tolerance of 0.5 m
+was a number picked rather than derived.
+
+**One mutation survived and found a real hole.** Making the demo hand the
+controller a flat sea level left all eight checks passing, because the float loop
+sets the water level *itself* -- it proved the buoyancy and the wave function work
+as a pair, and never that the demo wires one to the other. One step through the
+demo's own update closes it, and the mutation now fails.
+
+
+### 2026-08-16 (leaves)
+
+One cluster of foliage per terminal branch. The clusters are the same jittered
+blob the rocks are made of, smaller and coarser -- deliberately not leaf-shaped,
+because at the size these are drawn a cluster reads as foliage and a hundred
+individual leaves would be a hundred times the triangles to say the same thing.
+
+Hanging them on the *tips* gives the count another closed form to be checked
+against: a complete c-ary tree of depth d has exactly **c^d** terminal branches,
+so 3^4 = 81 clusters. Measured 81. The generator counts nothing.
+
+Bark and foliage come out as **separate meshes** rather than one, because they
+are two colours and the leaves are the half worth being able to switch off when
+counting triangles. That is a checkbox in the panel.
+
+```
+1452 bark tris + 2430 leaf tris = 3882 a tree, 38,820 for ten
+leaves span y 2.26 to 8.28, trunk alone is 2.60
+```
+
+Seven checks. Placement is checked as well as count, because a cluster count
+alone would pass just as happily with all the foliage bunched at the foot of the
+trunk: nothing below half the trunk's height, and the canopy above the last
+branch.
+
+Three mutations, all caught -- foliage on every branch rather than the tips,
+clusters hung at the base, and the cluster radius collapsed to zero.
+
+**A weakness carried over from the tree work, restated because it still
+applies.** "A different seed grows a different canopy" cannot fail while the
+leaf *positions* depend on branch tips, which already depend on the seed. It
+would keep passing if the cluster's own jitter stopped reading the seed
+entirely. Catching that needs the jitter varied on its own.
+
+
+### 2026-08-16 (felling trees)
+
+Trees now have a body, which is two features at once: a standing tree is a
+**static** collider you walk into rather than through, and felling it is a
+**change of body type** on that same collider. Nothing is created or destroyed
+-- which matters, because `PhysicsWorld3D` has no way to remove a body. The test
+checks that specifically: felling adds zero bodies.
+
+Four swings of the pickaxe. A swing goes to whichever of a rock or a standing
+tree is better lined up rather than preferring one kind, so aiming at a trunk
+with a boulder off to the side hits the trunk. A felled trunk stops being a
+target.
+
+**The capsule rolled.** A trunk is obviously a capsule, so it was one -- and it
+behaved exactly like the spherical rocks did two entries ago: felled, it rolled
+**6.71 m and was still moving after fifteen seconds**, because a round collider
+on a slope has no rolling resistance for the solver to spend. A box trunk is
+invisible at this scale and lies where it falls: drift down to **1.75 m**.
+
+The measurement that caught it is the one that looked least likely to. "Falls
+away from the player" was 0.27 with the capsule and is **0.98** with the box --
+it was not measuring a bad push direction at all, it was measuring the tree
+rolling downhill afterwards and taking the drift with it. A check aimed at one
+thing found another.
+
+Fifteen checks. Four mutations, all caught once aimed properly: never becoming
+dynamic, the hit count ignored, the push reversed, and felled trunks staying
+targets.
+
+**One mutation was wrong before it was informative.** `body.Type =
+BodyType::Dynamic;` appears twice -- once where a carried rock is released and
+once where a tree is felled -- and a first-occurrence replace hit the rock. It
+reported 15/15 and had mutated a code path the suite does not exercise. Retried
+against unique context it fails 2. A mutation that survives is worth one look at
+*what it actually changed* before it is worth any conclusions.
+
+
+### 2026-08-16 (trees, trunk and branches)
+
+A trunk that splits into branches that split into branches: each segment is a
+tapered prism, each tip spawns three children leaning off it, shorter and
+thinner by a fixed ratio, four generations deep. No leaves yet -- this is the
+skeleton.
+
+The ratios are the whole model, and choosing constant ones is what gives the
+generator **closed forms to be held to**. A complete c-ary tree of depth d has
+`(c^(d+1) - 1) / (c - 1)` nodes, and the height cannot exceed the geometric
+series `L(1 + r + ... + r^d)` -- which would need every branch pointing straight
+up. Neither is computed anywhere in the generator:
+
+```
+1452 triangles = 121 segments, closed form says 121
+height 7.437 m, series bound 7.781 m, trunk alone 2.600 m
+```
+
+Ten checks. Placement uses the same height-and-slope gate the shader shades
+grass with, so no tree stands on the beach or on a dune face -- the same number
+deciding the ground is green decides a tree can grow on it.
+
+Four mutations. Three caught: one child too few (31 segments against 121),
+leaves emitting no segment (40 against 121), and the length taper removed --
+which put the height at **12.394 m** against a 7.781 m bound, so that check has
+real teeth rather than being a formality.
+
+**The fourth was not caught, and the reason is worth keeping.** Replacing the
+seed with a constant in the branch *azimuth* left "a different seed grows a
+different tree" passing, because the seed is also used in the branch *lean*, so
+two seeds still diverge. The check proves *some* seed dependence, not that every
+seeded parameter is wired to the seed. A per-parameter check would need to vary
+one at a time; this one cannot tell you which half is dead.
+
+
+### 2026-08-16 (breaking rocks)
+
+Left mouse swings a pickaxe at a rock **too big to lift**. The two rules are
+deliberately complementary and read off the same number -- the collider's own
+half-extents -- so there is never a rock that is neither liftable nor breakable.
+Bigger rocks take more swings, from that same number.
+
+A broken rock becomes **eight octants, each exactly half its extents in every
+axis**. Halving all three is what makes the split conserve volume *exactly*:
+eight pieces at an eighth each. That is a number a test can hold the code to,
+which a scatter of plausible-looking rubble would not be. Measured across a
+break: volume **1.084514 to 1.084514**, mass **271.1284 to 271.1284**.
+
+The parent body is **reused as the first fragment** rather than retired, because
+`PhysicsWorld3D` has no way to remove a body -- handles are indices into it.
+Parking dead bodies below the world would have worked and would have grown the
+solver's cost with every swing. So a break adds seven bodies, not eight, and the
+test checks that specifically.
+
+The halving also makes the two mechanics meet: a boulder is two or three swings
+away from pieces small enough to carry.
+
+Fourteen checks and five mutations, all caught -- fragments not halved, mass not
+divided, the liftable filter dropped, the hit count ignored, and the parent not
+reused.
+
+**Both first-run failures were the test, not the code.** "A small rock cannot be
+hit" failed because the pickaxe correctly chose a *different*, better-aligned
+boulder standing behind it -- the check should have been on which rock was
+selected, not on whether the swing happened at all. And "every piece settles on
+the terrain" failed at 4 of 7 because eight fragments from one rock land in a
+heap, and a piece resting on another piece is correctly higher than the ground
+beneath it. Both checks now say what they meant: the small rock is never the
+*target*, and no piece has sunk *through* the ground.
+
+
+### 2026-08-16 (picking up rocks)
+
+**E** picks up the small rock you are looking at and **E** puts it down. A held
+rock is **kinematic** -- moved by whoever sets its position and by nothing else.
+Static would also stop the solver throwing it about, but a static body is
+scenery: it would not shove the rocks it is dragged through, and shoving one
+boulder with another is most of the point of being able to lift one.
+
+Position is driven directly rather than by a velocity chasing a target, which
+either lags or overshoots. The velocity it *would* have had is tracked
+alongside and handed back on release, so letting go throws rather than drops --
+clamped, because the throw should come from the player moving and not from how
+sharply they flicked the mouse on the frame they released.
+
+Whether a rock is liftable is read off **the collider's own half-extents**
+rather than a separate flag, so it cannot come to disagree with the rock it
+describes.
+
+**The first version worked and was useless: 1 of 16 rocks was liftable.** Radii
+were drawn uniformly from 0.35 to 1.15, so almost nothing landed under the
+limit -- a mechanic you would essentially never get to use. Squaring the draw
+biases the scatter toward small rocks with a few big ones, which is both a
+usable balance and closer to what a beach looks like: **6 of 16** now.
+
+Nine checks and four mutations, all caught: the size gate removed, the reach
+gate removed, release leaving the rock kinematic, and the carry never moving it.
+The drop is checked against the same predictor the settling test used -- a box
+at rest has its centre one half-height above the surface, and the surface comes
+from the density function the solver never reads. A released rock came to rest
+**0.002 m** from it.
+
+Two of the checks are weaker than they look and are worth naming: the carry
+tracks its target to 0.000000 m because the position is *assigned*, and the
+walker moved 0.0000 m while carrying because it was already at rest. They catch
+a carry that does nothing (mutation four) and little else.
+
+
+### 2026-08-16 (the transition cell, and the case it grew)
+
+The coarse side now subdivides its seam face to the fine neighbour's
+resolution, as a fan of tetrahedra from the cell's centre over its own
+triangulated boundary. That is the half value-matching could not do, and it is
+still not enough:
+
+| seam | holes before | with transition cells |
+|---|---|---|
+| 1:4 | 296 | 246 |
+| 1:2 | 362 | **368** |
+
+1:2 got *worse*, which is the tell. Subdividing the seam face into sixteen
+sub-quads while leaving the four side faces as single coarse quads means that
+along the edge where they meet there are several sub-edges on one side and one
+on the other. **The fan's own boundary has T-junctions and is not a closed
+surface**, so the tetrahedra do not tile the cell and the construction opens new
+holes inside it. At 1:2 it opens more than it closes.
+
+Finishing it means subdividing per *edge* rather than per face, and triangulating
+each face to respect which of its edges are split -- which cascades into the
+neighbouring cells, because a face shared with a plain coarse cell must stay
+coarse while a face shared with another transition cell must not. That is
+precisely the geometry Lengyel's tables encode, and it is the reason the
+algorithm has the shape it does rather than being a few lines of subdivision.
+
+Stopped here rather than keep adding a case per iteration to a construction that
+was gaining one each time, and **the transition code is reverted** -- code that
+does not work is worse kept than the measurement that says why. The finding
+stays: the next attempt starts from the T-junction on the cell's own boundary,
+and the harness that found it reproduces the bug before claiming any fix.
+
+**What is verified and stands:** the tetrahedron primitive itself -- sixteen
+unambiguous cases derived at runtime with no table, six tetrahedra tiling a cell
+to 1.000000000, a sphere within 0.04% of `4*pi*r^2` and 0.09% of
+`(4/3)*pi*r^3`, and every one of its 96,174 edges used by exactly two triangles.
+
+### 2026-08-16 (the seam closes geometrically, not topologically)
+
+The transition work reached a real result and stopped short of the goal, so
+both halves are worth writing down.
+
+**The construction.** Two chunks join watertightly if they agree on the shared
+face's triangulation *and* its field values. The tetrahedral decomposition gives
+the first for free: it is translation-invariant, so every face everywhere splits
+on the same diagonal (derived, not assumed -- face x=1 is always triangles
+{1,5,6} and {1,2,6}). For the second, the fine chunk takes its face samples by
+interpolating linearly over the *coarse* triangles. A linear field on a triangle
+has exactly one contour, a straight segment, so both sides compute the identical
+line. The coarse quad's diagonal passes exactly through fine lattice points, so
+no fine triangle ever straddles the two linear pieces.
+
+**And that is not enough.** Reconciled, a stride-1/stride-4 seam through a
+sphere went from **296 edges used once to 274** -- a 7% improvement, not a fix.
+The argument was right as far as it went and wrong about what it bought: the two
+contours are now the same *line*, but the fine side subdivides that line into
+several collinear segments, one per fine sub-edge it crosses, while the coarse
+side has one. The intermediate points are **T-junctions** -- vertices on one
+side with no counterpart on the other.
+
+That is geometric coincidence without topological agreement. There is no visible
+crack, which is what the eye wants, but it is not a closed manifold, and the
+edge-use count is right to refuse it.
+
+**What is left is the part that earns the name.** The coarse side has to
+subdivide its seam face to the fine resolution, so those intermediate vertices
+exist on both sides -- which is precisely what a transvoxel transition cell is
+for, and precisely the piece not yet built. Reconciling face *values* was the
+cheap half; reconciling face *topology* is the half with the geometry in it.
+
+The test already reproduces the bug before claiming the fix: it meshes the seam
+unreconciled first and asserts holes are present (296), so it is known to be
+capable of failing before it is trusted to pass. It also caught 15 edges used
+more than twice, which the T-junction story does not obviously explain and which
+wants looking at.
+
+### 2026-08-16 (a primitive with no ambiguous cases)
+
+Transvoxel is the right fix for the LOD seam, and its core is a 512-entry
+transition-cell table. Deriving that rather than sourcing it means needing a
+primitive whose cases can be *enumerated and checked* instead of trusted, and
+the cube is not it: 256 cases, several genuinely ambiguous, where two
+neighbouring cells resolving a face differently leave a hole.
+
+A tetrahedron has four corners, so **sixteen cases, none ambiguous**. Three
+corners on one side always give one triangle; two and two always give one quad;
+there is no configuration that could be drawn two ways. Sixteen is few enough
+that the polygon is derived from the sign pattern at runtime -- there is no
+table, so there is no table to get wrong. And two tetrahedra sharing a face
+agree on that face exactly, because a triangle's three corners admit only one
+contour: a straight segment between two edge crossings. Cracks become impossible
+by construction rather than by careful table design.
+
+The cell decomposition is derived rather than copied: the six tetrahedra are the
+six **monotone paths** along the cell's main diagonal -- at each step advance in
+x, y or z, and the 3! orders of spending those steps are the six. Every cell
+uses the same one, so two cells meeting at a face divide it with the same
+diagonal.
+
+Checked against things the code does not contain. The six tetrahedra sum to
+**1.000000000** of the cell. All fourteen mixed cases emit a surface and both
+uniform cases emit nothing. A radius-6 sphere came out **0.04%** off `4*pi*r^2`
+and **0.09%** off `(4/3)*pi*r^3`, and -- the check the whole exercise is for --
+every one of its 96,174 edges is used by exactly two triangles. No holes.
+`3F = 2E` holds exactly at 192,348.
+
+Three mutations, all caught: a wrong corner in the tetrahedron table, the
+orientation flip removed, and a genuine bowtie in the quad. A fourth was written
+and turned out to be a **no-op** -- reversing a triangle's winding at the call
+site changes nothing, because `Emit` re-orients every triangle against a
+direction computed from the corners themselves. Worth knowing rather than
+worth counting.
+
+The bowtie is the instructive one: area and volume came out **identical** to the
+correct mesh, 452.19 and 903.99, because it is the same four points connected
+wrongly. Only the edge-use count saw it. Area and volume cannot detect a
+topology error, which is precisely the error a seam is made of.
+
+**Not yet built: the transition slab itself.** This is the primitive it will be
+made from, verified, and until that lands it is a component with no system --
+which this project normally declines. It is here on the understanding that the
+next piece consumes it.
+
+
 ### 2026-08-16 (blades of grass, and a skirt that was the wrong fix)
 
 **The skirt does not fix the LOD seam, measured.** It was built on the
