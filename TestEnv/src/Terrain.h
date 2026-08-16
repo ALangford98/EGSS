@@ -236,7 +236,9 @@ public:
 			}
 		}
 
-		data.Submeshes.push_back({ "", 0, (unsigned int)data.Indices.size() });
+		Egss::Submesh all;
+		all.IndexCount = (unsigned int)data.Indices.size();
+		data.Submeshes.push_back(all);
 		data.RecalculateBounds();
 		return data;
 	}

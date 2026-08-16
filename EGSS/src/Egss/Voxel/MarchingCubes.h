@@ -59,8 +59,23 @@ namespace Egss {
 		// wide at most, and treat this as a known limitation rather than a
 		// bug: see the OpenWorld demo's LOD banding for how it is kept out
 		// of view in practice.
+		// `skirtDepth` (in world units, 0 to disable) extrudes the mesh's open
+		// boundary straight down by that much.
+		//
+		// This is the mitigation for the seam described above, not a fix for
+		// it. Two chunks on different strides genuinely disagree about where
+		// the surface is -- marching cubes on a coarser lattice cuts corners,
+		// so on a convex dome the coarse chunk meshes *systematically lower*
+		// than its fine neighbour, and what you get is not a hairline crack
+		// but a trench you can see into. A skirt hangs a wall off the edge of
+		// every chunk so the gap is closed by geometry: the step in the
+		// surface is still there, but it is a step rather than a hole.
+		//
+		// The depth wants to cover the worst vertical disagreement, which is
+		// about the terrain's slope times one coarse cell.
 		static MeshData Mesh(const VoxelField3D& field,
-			const glm::ivec3& min, const glm::ivec3& max, int stride = 1);
+			const glm::ivec3& min, const glm::ivec3& max, int stride = 1,
+			float skirtDepth = 0.0f);
 
 		static MeshData Mesh(const VoxelField3D& field)
 		{

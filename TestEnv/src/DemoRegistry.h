@@ -26,6 +26,7 @@
 #include "VoxelTerrain.h"
 #include "ModelDemo.h"
 #include "OpenWorld.h"
+#include "CelShading.h"
 
 struct DemoEntry
 {
@@ -48,7 +49,8 @@ inline const DemoEntry s_Demos[] =
 	{ "Map Building (seeded terrain)","MapBuild",  []() -> DemoLayer* { return new MapBuilding(); } },
 	{ "Voxel terrain (dig it out)",   "Voxel",     []() -> DemoLayer* { return new VoxelTerrain(); } },
 	{ "Model (glTF hierarchy + textures)", "Model", []() -> DemoLayer* { return new ModelDemo(); } },
-	{ "Open World (streaming islands)", "OpenWorld", []() -> DemoLayer* { return new OpenWorld(); } }
+	{ "Open World (streaming islands)", "OpenWorld", []() -> DemoLayer* { return new OpenWorld(); } },
+	{ "Cel shading (bands + outlines)", "Cel",      []() -> DemoLayer* { return new CelShading(); } }
 };
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));

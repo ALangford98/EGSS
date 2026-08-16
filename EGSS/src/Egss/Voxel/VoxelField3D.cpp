@@ -446,6 +446,92 @@ namespace Egss {
 		return count;
 	}
 
+	// Layout: a flag byte, then the uniform value and material, then the dense
+	// arrays if there are any. A uniform chunk is six bytes; a dense one is
+	// 4096 floats and 4096 bytes, which is the whole reason the flag is there.
+	//
+	// No endianness or float-format conversion. This is a cache next to the
+	// executable that regenerates when it does not match, not an interchange
+	// format -- paying for portability would be paying for a property nothing
+	// asks of it.
+	namespace {
+		constexpr size_t s_VoxelsPerChunk =
+			(size_t)VoxelField3D::ChunkSize * VoxelField3D::ChunkSize * VoxelField3D::ChunkSize;
+		constexpr size_t s_HeaderBytes = 1 + sizeof(float) + 1;
+		constexpr size_t s_DenseBytes =
+			s_HeaderBytes + s_VoxelsPerChunk * sizeof(float) + s_VoxelsPerChunk;
+	}
+
+	void VoxelField3D::SaveChunk(const glm::ivec3& chunk, std::vector<unsigned char>& out) const
+	{
+		out.clear();
+
+		if (chunk.x < 0 || chunk.y < 0 || chunk.z < 0
+			|| chunk.x >= m_Chunks.x || chunk.y >= m_Chunks.y || chunk.z >= m_Chunks.z)
+			return;
+
+		const Chunk& c = m_Storage[ChunkIndexOf(chunk.x, chunk.y, chunk.z)];
+		bool dense = !c.Distance.empty();
+
+		out.resize(dense ? s_DenseBytes : s_HeaderBytes);
+
+		size_t at = 0;
+		out[at++] = dense ? 1u : 0u;
+		std::memcpy(&out[at], &c.Uniform, sizeof(float));
+		at += sizeof(float);
+		out[at++] = c.UniformMaterial;
+
+		if (!dense)
+			return;
+
+		std::memcpy(&out[at], c.Distance.data(), s_VoxelsPerChunk * sizeof(float));
+		at += s_VoxelsPerChunk * sizeof(float);
+		std::memcpy(&out[at], c.Material.data(), s_VoxelsPerChunk);
+	}
+
+	bool VoxelField3D::LoadChunk(const glm::ivec3& chunk, const unsigned char* data, size_t size)
+	{
+		if (!data || size < s_HeaderBytes)
+			return false;
+
+		if (chunk.x < 0 || chunk.y < 0 || chunk.z < 0
+			|| chunk.x >= m_Chunks.x || chunk.y >= m_Chunks.y || chunk.z >= m_Chunks.z)
+			return false;
+
+		bool dense = data[0] != 0;
+		if (size != (dense ? s_DenseBytes : s_HeaderBytes))
+			return false;
+
+		Chunk& c = m_Storage[ChunkIndexOf(chunk.x, chunk.y, chunk.z)];
+
+		size_t at = 1;
+		std::memcpy(&c.Uniform, &data[at], sizeof(float));
+		at += sizeof(float);
+		c.UniformMaterial = data[at++];
+
+		if (!dense)
+		{
+			// Releasing the vectors rather than leaving them is what makes a
+			// round trip through the cache produce the same *storage* and not
+			// merely the same values -- AllocatedChunks would otherwise differ
+			// between a generated field and a loaded one.
+			c.Distance.clear();
+			c.Distance.shrink_to_fit();
+			c.Material.clear();
+			c.Material.shrink_to_fit();
+			return true;
+		}
+
+		c.Distance.resize(s_VoxelsPerChunk);
+		c.Material.resize(s_VoxelsPerChunk);
+
+		std::memcpy(c.Distance.data(), &data[at], s_VoxelsPerChunk * sizeof(float));
+		at += s_VoxelsPerChunk * sizeof(float);
+		std::memcpy(c.Material.data(), &data[at], s_VoxelsPerChunk);
+
+		return true;
+	}
+
 	size_t VoxelField3D::AllocatedBytes() const
 	{
 		size_t bytes = m_Storage.size() * sizeof(Chunk);

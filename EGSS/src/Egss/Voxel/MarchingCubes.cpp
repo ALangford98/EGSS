@@ -1,4 +1,7 @@
 #include "egsspch.h"
+
+#include <unordered_map>
+#include <tuple>
 #include "Egss/Voxel/MarchingCubes.h"
 
 namespace Egss {
@@ -328,8 +331,109 @@ namespace Egss {
 		return s_Corners[glm::clamp(corner, 0, 7)];
 	}
 
+	// Hangs a wall off every open edge of the mesh, straight down.
+	//
+	// An edge used by exactly one triangle is on the boundary of an open
+	// surface -- which for a chunk is precisely where it was cut off at the
+	// chunk border, and precisely where a neighbour on a different stride
+	// leaves a gap. Edges used twice are interior and get nothing.
+	//
+	// The winding of the single triangle that owns an edge tells us which way
+	// is outward, so the skirt quad can be wound to match rather than guessed.
+	static void AddSkirt(MeshData& data, float depth)
+	{
+		if (depth <= 0.0f || data.Indices.size() < 3)
+			return;
+
+		// Key on the *positions*, not the indices: marching cubes emits its
+		// vertices per triangle, so two triangles sharing an edge in space do
+		// not share an index and a by-index count would call every edge a
+		// boundary.
+		auto key = [](const glm::vec3& a, const glm::vec3& b)
+		{
+			auto q = [](float v) { return (long long)std::llround(v * 4096.0); };
+
+			long long ax = q(a.x), ay = q(a.y), az = q(a.z);
+			long long bx = q(b.x), by = q(b.y), bz = q(b.z);
+
+			// Order-independent, so an edge and its reverse hash together.
+			if (std::tie(ax, ay, az) > std::tie(bx, by, bz))
+			{
+				std::swap(ax, bx); std::swap(ay, by); std::swap(az, bz);
+			}
+
+			size_t h = 1469598103934665603ull;
+			for (long long v : { ax, ay, az, bx, by, bz })
+			{
+				h ^= (size_t)v;
+				h *= 1099511628211ull;
+			}
+			return h;
+		};
+
+		struct Edge { glm::vec3 A, B; int Count; };
+		std::unordered_map<size_t, Edge> edges;
+
+		size_t triangles = data.Indices.size() / 3;
+
+		for (size_t t = 0; t < triangles; t++)
+		{
+			const glm::vec3& p0 = data.Vertices[data.Indices[t * 3 + 0]].Position;
+			const glm::vec3& p1 = data.Vertices[data.Indices[t * 3 + 1]].Position;
+			const glm::vec3& p2 = data.Vertices[data.Indices[t * 3 + 2]].Position;
+
+			const glm::vec3 pairs[3][2] = { { p0, p1 }, { p1, p2 }, { p2, p0 } };
+
+			for (const auto& e : pairs)
+			{
+				size_t k = key(e[0], e[1]);
+				auto it = edges.find(k);
+
+				if (it == edges.end())
+					edges.insert({ k, Edge{ e[0], e[1], 1 } });
+				else
+					it->second.Count++;
+			}
+		}
+
+		for (const auto& entry : edges)
+		{
+			if (entry.second.Count != 1)
+				continue;
+
+			const glm::vec3& a = entry.second.A;
+			const glm::vec3& b = entry.second.B;
+
+			glm::vec3 down(0.0f, -depth, 0.0f);
+
+			// Normal along the edge, horizontal and outward-ish. A vertical
+			// edge would give a degenerate normal, so those are skipped --
+			// they have no gap to close anyway.
+			glm::vec3 along = b - a;
+			glm::vec3 n = glm::cross(along, glm::vec3(0.0f, 1.0f, 0.0f));
+
+			if (glm::length(n) < 1e-6f)
+				continue;
+
+			n = glm::normalize(n);
+
+			unsigned int base = (unsigned int)data.Vertices.size();
+			data.Vertices.push_back({ a, n, { 0.0f, 0.0f } });
+			data.Vertices.push_back({ b, n, { 1.0f, 0.0f } });
+			data.Vertices.push_back({ b + down, n, { 1.0f, 1.0f } });
+			data.Vertices.push_back({ a + down, n, { 0.0f, 1.0f } });
+
+			data.Indices.push_back(base);
+			data.Indices.push_back(base + 1);
+			data.Indices.push_back(base + 2);
+			data.Indices.push_back(base);
+			data.Indices.push_back(base + 2);
+			data.Indices.push_back(base + 3);
+		}
+	}
+
 	MeshData MarchingCubes::Mesh(const VoxelField3D& field,
-		const glm::ivec3& min, const glm::ivec3& max, int stride)
+		const glm::ivec3& min, const glm::ivec3& max, int stride, float skirtDepth)
 	{
 		MeshData data;
 
@@ -445,6 +549,8 @@ namespace Egss {
 				}
 			}
 		}
+
+		AddSkirt(data, skirtDepth);
 
 		return data;
 	}

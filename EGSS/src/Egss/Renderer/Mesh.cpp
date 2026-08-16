@@ -81,7 +81,11 @@ namespace Egss {
 		// what lets a caller loop over submeshes without asking whether there
 		// are any.
 		if (m_Submeshes.empty() && !data.Indices.empty())
-			m_Submeshes.push_back({ std::string(), 0u, (unsigned int)data.Indices.size() });
+		{
+			Submesh all;
+			all.IndexCount = (unsigned int)data.Indices.size();
+			m_Submeshes.push_back(all);
+		}
 
 		m_VertexArray.reset(VertexArray::Create());
 

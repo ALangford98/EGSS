@@ -156,6 +156,27 @@ namespace Egss {
 		size_t TotalChunks() const { return m_Storage.size(); }
 		size_t AllocatedBytes() const;
 
+		// --- Persistence ---------------------------------------------------
+		//
+		// One chunk's contents as bytes, and back. A field is expensive to
+		// *produce* -- a density evaluation per voxel, 4,096 of them a chunk --
+		// and cheap to store, because a chunk that never comes near the surface
+		// is uniform and collapses to two numbers.
+		//
+		// Deliberately per chunk rather than a whole-field Save/Load: streaming
+		// wants one chunk at a time, and a format that has to be read end to end
+		// before the first chunk is usable would defeat the point of streaming.
+		// What the bytes are *stored in* -- one file, many files, a database --
+		// is the caller's business and is not decided here.
+		void SaveChunk(const glm::ivec3& chunk, std::vector<unsigned char>& out) const;
+
+		// Returns false and changes nothing if the bytes are not the right
+		// length for this field's chunk size, which is the one corruption that
+		// can be detected locally. Everything else -- whether these bytes came
+		// from the same *world* -- is the caller's to check, and OpenWorld's
+		// chunk cache does it by fingerprinting the density function.
+		bool LoadChunk(const glm::ivec3& chunk, const unsigned char* data, size_t size);
+
 		// --- Editing ------------------------------------------------------
 		//
 		// Digging is a min or a max against another distance field, which is

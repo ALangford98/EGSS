@@ -47,7 +47,59 @@ public:
 		// count as standing on it. Separate from the walker's own radius,
 		// which is a shape fact, not a gait one.
 		float GroundedTolerance = 0.25f;
+
+		// --- Water ---------------------------------------------------------
+		//
+		// Off unless a caller turns it on. A demo with no water must not have
+		// its jump quietly rerouted through a buoyancy model because the
+		// controller happens to know how to swim.
+		bool HasWater = false;
+		float WaterLevel = 0.0f;
+
+		// Standing in water shallower than this is wading: normal walking,
+		// normal jumping. Deeper than this the feet have left the bottom in
+		// any useful sense and it becomes swimming. Without the distinction,
+		// ankle-deep surf would take control away from the player.
+		float WadeDepth = 1.1f;
+
+		float SwimSpeed = 2.6f;      // slower than walking, because water
+		float SwimVerticalSpeed = 2.2f;   // space to rise, shift to dive
+
+		// Where the feet settle when floating with nothing pressed, measured
+		// down from the surface. Roughly eye-out-of-the-water for a 1.7 m
+		// capsule.
+		float FloatDepth = 1.35f;
+
+		// How hard the float is corrected, per second. A spring rather than a
+		// snap, so entering the water sinks and comes back up instead of
+		// clamping to the surface on the first step.
+		float BuoyancyStiffness = 3.0f;
+
+		// Fraction of velocity shed per second in water, which is what makes
+		// it feel like water rather than like low gravity.
+		float WaterDrag = 6.0f;
 	};
+
+	// What the body is doing, for a caller that wants to show it.
+	enum class Motion { Airborne, Grounded, Wading, Swimming };
+
+	// The rule, pulled out of UpdateWalk so it can be checked without a
+	// physics world: `depth` is how far the feet are below the water surface,
+	// negative when dry.
+	//
+	// Standing on the bottom in shallow water is still walking -- including
+	// jumping out of it. Deeper than a wade, or with no bottom underfoot at
+	// all, it is swimming.
+	static Motion Classify(float depth, bool grounded, const Config& cfg)
+	{
+		if (depth <= 0.0f)
+			return grounded ? Motion::Grounded : Motion::Airborne;
+
+		if (grounded && depth < cfg.WadeDepth)
+			return Motion::Wading;
+
+		return Motion::Swimming;
+	}
 
 	Config Cfg;
 
@@ -195,34 +247,92 @@ public:
 
 		bool grounded = found && (feet - ground) < Cfg.GroundedTolerance;
 
+		// How deep the feet are below the water surface. Negative out of water.
+		float depth = Cfg.HasWater ? (Cfg.WaterLevel - feet) : -1.0f;
+
+		// Standing on the bottom in shallow water is still walking. Only once
+		// the water is deeper than a wade -- or there is no bottom within
+		// reach -- does it become swimming.
+		m_Motion = Classify(depth, grounded, Cfg);
+
+		bool wading = m_Motion == Motion::Wading;
+		bool swimming = m_Motion == Motion::Swimming;
+
 		glm::vec3 velocity = body.Velocity;
+
+		float speed = swimming ? Cfg.SwimSpeed : Cfg.WalkSpeed;
 
 		if (glm::length(wish) > 1e-4f)
 		{
-			glm::vec3 move = glm::normalize(wish) * Cfg.WalkSpeed;
+			glm::vec3 move = glm::normalize(wish) * speed;
 			velocity.x = move.x;
 			velocity.z = move.z;
 		}
-		else if (grounded)
+		else if (grounded && !swimming)
 		{
 			velocity.x = 0.0f;
 			velocity.z = 0.0f;
 		}
+		else if (swimming)
+		{
+			// Coasting to a stop rather than stopping dead: the only thing
+			// separating "floating in water" from "standing in mid-air" is
+			// that water takes the momentum back gradually.
+			float keep = glm::max(0.0f, 1.0f - Cfg.WaterDrag * dt);
+			velocity.x *= keep;
+			velocity.z *= keep;
+		}
 
-		if (grounded && Egss::Input::IsKeyPressed(EGSS_KEY_SPACE))
+		if (swimming)
+		{
+			// Vertical control is taken over entirely while swimming, which is
+			// what stops gravity from winning: the body is re-assigned a
+			// vertical speed every step rather than accumulating one.
+			float wantY;
+
+			if (Egss::Input::IsKeyPressed(EGSS_KEY_SPACE))
+				wantY = Cfg.SwimVerticalSpeed;
+			else if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT_SHIFT))
+				wantY = -Cfg.SwimVerticalSpeed;
+			else
+				// Float: rise while deeper than FloatDepth, sink while
+				// shallower, and the error term is zero at the depth the body
+				// is meant to settle at.
+				wantY = glm::clamp((depth - Cfg.FloatDepth) * Cfg.BuoyancyStiffness,
+					-Cfg.SwimVerticalSpeed, Cfg.SwimVerticalSpeed);
+
+			velocity.y = wantY;
+		}
+		else if ((grounded || wading) && Egss::Input::IsKeyPressed(EGSS_KEY_SPACE))
+		{
 			velocity.y = Cfg.JumpSpeed;
+		}
 
 		body.Velocity = velocity;
 		body.Awake = true;
 
 		m_Camera.SetPosition(body.Position + glm::vec3(0.0f, eyeHeight, 0.0f));
 
-		(void)dt;
-		return grounded;
+		return grounded || wading;
+	}
+
+	Motion GetMotion() const { return m_Motion; }
+
+	static const char* MotionName(Motion m)
+	{
+		switch (m)
+		{
+			case Motion::Swimming: return "swimming";
+			case Motion::Wading:   return "wading";
+			case Motion::Grounded: return "grounded";
+			default:               return "airborne";
+		}
 	}
 
 private:
 	Egss::PerspectiveCamera& m_Camera;
+
+	Motion m_Motion = Motion::Airborne;
 
 	float m_Yaw;
 	float m_Pitch;

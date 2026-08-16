@@ -150,7 +150,18 @@ namespace Egss {
 		{
 			unsigned int count = (unsigned int)result.Indices.size() - submeshStart;
 			if (count > 0)
-				result.Submeshes.push_back({ currentMaterial, submeshStart, count });
+			{
+				// Named, not positional. This was `{ currentMaterial,
+				// submeshStart, count }` until a field was added in the middle
+				// of Submesh, after which it still compiled and quietly meant
+				// something else -- the count landed in FirstIndex and
+				// IndexCount kept its default of 0, so every .obj drew nothing.
+				Submesh submesh;
+				submesh.Material = currentMaterial;
+				submesh.FirstIndex = submeshStart;
+				submesh.IndexCount = count;
+				result.Submeshes.push_back(submesh);
+			}
 
 			submeshStart = (unsigned int)result.Indices.size();
 		};

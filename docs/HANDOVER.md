@@ -275,6 +275,145 @@ look caught immediately.
   and both give the same direction once normalised — measured byte-identical on
   the Model demo. It is still the correct matrix for a shear or for normals that
   are not aligned to the scale axes; just do not claim a box demonstrates it.
+- **The LOD seam is a step, not a crack.** Chunks on different marching-cubes
+  strides do not disagree by a hairline: the coarse lattice cuts corners, so on
+  a convex surface it meshes *systematically lower* and leaves a solid terrace
+  whose wall reads as "a hole into the ground". Skirts (walling every boundary
+  edge downward) were built for this and moved **2 pixels**, even with the bands
+  forced to 10 m/20 m -- they work, there is just no gap. Default off; the fix
+  is transvoxel transition cells. Turning LOD off is not the alternative, it was
+  worth 9x the triangles at full stream.
+- **`flat` is a GLSL keyword.** `float flat = ...` is a syntax error (it is an
+  interpolation qualifier), the shader fails to compile, and `Shader::Create`
+  logs it and hands back an unusable program — which renders **white**, not
+  nothing. Same for `sample`, `filter`, `input`, `output`, `active`. When a
+  shader edit produces an inexplicable frame, read the log first: it said
+  `unexpected FLAT` on the line in question while the picture said only "white".
+- **A sphere collider rolls forever.** Scenery rocks spawned as spheres landed
+  exactly where predicted and then crept downhill — 3.69 to 3.10 over 300 steps —
+  rolled into the sea, down the seabed, and eventually so far inside the SDF that
+  the narrowphase stopped ejecting them and they fell out of the world. The
+  collision was correct throughout. A rigid-body solver has no rolling
+  resistance, so anything round on anything sloped is in permanent motion; use a
+  box for things meant to sit still, and draw a mesh *inscribed* in it rather
+  than drawing the collider.
+- **Render state is global and outlives the demo that set it.** `CullFace`,
+  depth write, blend mode and polygon mode all persist across a demo switch,
+  because they live in the GL context and not in the layer. `CelShading` set
+  front-face culling for its outline pass and restored it to **`Back`** — but
+  the engine default is `None` (`OpenGLRendererAPI::Init` never enables
+  `GL_CULL_FACE`), so every demo selected afterwards silently ran with back-face
+  culling on. OpenWorld's water is a single-sided quad facing +Y, so it vanished
+  the moment the camera went under it, and only for someone who had visited the
+  Cel demo first. Restore to the *default*, not to what you assume was there —
+  and in a demo that cares, set the state at the top of the draw rather than
+  inheriting it. `VoxelTerrain` still leaves culling on `Back`; it gets away
+  with it.
+- **Crossing a boundary needs to look like crossing it.** Being underwater
+  rendered identically to standing on dry sand — same sky, same lighting — so
+  "the actual water is invisible" was an accurate description of correct-looking
+  geometry. A submerged camera now clears to the water colour and fogs by
+  `1 - exp(-density*d)`. When a demo has two regimes, check that the picture
+  changes at the boundary, not just that each side is drawn right.
+- **A signed field scales both sides.** OpenWorld's island mask is positive
+  inland and negative at sea, so `mask * s_MaskToHeight` shapes the island *and*
+  the sea floor with one number. Flattening the islands from 0.55 to 0.10
+  therefore flattened the seabed by the same factor, turning the sea into a
+  shin-deep sand shelf 80 m wide that read as more beach — reported as "I still
+  can't see the water" after a changelog entry claimed it fixed. Land and water
+  now have separate scales. Before scaling anything derived from a signed
+  quantity, ask what the negative half of it means.
+- **A capture that stops at step 300 cannot see a trend.** The same water bug was
+  visible in the numbers that "confirmed" the fix — 12.7% of frame at step 30,
+  12.4% at 90, 11.7% at 200, 9.2% at 800 — monotonically shrinking, and 4.7% by
+  step 6000, which is where a person actually plays. When measuring something a
+  player experiences over minutes, capture at the timescale they experience, and
+  read a series as a series rather than as one number per run.
+- **A comment doing a constant's job.** OpenWorld's `Height` scaled the island
+  mask by a literal `0.55`, and `Slope` scaled its gradient by another literal
+  `0.55` under a comment reading "0.55 matches the scale Height applies to the
+  mask". That comment is an admission: the two must agree and nothing enforces
+  it, so flattening the terrain would have left the normals lighting the old
+  shape with no error anywhere. It is `s_MaskToHeight` now. When a comment says
+  two numbers have to match, that is the bug report.
+- **A light albedo has no cel bands.** The OpenWorld shader's brightest
+  multiplier is `ambient + sun + sky*0.35` = 1.525, so an albedo over ~0.65
+  clips — and clipped means *every* band saturates to the same white, so the
+  banding silently disappears rather than looking too bright. Sand at
+  (0.84, 0.76, 0.56) measured (255, 255, 213). Pick the albedo from the
+  lighting's maximum, then check the brightest pixel against the product.
+- **"It never moved" is a test-setup failure, not a physics failure.** The
+  swimming check reported the body's feet at exactly `start - eyeHeight` from
+  both starting heights — the same distance, from two different places, is a
+  body that was never simulated. It ran from `OnDemoAttach` *before*
+  `SpawnWalker`, so the handle did not refer to a body yet. An exactly-preserved
+  input is the signature; look at ordering before looking at the model.
+- **A cache keyed by a version number is a trap; key it by behaviour.** The
+  OpenWorld chunk cache stores generated voxel chunks between runs, and its worst
+  failure is not a miss but a *stale hit*: change the terrain function, forget to
+  clear the file, and the old world comes back while the code says otherwise. The
+  key is therefore a hash of **512 fixed samples of the density function** plus
+  the lattice geometry, not a constant somebody has to remember to bump. Any
+  change to the islands, noise, sea level or voxel size moves a sample and
+  invalidates the file automatically. `openworld.chunks` lives beside the
+  executable and `bin/` is gitignored, so it never reaches a commit.
+- **Round-trip tests miss whatever the *setup* cannot reach.** Three of five
+  mutations against the cache survived the first pass, all for that reason:
+  loading uniform-over-dense was invisible because the target field was fresh
+  (nothing allocated to free); the length check was invisible because the
+  truncated blob was a six-byte uniform chunk caught by an earlier guard; the
+  write path's offset was invisible because every read went through a *reopened*
+  cache that rebuilds offsets by scanning. None needed a better assertion — each
+  needed a different starting state. When a mutation survives, look at what the
+  test built before it looked at anything.
+- **Streaming order is invisible until the radius grows.** `OpenWorld`'s
+  `StreamAround` filled chunks in scan-line order (`dz` then `dx`) for its whole
+  life without anyone noticing, because at a 64 m radius the disc is small. At
+  128 m — four times the area, 10,455 chunks, three minutes to populate at one a
+  step — it assembles in visible stripes and the far edge arrives before the
+  ground beside the player. It is now nearest-first, via offsets sorted once per
+  reach, with a cursor so the scan does not re-walk the filled interior every
+  step. Two lessons: a quantity change makes previously-invisible ordering bugs
+  visible, and when you make something bigger, check the *order* things happen
+  in and not only the cost.
+- **A green suite can be measuring a feature that does nothing.** Chunk LOD
+  passed twelve checks — hysteresis correct, every chunk on the right band, the
+  mechanism sound — while saving **1.02x**, because the bands sat at 48/96 m and
+  the load radius is 64 m, so the chunks they would have coarsened were never
+  loaded. Correctness checks cannot tell you a feature is pointless; only the
+  magnitude can. Whenever something is built to *save* something, measure the
+  saving as well as the behaviour, and say the number out loud.
+- **A test that cannot see the line it is testing.** The cel outline's clip-space
+  push multiplies by `clip.w` to survive the perspective divide. Deleting that
+  multiply left all 20 checks passing, because the test rendered
+  **orthographically** and `w` is 1 there — the mutation and the correct code are
+  the same expression under that projection. Same shape of hole in the same
+  suite: dropping the top-band clamp changed nothing, because no pixel of a
+  *curved* surface lands on `N·L = 1.0` exactly, so the clamp never fired. Both
+  needed a second geometry (perspective at two distances; a flat plane square-on
+  to the light), not a better assertion. When a mutation survives, ask what the
+  test set up rather than what it checked.
+- **A constant offset is the measurement, not the code.** The outline measured
+  6 px too wide at every setting, slope exactly 1. With ambient 0 the darkest
+  band is pure black — the same colour as the outline — so the scanline counted
+  both as one run, and band 0's ring is `R(1-sqrt(1-1/B^2))` = 5.7 px. The rule
+  in CLAUDE.md caught this one exactly as written; when the error is the same at
+  every reading, stop looking at the shader.
+- **Adding a field to a struct silently rewrites every positional initialiser.**
+  `Submesh` gained `MaterialIndex` as its *second* member for glTF. Three sites
+  built one as `{ material, firstIndex, indexCount }`, and those three arguments
+  simply slid over: the first index became the material index, the count became
+  `FirstIndex`, and `IndexCount` fell back to its default of `0`. Every `.obj`
+  mesh then drew zero indices — the Cube3D floor, sphere and icosahedron
+  vanished while the wireframes and debug lines, which do not go through
+  `Submesh`, stayed. **It compiles without a warning**, because every argument
+  is still convertible to the field it landed on. Two hours went into blaming a
+  stale shared-library build, since a struct layout mismatch across a `.so`
+  boundary has the identical signature; `./egss.py clean` disproved that in one
+  step and should have been the *first* step, not the fourth. When adding a
+  field to an aggregate, `grep` for every brace-initialiser of it and prefer
+  named assignment, which is what these sites use now and what `GltfLoader.cpp`
+  always did.
 - **Which way does yaw go?** `PerspectiveCamera::GetForward` is
   `(cos yaw·cos pitch, sin pitch, sin yaw·cos pitch)` and `GetRight` is
   `cross(forward, up)`, so **increasing yaw turns right**. The voxel demo's

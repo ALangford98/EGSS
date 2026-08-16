@@ -681,6 +681,19 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       Verified by mutation: 62 checks passed first try, six deliberate bugs
       injected, all six caught. The Model demo shows a jointed figure built
       from one 24-vertex cube referenced by twenty nodes
+- [x] **Distant-chunk LOD** — OpenWorld picks a marching-cubes stride per chunk
+      from its distance (24 m to stride 2, 48 m to stride 4) with an 8 m
+      hysteresis band, and budgets the remeshing like streaming. Worth 1.16x at
+      the default 64 m load radius and **9.16x at 128 m**; seeing 128 m with LOD
+      costs 0.82x what seeing 64 m without it did. Triangles fall as 1/stride²
+      (measured 4.08x and 16.09x against 4 and 16). The cross-stride seam is
+      unfixed and documented — transition cells are the real answer
+- [x] **Chunk persistence** — `VoxelField3D::SaveChunk`/`LoadChunk` plus a
+      demo-owned append-only cache file, keyed by a fingerprint of the density
+      function so a changed world discards a stale file automatically. 6.21 s
+      cold against 4.16 s warm over 600 steps at a 128 m radius, and the frame
+      is byte-identical between them. 2.8 MB for 951 chunks, because a chunk
+      that never nears the surface is uniform and stores as six bytes
 - [ ] **glTF: skinning and animation.** Joints, weights and samplers have
       nowhere to be played back to until something poses a skeleton — parsing
       them now would be a component with no system
@@ -1022,6 +1035,458 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-16 (blades of grass, and a skirt that was the wrong fix)
+
+**The skirt does not fix the LOD seam, measured.** It was built on the
+assumption that the seam is a crack; it is not. A coarse chunk meshes
+systematically *lower* than its fine neighbour, so what you get is a solid step
+whose wall you can see into -- and a skirt has no gap to fill.
+
+The mechanism itself works: 582 triangles a chunk became 718, so 68 boundary
+edges were found and walled. The picture moved by **2 pixels**, and that was
+with the LOD bands forced to 10 m and 20 m to put mismatched chunks directly
+under the camera. 23% more triangles for two pixels, so it now defaults off.
+Kept, because it is the right mechanism for an actual crack and because the
+negative result is worth more than the code. The real fix for a step is
+transvoxel transition cells, which reconcile the two lattices rather than
+hanging a curtain off one of them.
+
+Disabling LOD is not the alternative either -- at full stream it was worth 9x
+the triangles.
+
+**Grass, as geometry.** One triangle a blade -- a base edge across the slope and
+a point above it. A quad is two triangles for a shape nobody can tell apart at
+this size, and grass is the one thing here where the count *is* the cost.
+
+Blades are scattered on the chunk's own triangles rather than on a grid, so they
+follow the ground exactly and inherit the mesh's density: more grass where the
+surface is busier, which is also where it looks right. Placement is uniform
+within each triangle (the `sqrt` on the barycentric is what stops them bunching
+along one edge), and fractional density is honest -- the whole part is a
+guaranteed count and the remainder is a threshold, so 0.6 gives six blades every
+ten triangles instead of none.
+
+They are gated on the same height-and-slope test the shader shades with, so a
+blade never stands on bare sand or on a face too steep to be green. And only
+**stride-1 chunks** get grass, which is not a special case: a stride-2 chunk is
+already the renderer saying this is far enough away to halve its detail, and
+grass is the first thing that should go. 21 chunks of grass inside a 52,349
+triangle frame.
+
+**Rocks smoothed** from a 9x6 lattice jittered 0.68-1.0 to a 16x10 one jittered
+0.84-1.0 -- more facets, shallower dents. The ceiling stays at 1.0 so the mesh
+still cannot leave the box that collides for it.
+
+### 2026-08-15 (grass, and rocks that would not stay put)
+
+**Grass by elevation and slope.** Height decides where it starts, slope decides
+whether it can hold on — grass on a near-vertical face looks painted on, and the
+dunes are steep enough at their edges for that to show. Sand at the waterline,
+green over the crown, `smoothstep` between. Gated on a `u_Terrain` uniform so the
+water and the rocks, which share the shader, do not sprout grass wherever they
+happen to sit above the line.
+
+The first attempt rendered the whole world **white**. `flat` is a GLSL
+interpolation qualifier, so `float flat = smoothstep(...)` is a syntax error; the
+shader failed to compile, and the engine logged it and carried on with an
+unusable program. The log said `unexpected FLAT` immediately. The picture said
+"white", which is much harder to act on — when a shader change produces something
+inexplicable, read the log before reading the frame.
+
+**Rocks, and the shape that made them work.** The obvious version — sphere
+collider, coarse sphere mesh — matched perfectly and behaved terribly. A rock
+landed exactly where predicted, at `Height + radius`, then crept downhill:
+3.69 → 3.66 → 3.58 → 3.10, and by step 599 it was at −18.8 m doing −17.6 m/s.
+
+Nothing was wrong with the collision. **A sphere on a slope rolls**, this island
+is a dome, so every rock rolled down the beach, into the sea, down the seabed,
+and eventually far enough inside the field that the narrowphase stopped pushing
+it out. Real rocks do not roll away because real rocks are not spheres, and a
+rigid-body solver has no rolling resistance to stand in for that. Boxes rest on a
+face: 16 rocks, worst `|centre − (Height + half)|` of **0.148 m** — inside one
+0.5 m voxel — and worst drift **0.249 m** over 15 s, against 3 checks.
+
+Then the boxes looked like crates, because what was drawn *was* the collider.
+They are now flat-shaded jittered blobs inscribed in the box, radius 0.68–1.0 in
+the box's own units, so the mesh can only ever be inside what it collides with —
+which reads as a rock half-buried rather than one floating. Flat normals are the
+point: a smooth rock under cel banding is a soft gradient with a couple of bands
+across it, while a faceted one is a set of plates each holding a single shade.
+
+### 2026-08-15 (the water was culled, and underwater looked like dry land)
+
+Reported from a screenshot: "I am swimming in this picture. The water texture is
+on the ground. The actual water is invisible." Two separate causes, and the first
+is a render-state leak I introduced.
+
+**`CullFace` is global and outlives the demo that set it.** `CelShading` turns on
+front-face culling for its inverted-hull outline pass and restored it to
+**`Back`** afterwards -- but the engine's default is `None`; `Init` never enables
+`GL_CULL_FACE` at all. So selecting the Cel demo, then switching to Open World,
+left back-face culling on for a demo that had never asked for it. The water is a
+single-sided quad facing +Y, so from underneath it is a back face and disappears
+exactly when the camera goes under it. `Cube3D` restores to `None` and always
+did; this did not. `VoxelTerrain` leaves it on `Back` too, which is the same
+latent bug in a demo that happens not to care.
+
+Fixed twice over: the Cel demo restores the default, and Open World now *sets*
+the cull mode it wants at the top of its draw rather than inheriting whatever was
+left behind. Setting state is cheap; depending on state you did not set is a bug
+waiting for a particular order of clicks.
+
+**And being underwater looked exactly like being on dry sand**, because nothing
+changed when the camera crossed the surface. The sky stayed sky-blue, the sand
+stayed sand, and the only blue left in frame was the distant sea seen edge-on --
+which is precisely "the water texture is on the ground". Submerged now clears to
+the water colour instead of to sky, and everything fades toward it with distance
+by Beer-Lambert, `1 - exp(-density * d)`, the same exponential an actual
+attenuating medium follows. At 0.06 per metre that is about half gone by 12 m, so
+the sea floor stays readable underfoot while the distance closes in.
+
+Checked by spawning at sea with the float depth temporarily set below the eye,
+since buoyancy otherwise puts the camera just above the surface within a few
+hundred steps -- which is itself the design working. The above-water frame is
+byte-identical to before the change, and the Cel demo's own capture still hashes
+`56fa9457`, so neither fix moved anything it should not have.
+
+### 2026-08-15 (the water was a sand shelf)
+
+"I still can't see the water", after a changelog entry claiming it was fixed.
+The entry was wrong, and the evidence was already in its own numbers: water
+covered 12.7% of the frame at step 30, 12.4% at 90, 11.7% at 200 and 9.2% at
+800. Monotonically shrinking — and every capture used to declare it fixed
+stopped inside the first few hundred steps, while a person plays for minutes.
+By step 6000 it was **4.7%**.
+
+The cause was the flattening from the previous entry. `s_MaskToHeight` scales
+the island mask, and **the mask is negative at sea** — so dropping it from 0.55
+to 0.10 flattened the sea floor by exactly the same factor as the islands:
+
+| past the shore | seabed before | after |
+|---|---|---|
+| 10 m | −5.5 m | −1.0 m |
+| 20 m | −8 m (floor) | −2.0 m |
+| 40 m | −8 m | −4.0 m |
+
+Every island sat in an enormous shin-deep shelf that only reached the −8 m floor
+about 80 m out. Bright sand under a thin film of 0.82-alpha water reads as more
+beach, and as more shelf streamed in the visible sea shrank — which is exactly
+the trend the early captures were showing and nobody read.
+
+Land and seabed now scale separately: `s_MaskToHeight` = 0.10 inland,
+`s_SeabedDrop` = 0.55 offshore, with a deliberate crease at the waterline
+because a beach really does change slope where it enters the water. `Slope`
+picks the same side, which is the second time that shared constant has earned
+its keep. Water at step 6000 went 4.7% → **6.8%**, and the sea is now a deep
+blue band rather than a pale shelf.
+
+Checked from four yaws this time (6.7–10.8% of frame) rather than from the one
+that happened to look right — the same mistake as declaring it fixed from a
+step-300 capture, in the other axis.
+
+The starting pitch also went from −12° to −2°. Twelve degrees down was composed
+for standing on a mountain; on a flat beach it spends two thirds of the screen
+on the sand at your feet.
+
+### 2026-08-15 (sandy islands, visible water, and swimming)
+
+**The water was never missing.** It measured `(82, 138, 178)` against a sky of
+`(135, 173, 201)` — drawn, blended, and genuinely different, but reading as haze
+because nothing in view gave it context. What actually hid it was the terrain:
+islands whose centres stood `Radius * 0.55` ≈ 19–36 m above the sea, so the
+player spawned on a mountain and every shoreline was over the horizon. Deepening
+the water to `(0.06, 0.26, 0.40, 0.82)` helped; putting a beach in front of it is
+what fixed it.
+
+**Islands are now low and sandy.** Radius 22–40 m (was 35–65), the mask-to-height
+scale down to **0.10** from 0.55, and relief noise from 4.0/1.6 to 0.9/0.35. A
+30 m island now rises about 3 m rather than 19 m.
+
+That scale existed as the literal `0.55` in **two** places — `Height`, and
+`Slope`, which needs the same figure to report normals for the shape `Height`
+actually builds. The comment in `Slope` even said "0.55 matches the scale Height
+applies to the mask", which is a comment doing a constant's job: change one and
+the terrain silently lights as though it were still the old shape. It is
+`s_MaskToHeight` now, used by both.
+
+**Sand albedo was computed, not picked.** The shader's brightest multiplier is
+`u_Ambient + sun*sunColor + sky*skyColor*0.35` = `0.35 + 1.0 + 0.175` = **1.525**
+on red, so any albedo over about 0.65 clips — and a clipped surface has no cel
+bands left, because every level saturates to the same white. A first guess of
+`(0.84, 0.76, 0.56)` measured `(255, 255, 213)`: two channels pinned. At
+`(0.62, 0.56, 0.41)` the brightest band should land on `(241, 217, 156)`, and it
+measures **(241, 217, 156)** exactly.
+
+**Swimming.** The controller gained an opt-in water model — off unless a caller
+sets `HasWater`, so a demo with no water does not have its jump quietly rerouted
+through a buoyancy term. The rule that matters is the one distinguishing *wading*
+from *swimming*: standing on the bottom in water shallower than 1.1 m is still
+walking, and still jumping. Without that, ankle-deep surf would take control away
+from the player.
+
+Buoyancy is a spring toward a float depth rather than a snap to the surface, so
+entering the water sinks and comes back up. The check is one the implementation
+does not contain: the float term is zero at exactly one depth, so a body left
+alone must settle with its feet `FloatDepth` under **wherever it started**.
+Dropped from 6 m above the water it settles at **1.404 m**; released on the
+seabed 8 m down it rises to **1.405 m** — the same equilibrium from opposite
+directions.
+
+Both are 0.054 m below the 1.35 m target, and that residual is arithmetic rather
+than error: gravity adds `9.81 / 60` = 0.1635 m/s to the vertical velocity after
+the controller assigns it, and the spring balances that at
+`0.1635 / 3.0` = **0.0545 m** of extra depth.
+
+9 checks. The first run failed with the body's feet exactly at `start − eyeHeight`
+in both cases — the signature of a body that never moved, which it had not: the
+test ran before `SpawnWalker`, so the handle was not a body yet. Three mutations
+after that (no wade branch, buoyancy never applied, buoyancy sign flipped), all
+caught.
+
+**Two follow-ons.** The checker texture is off by default now the ground is meant
+to read as sand rather than as a test surface — the toggle stays for the
+textured-vs-untextured comparison. And flat sand shows the documented cross-stride
+LOD seams that relief and a busy texture used to hide, so the bands moved out to
+56 m and 104 m; the flatter world draws 41–54k triangles there against the
+mountainous one's 90–110k at the *tighter* bands, so the wider bands cost nothing.
+
+The terrain change also gave the chunk cache's fingerprint its first real test: it
+invalidated the stale file by itself, with nothing to remember and nothing to
+clear by hand.
+
+### 2026-08-15 (cel-shaded terrain, and a chunk cache on disk)
+
+**Cel shading on the terrain** is the Cel demo's quantiser, moved unchanged into
+the OpenWorld sun shader — `floor` to a level, clamp the top, divide by
+`bands - 1`. Both the sun term *and* the sky term are banded, which was not the
+first attempt: banding only the sun leaves the sky gradient sliding smoothly
+underneath the hard sun edges, and the result reads as a bug rather than as a
+style. The flat regions have to agree with each other.
+
+**No outline.** An inverted hull needs a closed mesh, and a chunk mesh is an
+*open* surface that stops at the chunk boundary — an inflated copy would show
+its back faces along every one of those edges, hundreds of them, instead of only
+at the silhouette. Outlines on terrain want a depth-discontinuity pass, which is
+a different piece of work and not this one.
+
+**The chunk cache** answers "can chunks be kept between runs" with yes. The
+world is procedural and deterministic, so nothing is *lost* by regenerating it —
+the cache buys time, not data, and it is worth having because the cost is so
+lopsided: producing a chunk is a density evaluation for each of its 4,096
+voxels, and reading one back is a seek and a memcpy.
+
+`VoxelField3D` gained `SaveChunk`/`LoadChunk` — bytes in, bytes out, per chunk,
+with no opinion about where they are stored. Streaming wants one chunk at a
+time, so a whole-field format that had to be read end to end before the first
+chunk was usable would defeat the point. The demo owns the file: a header, then
+append-only records, indexed on open by reading only the record headers and
+seeking past each payload.
+
+Measured over 600 steps at a 128 m radius: **6.21 s cold** (951 chunks generated
+and written, 2.8 MB) against **4.16 s warm**, and the captured frame is
+**byte-identical** between them — the cache reproduces the world exactly rather
+than approximately. 2.8 MB for 951 chunks is under 3 KB each against a dense
+chunk's 20 KB, because most chunks never come near the surface and collapse to
+six bytes. The self-test saw 55 of 65 uniform.
+
+**The dangerous failure is a stale cache, not a missing one.** Change the terrain
+function, forget to clear the file, and the world silently comes back as the old
+one while the code says otherwise — a whole session lost to a wrong assumption.
+So it is not a version number somebody has to remember to bump: the cache is
+keyed by a **fingerprint of the density function itself**, 512 fixed samples
+hashed together with the lattice geometry. Change the islands, the noise, the sea
+level or the voxel size and at least one sample moves, the fingerprint changes,
+and the file is discarded. A fingerprint derived from what the function *does*
+cannot drift out of step with it.
+
+15 checks — every voxel compared bit-for-bit rather than with a tolerance, since
+these bytes were memcpy'd and anything less than exact means the encoding lost
+something. Five mutations, and **three survived the first pass**, all three
+because of what the test set up rather than what it asserted:
+
+- *Loading uniform over dense need not free the arrays* — invisible, because the
+  test loaded into a **fresh** field where nothing was allocated to begin with.
+- *The length check can be deleted* — invisible, because the truncated blob was a
+  **uniform** chunk, six bytes cut to five, which the earlier `size < header`
+  guard catches before the length check runs.
+- *The write path can record the wrong offset* — invisible, because every read in
+  the test went through a **reopened** cache, which rebuilds offsets by scanning
+  the file. The writing instance's own bookkeeping was never read from.
+
+Fixed by adding the three setups the checks needed: a reused field, a dense blob
+one byte short (and one byte long), and a read back through the writing instance.
+All five mutations caught.
+
+### 2026-08-15 (a 128 m load radius, and the streaming order it exposed)
+
+LOD made a bigger view affordable, so the load radius went from 64 m to 128 m to
+find out what that costs. The rendering was never the problem:
+
+| | Debug | Release |
+|---|---|---|
+| streaming, mean | 3.2 ms | 0.30 ms |
+| streaming, worst | 10.6 ms | 1.87 ms |
+| steps over 16.6 ms, out of 1800 | 0 | 0 |
+
+Triangles stayed flat around 90k as the world grew, which is LOD doing its job —
+without it the same view is 745k. A budget of 4 chunks a step is comfortable in
+Release (1.1 ms mean, 6.3 ms worst) and **not** in Debug (11.9 ms mean, 31 ms
+worst, 149 of 1200 steps over frame). It stays at 1; it is a slider.
+
+**What the bigger radius actually exposed was the fill order.** `StreamAround`
+walked `dz` then `dx` — scan-line order across the disc — so the far edge of the
+first row arrived before the ground beside the player. Chunks are 8 m here
+(0.5 m voxels, 16 to a chunk), so a 128 m disc is **10,455 chunks**: about three
+minutes to populate at one a step, assembling in visible stripes the whole time.
+At 64 m the disc is a quarter of the area and this was easy to miss.
+
+Sorting the offsets by distance once per reach fixes it and keeps the early-out —
+the loop still stops at the first few unfilled chunks, it just finds the closest
+ones first. The evidence it worked: at step 120 the old order had already meshed
+94 stride-4 chunks (things over 48 m away) while nearer ground was still missing;
+the new order has **none**, because it has not reached that far out yet.
+
+That cost 3.2 ms → 6.2 ms in Debug, because the scan now walks the whole filled
+interior every step looking for the first gap. A cursor that resumes where the
+last call stopped — valid until the player crosses into a new chunk — brings it
+to 4.3 ms and falling as the interior grows, where the old number rose. The
+remaining gap over the 3.2 ms baseline is **not** overhead: nearest-first meshes
+near chunks, which are stride 1 and 2 and genuinely more expensive than the
+stride-4 chunks scan-line order happened to reach first. It is paying for the
+right work rather than less work.
+
+**It still never finishes populating while you walk**, and that is fine. Crossing
+one chunk brings roughly 2πr/8 ≈ 100 new columns inside a 128 m disc and the
+budget fills about 7, so the far edge always lags — at 64 m it lagged too, by 50
+against 7. What changed is *which* chunks lose the race: the horizon rather than
+the ground underfoot.
+
+### 2026-08-15 (chunk LOD, and a feature that measured 1.02x)
+
+`MarchingCubes::Mesh` grew a stride parameter last session and nothing used it —
+a parameter with no system, which is the thing this project declines to build.
+This is the system: OpenWorld picks a stride per chunk from its distance,
+remeshes when the band changes, and budgets that work the same way streaming is
+budgeted.
+
+**Hysteresis is the part that is not obvious.** A chunk sitting exactly on a
+band boundary would remesh every step the player breathed across it, and
+remeshing is the expensive thing LOD exists to avoid — an LOD that thrashes
+costs more than no LOD at all. So the edge to coarsen sits 8 m further out than
+the edge to refine, and 20 crossings inside that margin produce no work at all.
+
+**The first honest result was that it did nothing.** 178 chunks at stride 1,
+3 at stride 2, none at stride 4, and a saving of **1.02x**. All twelve checks
+passed while the feature was worthless: the bands were at 48 m and 96 m and the
+load radius is 64 m, so the chunks the bands would have coarsened were never
+loaded. Nothing was wrong with the mechanism and nothing was wrong with the
+tests; the configuration made the feature a no-op, and only a number said so.
+
+That reframes what LOD is for. It is not a discount on the view you already
+have — at a 64 m radius the best any band placement manages is **1.16x**, because
+almost everything is near. It is what makes a *bigger* view affordable:
+
+| load radius | stride 1 everywhere | with LOD | |
+|---|---|---|---|
+| 64 m | 99,357 tris | 85,787 | 1.16x |
+| 128 m | 745,644 tris | 81,413 | **9.16x** |
+
+Seeing **128 m with LOD costs 0.82x the triangles of seeing 64 m without it** —
+the view distance doubles and gets cheaper. Bands ship at 24 m and 48 m, chosen
+from that sweep rather than guessed, and they are absolute distances rather than
+fractions of the load radius: how much detail is worth drawing depends on how far
+away a thing is, not on how far the game happens to be streaming.
+
+**Triangles against 1/stride².** Marching cubes emits triangles in proportion to
+the surface area it crosses over the area of a cell face, and a stride-*s* cell
+face is *s*² larger — so the count should fall as 1/*s*². The busiest chunk
+measured **4.08x** at stride 2 and **16.09x** at stride 4, against 4 and 16.
+(Slightly over, both times, because a coarser lattice also misses fine detail,
+which removes surface as well as resolution.)
+
+14 checks, and since they came up green first time, four mutations: hysteresis
+ignored, `BandFor` pinned to 1, the remesh decided but never performed, and the
+stride recorded but not passed to the mesher. All four caught — the last one
+only by the triangle counts, since the chunk still *records* the stride it was
+asked for, which is worth knowing about what that check does and does not prove.
+
+**The seam is still there and is still not fixed.** 95 neighbouring chunk pairs
+straddle a stride change in the default configuration, and each is a crack,
+because a stride-2 lattice does not share corners with a stride-1 one.
+Transvoxel-style transition cells are the real answer. Keeping the change 24 m
+out, where the gap is a few pixels, is the mitigation — and the captured frames
+confirm the near field is identical with LOD on and off, with the coarsening
+visible only on the distant ridge.
+
+### 2026-08-15 (cel shading, and the odd-number law)
+
+Two mechanisms, neither of them a filter over a finished image.
+
+**Quantise the lighting.** Snapping `N·L` to a few levels is the whole of the
+banded look, and it is three lines. The one that matters divides by
+**`bands - 1`**, not `bands`. Dividing by `bands` is the obvious thing and it is
+wrong: the top level comes out at `(bands-1)/bands`, so a 4-band model never
+gets brighter than 0.75 and the whole image sits under a haze that is very hard
+to attribute to the right line later.
+
+**Outline by inflating the mesh.** Draw it again with the *front* faces culled,
+pushed outward along its normals; the far side of the inflated copy sticks out
+past the real silhouette and nowhere else, because everywhere else the real mesh
+is nearer and wins the depth test. The push happens in **clip space**, offset by
+`pixels * 2 / viewport` and multiplied by `clip.w` to cancel the perspective
+divide that is about to happen. That makes the width a number of *pixels* rather
+than a number of metres, so it does not thin out as the object recedes — and,
+more usefully, it is a claim in units a screenshot can be measured in.
+
+**The measurement.** Point the light straight down the view axis at a sphere and
+project it orthographically. A point at angle *t* from the pole has `N·L = cos t`
+and sits at screen radius `R sin t`, so the fraction of the disc brighter than
+*x* is `1 - x²`. Band *k* covers `N·L ∈ [k/B, (k+1)/B)`, so its share of the disc
+is
+
+```
+(1 - (k/B)²) - (1 - ((k+1)/B)²) = (2k+1)/B²
+```
+
+The bands are in the ratio **1 : 3 : 5 : 7 : …** — the odd numbers, for every
+`B`. Nothing in the shader computes an area or a radius, so this is a check from
+outside rather than the same arithmetic written twice. Measured for `B` = 2…6:
+worst error **0.0006**, which is pixel discretisation on a 180 px disc. The
+outline measured 2, 4, 8 and 12 px when set to 2, 4, 8 and 12 px, exactly.
+
+**The failure that was the test's fault.** The outline came out 6 px too wide at
+*every* setting — 2→8, 4→10, 8→14, 12→18. A constant offset with slope exactly 1
+is the signature of a bad measurement, and it was: with ambient 0 the darkest
+band renders pure black, the same colour as the outline, so the scanline counted
+them as one run. Band 0's ring is `R(1 - √(1 - 1/B²))` = 5.7 px on this disc.
+That is the 6. Colouring the outline green fixed the *test*; the shader was
+right all along.
+
+**Five mutations, and two that got away first time.** Dividing by `bands`,
+dropping the top-band clamp, rounding instead of flooring, halving the NDC scale,
+and dropping `clip.w`. Three were caught immediately. The other two are the
+interesting ones:
+
+- **Dropping `clip.w` changed nothing**, because under an orthographic
+  projection `w` is 1 and the multiply is a no-op. The test could not see the
+  one line that makes the outline perspective-correct. Fixed by measuring under
+  perspective at two distances: 6 px at distance 4 and 6 px at distance 12.
+- **Dropping the top-band clamp changed nothing**, because no pixel of a *curved*
+  surface lands on `N·L = 1.0` exactly. The clamp is not dead code, though — a
+  flat surface square-on to the light hits exactly 1.0 at every pixel, and
+  unclamped the whole plane jumps a level (204 where the top band is 153). Added
+  that geometry, and the mutation is caught by exactly one check.
+
+Final: **28 checks, 0 failures**, and all five mutations now caught by the check
+aimed at each.
+
+**What the demo is honest about.** The icosahedron's outline breaks at its
+corners, visibly. An inflated hull needs one shared normal per vertex, and a
+flat-shaded mesh has a separate vertex per face, so the inflated faces come apart
+at the seams — the mechanism being what it is rather than a bug. The ground gets
+no outline at all, because an inflated plane is just a slightly larger plane and
+its "outline" would be a frame around the whole floor.
+
 ### 2026-08-14 (the Model demo, actually reachable)
 
 The previous entry described a finished loader and a working demo; the demo
@@ -1122,6 +1587,27 @@ labelled as one.
 `GltfLoader`. A Mesh is one vertex array; flattening a scene into one would throw
 away the hierarchy, the materials and the placements, which is the entire reason
 to have used glTF.
+
+**And it broke every `.obj` in the engine, silently.** `Submesh` gained
+`MaterialIndex` — glTF numbers its materials and its names are optional and need
+not be unique, so a name cannot stand in for the index. The field went in second,
+next to the name it complements, and three sites built a `Submesh` positionally
+as `{ material, firstIndex, indexCount }`. Those arguments slid over one place:
+the first index became the material index, the count became `FirstIndex`, and
+`IndexCount` kept its default of `0`. Zero indices drawn, no warning, because
+every argument was still convertible to the field it landed on.
+
+It showed up as the Cube3D capture changing hash — floor, sphere and icosahedron
+gone, wireframes and debug lines still there, those not going through `Submesh`.
+Diagnosis went wrong before it went right: the signature is identical to a stale
+shared-library build, where `TestEnv` and `libEGSS.so` disagree about a struct's
+layout, and that got two hours. `./egss.py clean` refuted it in one step and
+should have been the first thing tried, not the fourth. The captured frame is
+what caught it at all — nothing else in the session would have.
+
+The three sites now assign by name, as `GltfLoader.cpp` already did. Fixed,
+Cube3D's capture is byte-identical to the pre-glTF one, which is the check that
+the fix is a fix and not a new picture.
 
 Not done, and a separate piece: **skinning and animation**. They are the reason
 to want glTF next, and joints, weights and samplers have nowhere to be played
