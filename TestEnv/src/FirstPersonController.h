@@ -239,6 +239,11 @@ public:
 		if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) wish += right;
 		if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) wish -= right;
 
+		// Kept for whoever is drawing the body: which way the player is *trying*
+		// to go, which is not the same as which way they are looking and is the
+		// thing a character turns to face.
+		m_Wish = glm::length(wish) > 1e-4f ? glm::normalize(wish) : glm::vec3(0.0f);
+
 		float feet = body.Position.y - eyeHeight;
 
 		float ground = 0.0f;
@@ -318,6 +323,9 @@ public:
 
 	Motion GetMotion() const { return m_Motion; }
 
+	// Zero when standing still. World space, horizontal.
+	const glm::vec3& GetWish() const { return m_Wish; }
+
 	static const char* MotionName(Motion m)
 	{
 		switch (m)
@@ -333,6 +341,7 @@ private:
 	Egss::PerspectiveCamera& m_Camera;
 
 	Motion m_Motion = Motion::Airborne;
+	glm::vec3 m_Wish{ 0.0f };
 
 	float m_Yaw;
 	float m_Pitch;

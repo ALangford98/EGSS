@@ -51,7 +51,7 @@ class OpenWorld : public DemoLayer
 public:
 	OpenWorld()
 		: DemoLayer("OpenWorld"), m_Camera(70.0f, 16.0f / 9.0f, 0.1f, 500.0f),
-		  m_Controller(m_Camera, -90.0f, -2.0f)
+		  m_Controller(m_Camera, -90.0f, -14.0f)
 	{
 		RegisterParam("Walk speed", &m_Controller.Cfg.WalkSpeed);
 		RegisterParam("Sensitivity", &m_Controller.Cfg.MouseSensitivity);
@@ -97,8 +97,8 @@ public:
 			{ 0.00f, 0.150f, 0.105f },
 			{ 0.10f, 0.163f, 0.108f },
 			{ 0.22f, 0.140f, 0.096f },
-			{ 0.36f, 0.175f, 0.112f },
-			{ 0.46f, 0.166f, 0.102f } }, 12), "Torso"));
+			{ 0.36f, 0.158f, 0.104f },
+			{ 0.46f, 0.140f, 0.094f } }, 12), "Torso"));
 
 		m_HeadMesh.reset(new Egss::Mesh(MakeOvoid({ 0.098f, 0.125f, 0.108f }, 12, 8), "Head"));
 		m_HandMesh.reset(new Egss::Mesh(MakeOvoid({ 0.045f, 0.055f, 0.030f }, 8, 5), "Hand"));
@@ -180,6 +180,7 @@ public:
 
 		m_Swing = glm::max(0.0f, m_Swing - dt / s_SwingTime);
 
+		UpdateFacing(dt, m_Controller.GetYaw(), m_Controller.GetWish());
 		UpdateCarry(dt);
 		UpdatePickaxe();
 		UpdateRockImpacts();
@@ -188,11 +189,19 @@ public:
 		// HeadPosition, so nothing else changes when the view does.
 		if (m_ThirdPerson && m_FirstPerson)
 		{
-			glm::vec3 head = HeadPosition();
+			UpdateCameraFocus(dt);
+
 			glm::vec3 back = -m_Camera.GetForward();
 
-			m_Camera.SetPosition(head + back * s_ThirdPersonBack
+			m_Camera.SetPosition(m_CameraFocus + back * s_ThirdPersonBack
 				+ glm::vec3(0.0f, s_ThirdPersonUp, 0.0f));
+		}
+		else
+		{
+			// Kept level with the player while in first person, so switching
+			// views does not start with the camera catching up from wherever
+			// it was left.
+			m_CameraFocus = HeadPosition();
 		}
 
 		ApplyUndertow();
@@ -630,12 +639,114 @@ public:
 	// Only what a person can see of themselves: hips, legs, arms and hands.
 	// No head, no chest, no neck, because from inside your own eyes there is
 	// nothing there to draw.
+	// What the third-person camera actually follows, which is not the player.
+	//
+	// A camera welded to the head reports every step, every stumble and every
+	// jump as a camera move. This one has a **dead zone** the player can move
+	// inside without it noticing, and beyond that it closes the gap on a time
+	// constant rather than instantly.
+	//
+	// The vertical dead zone is much larger than the horizontal one on purpose.
+	// A jump is a metre up and a metre back down inside half a second, and it
+	// should not move the camera at all; climbing a dune is the same metre held
+	// for several seconds, and that should. **The two are told apart by how
+	// long the offset lasts, not by asking whether the player is jumping** --
+	// no flag to get wrong, and it handles falling off a ledge for free.
+	void UpdateCameraFocus(float dt)
+	{
+		glm::vec3 head = HeadPosition();
+
+		// Horizontal: small dead zone, quick catch-up.
+		{
+			glm::vec2 offset(head.x - m_CameraFocus.x, head.z - m_CameraFocus.z);
+			float distance = glm::length(offset);
+
+			if (distance > s_FocusDeadZone)
+			{
+				glm::vec2 pull = offset * ((distance - s_FocusDeadZone) / distance);
+				float k = 1.0f - std::exp(-dt / s_FocusLag);
+
+				m_CameraFocus.x += pull.x * k;
+				m_CameraFocus.z += pull.y * k;
+			}
+		}
+
+		// Vertical: large dead zone, slow catch-up.
+		{
+			float offset = head.y - m_CameraFocus.y;
+
+			if (std::fabs(offset) > s_FocusDeadZoneUp)
+			{
+				float over = offset - (offset > 0.0f ? s_FocusDeadZoneUp : -s_FocusDeadZoneUp);
+				float k = 1.0f - std::exp(-dt / s_FocusLagUp);
+
+				m_CameraFocus.y += over * k;
+			}
+		}
+	}
+
+	// **The body's own facing, which is not the camera's.**
+	//
+	// A person can turn their head about seventy degrees before they have to
+	// move their feet. Driving the body straight off the camera yaw -- which is
+	// what this did -- means the feet spin on the spot the instant the mouse
+	// moves, and everything hung off the body spins with them.
 	glm::vec3 BodyForward() const
 	{
-		// Yaw only. The hips do not tip when you look at your feet, and a body
-		// that pitched with the camera would put its legs through the floor.
-		float yaw = glm::radians(m_Controller.GetYaw());
+		float yaw = glm::radians(m_BodyYaw);
 		return glm::normalize(glm::vec3(std::cos(yaw), 0.0f, std::sin(yaw)));
+	}
+
+	static float WrapDegrees(float a)
+	{
+		while (a > 180.0f) a -= 360.0f;
+		while (a < -180.0f) a += 360.0f;
+		return a;
+	}
+
+	// Eased, not linear. A constant rate starts and stops dead, which is what
+	// made the turn look mechanical -- a person accelerates into a turn and
+	// coasts out of it. Taking a fixed *fraction* of what is left each second
+	// gives the coast for free, and the cap keeps the start from being a snap.
+	static float TurnToward(float from, float to, float maxStep, float dt)
+	{
+		float diff = WrapDegrees(to - from);
+		float step = diff * glm::min(1.0f, s_TurnEase * dt);
+
+		return from + glm::clamp(step, -maxStep, maxStep);
+	}
+
+	// Three rules, and which one applies is the whole behaviour.
+	//
+	//   Moving -- the feet go where you are going. The body turns toward the
+	//   direction of travel, which is what makes walking sideways-to-camera in
+	//   third person turn the character around instead of crab-walking.
+	//
+	//   Standing, first person -- the head is free inside a cone. Past the
+	//   neck's limit the body is dragged along, and past a smaller comfort
+	//   angle it eases round to face where you are looking, which is the step
+	//   you take when you have been peering over your shoulder too long.
+	//
+	//   Standing, third person -- nothing. The camera orbits a body that stays
+	//   put, because looking at your character is not your character turning.
+	void UpdateFacing(float dt, float camYaw, const glm::vec3& wish)
+	{
+		if (glm::length(wish) > 1e-3f)
+		{
+			float target = glm::degrees(std::atan2(wish.z, wish.x));
+			m_BodyYaw = TurnToward(m_BodyYaw, target, s_TurnRate * dt, dt);
+			return;
+		}
+
+		if (m_ThirdPerson)
+			return;
+
+		float diff = WrapDegrees(camYaw - m_BodyYaw);
+
+		if (std::fabs(diff) > s_NeckLimit)
+			m_BodyYaw = camYaw - (diff > 0.0f ? s_NeckLimit : -s_NeckLimit);
+		else if (std::fabs(diff) > s_NeckComfort)
+			m_BodyYaw = TurnToward(m_BodyYaw, camYaw, s_SettleRate * dt, dt);
 	}
 
 	glm::vec3 BodyRight() const
@@ -656,7 +767,16 @@ public:
 
 	glm::vec3 CarryPoint() const
 	{
-		glm::vec3 aim = m_Camera.GetForward();
+		// **In the body's frame, not the camera's.** A hand is on the end of an
+		// arm, and an arm is attached to a shoulder -- so turning your head
+		// does not carry the thing you are holding around with it. Only the
+		// pitch is taken from the camera, because raising what you are holding
+		// to look at it is something a person does.
+		glm::vec3 forward = BodyForward();
+		float pitch = glm::radians(m_Controller.GetPitch());
+
+		glm::vec3 aim = glm::normalize(forward * std::cos(pitch)
+			+ glm::vec3(0.0f, std::sin(pitch), 0.0f));
 
 		glm::vec3 at = HeadPosition()
 			+ aim * s_HandForward
@@ -797,8 +917,10 @@ public:
 	// carrying anything shoved the player around.
 	glm::quat GripOrientation() const
 	{
-		glm::vec3 aim = m_Camera.GetForward();
-		glm::vec3 shaft = glm::normalize(glm::vec3(0.0f, 1.0f, 0.0f) * 0.75f + aim * 0.66f);
+		// Off the body for the same reason the hand is: a tool held in a hand
+		// does not swing round the moment its owner glances sideways.
+		glm::vec3 shaft = glm::normalize(glm::vec3(0.0f, 0.75f, 0.0f)
+			+ BodyForward() * 0.66f);
 
 		return ShaftTowards(shaft);
 	}
@@ -885,13 +1007,24 @@ public:
 			float sign = side == 0 ? -1.0f : 1.0f;
 			glm::vec3 shoulder = shoulderMid + right * (sign * s_ShoulderWidth);
 
-			glm::vec3 to = (side == 1)
-				? hand
-				: shoulder + forward * (0.16f - std::sin(m_Stride) * 0.16f) - up * 0.52f;
+			// **An empty hand hangs.** Sticking one out in front is what a
+			// person does when they are holding something, and looks like
+			// sleepwalking when they are not -- so the reach only happens on
+			// the side that is carrying, and only while it is.
+			bool carrying = (m_Held >= 0 || m_HeldTool >= 0);
+
+			float swingArm = std::sin(m_Stride) * (side == 0 ? 1.0f : -1.0f);
+
+			glm::vec3 rest = shoulder
+				+ forward * (swingArm * 0.13f)
+				+ right * (sign * 0.03f)
+				- up * 0.52f;
+
+			glm::vec3 to = (side == 1 && carrying) ? hand : rest;
 
 			glm::vec3 elbow = (shoulder + to) * 0.5f + right * (sign * 0.09f) - up * 0.07f;
 
-			DrawJoint(shoulder, 0.072f, m_ClothColour);
+			DrawJoint(shoulder, 0.058f, m_ClothColour);
 			DrawLimb(shoulder, elbow, 0.062f, 0.050f, m_ClothColour);
 			DrawLimb(elbow, to, 0.050f, 0.040f, m_SkinColour);
 			DrawJoint(elbow, 0.049f, m_ClothColour);
@@ -2615,6 +2748,12 @@ public:
 		body.LinearDamping = 0.05f;
 
 		m_Walker = m_World.AddBody(body);
+
+		// The camera's focus starts *on* the player. Left at its default it
+		// starts at the world origin, and with third person on from the first
+		// frame nothing ever syncs it -- the camera opens somewhere out at sea
+		// and creeps toward the island.
+		m_CameraFocus = HeadPosition();
 	}
 
 	// --- Draw ---------------------------------------------------------------
@@ -3262,7 +3401,7 @@ public:
 	static constexpr float s_ThighLength = 0.42f;
 	static constexpr float s_ShinLength = 0.42f;
 	static constexpr float s_ShoulderDrop = 0.12f;
-	static constexpr float s_ShoulderWidth = 0.20f;
+	static constexpr float s_ShoulderWidth = 0.165f;
 	static constexpr float s_StrideSwing = 0.55f;
 	static constexpr float s_StridePerMetre = 2.6f;
 
@@ -3273,6 +3412,22 @@ public:
 
 	static constexpr float s_ThirdPersonBack = 3.1f;
 	static constexpr float s_ThirdPersonUp = 0.55f;
+
+	// How far a neck turns, and how it gives up. 70 degrees is about the limit
+	// of a comfortable glance; past 40 the body starts easing round to meet it.
+	static constexpr float s_NeckLimit = 70.0f;
+	static constexpr float s_NeckComfort = 40.0f;
+	static constexpr float s_SettleRate = 70.0f;    // degrees a second
+	static constexpr float s_TurnEase = 5.0f;       // fraction of the gap a second
+	static constexpr float s_TurnRate = 260.0f;
+
+	// How much the player can move before the camera notices, and how quickly
+	// it closes what is left. Up is a much bigger allowance: a jump must not
+	// move it, a climb must.
+	static constexpr float s_FocusDeadZone = 0.35f;
+	static constexpr float s_FocusLag = 0.22f;
+	static constexpr float s_FocusDeadZoneUp = 0.95f;
+	static constexpr float s_FocusLagUp = 0.55f;
 	static constexpr float s_ThrowSpeedLimit = 9.0f;
 
 	// Breaking. Shorter reach than a pickup: you have to be at the rock.
@@ -3505,7 +3660,9 @@ public:
 
 	std::shared_ptr<Egss::Mesh> m_LimbMesh, m_TorsoMesh, m_HeadMesh;
 	std::shared_ptr<Egss::Mesh> m_HandMesh, m_FootMesh, m_JointMesh;
-	bool m_ThirdPerson = false;
+	bool m_ThirdPerson = true;
+	float m_BodyYaw = -90.0f;
+	glm::vec3 m_CameraFocus{ 0.0f };
 	bool m_ShowBody = true;
 	float m_Stride = 0.0f;
 

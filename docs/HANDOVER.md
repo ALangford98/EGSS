@@ -334,6 +334,12 @@ look caught immediately.
   should march (half a voxel is eighteen samples over 4.5 m). The real fix is
   for Raycast to skip uniform chunks by asking the field, not by reading a
   magic number.
+- **A test that moves the world has to put it back where it found it.** The
+  camera feel-test teleported the walker to a convenient "home" at the world
+  origin and restored it *there* rather than to where it started -- which is
+  open sea, so three successive third-person captures came back underwater and
+  looked like a camera bug. Snapshot the state you disturb, and restore the
+  snapshot.
 - **A first-person body has to agree with the camera's own height.** The
   viewmodel torso was built 0.72 m from hip to shoulder against a real 0.45, so
   its chest sat above the eye and first person rendered as a solid wall. Eyes

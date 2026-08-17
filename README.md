@@ -1035,6 +1035,91 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-16 (a camera that does not report every step, and a body that moves like one)
+
+**The third-person camera follows a focus point, not the player.** There is a
+dead zone the player can move inside without it noticing, and beyond that it
+closes the gap on a time constant rather than instantly.
+
+The vertical dead zone is deliberately much larger than the horizontal one --
+0.95 m against 0.35. A jump is a metre up and a metre back down inside half a
+second and should not move the camera at all; climbing a dune is the same metre
+held for several seconds and should. **The two are told apart by how long the
+offset lasts, not by asking whether the player is jumping**: no flag to get
+wrong, and falling off a ledge is handled without a second rule.
+
+Measured: a 1 m jump moves the camera **0.0055 m**. A 3 m climb moves it
+**1.505 m**, against a predicted 1.500 -- climbing at a steady rate the focus
+settles where its catch-up equals the climb, so it lags by
+`deadZone + lag * rate` and moves by the rest. The prediction is the reason the
+lag was tightened from 0.90 s to 0.55: at the old value the camera trailed
+1.85 m behind during a climb.
+
+**Turning eases instead of running at a fixed rate.** A constant rate starts and
+stops dead, which is what made it look mechanical -- a person accelerates into a
+turn and coasts out of it. Taking a fixed fraction of the remaining angle each
+second gives the coast for free, with a cap so the start is not a snap. A half
+turn now takes **0.95 s**.
+
+**An empty hand hangs.** Sticking one out in front is what a person does when
+they are holding something and looks like sleepwalking when they are not, so the
+reach only happens on the carrying side and only while it is carrying. The other
+arm swings with the opposite leg.
+
+**Shoulders in**, from 0.20 to 0.165 half-width, with the torso's top ring and
+the shoulder joints narrowed to match. They were broad.
+
+Six checks and one real bug found by looking at a capture: `m_CameraFocus`
+started at the world origin, so with third person on from the first frame the
+branch that syncs it never ran and the camera opened out at sea. It is seeded
+from the player at spawn now.
+
+**A second thing the capture caught was the test, not the code.** Three attempts
+at a third-person screenshot came back underwater, and the cause was the
+temporary feel-test teleporting the walker to a "home" of (0, 10, 0) -- the world
+origin, which is open water -- and restoring it there rather than to where it
+had been. A test that moves the world has to put it back where it found it.
+
+
+### 2026-08-16 (a head that turns before the feet do)
+
+The body was driven straight off the camera yaw, so the feet spun on the spot
+the instant the mouse moved and everything hung off them -- hands, held tools --
+spun too. The body now has **its own facing**, and three rules decide it.
+
+**Moving:** the feet go where you are going. The body turns toward the direction
+of travel, which is what makes walking sideways-to-camera in third person turn
+the character around rather than crab-walk them.
+
+**Standing, first person:** the head is free inside a cone. Past 70 degrees --
+about the limit of a comfortable glance -- the body is *dragged* so the neck
+never exceeds it. Past a smaller 40-degree comfort angle it eases round at 90
+degrees a second, which is the step you take when you have been peering over
+your shoulder too long.
+
+**Standing, third person:** nothing. The camera orbits a body that stays put,
+because looking at your character is not your character turning.
+
+Seven checks, four mutations, all caught.
+
+**One check was wrong and the code was right.** Holding a 55-degree look, the
+body eased 0 to 15 degrees and stopped -- and 55 - 15 is exactly the comfort
+angle. It turns until it is *comfortable*, not until it is square to the camera,
+which is what a person does: you rotate enough to stop craning and no further.
+The test now says that.
+
+Held things moved to the **body's frame** as part of this. A hand is on the end
+of an arm and an arm is attached to a shoulder, so turning your head no longer
+carries what you are holding around with it. Only pitch still comes from the
+camera, because raising a tool to look at it is something a person does.
+
+**Not fixed: the holes in the ground and the dark lines beside them.** Both are
+the LOD seam. The transition-cell work that would close it was attempted and
+reverted a few entries ago, and marching a shovel ray past the sparse-air
+sentinel does not touch it. It is the oldest outstanding defect in this demo and
+it needs the transvoxel piece finished.
+
+
 ### 2026-08-16 (a whole body, and a camera that steps back from it)
 
 The body was boxes and half a person. It is now a **whole figure built from
