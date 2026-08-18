@@ -1035,6 +1035,113 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-17 (render state that leaked between demos, and the matrix that found it)
+
+**A demo's captured frame should not depend on which demo ran before it. Three
+of thirteen did.**
+
+Persistent pipeline state — blending, depth write, cull face, polygon mode — was
+established once in `OpenGLRendererAPI::Init` and then changed by whichever layer
+wanted it changed, with nothing re-establishing it at a frame or layer boundary.
+The expensive part of that is not the wrong pixel, it is that **the demo which
+breaks is not the demo that broke it**, so reading the broken demo's code tells
+you nothing. An earlier session lost hours to exactly this with `CullFace` left
+at `Back`, which made OpenWorld's single-sided water invisible from below.
+
+So the first thing built was a way to *provoke* it: `--warmup <demo>
+--warmup-steps <n>` runs another demo first and then switches. The step
+accounting works out because `DemoLayer` seals the is-this-demo-active guard —
+an inactive demo does not fixed-update, update or draw — so a run warmed up for
+W steps and captured at step W+T shows the target after exactly T steps of its
+own, comparable pixel for pixel against a plain run captured at step T.
+
+That makes the test a matrix: every demo after every other demo, hashed. 13
+demos, **156 warmed runs**. Result:
+
+```
+LEAK  Breakout  after OpenWorld
+LEAK  Scene     after OpenWorld
+LEAK  Acoustics after OpenWorld
+```
+
+One culprit, and the three victims are exactly the Renderer2D demos. OpenWorld's
+water finished with `SetBlendMode(BlendMode::None)` — `glDisable(GL_BLEND)` —
+while the baseline `Init` established was blending *on*, and Renderer2D never
+sets blending itself. **Every one of those call sites already had a "restore";
+what each of them restored was its author's assumption about the baseline.**
+
+Fixed with `RendererAPI::ResetState()`, called once per frame from
+`Application::Run` before any layer draws, and reused by `Init` so the baseline
+is written down once instead of twice. A per-frame reset rather than save/restore
+at each site, because the sites were the problem. Every demo already sets the
+state it needs inside its own draw path — none set it in `OnDemoAttach` or
+`OnDemoActivated` — so nothing depended on state persisting across frames.
+
+Verified three ways: **156/156 clean** afterwards; all four control captures
+**byte-identical** to before, so the leak closed without changing any demo's own
+rendering; and the cost is **below the noise floor** — 0.064 s of mean
+difference over 3000 frames against a run-to-run spread of 5.71 to 7.21 s.
+
+### 2026-08-17 (a hash that overflowed, and the loop the compiler deleted because of it)
+
+**Release could not start a single demo.** Every one of them died before its
+first frame, with the process reaching about **17 GB** and being OOM killed.
+Debug was completely unaffected: 92 MB peak, 2.35 s. Since the day-to-day work
+happens in Debug and "verify all three configs" had been read as *build* all
+three, this had been sitting behind a green build.
+
+The cause was `SpawnRocks` running a loop bounded by
+`static constexpr int s_RockCount = 16` around **99,482 times**, allocating a
+rock mesh and a rigid body each pass. It took every demo down rather than just
+OpenWorld because `OnAttach` is deliberately unguarded, so OpenWorld builds its
+world whichever demo you asked for.
+
+The measurement that made it undeniable, and that pointed away from every
+theory I had: an explicit `if (i >= s_RockCount) break;` placed as the **first
+statement of the loop body never fired**, while the next line logged
+`i=99481 of 16`. A hand-written bound check and a print cannot disagree, so the
+check was not in the binary — and it wasn't. The loop's back edge was an
+unconditional `jmp` with no comparison near it.
+
+The UB behind it was in `Hash2D`:
+
+```cpp
+h ^= (uint32_t)(x * 374761393);     // multiply in int, then cast -- overflows
+h ^= (uint32_t)x * 374761393u;      // cast, then multiply -- defined wraparound
+```
+
+The cast was outside the multiply, so the multiply happened in `int` and
+overflowed for any `|x|` above 5. GCC 16.1.1 reasoned exactly as it is entitled
+to: a loop calling that hash cannot legally reach `i=6`, so `i < 16` is not what
+ends it, so the test is dead. Removing it is a valid consequence of a program
+that was already illegal. **This is the plain form of "UB is not a wrong
+answer, it is a licence"** — the damage was nowhere near the arithmetic, and the
+symptom was a memory blowup in a loop whose bound was a compile-time constant.
+
+Two copies of the idiom had the fault, in `OpenWorld.h` and `VoxelTerrain.h`.
+`Terrain::Hash`, which they were cloned from, always had the cast in the right
+place.
+
+**The fix does not move the terrain**, and that is checked rather than assumed:
+two's-complement wraparound and unsigned multiply produce the same bits, and the
+chunk cache — whose key is a fingerprint over 512 density samples — still
+reported *"364 chunks already stored"* instead of rebuilding. All three configs
+now capture the same OpenWorld frame **byte-identically** (`e75c6ba4…`), at
+about 90 MB each.
+
+On the tools: `-D_GLIBCXX_ASSERTIONS`, `-fstack-protector-all` and
+`-Wall -Wextra -Waggressive-loop-optimizations -Warray-bounds=2` were **all
+silent** through the entire runaway. UBSan named the file and line on its first
+run. Hours went into gdb backtraces, disassembly and an optimisation-level
+bisect before that, and none of it was necessary. Reach for the sanitizer early.
+Six demos now run UBSan-clean.
+
+One self-inflicted lesson recorded beside it: the per-iteration logging used to
+catch the loop wrote a 1.6 GB file into `/tmp`, which is a **tmpfs** here. `Shmem`
+reached 8 GB, `bash` could no longer fork, and `cc1plus` started failing with
+*"Disk quota exceeded"*. Two symptoms, one cause, and neither of them the bug
+being chased.
+
 ### 2026-08-16 (a camera that does not report every step, and a body that moves like one)
 
 **The third-person camera follows a focus point, not the player.** There is a

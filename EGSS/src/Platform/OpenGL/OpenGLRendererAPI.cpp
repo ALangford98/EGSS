@@ -33,9 +33,9 @@ namespace Egss {
 		glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION, 0, nullptr, GL_FALSE);
 #endif
 
-		glEnable(GL_BLEND);
-		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-		glEnable(GL_DEPTH_TEST);
+		// The same baseline the frame loop re-establishes, rather than a second
+		// copy of it here that could drift from the first.
+		ResetState();
 
 		// GL_MAX_TEXTURE_IMAGE_UNITS, not GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS.
 		// The combined figure sums every stage, so on a driver reporting 16 per
@@ -54,6 +54,22 @@ namespace Egss {
 
 		EGSS_CORE_INFO("GL: {0} fragment texture units reported, using {1}",
 			units, m_MaxTextureSlots);
+	}
+
+	// Every piece of persistent pipeline state the engine ever changes, put
+	// back to what a layer is entitled to assume. Anything added to the
+	// RendererAPI state setters belongs here too, or it becomes the next thing
+	// to leak between layers.
+	void OpenGLRendererAPI::ResetState()
+	{
+		glEnable(GL_BLEND);
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		glEnable(GL_DEPTH_TEST);
+		glDepthMask(GL_TRUE);
+		glDisable(GL_CULL_FACE);
+		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+		glLineWidth(1.0f);
+		glPointSize(1.0f);
 	}
 
 	void OpenGLRendererAPI::SetViewport(unsigned int x, unsigned int y, unsigned int width, unsigned int height)

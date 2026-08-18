@@ -244,6 +244,82 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **Signed overflow in a hash deleted a loop's exit test, in Release only.**
+  `Hash2D` wrote `h ^= (uint32_t)(x * 374761393)` — the cast is *outside* the
+  multiply, so the multiply happens in `int` and overflows for any |x| above 5.
+  That is undefined behaviour, and GCC 16.1.1 reasoned from it: a
+  `for (int i = 0; i < s_RockCount; i++)` loop calling the hash cannot legally
+  reach i=6, so `i < 16` is not what ends it, so the test is dead — and it
+  removed the test. The back edge became an unconditional `jmp` and `SpawnRocks`
+  ran **99,482 times**, allocating a mesh and a body each pass until the process
+  reached ~17 GB and was OOM killed. Every demo died, because `OnAttach` is
+  deliberately unguarded and so OpenWorld builds its world whichever demo you
+  asked for. Debug was untouched at 92 MB and 2.35 s.
+
+  Two things about finding it are worth keeping. **An explicit
+  `if (i >= s_RockCount) break;` as the first statement of the body never
+  fired**, while the next line logged `i=99481 of 16` — when a hand-written
+  bound check and a print disagree, stop looking for the bug in your logic and
+  start looking for deleted code. And **the diagnostics that seem obvious were
+  all silent**: `-D_GLIBCXX_ASSERTIONS`, `-fstack-protector-all`, and
+  `-Wall -Wextra -Waggressive-loop-optimizations -Warray-bounds=2` said nothing.
+  UBSan named the file and line on its first run. Reach for it early; the whole
+  hunt before it was hours and produced no answer.
+
+  Fixed by casting first — `(uint32_t)x * 374761393u` — which makes the
+  wraparound the defined kind. The bit pattern is identical, so the terrain does
+  not move: the chunk cache still reported *"364 chunks already stored"* rather
+  than rebuilding, which is a fingerprint over 512 density samples agreeing
+  across the change. `Terrain::Hash` always had the cast in the right place;
+  the two copies of the idiom in `OpenWorld.h` and `VoxelTerrain.h` did not.
+
+  The cheap general lesson: **run all three configs, do not just link them.**
+  A Release-only miscompile sits invisible behind a green build for as long as
+  the day-to-day work happens in Debug.
+- **"Restore" meant "put back what I assumed was there", and it was wrong.**
+  Persistent pipeline state — blending, depth write, cull face, polygon mode —
+  was established once in `OpenGLRendererAPI::Init` and thereafter changed by
+  whichever layer wanted it changed. OpenWorld's water finished with
+  `SetBlendMode(BlendMode::None)`, which is `glDisable(GL_BLEND)`, while the
+  baseline `Init` set was blending *on*. Renderer2D never sets blending itself,
+  so every 2D demo run after OpenWorld drew unblended.
+
+  What makes this class of bug expensive is that **the demo that breaks is not
+  the demo that broke it**, so reading the broken demo tells you nothing — an
+  earlier session lost hours to the same mechanism with `CullFace` left at
+  `Back` making OpenWorld's single-sided water invisible from below.
+
+  Provoke it with `--warmup <demo> --warmup-steps <n>` (`DemoWarmup.h`), which
+  runs another demo first and then switches. A demo's captured frame must not
+  depend on what ran before it, so the test is a matrix: capture each demo
+  after each other demo and compare hashes. 13 demos, 156 warmed runs. It found
+  **3 leaks, all of them "after OpenWorld"** — Breakout, Scene and Acoustics,
+  which are exactly the Renderer2D demos.
+
+  Fixed with `RendererAPI::ResetState()`, called once per frame from
+  `Application::Run` before any layer draws. **A per-frame reset rather than
+  save/restore at each call site**, because every one of those sites already
+  had a restore and every one of them restored a guess. Anything added to the
+  state setters belongs in `ResetState` too, or it is the next thing to leak.
+  After: 156/156 clean, and all four control captures byte-identical, so it
+  closed the leak without changing any demo's own picture. Cost is below the
+  noise floor — 0.064 s of mean difference over 3000 frames against a
+  run-to-run spread of 5.71–7.21 s.
+- **`/tmp` is a tmpfs here, so a log file is resident memory.** Probing the
+  above with one `EGSS_INFO` per loop iteration wrote a 1.6 GB log into the
+  scratchpad under `/tmp`, and the runs after it did the same; `Shmem` reached
+  **8.0 GB** on a 24 GB machine. The symptoms looked like two unrelated
+  disasters and were one: `bash` could no longer fork, so every command down to
+  `true` failed to start, and `cc1plus` began dying with *"error writing to
+  /tmp/ccXXXX.s: Disk quota exceeded"* mid-build. `free`'s `available` column
+  hides this — the giveaway is `Shmem` in `/proc/meminfo`, which is tmpfs and
+  is **not** reclaimable.
+
+  Two rules from it. **Per-iteration logging needs a bound** — cap the count,
+  or sample, or write somewhere that is not RAM. And **cap anything suspected
+  of unbounded allocation** before running it, with `ulimit -v` or
+  `systemd-run --scope -p MemoryMax=4G`, so a failed experiment ends the
+  process rather than the session.
 - **A changelog entry can describe work that was never committed.** The glTF
   entry stated `Texture2D::CreateFromMemory` "had to exist" and that the
   `GL_UNPACK_ALIGNMENT` fix was in; neither was in the diff, only in the prose.

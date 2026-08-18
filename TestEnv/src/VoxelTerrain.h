@@ -179,12 +179,17 @@ private:
 		return glm::mix(glm::mix(x00, x10, s.y), glm::mix(x01, x11, s.y), s.z);
 	}
 
+	// Multiply in `uint32_t`, not in `int` -- see the note on OpenWorld's
+	// Hash2D. The cast has to be on the *operand*, not on the result: cast the
+	// result and the signed overflow has already happened by the time it runs,
+	// which is undefined behaviour that GCC 16 will reason from about the loops
+	// calling this. Same bits either way.
 	static float Hash(int x, int y, int z, uint32_t seed)
 	{
 		uint32_t h = seed;
-		h ^= (uint32_t)(x * 374761393);
-		h ^= (uint32_t)(y * 668265263);
-		h ^= (uint32_t)(z * 2147483647);
+		h ^= (uint32_t)x * 374761393u;
+		h ^= (uint32_t)y * 668265263u;
+		h ^= (uint32_t)z * 2147483647u;
 		h = (h ^ (h >> 13)) * 1274126177u;
 		h ^= h >> 16;
 

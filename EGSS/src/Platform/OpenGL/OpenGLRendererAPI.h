@@ -8,6 +8,7 @@ namespace Egss {
 	{
 	public:
 		void Init() override;
+		void ResetState() override;
 		void SetViewport(unsigned int x, unsigned int y, unsigned int width, unsigned int height) override;
 		void SetClearColor(const glm::vec4& color) override;
 		void Clear() override;

@@ -62,6 +62,27 @@ namespace Egss {
 		virtual ~RendererAPI() = default;
 
 		virtual void Init() = 0;
+
+		// Puts the pipeline back to the baseline every layer is entitled to
+		// assume: blending on and straight alpha, depth tested and written,
+		// nothing culled, filled polygons, one-pixel lines and points.
+		//
+		// **Called once per frame**, before anything draws. Persistent GL state
+		// used to be established once in `Init` and then changed by whichever
+		// layer wanted it changed, so a layer that left it altered silently
+		// reconfigured every layer after it -- and the layer that broke was
+		// never the layer that broke it. Measured, by capturing each demo after
+		// each other demo and comparing: three of thirteen came out different
+		// depending on what ran first, all three because OpenWorld's water
+		// finished with `SetBlendMode(None)` and Renderer2D relies on the
+		// blending `Init` switched on.
+		//
+		// A per-frame reset rather than a save/restore around each caller,
+		// because "restore" means putting back what was there and every one of
+		// those sites instead put back what its author assumed was there. This
+		// way the assumption is written down once, here, and is true.
+		virtual void ResetState() = 0;
+
 		virtual void SetViewport(unsigned int x, unsigned int y, unsigned int width, unsigned int height) = 0;
 		virtual void SetClearColor(const glm::vec4& color) = 0;
 		virtual void Clear() = 0;

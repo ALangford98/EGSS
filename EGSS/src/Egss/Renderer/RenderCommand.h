@@ -14,6 +14,12 @@ namespace Egss {
 			s_RendererAPI->Init();
 		}
 
+		// The per-frame baseline -- see RendererAPI::ResetState.
+		inline static void ResetState()
+		{
+			s_RendererAPI->ResetState();
+		}
+
 		inline static void SetViewport(unsigned int x, unsigned int y, unsigned int width, unsigned int height)
 		{
 			s_RendererAPI->SetViewport(x, y, width, height);

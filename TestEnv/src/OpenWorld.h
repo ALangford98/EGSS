@@ -2295,11 +2295,25 @@ public:
 	// and does not depend on what was sampled before it. Written fresh
 	// rather than reused because both existing versions are private to
 	// their own class.
+	//
+	// **Multiply in `uint32_t`, not in `int`.** `(uint32_t)(x * 374761393)`
+	// overflows a signed int for any |x| above 5 and is undefined behaviour --
+	// the cast is outside the multiply, so it converts a result that was
+	// already illegal. Casting first makes the wraparound the defined kind,
+	// and the bit pattern is identical, so the terrain does not move.
+	//
+	// This was not a theoretical complaint. GCC 16 reasoned from it that a
+	// `for (int i = 0; i < 16; i++)` loop calling this could not survive past
+	// i=5, concluded the `i < 16` test was therefore not what ended the loop,
+	// and deleted it -- leaving an unconditional back edge that spawned rocks
+	// until the process was OOM killed at 17 GB. Release only; Debug was fine.
+	// See the trap in HANDOVER. Terrain::Hash always had the cast in the right
+	// place; these two copies of the idiom did not.
 	static uint32_t Hash2D(int x, int y, uint32_t seed)
 	{
 		uint32_t h = seed;
-		h ^= (uint32_t)(x * 374761393);
-		h ^= (uint32_t)(y * 668265263);
+		h ^= (uint32_t)x * 374761393u;
+		h ^= (uint32_t)y * 668265263u;
 		h = (h ^ (h >> 13)) * 1274126177u;
 		h ^= h >> 16;
 		return h;

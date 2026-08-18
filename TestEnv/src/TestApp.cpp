@@ -22,6 +22,7 @@
 
 #include "DemoRegistry.h"
 #include "DemoSelector.h"
+#include "DemoWarmup.h"
 #include "ProfilerPanel.h"
 
 class TestEnv : public Egss::Application
@@ -29,6 +30,11 @@ class TestEnv : public Egss::Application
 public:
 	TestEnv()
 	{
+		// Before the demos, so that on the step it hands over, the demo it
+		// hands over *to* is already the active one when the demos are walked.
+		// Pushed unconditionally; without --warmup it does nothing at all.
+		PushLayer(new DemoWarmup());
+
 		// Every demo in DemoRegistry.h, pushed and numbered. Adding one needs
 		// no change here.
 		PushAllDemos(*this);

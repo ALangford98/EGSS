@@ -364,6 +364,13 @@ namespace Egss {
 				{
 					EGSS_PROFILE_SCOPE("Layer::OnUpdate");
 
+					// Persistent pipeline state back to the baseline before any
+					// layer draws, so a layer that leaves it altered cannot
+					// reconfigure the next frame -- or the next demo. See
+					// RendererAPI::ResetState for what leaked and how it was
+					// measured.
+					RenderCommand::ResetState();
+
 					// Bottom-up, so later layers draw over earlier ones.
 					for (Layer* layer : m_LayerStack)
 						layer->OnUpdate(frameTime);
