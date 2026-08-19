@@ -681,13 +681,25 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       Verified by mutation: 62 checks passed first try, six deliberate bugs
       injected, all six caught. The Model demo shows a jointed figure built
       from one 24-vertex cube referenced by twenty nodes
-- [x] **Distant-chunk LOD** — OpenWorld picks a marching-cubes stride per chunk
-      from its distance (24 m to stride 2, 48 m to stride 4) with an 8 m
-      hysteresis band, and budgets the remeshing like streaming. Worth 1.16x at
-      the default 64 m load radius and **9.16x at 128 m**; seeing 128 m with LOD
-      costs 0.82x what seeing 64 m without it did. Triangles fall as 1/stride²
-      (measured 4.08x and 16.09x against 4 and 16). The cross-stride seam is
-      unfixed and documented — transition cells are the real answer
+- [x] **Distant-chunk LOD** — OpenWorld picks a stride per chunk from its
+      distance (24 m to stride 2, 48 m to stride 4) with an 8 m hysteresis
+      band, and budgets the remeshing like streaming. Triangles fall as
+      1/stride² (measured 4.08x and 16.09x against 4 and 16); see the
+      2026-08-18 entry for the current triangle-count picture, which changed
+      with the mesher swap below.
+- [x] **The cross-stride LOD seam** — `VoxelTransition` closes it: 64 holes
+      to 0 on a curved test surface, verified against a mutation reproducing
+      the two earlier reverted attempts' bug. Chunk corners needing the fix
+      on two faces at once are out of scope and keep the old seam there —
+      smaller and rarer than before, not silently dropped. Closing it
+      surfaced that `MarchingCubes` and `MarchingTetrahedra` disagree on any
+      shared face, LOD or not (102 holes, measured), so OpenWorld now meshes
+      all terrain with `MarchingTetrahedra` — **~8.4x more triangles at the
+      same settings (81,413 → 684,718 at 128 m), not yet offset by anything.**
+      See the changelog entry for what was deliberately left: forcing
+      `MarchingCubes`'s ambiguous cases to agree instead (keeps the triangle
+      count down, its own research-grade task), and dedicated verification
+      of the 4:1 stride case
 - [x] **Chunk persistence** — `VoxelField3D::SaveChunk`/`LoadChunk` plus a
       demo-owned append-only cache file, keyed by a fingerprint of the density
       function so a changed world discards a stale file automatically. 6.21 s
@@ -1034,6 +1046,78 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-18 (the LOD seam, closed -- and a mesher swap it turned out to need)
+
+**The oldest outstanding defect in the project is fixed.** Two attempts on
+2026-08-16 fanned a coarse chunk's subdivided seam face from the cell's
+centre and were reverted: the fan's *side* faces, perpendicular to the seam,
+were left as flat coarse triangles, so two neighbouring transition cells put
+a different number of vertices on the edge between them -- a T-junction, not
+visible but fatal to the watertightness check.
+
+**`VoxelTransition`** (`EGSS/src/Egss/Voxel/VoxelTransition.h/.cpp`) fixes it
+by marking *edges*, not faces. Against a coarse cube cell's fixed six-tet
+decomposition (`MarchingTetrahedra::CellTetrahedra()`), exactly two tets have
+a full face on a given boundary ("cap" tets) and two touch it along one edge
+only ("collar" tets); the other two don't meet it at all. A cap tet's face is
+recursively quadrisected down to the fine chunk's own lattice spacing,
+sampling the true field fresh at every new point (the field is exact at any
+integer lattice point regardless of a chunk's stride -- "coarse" and "fine"
+differ only in which points a mesher samples), then every small triangle is
+coned to the tet's one off-boundary apex. A collar tet's one marked edge is
+subdivided the same way and the tet split into a strip of small tets sharing
+its two off-edge corners. Every consumer of a marked edge fetches its
+subdivision from one function keyed on the edge's own endpoints
+(`SubdivideEdge`), so two tets that share a physical edge -- whether two of
+one cube's six or two either side of a cube or chunk boundary -- agree by
+construction, with nothing to coordinate. All of it reduces to calls to the
+existing, unmodified `MarchingTetrahedra::Cell`; no new triangle-emission
+code, no lookup table. Chunk corners needing the treatment on two faces at
+once are explicitly out of scope and mesh plainly, same as before -- a
+smaller, rarer residual than the seam this closes.
+
+Verified the way the reverted attempts were, and further: two chunks at
+different strides sharing a real boundary, edge-use counts before and after
+(**64 holes → 0**, sphere surface, curved so the coarse lattice provably cuts
+corners), plus a mutation that reproduces the exact historical bug (cap tets
+fixed, collar tets left plain) and confirms the harness would have caught it
+(**0 → 128 holes**).
+
+**That surfaced a second, unrelated defect: `MarchingCubes` and
+`MarchingTetrahedra` do not agree with each other on a shared face, even at
+identical stride.** Isolated with a direct control, no LOD involved: two
+plain `MarchingCubes` calls split at a plane, 0 holes; two plain
+`MarchingTetrahedra` calls split at the same plane, 0 holes; one of each
+meeting at that plane, **102 holes**. Each mesher is internally consistent;
+they are not consistent with each other -- marching cubes' well-known
+ambiguous saddle cases resolve differently under a fixed tetrahedral
+diagonal, which is the exact ambiguity `MarchingTetrahedra` was built to
+sidestep. It does not stay local: patching one boundary layer just relocates
+the mismatch to whatever it borders next, so there is no bounded, layer-at-a-
+time fix -- only committing to one mesher across a whole connected region
+terminates it.
+
+**`OpenWorld` now meshes all terrain with `MarchingTetrahedra`, not
+`MarchingCubes`.** `VoxelTerrain` (the other voxel demo) is untouched --
+it never varies stride, so it never hits this. The real cost, measured
+rather than assumed: at the default 128 m load radius, the old
+`MarchingCubes`-based LOD held 81,413 triangles; the same radius, same bands,
+now costs **684,718** -- roughly 8.4x. Not yet offset by anything; worth a
+follow-up pass (tighter LOD bands, or the ambiguous-case reconciliation noted
+below) if the frame cost turns out to matter in practice. Skirts, already
+default-off and known not to fix the seam (2026-08-16), are removed from the
+terrain path entirely -- superseded, not merely redundant.
+
+Two things not done, on purpose. **`MarchingCubes.cpp` itself was not
+touched** -- forcing its ambiguous-case table to agree with the tetrahedral
+diagonal would keep triangle counts down but is its own research-grade task
+(this is what Lewiner's "Marching Cubes 33" is about), and was left rather
+than attempted alongside everything above. **The 4:1 stride case
+(`VoxelTransition`'s `ratio` parameter, exercised so far only at 2:1) is
+implemented via the same recursion depth but not separately verified** --
+worth a dedicated check before relying on stride-4 chunks bordering stride-1
+ones directly.
 
 ### 2026-08-17 (render state that leaked between demos, and the matrix that found it)
 

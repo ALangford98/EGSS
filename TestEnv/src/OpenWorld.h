@@ -9,7 +9,7 @@
 // textured-vs-untextured compute comparison is deliberately not in this
 // piece -- it needs this demo to exist first as the thing to measure.
 //
-// **Distant-chunk LOD is in**, on top of `MarchingCubes::Mesh`'s stride:
+// **Distant-chunk LOD is in**, on top of `MarchingTetrahedra::Mesh`'s stride:
 // chunks past 24 m mesh on a stride-2 lattice and past 48 m on stride-4,
 // with an 8 m hysteresis band so a chunk sitting on a boundary does not
 // remesh every step. It buys little at the default 64 m load radius, where
@@ -1892,19 +1892,103 @@ public:
 	}
 
 	// Meshes one chunk on a lattice `stride` voxels wide and stores the result.
+	//
+	// Terrain is meshed with MarchingTetrahedra, not MarchingCubes -- found
+	// necessary, not stylistic, while building the LOD transition below.
+	// MarchingCubes and MarchingTetrahedra are each internally watertight but
+	// do *not* agree with each other on a shared face, even at identical
+	// stride: a control test (two chunks split at one plane, no LOD involved)
+	// measured 102 open edges where a MarchingCubes chunk met a
+	// MarchingTetrahedra one, and zero either way when both sides matched.
+	// That is marching cubes' well-known ambiguous-saddle resolution
+	// disagreeing with the tetrahedral decomposition's fixed one -- the same
+	// ambiguity MarchingTetrahedra was built to sidestep in the first place --
+	// and it does not stay local: patching one boundary layer just relocates
+	// the mismatch to whatever it borders next. The only fix that terminates
+	// is one mesher, consistently, wherever chunks can end up adjacent.
+	//
+	// The LOD boundary itself is closed by VoxelTransition, which recursively
+	// refines a coarse chunk's boundary layer to match a neighbour meshed at
+	// half its stride -- see VoxelTransition.h for why (two earlier, reverted
+	// attempts fanned a coarse cell's seam face from its centre and left the
+	// fan's side faces unreconciled with their neighbours). Only the *coarse*
+	// side needs this: the fine side already matches, because both compute
+	// the same tetrahedral decomposition from the same field at the same
+	// fine lattice positions.
+	//
+	// A chunk needing the transition on two faces at once -- an LOD boundary
+	// corner -- is out of scope for now and meshes plainly on every face,
+	// which reproduces the old seam there rather than fixing it. Smaller and
+	// rarer than today's full seam, and honestly worse than the single-face
+	// case rather than silently dropped.
 	void MeshChunk(const glm::ivec3& chunk, int stride)
 	{
 		glm::ivec3 min, max;
 		m_Field->ChunkRange(chunk, min, max);
 
-		// Skirt depth scales with the stride, because the disagreement it is
-		// covering does: a coarse cell spans `stride` voxels, and the surface
-		// can differ by roughly the terrain's slope across that span. The
-		// seabed falls at 0.55 m per metre, so 1.5 voxels of stride is
-		// comfortably more than the worst case.
-		float skirt = m_Skirts ? (float)stride * s_Voxel * 1.5f : 0.0f;
+		static const glm::ivec3 s_FaceDir[6] =
+		{
+			{  1,  0,  0 }, { -1,  0,  0 },
+			{  0,  1,  0 }, {  0, -1,  0 },
+			{  0,  0,  1 }, {  0,  0, -1 },
+		};
 
-		Egss::MeshData data = Egss::MarchingCubes::Mesh(*m_Field, min, max, stride, skirt);
+		unsigned int boundaryMask = 0;
+		int ratio = 1;
+		int markedFaces = 0;
+
+		for (int f = 0; f < 6; f++)
+		{
+			auto it = m_Chunks.find(ChunkKey(chunk + s_FaceDir[f]));
+			if (it == m_Chunks.end())
+				continue;
+
+			int neighbourStride = it->second.Stride;
+			if (neighbourStride < stride && stride % neighbourStride == 0)
+			{
+				boundaryMask |= (1u << f);
+				ratio = stride / neighbourStride;
+				markedFaces++;
+			}
+		}
+
+		Egss::MeshData data;
+
+		if (markedFaces == 1)
+		{
+			int face = 0;
+			while (!(boundaryMask & (1u << face)))
+				face++;
+
+			glm::ivec3 interiorMin = min, interiorMax = max;
+			glm::ivec3 layerMin = min, layerMax = max;
+
+			switch (face)
+			{
+				case Egss::VoxelTransition::PosX: interiorMax.x -= stride; layerMin.x = interiorMax.x; break;
+				case Egss::VoxelTransition::NegX: interiorMin.x += stride; layerMax.x = interiorMin.x; break;
+				case Egss::VoxelTransition::PosY: interiorMax.y -= stride; layerMin.y = interiorMax.y; break;
+				case Egss::VoxelTransition::NegY: interiorMin.y += stride; layerMax.y = interiorMin.y; break;
+				case Egss::VoxelTransition::PosZ: interiorMax.z -= stride; layerMin.z = interiorMax.z; break;
+				case Egss::VoxelTransition::NegZ: interiorMin.z += stride; layerMax.z = interiorMin.z; break;
+			}
+
+			data = Egss::MarchingTetrahedra::Mesh(*m_Field, interiorMin, interiorMax, stride);
+			Egss::VoxelTransition::MeshBoundaryLayer(*m_Field, layerMin, layerMax, stride, boundaryMask, ratio, data);
+
+			if (!data.Indices.empty())
+			{
+				Egss::Submesh all;
+				all.IndexCount = (unsigned int)data.Indices.size();
+				data.Submeshes.push_back(all);
+				data.RecalculateBounds();
+			}
+		}
+		else
+		{
+			data = Egss::MarchingTetrahedra::Mesh(*m_Field, min, max, stride);
+		}
+
 		size_t key = ChunkKey(chunk);
 
 		if (data.Indices.empty())
@@ -3320,8 +3404,6 @@ public:
 
 		ImGui::Separator();
 		ImGui::Checkbox("Chunk LOD", &m_Lod);
-		ImGui::SameLine();
-		ImGui::Checkbox("Skirts", &m_Skirts);
 		ImGui::SliderFloat("Stride 2 beyond", &m_LodNear, 16.0f, 200.0f, "%.0f m");
 		ImGui::SliderFloat("Stride 4 beyond", &m_LodFar, 32.0f, 300.0f, "%.0f m");
 		ImGui::SliderFloat("Hysteresis", &m_LodHysteresis, 0.0f, 32.0f, "%.0f m");
@@ -3550,20 +3632,13 @@ public:
 	// picture and the triangle count, and not the simulation.
 	bool m_Lod = true;
 
-	// **Default off, on measurement.** Skirts were built to close the LOD
-	// seam and they do not, because the seam is not a hole: a coarse chunk
-	// meshes systematically *lower* than its fine neighbour, and the result is
-	// a solid step whose wall you can see. There is no gap for a skirt to
-	// fill. Generated correctly (582 tris a chunk became 718, so 68 boundary
-	// edges found), and the picture moved by **2 pixels** even with the bands
-	// forced to 10 m and 20 m to put mismatched chunks right under the camera.
-	// 23% more triangles for two pixels is not a trade worth making.
-	//
-	// Kept because the mechanism is right for an actual crack, and because the
-	// measurement is the useful part: the fix for the step is transition cells
-	// (transvoxel), which reconcile the two lattices instead of hanging a
-	// curtain off one of them.
-	bool m_Skirts = false;
+	// Skirts (a wall hung off every open mesh edge) were tried and removed:
+	// they close a *gap*, and the LOD seam is not one -- a coarse chunk meshes
+	// systematically lower than its fine neighbour, so the result was a solid
+	// step whose wall you could see, moving the picture by 2 pixels for 23%
+	// more triangles even with the bands forced together. Superseded by
+	// VoxelTransition, which reconciles the two lattices instead of hanging a
+	// curtain off one of them -- see MeshChunk.
 	float m_LodNear = 56.0f;    // beyond this, stride 2
 	float m_LodFar = 104.0f;     // beyond this, stride 4
 	float m_LodHysteresis = 8.0f;

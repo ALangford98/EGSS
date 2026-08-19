@@ -393,7 +393,24 @@ look caught immediately.
   edge downward) were built for this and moved **2 pixels**, even with the bands
   forced to 10 m/20 m -- they work, there is just no gap. Default off; the fix
   is transvoxel transition cells. Turning LOD off is not the alternative, it was
-  worth 9x the triangles at full stream.
+  worth 9x the triangles at full stream. **Fixed 2026-08-18** — see the
+  changelog entry; `VoxelTransition` is the transition-cell piece this was
+  waiting on.
+- **`MarchingCubes` and `MarchingTetrahedra` do not agree on a shared face**,
+  even at identical stride with no LOD involved — measured directly, no LOD
+  in the setup: two `MarchingCubes` chunks split at a plane, 0 open edges;
+  two `MarchingTetrahedra` chunks at the same plane, 0; one of each meeting
+  there, 102. Marching cubes' well-known ambiguous saddle cases resolve
+  differently under a fixed tetrahedral diagonal — the exact ambiguity
+  `MarchingTetrahedra` exists to sidestep — and the mismatch does not stay
+  local: whichever cell ends up next to a tet-meshed one inherits the same
+  disagreement with *its* neighbour, so there is no bounded, one-layer-at-a-
+  time patch. `OpenWorld` now meshes all terrain with `MarchingTetrahedra`
+  for exactly this reason (found while building the LOD transition above,
+  which needed tets at the boundary and MarchingCubes everywhere else — that
+  "everywhere else" is what broke). Reach for one mesher consistently across
+  any region that can end up touching itself; do not mix them and assume
+  edge interpolation alone makes them agree.
 - **`flat` is a GLSL keyword.** `float flat = ...` is a syntax error (it is an
   interpolation qualifier), the shader fails to compile, and `Shader::Create`
   logs it and hands back an unusable program — which renders **white**, not
