@@ -77,35 +77,26 @@ namespace Egss {
 		}
 		else if (body.Shape == ColliderShape3D::Heightfield)
 		{
-			// The whole map. A demo did then put a few hundred bodies on a
-			// large heightfield, and both halves of what that costs are now
-			// handled in the broadphase rather than here: the body is kept out
-			// of the cells instead of being stamped into all 29,575 of them,
-			// and it no longer sizes the grid. See the note on m_Oversized.
+			// **The map, and everything under it.** The box has no floor.
 			//
-			// These bounds still describe the *surface*, the band between
-			// Lowest and Highest, while the narrowphase treats everything below
-			// the surface as inside the collider and ejects it. That
-			// disagreement is why the broadphase cannot use a bounds test to
-			// reject terrain pairs, and it is the line to come back to.
+			// The narrowphase calls any point below the surface inside: a
+			// sphere's depth is measured along the winning triangle's normal
+			// and goes on growing the further under it sits, and a box corner
+			// is tested with `local.y < height` and nothing else. Neither has a
+			// depth at which the ground stops. So a box spanning only
+			// Lowest..Highest describes the *surface*, and a body under the map
+			// was ejected by one half of the pipeline while the other half
+			// denied it was touching anything.
 			//
-			// Confirmed inert rather than assumed so: RebuildGrid always
-			// classifies the heightfield as m_Oversized (a whole map's cell
-			// span dwarfs any body count), so it is brute-forced against every
-			// body regardless of these bounds -- the Y range computed here is
-			// never actually read. And even a body found impossibly far below
-			// the surface would not be ejected violently if it were read:
-			// CorrectPositions clamps per-step correction to s_MaxCorrection
-			// regardless of depth, and the velocity side (RestitutionBias)
-			// comes from approach velocity, not penetration. So this cannot
-			// explode; it is a latent inconsistency, not a live hazard.
-			//
-			// The fix, whenever a broadphase optimisation wants to trust these
-			// bounds: report outMin.y as unbounded downward (a large negative
-			// sentinel, not `Lowest`), matching what the narrowphase already
-			// treats as solid, rather than trying to give the narrowphase a
-			// floor it does not have. The ground is supposed to extend
-			// downward forever; the bounds are what is lying about it.
+			// -infinity rather than a large negative sentinel, which is what an
+			// earlier note here proposed. A sentinel is a lie arithmetic can
+			// reach: `RebuildGrid` divides this span by the cell size and casts
+			// to int, and a value past INT_MAX is undefined behaviour, not a
+			// big number -- the same shape as the overflow that got a loop
+			// deleted on 2026-08-17. Infinity cannot be mistaken for a
+			// coordinate, and every consumer here now either compares it (fine)
+			// or clamps before casting (`CellRange`), or asks `IndexBounds` for
+			// a finite box instead.
 			if (!body.Field || body.Field->Empty())
 			{
 				outMin = body.Position;
@@ -114,7 +105,9 @@ namespace Egss {
 			}
 
 			float half = body.Field->HalfExtent();
-			outMin = body.Position + glm::vec3(-half, body.Field->Lowest, -half);
+			outMin = glm::vec3(body.Position.x - half,
+				-std::numeric_limits<float>::infinity(),
+				body.Position.z - half);
 			outMax = body.Position + glm::vec3(half, body.Field->Highest, half);
 			return;
 		}
@@ -196,6 +189,35 @@ namespace Egss {
 
 		outMin = body.Position - extent;
 		outMax = body.Position + extent;
+	}
+
+	// True for a collider that is solid all the way down, so its world box has
+	// no floor. One shape qualifies; the test is here rather than spelled out at
+	// each site so that a second such shape has one place to be added.
+	static bool UnboundedBelow(const RigidBody3D& body)
+	{
+		return body.Shape == ColliderShape3D::Heightfield
+			&& body.Field && !body.Field->Empty();
+	}
+
+	// The same box, made finite, because a spatial index has a bottom row and
+	// cannot hold a half-space.
+	//
+	// Two boxes for one body, answering different questions -- the same split
+	// `Heightfield3D` already makes between a face normal and a smooth one. This
+	// one is "which cells does this body need to be found in"; `BodyBounds` is
+	// "what does this collider contain", which is the one a rejection test has
+	// to ask.
+	//
+	// Giving the index the surface band alone would drop the pair for a body
+	// deep under the map, so the index does not stop there: `RebuildGrid` lowers
+	// such a body to the grid's own floor once it knows where that is.
+	static void IndexBounds(const RigidBody3D& body, glm::vec3& outMin, glm::vec3& outMax)
+	{
+		BodyBounds(body, outMin, outMax);
+
+		if (UnboundedBelow(body))
+			outMin.y = body.Position.y + body.Field->Lowest;
 	}
 
 	// Two unit vectors spanning the plane perpendicular to `normal`.
@@ -1390,13 +1412,19 @@ namespace Egss {
 		// magnitude.
 		for (unsigned int i = 0; i < m_Bodies.size(); i++)
 		{
-			BodyBounds(m_Bodies[i], m_Bounds[i].Min, m_Bounds[i].Max);
+			// The finite box, not the collider's own -- a heightfield's has no
+			// floor and this is an index. See IndexBounds.
+			IndexBounds(m_Bodies[i], m_Bounds[i].Min, m_Bounds[i].Max);
 
+			// Counted in double rather than int. A span that overflows an int
+			// is not a pathological input, it is a large floor with a small
+			// cell size, and `(int)` of it is undefined behaviour rather than a
+			// large number.
 			glm::vec3 size = m_Bounds[i].Max - m_Bounds[i].Min;
 			double spanned =
-				(double)((int)(size.x / m_GridCellSize) + 2) *
-				(double)((int)(size.y / m_GridCellSize) + 2) *
-				(double)((int)(size.z / m_GridCellSize) + 2);
+				(std::floor((double)size.x / m_GridCellSize) + 2.0) *
+				(std::floor((double)size.y / m_GridCellSize) + 2.0) *
+				(std::floor((double)size.z / m_GridCellSize) + 2.0);
 
 			// Past this size the bucketing costs more than the pair tests it
 			// saves, and the body is tested directly instead -- see the note on
@@ -1438,17 +1466,22 @@ namespace Egss {
 
 		m_GridOrigin = worldMin;
 
-		glm::vec3 span = worldMax - worldMin;
-		m_GridWidth = std::max(1, (int)(span.x / m_GridCellSize) + 1);
-		m_GridHeight = std::max(1, (int)(span.y / m_GridCellSize) + 1);
-		m_GridDepth = std::max(1, (int)(span.z / m_GridCellSize) + 1);
-
 		// A pathological cell size would otherwise allocate unboundedly, and
 		// in 3D that arrives far sooner than in 2D: halving the cell size
 		// costs eight times the cells rather than four. Smaller cap than the
 		// 2D world's for the same reason.
-		const long long maxCells = 1 << 18;
-		if ((long long)m_GridWidth * m_GridHeight * m_GridDepth > maxCells)
+		//
+		// Counted in double and capped *before* the cast, so the cast is always
+		// in range. The old order cast first and checked the product after,
+		// which is fine for the spans that reach here today and undefined for a
+		// large enough one.
+		glm::vec3 span = worldMax - worldMin;
+		double cellsX = std::max(1.0, std::floor((double)span.x / m_GridCellSize) + 1.0);
+		double cellsY = std::max(1.0, std::floor((double)span.y / m_GridCellSize) + 1.0);
+		double cellsZ = std::max(1.0, std::floor((double)span.z / m_GridCellSize) + 1.0);
+
+		const double maxCells = (double)(1 << 18);
+		if (cellsX * cellsY * cellsZ > maxCells)
 		{
 			m_GridWidth = 0;
 			m_GridHeight = 0;
@@ -1456,12 +1489,33 @@ namespace Egss {
 			return;
 		}
 
+		m_GridWidth = (int)cellsX;
+		m_GridHeight = (int)cellsY;
+		m_GridDepth = (int)cellsZ;
+
 		m_Cells.assign((size_t)m_GridWidth * m_GridHeight * m_GridDepth, {});
 
 		for (unsigned int i = 0; i < m_Bodies.size(); i++)
 		{
 			if (m_OutsideCells[i])
 				continue;
+
+			// A body with no floor is indexed down to the grid's, now that the
+			// grid has one. Without this it would be stamped into its surface
+			// band only, and a body deep under the map shares no cell with that
+			// band -- the pair dropped by the broadphase, and the body never
+			// ejected, while brute force ejects it. The grid is supposed to be
+			// bit-identical to brute force, and this is one of the two places
+			// that can quietly stop being true.
+			//
+			// It changes nothing on the default path, where such a body is
+			// m_Oversized and so a candidate for everything already; it is
+			// BroadphaseExcludeOversized = false that reaches this. Written into
+			// m_Bounds rather than applied here because the query walk reads the
+			// same cache, and a body looked for in cells it was not put in is a
+			// body the narrowphase never sees.
+			if (UnboundedBelow(m_Bodies[i]))
+				m_Bounds[i].Min.y = m_GridOrigin.y;
 
 			int x0, y0, z0, x1, y1, z1;
 			CellRange(m_Bounds[i].Min, m_Bounds[i].Max, x0, y0, z0, x1, y1, z1);

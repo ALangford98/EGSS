@@ -8,6 +8,7 @@
     ./egss.py run [config]    build, then run from the binary's own directory
     ./egss.py clean [config]
     ./egss.py gen             regenerate project files only
+    ./egss.py sanitize        build instrumented and run every demo under it
 
 Why this exists
 ---------------
@@ -28,11 +29,26 @@ automatically -- a pinned version, checksummed before it is unpacked. Pass
 `run` matters too: the executable reads and writes imgui.ini and profile.json
 relative to the working directory, so it has to be launched from beside the
 binary or it will quietly use a different layout file each time.
+
+Sanitizers
+----------
+`--sanitize` generates and builds with ASan and UBSan into `bin/<Config>-...-
+sanitize/`, and works with any config. `./egss.py sanitize` does that and then
+runs every demo under it in lockstep, which is the whole point: an instrumented
+binary nobody runs catches nothing.
+
+It exists because of 2026-08-17. A signed overflow in a hash let the compiler
+delete a loop's exit test, `SpawnRocks` ran 99,482 times, the process reached
+17 GB and was OOM killed -- in release only, and every warning flag the project
+had was silent. UBSan named the file and line on its first run, at the end of an
+afternoon that had produced no other answer. It was reached by hand that day and
+there was no way to reach it again.
 """
 
 import argparse
 import hashlib
 import os
+import re
 import platform
 import shutil
 import subprocess
@@ -44,6 +60,15 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIGS = ["debug", "release", "dist"]
+SANITIZE_STEPS = 300
+
+# Leak detection left **on**, which was worth checking rather than assuming: the
+# usual reason to disable it is a driver or a UI toolkit that leaks by design,
+# and 300 steps of every demo reports nothing at all here. Turning it off "to
+# reduce noise" would have thrown away a real check for noise that does not
+# exist.
+SANITIZE_ASAN_OPTIONS = "detect_leaks=1"
+
 IS_WINDOWS = platform.system() == "Windows"
 
 # Pinned rather than "latest" so two clones cannot generate project files with
@@ -209,7 +234,7 @@ def premake_path(allow_fetch=True):
     return fetch_premake(directory, name)
 
 
-def generate(allow_fetch=True):
+def generate(allow_fetch=True, sanitize=False):
     """Regenerate project files. Cheap, so it is not conditional.
 
     Output is swallowed unless it fails. Because this now runs on every build,
@@ -224,6 +249,12 @@ def generate(allow_fetch=True):
     action = "vs2022" if IS_WINDOWS else "gmake2"
     command = [premake_path(allow_fetch), action]
 
+    # Passed to premake, not to make: the flags live in the generated project
+    # files, and so does the separate output directory that keeps instrumented
+    # objects away from plain ones.
+    if sanitize:
+        command.append("--sanitize")
+
     print("\033[90m$ " + " ".join(command) + "\033[0m")
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
@@ -234,8 +265,30 @@ def generate(allow_fetch=True):
     return result.returncode
 
 
-def build(config, jobs, generate_first=True, allow_fetch=True):
-    if generate_first and generate(allow_fetch) != 0:
+def generated_with_sanitize():
+    """Whether the project files sitting on disk were generated with --sanitize.
+
+    Read out of the generated files rather than remembered in a state file of
+    its own, which cannot go stale against them.
+
+    This exists because `--no-gen` and `--sanitize` disagreeing is silent and
+    genuinely confusing: the flags and the output directory both live in the
+    generated project files, so `build --sanitize --no-gen` after a plain
+    generation rebuilds the *plain* tree and reports success, and the
+    instrumented binary you then run is whatever was there before.
+    """
+    name = "EGSS.vcxproj" if IS_WINDOWS else "Makefile"
+    path = os.path.join(ROOT, "EGSS", name)
+
+    try:
+        with open(path) as handle:
+            return "-fsanitize" in handle.read()
+    except OSError:
+        return None   # nothing generated yet; the caller will generate
+
+
+def build(config, jobs, generate_first=True, allow_fetch=True, sanitize=False):
+    if generate_first and generate(allow_fetch, sanitize) != 0:
         return 1
 
     if IS_WINDOWS:
@@ -252,13 +305,15 @@ def build(config, jobs, generate_first=True, allow_fetch=True):
     return run(["make", f"-j{jobs}", f"config={config}"])
 
 
-def binary_dir(config):
+def binary_dir(config, sanitize=False):
     system = "windows" if IS_WINDOWS else platform.system().lower()
-    return os.path.join(ROOT, "bin", f"{config.capitalize()}-{system}-x86_64", "TestEnv")
+    suffix = "-sanitize" if sanitize else ""
+    return os.path.join(ROOT, "bin",
+                        f"{config.capitalize()}-{system}-x86_64{suffix}", "TestEnv")
 
 
-def launch(config, forwarded=None):
-    directory = binary_dir(config)
+def launch(config, forwarded=None, sanitize=False):
+    directory = binary_dir(config, sanitize)
     executable = os.path.join(directory, "TestEnv.exe" if IS_WINDOWS else "TestEnv")
 
     if not os.path.isfile(executable):
@@ -271,13 +326,109 @@ def launch(config, forwarded=None):
     # From its own directory, so imgui.ini, profile.json, screenshots and
     # recordings all land beside it -- and so assets resolve, since they are
     # loaded by path relative to the executable.
-    return subprocess.call([executable] + forwarded, cwd=directory)
+    return subprocess.call([executable] + forwarded, cwd=directory,
+                           env=sanitizer_env() if sanitize else None)
+
+
+def sanitizer_env():
+    """Environment for an instrumented run.
+
+    `print_stacktrace` is what turns "there is undefined behaviour somewhere"
+    into a file and a line, which is the entire reason this exists.
+    """
+    env = dict(os.environ)
+    env.setdefault("UBSAN_OPTIONS", "print_stacktrace=1")
+    env.setdefault("ASAN_OPTIONS", SANITIZE_ASAN_OPTIONS)
+    return env
+
+
+def demo_shortnames():
+    """The demos, read out of DemoRegistry.h rather than repeated here.
+
+    Adding a demo is meant to be one line in that file, and a sweep that has to
+    be edited as well is a sweep that quietly stops covering the newest thing --
+    which is the one most likely to need it.
+    """
+    path = os.path.join(ROOT, "TestEnv", "src", "DemoRegistry.h")
+    names = []
+
+    with open(path) as handle:
+        for line in handle:
+            match = re.search(r'^\s*\{\s*"[^"]*",\s*"([^"]+)"', line)
+            if match:
+                names.append(match.group(1))
+
+    return names
+
+
+def sanitize_sweep(config, jobs, steps, allow_fetch=True, generate_first=True):
+    """Build instrumented, then run every demo under it and report.
+
+    Lockstep and hidden, so the sweep is the same work every time and does not
+    take the keyboard off whatever the machine is being used for. Each demo is
+    its own process: a sanitizer report is most useful with the demo that
+    produced it named beside it, and one demo aborting must not cost the rest.
+    """
+    if build(config, jobs, generate_first=generate_first,
+             allow_fetch=allow_fetch, sanitize=True) != 0:
+        return 1
+
+    directory = binary_dir(config, sanitize=True)
+    executable = os.path.join(directory, "TestEnv.exe" if IS_WINDOWS else "TestEnv")
+
+    if not os.path.isfile(executable):
+        sys.exit(f"No binary at {executable}")
+
+    demos = demo_shortnames()
+    if not demos:
+        sys.exit("No demos found in TestEnv/src/DemoRegistry.h")
+
+    print(f"\nSweeping {len(demos)} demos, {steps} steps each, "
+          f"{config} + ASan + UBSan\n")
+
+    findings = 0
+
+    for name in demos:
+        result = subprocess.run(
+            [executable, "--demo", name, "--lockstep", "--hide-ui",
+             "--hide-window", "--exit-after", str(steps)],
+            cwd=directory, env=sanitizer_env(),
+            capture_output=True, text=True)
+
+        output = result.stdout + result.stderr
+
+        # UBSan prints "runtime error:" and carries on; ASan prints a banner and
+        # aborts. Both are matched rather than relying on the exit code, because
+        # a recoverable UBSan report leaves it at zero.
+        reports = [line for line in output.splitlines()
+                   if "runtime error:" in line or "ERROR: AddressSanitizer" in line
+                   or "ERROR: LeakSanitizer" in line]
+
+        unique = list(dict.fromkeys(reports))
+
+        if unique or result.returncode != 0:
+            findings += len(unique)
+            status = "\033[31mFAIL\033[0m"
+        else:
+            status = "\033[32m ok \033[0m"
+
+        print(f"  [{status}] {name}"
+              + (f"  (exit {result.returncode})" if result.returncode else ""))
+
+        for line in unique[:12]:
+            print(f"           {line.strip()}")
+
+        if len(unique) > 12:
+            print(f"           ... and {len(unique) - 12} more")
+
+    print(f"\n{len(demos)} demos, {findings} sanitizer reports\n")
+    return 1 if findings else 0
 
 
 def main():
     parser = argparse.ArgumentParser(description="Build and run EGSS.")
     parser.add_argument("command", nargs="?", default="run",
-                        choices=["build", "run", "clean", "gen"])
+                        choices=["build", "run", "clean", "gen", "sanitize"])
     parser.add_argument("config", nargs="?", default="debug",
                         choices=CONFIGS + ["all"])
     parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
@@ -285,6 +436,10 @@ def main():
                         help="skip regenerating project files")
     parser.add_argument("--no-fetch", action="store_true",
                         help="fail instead of downloading premake5 if it is missing")
+    parser.add_argument("--sanitize", action="store_true",
+                        help="build with ASan and UBSan, into bin/<Config>-...-sanitize")
+    parser.add_argument("--steps", type=int, default=SANITIZE_STEPS,
+                        help=f"fixed steps per demo in a sweep (default {SANITIZE_STEPS})")
     # Everything after a bare -- goes to TestEnv rather than to this script,
     # which is the only way to reach its flags: the binary lives beside its
     # assets under bin/, so running it by hand means knowing the config-
@@ -304,7 +459,23 @@ def main():
     args = parser.parse_args(argv)
 
     if args.command == "gen":
-        return generate(allow_fetch=not args.no_fetch)
+        return generate(allow_fetch=not args.no_fetch, sanitize=args.sanitize)
+
+    if args.command == "sanitize":
+        if args.config == "all":
+            sys.exit("Pick one config to sweep.")
+
+        # Same guard as below, and it matters more here: a sweep that ran the
+        # plain binary would report no findings, which reads as a pass.
+        if args.no_gen and generated_with_sanitize() is not True:
+            print("--no-gen ignored: the project files were generated "
+                  "without --sanitize")
+
+        skip_gen = args.no_gen and generated_with_sanitize() is True
+
+        return sanitize_sweep(args.config, args.jobs, args.steps,
+                              allow_fetch=not args.no_fetch,
+                              generate_first=not skip_gen)
 
     configs = CONFIGS if args.config == "all" else [args.config]
 
@@ -314,17 +485,30 @@ def main():
         return 0
 
     # Generate once even when building several configs.
-    if not args.no_gen and generate(allow_fetch=not args.no_fetch) != 0:
+    #
+    # --no-gen is overridden when the project files on disk were generated the
+    # other way round, because skipping the regeneration there does not skip
+    # work, it builds the wrong tree.
+    on_disk = generated_with_sanitize()
+    skip = args.no_gen and (on_disk is None or on_disk == args.sanitize)
+
+    if args.no_gen and not skip:
+        print("--no-gen ignored: the project files were generated "
+              + ("with" if on_disk else "without") + " --sanitize")
+
+    if not skip and generate(allow_fetch=not args.no_fetch,
+                             sanitize=args.sanitize) != 0:
         return 1
 
     for config in configs:
-        if build(config, args.jobs, generate_first=False) != 0:
+        if build(config, args.jobs, generate_first=False,
+                 sanitize=args.sanitize) != 0:
             return 1
 
     if args.command == "run":
         if args.config == "all":
             sys.exit("Pick one config to run.")
-        return launch(args.config, forwarded)
+        return launch(args.config, forwarded, sanitize=args.sanitize)
 
     return 0
 

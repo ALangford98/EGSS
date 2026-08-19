@@ -8,7 +8,28 @@ workspace "EGSS"
         "Dist"
     }
 
+-- Sanitizers are a *generation* option rather than a fourth configuration.
+--
+-- A configuration would have to be repeated in all five project files, and the
+-- three that describe vendored code have no opinion about any of this. An
+-- option composes with the configurations instead: `--sanitize` can be had with
+-- debug, release or dist, which matters because optimisation changes what
+-- undefined behaviour *does* even though it does not change whether UBSan sees
+-- it -- 2026-08-17's miscompile only bit in release.
+newoption {
+    trigger = "sanitize",
+    description = "Instrument with ASan and UBSan, in a bin/ tree of their own"
+}
+
 outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
+
+-- Its own tree, so nothing links an instrumented object against a plain one
+-- and no plain build is ever slowed by a stale instrumented object. A suffix on
+-- the directory rather than flags added in place, because make cannot tell that
+-- the flags changed and would leave both kinds of .o in the same folder.
+if _OPTIONS["sanitize"] then
+    outputdir = outputdir .. "-sanitize"
+end
 
 --include directories 
 IncludeDir = {}
@@ -156,6 +177,22 @@ project "EGSS"
         optimize "Full"
         symbols "Off"
 
+    -- ASan and UBSan together, and symbols regardless of configuration -- a
+    -- sanitizer report without a file and line is most of the value gone.
+    --
+    -- Only the two first-party projects are instrumented. ASan's malloc
+    -- bookkeeping is process-wide, so a use-after-free in vendored code is
+    -- still caught; what an uninstrumented GLFW loses is the redzones around
+    -- its own stack and global arrays, which is a fair trade for not reading
+    -- three thousand lines of somebody else's undefined behaviour.
+    --
+    -- Recoverable on purpose: UBSan's default is to print and carry on, so one
+    -- sweep names every site it hits rather than only the first.
+    filter "options:sanitize"
+        buildoptions { "-fsanitize=address,undefined", "-fno-omit-frame-pointer" }
+        linkoptions { "-fsanitize=address,undefined" }
+        symbols "On"
+
             
 
 project "TestEnv"
@@ -251,3 +288,19 @@ project "TestEnv"
         runtime "Release"
         optimize "Full"
         symbols "Off"
+
+    -- ASan and UBSan together, and symbols regardless of configuration -- a
+    -- sanitizer report without a file and line is most of the value gone.
+    --
+    -- Only the two first-party projects are instrumented. ASan's malloc
+    -- bookkeeping is process-wide, so a use-after-free in vendored code is
+    -- still caught; what an uninstrumented GLFW loses is the redzones around
+    -- its own stack and global arrays, which is a fair trade for not reading
+    -- three thousand lines of somebody else's undefined behaviour.
+    --
+    -- Recoverable on purpose: UBSan's default is to print and carry on, so one
+    -- sweep names every site it hits rather than only the first.
+    filter "options:sanitize"
+        buildoptions { "-fsanitize=address,undefined", "-fno-omit-frame-pointer" }
+        linkoptions { "-fsanitize=address,undefined" }
+        symbols "On"

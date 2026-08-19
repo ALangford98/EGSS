@@ -48,6 +48,10 @@ an earlier command persists.
 ./egss.py gen              # project files only
 ./egss.py build --no-gen   # skip regeneration
 
+./egss.py sanitize         # ASan + UBSan, then every demo under it
+./egss.py sanitize release # the same at -O2, where UB actually bites
+./egss.py build --sanitize # just the instrumented build
+
 # Flags for TestEnv go after a bare --
 ./egss.py run -- --demo Breakout --record run.rec
 ```

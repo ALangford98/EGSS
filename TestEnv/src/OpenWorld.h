@@ -10,13 +10,30 @@
 // piece -- it needs this demo to exist first as the thing to measure.
 //
 // **Distant-chunk LOD is in**, on top of `MarchingTetrahedra::Mesh`'s stride:
-// chunks past 24 m mesh on a stride-2 lattice and past 48 m on stride-4,
-// with an 8 m hysteresis band so a chunk sitting on a boundary does not
-// remesh every step. It buys little at the default 64 m load radius, where
-// almost everything is near -- the point of it is that a *bigger* radius
-// becomes affordable: at 128 m it is 745,644 triangles down to 81,413, and
-// seeing 128 m with LOD costs 0.82x what seeing 64 m without it did. The load
-// radius now defaults to 128 m on the strength of that.
+// chunks past `m_LodNear` mesh on a stride-2 lattice and past `m_LodFar` on
+// stride-4, with an 8 m hysteresis band so a chunk sitting on a boundary does
+// not remesh every step. It buys little at a 64 m load radius, where almost
+// everything is near -- the point of it is that a *bigger* radius becomes
+// affordable: when the bands were 24 m and 48 m and the mesher was marching
+// cubes, 128 m went from 745,644 triangles to 81,413, and seeing 128 m with LOD
+// cost 0.82x what seeing 64 m without it did. The load radius defaults to 128 m
+// on the strength of that.
+//
+// **Both of those numbers have since moved, and the comment claiming otherwise
+// outlived them by two commits.** The bands are 56 m and 104 m now, and the
+// terrain meshes with marching tetrahedra. Measured at a 128 m radius, once the
+// load has converged (it has by step 2,500; step 500 is still 14% short):
+//
+//     bands       tets       cubes      tets/cubes
+//     56 / 104    637,186    186,291    3.42x
+//     24 / 48     240,734     67,955    3.54x
+//     band factor   2.65x      2.74x
+//
+// So the mesher is worth ~3.4x and the bands ~2.7x, and the 8.4x recorded on
+// 2026-08-18 as the swap's cost is those two multiplied -- the before and after
+// were measured either side of a band change nobody was accounting for. The
+// swap's own cost in time is **0.33 ms a step** (3.43 against 3.10, over 3,000
+// lockstep steps in release), which is why it stays.
 //
 // Chunks are filled **nearest first** rather than in scan-line order, which
 // only started to matter at the larger radius -- a 128 m disc is 10,455 chunks

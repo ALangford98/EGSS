@@ -121,6 +121,19 @@ that compiles in the editor and never links.
 Verify all three configs before calling something done; Release has caught
 things Debug did not.
 
+**Sanitizers are a command now, not an afternoon.** `./egss.py sanitize` builds
+with ASan and UBSan into `bin/<Config>-...-sanitize/` and runs every demo under
+it in lockstep, reporting per demo; `./egss.py sanitize release` does it at -O2,
+and `--sanitize` on `build` or `run` gets the instrumented binary on its own.
+Reach for it early on anything that behaves differently between configs — the
+2026-08-17 miscompile cost most of a day and UBSan named the file and line on
+its first run.
+
+It is a *generation* option rather than a fourth configuration (five project
+files would each need one, and three of them describe vendored code), and the
+separate output tree is load-bearing: make cannot tell that the flags changed,
+so instrumented and plain objects in one directory link whatever is there.
+
 Assets load by path **relative to the executable**. premake copies
 `TestEnv/assets` next to the binary after every link. The two platforms need
 different arguments there — `cp -rf src dst` puts src *inside* dst once dst
@@ -729,6 +742,24 @@ look caught immediately.
   settled. Measure stacks with `AllowSleeping = false` — the collapse rate went
   from 9/20 to 16/20 with sleeping turned off, and the difference was entirely
   bodies falling asleep partway through falling over.
+- **Counting open edges means deciding which vertices are one vertex, and
+  snapping to a grid does it wrong in both directions.** Two points a micron
+  apart that straddle a grid line read as a hole, so the count *grows as the
+  ruler gets finer* -- 4, 12, 120 open edges at 1e-4, 1e-5, 1e-6 m on a closed
+  sphere -- and coarsening to 1e-3 invents holes instead by merging points that
+  really were distinct. Weld by proximity (look in the 27 neighbouring cells,
+  reuse anything within epsilon) and the answer stops moving: the same 0 across
+  1e-2 to 1e-5. **Quote the sweep, not one number** -- a watertightness result
+  at a single tolerance says as much about the tolerance as about the mesh.
+  Underneath it is `MarchingTetrahedra::Crossing`, which interpolates from
+  whichever endpoint it was handed first, so two tets sharing an edge agree only
+  to within a few ulps.
+- **A ratio measured across two changes belongs to both of them.** The mesher
+  swap was recorded as costing 8.4x the triangles "at the same bands"; the bands
+  had in fact been widened two commits earlier, and the real split is 3.4x for
+  the mesher and 2.7x for the bands. Before quoting a before-and-after, check
+  what else moved between the two measurements -- and prefer a 2x2, which cannot
+  hide this.
 - **A one-sided oracle asserted both ways will contradict a correct answer.**
   The random-direction search behind `Sat3D` proves boxes are *apart* when it
   finds a separating direction and proves nothing when it does not — a narrow
@@ -966,6 +997,25 @@ look caught immediately.
   bodies on the way, because the terrain body is a candidate for everything
   whatever the broadphase does, so the grid has nothing to reject and pays for
   the rebuild anyway. It stays at 200; measure both curves before touching it.
+- **A heightfield has two boxes, and using the wrong one drops pairs.**
+  `BodyBounds` is what the collider *contains* -- the map and everything under
+  it, `outMin.y` = `-infinity`, because the narrowphase is solid to any depth
+  (verified to 1000 m). `IndexBounds` is that made finite, because a grid has a
+  bottom row and cannot hold a half-space, and it is what `m_Bounds` caches.
+  Anything asking "could these two be touching" wants the first; anything asking
+  "which cells is this in" wants the second. The join is in `RebuildGrid`, which
+  lowers a floorless body to the *grid's* floor before stamping -- without that
+  the terrain sits in its surface band, a body 30 m under the map shares no cell
+  with it, and the pair is never tested. Reachable only with
+  `BroadphaseExcludeOversized = false`, where it silently broke the
+  bit-identical-to-brute-force property the switch depends on.
+- **An infinity in a bounds box is safer than a large sentinel**, which is the
+  opposite of what the note that stood here used to advise. Both consumers
+  divide a span by the cell size and cast to `int`, and a value past `INT_MAX`
+  is undefined behaviour, not a big number -- 2026-08-17 is what that costs.
+  Infinity cannot be mistaken for a coordinate, compares correctly everywhere,
+  and forced the two casts to be clamped first, which a sentinel would have let
+  through until the map got big enough.
 - **Comparing a raycast against "the first sample under the surface" only works
   if the ray starts above the surface.** A grazing test ray entered the map
   already underground; the marching reference reported the entry point and the
@@ -1058,7 +1108,11 @@ to be sensitive to.
 uniform-grid broadphase. It is **bit-identical to brute force** (candidates are
 sorted into brute-force order before testing, because sequential impulses are
 order-dependent), which is what makes `UseBroadphase` a real A/B and what makes
-it safe to switch on automatically. It does switch automatically:
+it safe to switch on automatically. That property held by luck in one corner
+until 2026-08-19: a heightfield's bounds described its surface rather than the
+solid under it, so with `BroadphaseExcludeOversized = false` a body under the
+map was a pair the grid dropped and brute force ejected. Both boxes are
+explicit now — see the trap on `BodyBounds` and `IndexBounds`. It does switch automatically:
 `BroadphaseMinBodies = 200`, because below ~120 bodies the grid measurably
 *loses* — 3x slower at 13 bodies.
 

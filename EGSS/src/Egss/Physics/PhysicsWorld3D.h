@@ -476,8 +476,9 @@ namespace Egss {
 		// the grid has nothing to reject there and pays for the rebuild anyway.
 		// Lowering this to suit the arena would put the terrain scene back to
 		// 0.74x, which is a milder version of the bug the rule just fixed.
-		// Raising the ceiling for terrain means giving a heightfield bounds
-		// that describe the solid under the surface, not the surface.
+		// Raising the ceiling for terrain is not what the solid-bounds fix
+		// bought -- see the note on m_Oversized for why a bounds test rejects
+		// almost nothing there, and what would.
 		//
 		// Safe to switch on automatically precisely because the two paths are
 		// bit-identical -- see the note on sorting in GenerateContacts. If they
@@ -555,12 +556,23 @@ namespace Egss {
 			glm::vec3 low = (boundsMin - m_GridOrigin) / m_GridCellSize;
 			glm::vec3 high = (boundsMax - m_GridOrigin) / m_GridCellSize;
 
-			x0 = std::max(0, (int)low.x);
-			y0 = std::max(0, (int)low.y);
-			z0 = std::max(0, (int)low.z);
-			x1 = std::min(m_GridWidth - 1, (int)high.x);
-			y1 = std::min(m_GridHeight - 1, (int)high.y);
-			z1 = std::min(m_GridDepth - 1, (int)high.z);
+			// **Clamped as floats, before the cast**, where it used to clamp the
+			// ints afterwards. `(int)` of a value past INT_MAX is undefined
+			// behaviour rather than a large int, and the boxes reaching here are
+			// not all small -- a collider with no floor reaches -infinity (see
+			// BodyBounds), and a wide static floor divided by a small cell size
+			// gets there without any infinity at all.
+			//
+			// The bounds of each clamp are one wider than the range they feed,
+			// so an empty overlap stays expressible as x1 < x0 rather than being
+			// squeezed into a spurious cell 0. Every value that was in range
+			// before still truncates to what it did.
+			x0 = (int)glm::clamp(low.x, 0.0f, (float)m_GridWidth);
+			y0 = (int)glm::clamp(low.y, 0.0f, (float)m_GridHeight);
+			z0 = (int)glm::clamp(low.z, 0.0f, (float)m_GridDepth);
+			x1 = (int)glm::clamp(high.x, -1.0f, (float)(m_GridWidth - 1));
+			y1 = (int)glm::clamp(high.y, -1.0f, (float)(m_GridHeight - 1));
+			z1 = (int)glm::clamp(high.z, -1.0f, (float)(m_GridDepth - 1));
 		}
 	private:
 		std::vector<RigidBody3D> m_Bodies;
@@ -606,20 +618,24 @@ namespace Egss {
 		// bookkeeping change: the pairs handed to the narrowphase are exactly
 		// the ones brute force would hand it, in the same order.
 		//
-		// A bounds test in front of that would reject a few more pairs and was
-		// deliberately not written: a heightfield collides like a solid volume
-		// extending downwards, while its bounds describe only the band between
-		// Lowest and Highest, so a body under the map would stop being ejected.
-		// Fix the bounds first if this is ever wanted.
+		// A bounds test in front of that is now *sound* -- a heightfield's box
+		// has no floor, so a body under the map still overlaps it (BodyBounds)
+		// -- and is still not written, because on terrain it would reject almost
+		// nothing: everything standing on a map is inside the map's box. The
+		// lever that would pay is a vertical reject against the highest sample
+		// under a body's footprint, which wants a coarse max-pyramid over the
+		// field rather than one box round all of it.
 		std::vector<unsigned int> m_Oversized;
 		// 1 for a body the grid is not holding, so a query knows not to walk
 		// cells it was never put in.
 		std::vector<unsigned char> m_OutsideCells;
 
-		// Every body's world bounds, computed once per rebuild. Classifying,
-		// sizing the grid and bucketing all three need them, and the query then
-		// needs the *same* ones -- a body looked for in cells it was not put in
-		// is a body the narrowphase never sees.
+		// Every body's **index** bounds, computed once per rebuild -- finite,
+		// and so not always the box the collider fills (see IndexBounds).
+		// Classifying, sizing the grid and bucketing all three need them, and
+		// the query then needs the *same* ones -- a body looked for in cells it
+		// was not put in is a body the narrowphase never sees. Anything asking
+		// what a collider actually contains wants BodyBounds instead.
 		struct BodyBoundsCache
 		{
 			glm::vec3 Min = glm::vec3(0.0f);

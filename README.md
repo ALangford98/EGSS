@@ -170,6 +170,33 @@ requests an OpenGL debug context.
 Platform defines are `EGSS_PLATFORM_LINUX` or `EGSS_PLATFORM_WINDOWS`, set by
 the `system:` filters. `Core.h` `#error`s on any other platform.
 
+### Sanitizers
+
+```sh
+./egss.py sanitize              # build instrumented, run every demo under it
+./egss.py sanitize release      # the config where UB actually bites
+./egss.py build --sanitize      # just the build
+./egss.py run --sanitize -- --demo OpenWorld
+```
+
+`--sanitize` is a **generation** option rather than a fourth configuration, so
+it composes with all three: it adds `-fsanitize=address,undefined` to the two
+first-party projects and builds into `bin/<Config>-<system>-x86_64-sanitize/`.
+The separate tree is the load-bearing part — make cannot tell that the flags
+changed, so instrumented and plain objects sharing a directory would link
+whatever was there.
+
+The sweep runs each demo in its own process, in lockstep with the window
+hidden, and reports per demo. It reads the demo list out of `DemoRegistry.h`, so
+adding a demo adds it to the sweep. Leak detection is left **on**: it was
+measured rather than assumed, and 300 steps of all thirteen demos report
+nothing, so there is no driver noise here to suppress.
+
+Instrumented costs about **2.1x to build** and **5.3x to run**: a cold debug
+build is 1 m 05 s against 2 m 20 s, and 300 lockstep steps of Physics3D are 6.1
+to 6.3 s against 32.5 to 33.0 s. That is why it is a command you reach for
+rather than something the normal build does.
+
 ### Output layout
 
 ```
@@ -699,7 +726,11 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       See the changelog entry for what was deliberately left: forcing
       `MarchingCubes`'s ambiguous cases to agree instead (keeps the triangle
       count down, its own research-grade task), and dedicated verification
-      of the 4:1 stride case
+      of the 4:1 stride case — **the 4:1 case is now verified** (96 open edges
+      to 0, and 108 left open by a deliberately one-level-short subdivision);
+      forcing `MarchingCubes`'s ambiguous cases to agree stays declined, now on
+      a measurement: the swap costs 0.33 ms a step, and 3.4x of the recorded
+      8.4x was the LOD bands rather than the mesher
 - [x] **Chunk persistence** — `VoxelField3D::SaveChunk`/`LoadChunk` plus a
       demo-owned append-only cache file, keyed by a fingerprint of the density
       function so a changed world discards a stale file automatically. 6.21 s
@@ -722,16 +753,18 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       it measurably loses. Bodies too large to be worth bucketing are kept out
       of the cells and out of the extent, without which a scene with terrain in
       it made the grid *eleven times slower* than no broadphase
-- [ ] **Give a heightfield bounds that describe the solid, not the surface.**
-      They currently span `Lowest` to `Highest` while the narrowphase treats
-      anything below the surface as inside the collider and ejects it, so a body
-      under the map is ejected by one and disowned by the other. Worth fixing as
-      a consistency bug; it is *not* the lever that lowers
-      `BroadphaseMinBodies` for terrain, because the terrain's bounds genuinely
-      do contain everything resting on it and a bounds test would reject almost
-      nothing. What would pay there is a cheap vertical reject — the highest
-      sample under a body's footprint, which a coarse max-pyramid over the field
-      could answer without touching a triangle
+- [x] **Give a heightfield bounds that describe the solid, not the surface** —
+      `outMin.y` is `-infinity`, matching a narrowphase that is solid to any
+      depth (verified to 1000 m, and on all three shape paths, against
+      `r + drop*cos θ`). The grid keeps a second, finite box (`IndexBounds`) and
+      lowers such a body to the grid's own floor before stamping, which fixed a
+      real divergence from brute force under
+      `BroadphaseExcludeOversized = false`. It is *not* the lever that lowers
+      `BroadphaseMinBodies` for terrain: a bounds test would still reject almost
+      nothing, since everything standing on a map is inside the map's box. What
+      would pay there is a cheap vertical reject — the highest sample under a
+      body's footprint, which a coarse max-pyramid over the field could answer
+      without touching a triangle
 - [x] **3D physics: shapes beyond boxes and spheres** — capsules are in, with a
       two-point manifold against boxes so one rests flat. Convex hulls are the
       next shape worth having, and would reuse `Sat3D`
@@ -1047,6 +1080,199 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-19 (the 4:1 seam, and where the 8.4x actually came from)
+
+**`VoxelTransition`'s 4:1 case is verified.** It had only ever been exercised at
+2:1 -- the 4:1 path is the same recursion one level deeper, which is exactly the
+kind of claim worth not taking on trust, since the two reverted attempts at this
+seam were also nearly right. Two chunks sharing a real boundary, the coarse one
+at stride 4 against a stride-1 neighbour: **96 open edges without the
+transition, 0 with it**, and 110 -> 0 on a second field placed off the lattice.
+Asking for `ratio` 2 where the neighbour is four times finer -- one level short
+-- leaves **108** open, which is what proves the ratio reaches the recursion
+rather than being ignored.
+
+It is not reachable at the default bands (16 m chunks, bands at 56 and 104 m
+with 8 m hysteresis, so neighbours differ by one band), but the panel's sliders
+bottom out at 16 m and 32 m, one chunk apart, which puts it in play.
+
+**The measurement was wrong twice before it was right, and that is the more
+useful half of this entry.** Counting open edges means deciding which vertices
+are the same vertex, and the obvious way -- snap positions to a grid, compare
+keys -- is unstable in both directions:
+
+- Two points a micron apart that straddle a grid line read as a hole. At a
+  1e-4 m grid a closed stride-2 sphere reported 4 open edges; at 1e-5, 12; at
+  1e-6, 120. **The count grows as the ruler gets finer**, which is the
+  signature of a ruler and not a hole.
+- Coarsening does not fix it: at 1e-3 m the same sweep *invented* four holes in
+  a stride-1 mesh that finer grids called closed, by merging two points that
+  really were distinct.
+
+The cause is `MarchingTetrahedra`'s `Crossing`, which interpolates from
+whichever endpoint it was handed first -- `pa + (pb - pa) * va/(va - vb)`. Two
+tets sharing an edge hand it the same corners in opposite orders, which is the
+same point in arithmetic and not always the same float. Welding by *proximity*
+instead -- look in the 27 neighbouring cells, reuse any representative within
+epsilon -- makes the tolerance mean what it says, and the answer stops moving:
+**0 open edges at 1e-2, 1e-3, 1e-4 and 1e-5 m**, breaking down only at 1e-6,
+below the ulp noise. Four decades of agreement is what makes the 0 above worth
+quoting; the first version of this test would have reported a seam bug that was
+not there.
+
+**And the 8.4x was not the mesher.** The 2026-08-18 entry recorded the
+`MarchingCubes` to `MarchingTetrahedra` swap as costing 8.4x the triangles at
+"the same radius, same bands". Measured as a 2x2, at a 128 m radius, converged
+(step 2,500 onward; step 500 is still 14% short):
+
+| bands | tets | cubes | tets/cubes |
+| --- | --- | --- | --- |
+| 56 / 104 | 637,186 | 186,291 | **3.42x** |
+| 24 / 48 | 240,734 | 67,955 | **3.54x** |
+| band factor | 2.65x | 2.74x | |
+
+The mesher is worth ~3.4x. The bands are worth ~2.7x, and they had been widened
+from 24/48 to 56/104 two commits earlier, in `3e44d6a` -- so the before and
+after were measured either side of a change nobody was accounting for, and
+3.42 x 2.65 = 9.1 is the 8.4x that was attributed to the mesher alone. A
+microbenchmark on a sphere agrees with the mesher half: 3.03x at stride 1,
+3.18x at stride 2, 2.77x at stride 4.
+
+**Nothing is being done about it, on measurement.** The swap costs **0.33 ms a
+step** -- 3.43 ms against 3.10 ms over 3,000 lockstep steps in release, about
+8% -- so 3.4x the triangles is not what this demo is spending its frame on.
+Reconciling `MarchingCubes`'s ambiguous cases was declined before as
+research-grade; at 0.33 ms it is not worth reopening. The band lever is real and
+is a *visual* decision rather than a performance one, and the numbers for making
+it are in the table. The stale comment at the top of `OpenWorld.h` -- still
+describing 24/48 bands and quoting 81,413 triangles, two commits after both
+changed -- now carries all of this.
+
+### 2026-08-19 (a sanitizer you can reach in one command)
+
+**UBSan found 2026-08-17's miscompile on its first run, and there was no way to
+reach it again.** That afternoon -- a signed overflow in a hash, a loop whose
+exit test the compiler deleted, `SpawnRocks` running 99,482 times, 17 GB and an
+OOM kill, with `-Wall -Wextra -Waggressive-loop-optimizations -Warray-bounds=2`,
+`-D_GLIBCXX_ASSERTIONS` and `-fstack-protector-all` all silent -- ended with the
+right tool being run by hand once. `./egss.py sanitize` is that tool wired in.
+
+`--sanitize` is a **generation option, not a fourth configuration**. Five
+project files would each have needed one and three of them describe vendored
+code; an option composes with the three configurations instead, which matters
+because optimisation changes what undefined behaviour *does* even though it does
+not change whether UBSan sees it. Instrumented output goes to
+`bin/<Config>-<system>-x86_64-sanitize/`, and **the separate tree is
+load-bearing**: make cannot tell that the compiler flags changed, so
+instrumented and plain objects in one directory would link whatever was
+there.
+
+`./egss.py sanitize` builds that and then runs **every demo** under it, in
+lockstep with the window hidden, one process each so the demo that produced a
+report is named beside it. The demo list is read out of `DemoRegistry.h`, so
+adding a demo adds it to the sweep -- the newest thing being the one most likely
+to need it.
+
+**It catches the bug it was built for.** Reintroducing the exact historical
+mistake -- `(uint32_t)(x * 374761393)`, the cast outside the multiply -- and
+sweeping reports it in **all thirteen demos**, because `OnAttach` is unguarded
+and every demo builds OpenWorld's world:
+
+```
+src/OpenWorld.h:2399:21: runtime error: signed integer overflow:
+    -10 * 374761393 cannot be represented in type 'int'
+    #0 OpenWorld::Hash2D(int, int, unsigned int)   src/OpenWorld.h:2399
+    #1 OpenWorld::Hash2DUnit(int, int, unsigned int) src/OpenWorld.h:2408
+    #2 OpenWorld::Noise2D(float, float, unsigned int) src/OpenWorld.h:2419
+    #3 OpenWorld::Height(float, float) const       src/OpenWorld.h:2308
+```
+
+The file, the line, the values, and the call path -- against an afternoon that
+produced no answer at all. Reverted, both sweeps are clean: **13 demos, 0
+reports** in debug and again in release.
+
+Two things were measured rather than assumed. **Leak detection is left on**: the
+usual reason to disable it is a driver that leaks by design, and 300 steps of
+every demo reports nothing here, so switching it off "to reduce noise" would
+have thrown away a real check for noise that does not exist. And the cost is
+**2.1x to build, 5.3x to run** -- 1 m 05 s against 2 m 20 s cold, 6.1 s against
+32.5 s for 300 steps -- which is why it is a command rather than the default.
+
+One trap found by falling into it: `--no-gen` and `--sanitize` disagreeing is
+silent. The flags *and* the output directory live in the generated project
+files, so `build --sanitize --no-gen` after a plain generation cheerfully
+rebuilds the plain tree, and `sanitize --no-gen` would sweep the plain binary
+and report no findings -- which reads as a pass. `egss.py` now reads
+`-fsanitize` back out of the generated makefile and regenerates anyway, saying
+so.
+
+### 2026-08-19 (a heightfield's box gets no floor)
+
+**A heightfield collides like a solid volume extending downwards and its bounds
+described only the surface.** `Heightfield3D`'s narrowphase calls any point
+below the surface inside -- a sphere's depth is measured along the winning
+triangle's normal and keeps growing the further under it sits, a box corner is
+tested with `local.y < height` and nothing else -- while `BodyBounds` returned
+the band between `Lowest` and `Highest`. A body under the map was ejected by one
+half of the pipeline and disowned by the other.
+
+`BodyBounds` now reports `-infinity` for such a body's `outMin.y`. **Infinity
+rather than the large negative sentinel an earlier note here proposed**, and
+that mattered: the two consumers of these bounds both divide the span by the
+cell size and cast to `int`, and a value past `INT_MAX` is undefined behaviour
+rather than a big number -- the same shape as the signed overflow that got a
+loop deleted on 2026-08-17. `RebuildGrid`'s cell counts are now computed in
+`double` and capped *before* the cast, and `CellRange` clamps as floats before
+its own, with the clamp bounds one wider than the ranges they feed so an empty
+overlap stays expressible as `x1 < x0` instead of being squeezed into a
+spurious cell 0.
+
+**A grid cannot hold a half-space, so the index gets a second box.**
+`IndexBounds` is `BodyBounds` made finite, and the grid classifies, sizes and
+buckets on that -- two boxes for one body, answering different questions, the
+same split `Heightfield3D` already makes between a face normal and a smooth one.
+Giving the index the surface band and stopping there is what the old code
+effectively did, and it drops the pair for a body deep under the map: the
+terrain is stamped into the band, the body is in a cell 30 m below it, and they
+never meet. So a body with no floor is lowered to the **grid's** floor before
+stamping, once the rebuild knows where that is.
+
+**That was a live bug, not only a latent inconsistency.** It needs
+`BroadphaseExcludeOversized = false` to reach -- on the default path the
+heightfield is `m_Oversized` and so a candidate for everything already, which is
+why it never showed -- but the grid is supposed to be *bit-identical* to brute
+force, and there it silently was not.
+
+Verified with a tilted plane, so every expected depth is a line of arithmetic
+the collider does not contain: a sphere under a plane touches at
+`r + drop*cos(theta)`, and the cosine converts the vertical drop the field is
+described by into the perpendicular one a contact measures. 17 checks.
+
+- **Solid to any depth**, 0.1 m to 1000 m under: 0.5970/0.5970, 1.4701/1.4701,
+  10.2014/10.2014, 97.5143/97.5143, 970.6426/970.6425 reported against
+  predicted. Asserted of all three shape paths rather than generalised from the
+  sphere, because each reaches the field differently -- a box 30 m under reports
+  29.7106 against 29.7106 (its deepest corner is the one further up the slope),
+  a capsule 29.9923 against 29.9923 (its lowest sample wins).
+- **Solid nowhere else**: nothing 2 m above the surface, and nothing 20 m under
+  it but 4 m past the edge of the map -- the box's sides still describe the
+  collider even though its bottom no longer does.
+- **The three broadphases agree**: brute force, grid with the terrain excluded,
+  and grid with it bucketed all report 29.6043 for the same body 30 m under.
+  Mutating the fix out reproduces the historical bug exactly -- the bucketed
+  case reports **no contact at all**, not a wrong depth.
+
+Nothing on the default path moves: `Physics3D`, `Ragdoll`, `Map Building`,
+`Voxel terrain` and `Open World` all capture **byte-identical** frames at step
+240 against the same build without the change.
+
+One thing deliberately not done. A bounds test in front of the oversized
+candidates is *sound* now, where before it would have stopped ejecting bodies
+under the map, and it is still not worth writing: everything standing on a map
+is inside the map's box, so it would reject almost nothing. The lever there is a
+vertical reject against the highest sample under a body's footprint, which wants
+a coarse max-pyramid over the field rather than one box around all of it.
+
 ### 2026-08-18 (the LOD seam, closed -- and a mesher swap it turned out to need)
 
 **The oldest outstanding defect in the project is fixed.** Two attempts on
@@ -1105,7 +1331,12 @@ rather than assumed: at the default 128 m load radius, the old
 `MarchingCubes`-based LOD held 81,413 triangles; the same radius, same bands,
 now costs **684,718** -- roughly 8.4x. Not yet offset by anything; worth a
 follow-up pass (tighter LOD bands, or the ambiguous-case reconciliation noted
-below) if the frame cost turns out to matter in practice. Skirts, already
+below) if the frame cost turns out to matter in practice.
+
+> **Corrected 2026-08-19.** "The same bands" was not true: they had been widened
+> from 24/48 to 56/104 in `3e44d6a`, before this. Measured as a 2x2, the mesher
+> is worth 3.4x and the bands 2.7x, and the product is the 8.4x recorded here.
+> The swap's own cost is 0.33 ms a step. See the 2026-08-19 entry. Skirts, already
 default-off and known not to fix the seam (2026-08-16), are removed from the
 terrain path entirely -- superseded, not merely redundant.
 
