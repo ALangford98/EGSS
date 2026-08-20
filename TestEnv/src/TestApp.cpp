@@ -24,6 +24,7 @@
 #include "DemoSelector.h"
 #include "DemoWarmup.h"
 #include "ProfilerPanel.h"
+#include "AudioRaceStress.h"   // TEMPORARY
 
 class TestEnv : public Egss::Application
 {
@@ -44,6 +45,7 @@ public:
 		// above the demos and consumes F1 before any of them.
 		PushLayer(new DemoSelector());
 		PushLayer(new ProfilerPanel());
+		PushLayer(new AudioRaceStress());   // TEMPORARY
 	}
 };
 

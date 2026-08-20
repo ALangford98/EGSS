@@ -50,24 +50,51 @@ public:
 		// makes the available demos visible without opening anything.
 		// Wrapped rather than one long row: with four demos a fixed-width
 		// button per column ran off the edge of the panel.
+		//
+		// **Grouped into the registry's folders**, which is what keeps this
+		// readable past a dozen demos. The folder holding the live demo is open
+		// by default and the rest are closed, so the panel opens showing where
+		// you are rather than everything at once. ImGui remembers whatever you
+		// open after that.
 		const int perRow = 3;
 
-		for (int i = 0; i < s_DemoCount; i++)
+		for (int folder = 0; folder < DemoFolderCount(); folder++)
 		{
-			if (i % perRow != 0)
-				ImGui::SameLine();
+			const char* name = DemoFolder(folder);
+			bool holdsActive = std::strcmp(s_Demos[g_ActiveDemo].Folder, name) == 0;
 
-			bool active = i == g_ActiveDemo;
+			// Only the *first* time this folder is seen -- after that it is
+			// whatever the user left it as, including across runs, since ImGui
+			// stores it in imgui.ini.
+			ImGui::SetNextItemOpen(holdsActive, ImGuiCond_FirstUseEver);
 
-			// Highlight the live one so the panel reads at a glance.
-			if (active)
-				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.75f, 1.0f));
+			if (!ImGui::CollapsingHeader(name))
+				continue;
 
-			if (ImGui::Button(s_Demos[i].ShortName, ImVec2(90.0f, 0.0f)))
-				SetDemo(i);
+			int shown = 0;
 
-			if (active)
-				ImGui::PopStyleColor();
+			for (int i = 0; i < s_DemoCount; i++)
+			{
+				if (std::strcmp(s_Demos[i].Folder, name) != 0)
+					continue;
+
+				if (shown % perRow != 0)
+					ImGui::SameLine();
+
+				shown++;
+
+				bool active = i == g_ActiveDemo;
+
+				// Highlight the live one so the panel reads at a glance.
+				if (active)
+					ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.75f, 1.0f));
+
+				if (ImGui::Button(s_Demos[i].ShortName, ImVec2(90.0f, 0.0f)))
+					SetDemo(i);
+
+				if (active)
+					ImGui::PopStyleColor();
+			}
 		}
 
 		ImGui::Spacing();

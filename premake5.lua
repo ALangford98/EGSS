@@ -16,9 +16,18 @@ workspace "EGSS"
 -- debug, release or dist, which matters because optimisation changes what
 -- undefined behaviour *does* even though it does not change whether UBSan sees
 -- it -- 2026-08-17's miscompile only bit in release.
+-- Two modes rather than one flag, because **ASan and TSan cannot be combined**
+-- -- they both want to own the process's memory layout, and asking for both is
+-- a link error rather than a stronger check. So a race hunt is its own build,
+-- and its own tree.
 newoption {
     trigger = "sanitize",
-    description = "Instrument with ASan and UBSan, in a bin/ tree of their own"
+    value = "MODE",
+    description = "Instrument, in a bin/ tree of its own",
+    allowed = {
+        { "address", "ASan + UBSan: memory errors, leaks, undefined behaviour" },
+        { "thread",  "TSan: data races" }
+    }
 }
 
 outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
@@ -28,7 +37,7 @@ outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
 -- the directory rather than flags added in place, because make cannot tell that
 -- the flags changed and would leave both kinds of .o in the same folder.
 if _OPTIONS["sanitize"] then
-    outputdir = outputdir .. "-sanitize"
+    outputdir = outputdir .. "-sanitize-" .. _OPTIONS["sanitize"]
 end
 
 --include directories 
@@ -188,9 +197,20 @@ project "EGSS"
     --
     -- Recoverable on purpose: UBSan's default is to print and carry on, so one
     -- sweep names every site it hits rather than only the first.
-    filter "options:sanitize"
+    filter "options:sanitize=address"
         buildoptions { "-fsanitize=address,undefined", "-fno-omit-frame-pointer" }
         linkoptions { "-fsanitize=address,undefined" }
+        symbols "On"
+
+    -- TSan instruments every memory access to track happens-before, so it has
+    -- to see *both* sides of a race to report one. The audio mixer runs on
+    -- miniaudio's device thread inside libEGSS, and the demo code that claims
+    -- and stops voices runs on the main thread in TestEnv, so both first-party
+    -- projects being instrumented is what makes this able to say anything at
+    -- all.
+    filter "options:sanitize=thread"
+        buildoptions { "-fsanitize=thread", "-fno-omit-frame-pointer" }
+        linkoptions { "-fsanitize=thread" }
         symbols "On"
 
             
@@ -300,7 +320,18 @@ project "TestEnv"
     --
     -- Recoverable on purpose: UBSan's default is to print and carry on, so one
     -- sweep names every site it hits rather than only the first.
-    filter "options:sanitize"
+    filter "options:sanitize=address"
         buildoptions { "-fsanitize=address,undefined", "-fno-omit-frame-pointer" }
         linkoptions { "-fsanitize=address,undefined" }
+        symbols "On"
+
+    -- TSan instruments every memory access to track happens-before, so it has
+    -- to see *both* sides of a race to report one. The audio mixer runs on
+    -- miniaudio's device thread inside libEGSS, and the demo code that claims
+    -- and stops voices runs on the main thread in TestEnv, so both first-party
+    -- projects being instrumented is what makes this able to say anything at
+    -- all.
+    filter "options:sanitize=thread"
+        buildoptions { "-fsanitize=thread", "-fno-omit-frame-pointer" }
+        linkoptions { "-fsanitize=thread" }
         symbols "On"

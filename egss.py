@@ -69,6 +69,13 @@ SANITIZE_STEPS = 300
 # exist.
 SANITIZE_ASAN_OPTIONS = "detect_leaks=1"
 
+# TSan reports and keeps going, so one sweep names every racing pair it saw
+# rather than the first. history_size buys deeper stacks for the *other* thread
+# in a race, which is the half that is usually hard to identify.
+SANITIZE_TSAN_OPTIONS = "halt_on_error=0:history_size=7"
+
+SANITIZE_MODES = ["address", "thread"]
+
 IS_WINDOWS = platform.system() == "Windows"
 
 # Pinned rather than "latest" so two clones cannot generate project files with
@@ -253,7 +260,7 @@ def generate(allow_fetch=True, sanitize=False):
     # files, and so does the separate output directory that keeps instrumented
     # objects away from plain ones.
     if sanitize:
-        command.append("--sanitize")
+        command.append("--sanitize=" + sanitize)
 
     print("\033[90m$ " + " ".join(command) + "\033[0m")
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
@@ -282,12 +289,25 @@ def generated_with_sanitize():
 
     try:
         with open(path) as handle:
-            return "-fsanitize" in handle.read()
+            text = handle.read()
     except OSError:
         return None   # nothing generated yet; the caller will generate
 
+    if "-fsanitize=thread" in text:
+        return "thread"
+    if "-fsanitize=address" in text:
+        return "address"
 
-def build(config, jobs, generate_first=True, allow_fetch=True, sanitize=False):
+    return False      # generated, and plain
+
+
+def build(config, jobs, generate_first=True, allow_fetch=True, sanitize=None):
+    if sanitize:
+        missing = sanitizer_runtime_missing(sanitize)
+        if missing:
+            print(missing, file=sys.stderr)
+            return 1
+
     if generate_first and generate(allow_fetch, sanitize) != 0:
         return 1
 
@@ -305,14 +325,14 @@ def build(config, jobs, generate_first=True, allow_fetch=True, sanitize=False):
     return run(["make", f"-j{jobs}", f"config={config}"])
 
 
-def binary_dir(config, sanitize=False):
+def binary_dir(config, sanitize=None):
     system = "windows" if IS_WINDOWS else platform.system().lower()
-    suffix = "-sanitize" if sanitize else ""
+    suffix = ("-sanitize-" + sanitize) if sanitize else ""
     return os.path.join(ROOT, "bin",
                         f"{config.capitalize()}-{system}-x86_64{suffix}", "TestEnv")
 
 
-def launch(config, forwarded=None, sanitize=False):
+def launch(config, forwarded=None, sanitize=None):
     directory = binary_dir(config, sanitize)
     executable = os.path.join(directory, "TestEnv.exe" if IS_WINDOWS else "TestEnv")
 
@@ -327,16 +347,58 @@ def launch(config, forwarded=None, sanitize=False):
     # recordings all land beside it -- and so assets resolve, since they are
     # loaded by path relative to the executable.
     return subprocess.call([executable] + forwarded, cwd=directory,
-                           env=sanitizer_env() if sanitize else None)
+                           env=sanitizer_env(sanitize) if sanitize else None)
 
 
-def sanitizer_env():
+def sanitizer_runtime_missing(mode):
+    """The sanitizer's runtime library, checked by trying to link against it.
+
+    Returns None when it works, or a message naming what to install.
+
+    **Probed rather than looked for on disk.** `gcc -print-file-name=libtsan.so`
+    happily names a path that exists and is a 38-byte linker script pointing at
+    a `libtsan.so.2.0.0` that does not -- which is exactly the state this machine
+    was in, and it fails at the link of libEGSS.so with
+    `ld.bfd: cannot find /usr/lib64/libtsan.so.2.0.0`, several minutes into a
+    build, saying nothing about a package. Compiling an empty program takes a
+    fifth of a second and cannot be fooled.
+    """
+    if IS_WINDOWS:
+        return None   # MSVC has its own story here; untested, like the rest.
+
+    flag = "-fsanitize=thread" if mode == "thread" else "-fsanitize=address"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = subprocess.run(
+            ["cc", flag, "-x", "c", "-", "-o", os.path.join(tmp, "probe")],
+            input="int main(void) { return 0; }",
+            capture_output=True, text=True)
+
+    if probe.returncode == 0:
+        return None
+
+    package = {
+        "thread": "libtsan (Fedora), libtsan2 (Debian/Ubuntu)",
+        "address": "libasan (Fedora), libasan8 (Debian/Ubuntu)",
+    }[mode]
+
+    return (f"The {flag} runtime is not installed, so this build would fail at "
+            f"the link.\n  Install: {package}\n"
+            f"  The compiler said: {probe.stderr.strip().splitlines()[-1] if probe.stderr.strip() else 'nothing'}")
+
+
+def sanitizer_env(mode):
     """Environment for an instrumented run.
 
     `print_stacktrace` is what turns "there is undefined behaviour somewhere"
     into a file and a line, which is the entire reason this exists.
     """
     env = dict(os.environ)
+
+    if mode == "thread":
+        env.setdefault("TSAN_OPTIONS", SANITIZE_TSAN_OPTIONS)
+        return env
+
     env.setdefault("UBSAN_OPTIONS", "print_stacktrace=1")
     env.setdefault("ASAN_OPTIONS", SANITIZE_ASAN_OPTIONS)
     return env
@@ -361,7 +423,8 @@ def demo_shortnames():
     return names
 
 
-def sanitize_sweep(config, jobs, steps, allow_fetch=True, generate_first=True):
+def sanitize_sweep(config, jobs, steps, mode="address", allow_fetch=True,
+                   generate_first=True):
     """Build instrumented, then run every demo under it and report.
 
     Lockstep and hidden, so the sweep is the same work every time and does not
@@ -370,10 +433,10 @@ def sanitize_sweep(config, jobs, steps, allow_fetch=True, generate_first=True):
     produced it named beside it, and one demo aborting must not cost the rest.
     """
     if build(config, jobs, generate_first=generate_first,
-             allow_fetch=allow_fetch, sanitize=True) != 0:
+             allow_fetch=allow_fetch, sanitize=mode) != 0:
         return 1
 
-    directory = binary_dir(config, sanitize=True)
+    directory = binary_dir(config, sanitize=mode)
     executable = os.path.join(directory, "TestEnv.exe" if IS_WINDOWS else "TestEnv")
 
     if not os.path.isfile(executable):
@@ -383,8 +446,9 @@ def sanitize_sweep(config, jobs, steps, allow_fetch=True, generate_first=True):
     if not demos:
         sys.exit("No demos found in TestEnv/src/DemoRegistry.h")
 
+    label = "TSan" if mode == "thread" else "ASan + UBSan"
     print(f"\nSweeping {len(demos)} demos, {steps} steps each, "
-          f"{config} + ASan + UBSan\n")
+          f"{config} + {label}\n")
 
     findings = 0
 
@@ -392,17 +456,19 @@ def sanitize_sweep(config, jobs, steps, allow_fetch=True, generate_first=True):
         result = subprocess.run(
             [executable, "--demo", name, "--lockstep", "--hide-ui",
              "--hide-window", "--exit-after", str(steps)],
-            cwd=directory, env=sanitizer_env(),
+            cwd=directory, env=sanitizer_env(mode),
             capture_output=True, text=True)
 
         output = result.stdout + result.stderr
 
         # UBSan prints "runtime error:" and carries on; ASan prints a banner and
-        # aborts. Both are matched rather than relying on the exit code, because
-        # a recoverable UBSan report leaves it at zero.
+        # aborts; TSan prints "WARNING: ThreadSanitizer: <what>" per racing
+        # pair. All matched rather than relying on the exit code, because a
+        # recoverable report leaves it at zero.
         reports = [line for line in output.splitlines()
                    if "runtime error:" in line or "ERROR: AddressSanitizer" in line
-                   or "ERROR: LeakSanitizer" in line]
+                   or "ERROR: LeakSanitizer" in line
+                   or "WARNING: ThreadSanitizer" in line]
 
         unique = list(dict.fromkeys(reports))
 
@@ -437,7 +503,11 @@ def main():
     parser.add_argument("--no-fetch", action="store_true",
                         help="fail instead of downloading premake5 if it is missing")
     parser.add_argument("--sanitize", action="store_true",
-                        help="build with ASan and UBSan, into bin/<Config>-...-sanitize")
+                        help="build with ASan and UBSan, into "
+                             "bin/<Config>-...-sanitize-address")
+    parser.add_argument("--thread", action="store_true",
+                        help="build with TSan instead -- races rather than "
+                             "memory errors. The two cannot be combined")
     parser.add_argument("--steps", type=int, default=SANITIZE_STEPS,
                         help=f"fixed steps per demo in a sweep (default {SANITIZE_STEPS})")
     # Everything after a bare -- goes to TestEnv rather than to this script,
@@ -458,22 +528,31 @@ def main():
 
     args = parser.parse_args(argv)
 
+    # One mode, however it was asked for. --thread wins because it is the more
+    # specific request, and `sanitize` implies instrumenting even if neither
+    # flag was given.
+    mode = "thread" if args.thread else ("address" if args.sanitize else None)
+    if args.command == "sanitize" and mode is None:
+        mode = "address"
+
     if args.command == "gen":
-        return generate(allow_fetch=not args.no_fetch, sanitize=args.sanitize)
+        return generate(allow_fetch=not args.no_fetch, sanitize=mode)
 
     if args.command == "sanitize":
         if args.config == "all":
             sys.exit("Pick one config to sweep.")
 
-        # Same guard as below, and it matters more here: a sweep that ran the
-        # plain binary would report no findings, which reads as a pass.
-        if args.no_gen and generated_with_sanitize() is not True:
-            print("--no-gen ignored: the project files were generated "
-                  "without --sanitize")
+        # Same guard as below, and it matters more here: a sweep that ran a
+        # binary built the other way would report no findings, which reads as a
+        # pass. TSan finding nothing in an ASan build is the same false all-clear
+        # as either finding nothing in a plain one.
+        skip_gen = args.no_gen and generated_with_sanitize() == mode
 
-        skip_gen = args.no_gen and generated_with_sanitize() is True
+        if args.no_gen and not skip_gen:
+            print("--no-gen ignored: the project files were generated for "
+                  + str(generated_with_sanitize()) + ", not " + mode)
 
-        return sanitize_sweep(args.config, args.jobs, args.steps,
+        return sanitize_sweep(args.config, args.jobs, args.steps, mode=mode,
                               allow_fetch=not args.no_fetch,
                               generate_first=not skip_gen)
 
@@ -490,25 +569,24 @@ def main():
     # other way round, because skipping the regeneration there does not skip
     # work, it builds the wrong tree.
     on_disk = generated_with_sanitize()
-    skip = args.no_gen and (on_disk is None or on_disk == args.sanitize)
+    wanted = mode if mode else False
+    skip = args.no_gen and (on_disk is None or on_disk == wanted)
 
     if args.no_gen and not skip:
-        print("--no-gen ignored: the project files were generated "
-              + ("with" if on_disk else "without") + " --sanitize")
+        print("--no-gen ignored: the project files were generated for "
+              + str(on_disk) + ", not " + str(wanted))
 
-    if not skip and generate(allow_fetch=not args.no_fetch,
-                             sanitize=args.sanitize) != 0:
+    if not skip and generate(allow_fetch=not args.no_fetch, sanitize=mode) != 0:
         return 1
 
     for config in configs:
-        if build(config, args.jobs, generate_first=False,
-                 sanitize=args.sanitize) != 0:
+        if build(config, args.jobs, generate_first=False, sanitize=mode) != 0:
             return 1
 
     if args.command == "run":
         if args.config == "all":
             sys.exit("Pick one config to run.")
-        return launch(args.config, forwarded, sanitize=args.sanitize)
+        return launch(args.config, forwarded, sanitize=mode)
 
     return 0
 
