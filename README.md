@@ -1080,6 +1080,61 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-20 (demos get folders, and a slime mould)
+
+**The demo list grew past what a flat panel reads well as**, so the registry
+carries a `Folder` per entry and the selector groups by it -- collapsible, with
+the folder holding the live demo open by default and the rest closed. Folders
+are enumerated in first-appearance order, walked from the table rather than
+declared in a list of their own, so adding a demo to a new folder creates it and
+there is no second place for a folder name to drift.
+
+**The order of `s_Demos` is deliberately untouched, and now says so in the
+file.** A recording stores the demo's *index* (`Replay::GetRecordedDemoIndex`),
+so sorting the table -- the obvious way to implement folders -- would silently
+repoint every recording made before the sort at a different scene. Grouping
+belongs in the selector; the table appends.
+
+**Physarum, as the first demo in the `Life` folder.** A few hundred thousand
+agents, each smelling the trail map at three points ahead of it and turning
+toward the strongest, each leaving a little trail behind. Everything the colony
+does -- veins, junctions, two strands finding each other and merging -- comes
+out of those two rules plus a blur and a decay, and none of it is written down
+anywhere in the file. Attract, repel and feed are on the three mouse buttons;
+attract and repel bias the *turn* rather than the position, because pushing
+agents directly moves them without changing what they want and the colony snaps
+back the moment you let go.
+
+On the fixed step like everything else, and **byte-identical across two runs and
+across debug and release**. It is single-threaded on purpose: several threads
+depositing into one trail map add their floats in whatever order they arrive,
+and the run stops reproducing itself.
+
+**Deposit and decay are a ratio, and the ratio is the picture.** The first
+attempt used 6/s deposit against 0.6/s decay -- 0.1 a step against a 1% loss --
+and every cell reached the clamp within seconds, so the field came out solid
+white with the *low* ground showing through as holes. At 3/s against 9/s a cell
+visited every step settles at about 0.36, and the network appears.
+
+Then three optimisations, **16.3 ms a step to 5.95 ms**, measured by differencing
+200-step and 1,200-step runs so the startup cost (every demo pays OpenWorld's
+`OnAttach`) is not in the number:
+
+- **The blur's wrap, 16.3 to 13.7 ms.** Two integer divisions per sample, nine
+  samples per cell, 147,456 cells. Only the four edges can wrap, so the interior
+  is its own loop -- with the nine terms summed in the same order, since float
+  addition does not associate and reordering them would stop old recordings
+  reproducing.
+- **The palette, 13.7 to ~13 ms.** A `pow` per pixel per frame became a
+  256-entry table; the trail is one number per cell, so the colour is a function
+  of one number, so it is a table. Exposure scales the index, so dragging it is
+  still immediate.
+- **The trig, to 5.95 ms.** Eight sine/cosine calls per agent became two, via
+  `cos(a ± s) = cos a cos s ∓ sin a sin s` with the sensor offset's pair hoisted
+  out of the loop. The identity is exact but the floats differ in the last bits,
+  so the same seed grows a *different* colony -- not a wrong one. Verified
+  deterministic again afterwards.
+
 ### 2026-08-19 (the 4:1 seam, and where the 8.4x actually came from)
 
 **`VoxelTransition`'s 4:1 case is verified.** It had only ever been exercised at

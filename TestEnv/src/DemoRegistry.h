@@ -27,6 +27,7 @@
 #include "ModelDemo.h"
 #include "OpenWorld.h"
 #include "CelShading.h"
+#include "SlimeMold.h"
 
 struct DemoEntry
 {
@@ -58,7 +59,9 @@ inline const DemoEntry s_Demos[] =
 	{ "Engine",   "Voxel terrain (dig it out)",   "Voxel",     []() -> DemoLayer* { return new VoxelTerrain(); } },
 	{ "Engine",   "Model (glTF hierarchy + textures)", "Model", []() -> DemoLayer* { return new ModelDemo(); } },
 	{ "Engine",   "Open World (streaming islands)", "OpenWorld", []() -> DemoLayer* { return new OpenWorld(); } },
-	{ "Engine",   "Cel shading (bands + outlines)", "Cel",      []() -> DemoLayer* { return new CelShading(); } }
+	{ "Engine",   "Cel shading (bands + outlines)", "Cel",      []() -> DemoLayer* { return new CelShading(); } },
+
+	{ "Life",     "Slime mould (physarum agents)", "Slime",    []() -> DemoLayer* { return new SlimeMold(); } }
 };
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));
