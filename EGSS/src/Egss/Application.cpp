@@ -40,6 +40,17 @@ namespace Egss {
 		WindowProps props;
 		props.Visible = !WantsHiddenWindow();
 
+		// Wallpaper mode is a window that is meant to be seen and never
+		// focused, so it overrides the hidden-by-default inference rather than
+		// being subject to it.
+		for (const std::string& argument : s_CommandLine)
+			props.Wallpaper = props.Wallpaper || argument == "--wallpaper";
+
+		m_Wallpaper = props.Wallpaper;
+
+		if (props.Wallpaper)
+			props.Visible = true;
+
 		// Said out loud, because "the demo did not appear" is otherwise
 		// indistinguishable from a crash on startup.
 		if (!props.Visible)
@@ -148,11 +159,27 @@ namespace Egss {
 			m_ExitAfterExplicit = true;
 		}
 
+		bool wallpaper = false;
+
 		for (const std::string& argument : s_CommandLine)
 		{
 			m_Lockstep = m_Lockstep || argument == "--lockstep";
 			m_HideUI = m_HideUI || argument == "--hide-ui";
 			m_Viewports = m_Viewports || argument == "--viewports";
+			wallpaper = wallpaper || argument == "--wallpaper";
+		}
+
+		// A wallpaper with a debug panel on it is not a wallpaper. Implied
+		// rather than required, and still overridable the other way: --show-ui
+		// puts the panels back, which is how you tune the thing you are
+		// looking at without stopping it.
+		if (wallpaper)
+		{
+			m_HideUI = true;
+
+			for (const std::string& argument : s_CommandLine)
+				if (argument == "--show-ui")
+					m_HideUI = false;
 		}
 
 		// --play <file> / --record <file>. Playback starts here, in the

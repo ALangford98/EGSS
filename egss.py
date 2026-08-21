@@ -9,6 +9,7 @@
     ./egss.py clean [config]
     ./egss.py gen             regenerate project files only
     ./egss.py sanitize        build instrumented and run every demo under it
+    ./egss.py windows         bridge KWin's window list to the wallpaper
 
 Why this exists
 ---------------
@@ -404,6 +405,56 @@ def sanitizer_env(mode):
     return env
 
 
+# Libraries whose internals are not this project's problem. Used to *classify*
+# TSan reports, never to suppress them: a suppression matching one of these
+# would also swallow a real race of ours that merely passes through ALSA on its
+# way to the mixer, which is exactly where our races live.
+THIRD_PARTY_LIBS = ("libasound", "libxcb", "libX11", "libGL", "libEGL", "libpulse",
+                    "iris_dri", "swrast", "libtsan", "ld-linux", "libc.so",
+                    "radeonsi", "zink", "libwayland")
+
+
+def classify_tsan(output):
+    """Split TSan reports into (ours, third-party).
+
+    A report counts as ours when the **innermost** frame of a racing access is
+    our own source. Not "our source appears near the top", which was the first
+    attempt and called every demo a failure: the libxcb race during
+    `glfwCreateWindow` puts `recvmsg` and `_xcb_in_read` at frames #0 and #1 and
+    our `LinuxWindow` constructor at #2, where it is the *caller* of the racing
+    read and not the thing that raced.
+
+    TSan's own interceptors (`libtsan`) sit at #0 for anything it wraps -- a
+    memcpy, a recvmsg -- so they are skipped to find the frame that actually
+    performed the access.
+    """
+    blocks = re.findall(r"(WARNING: ThreadSanitizer:.*?SUMMARY: ThreadSanitizer:.*?\n)",
+                        output, re.S)
+
+    ours, theirs = [], []
+
+    for block in blocks:
+        accesses = re.findall(
+            r"(?:Write|Read|Atomic write|Atomic read|Previous write|Previous read"
+            r"|Previous atomic write|Previous atomic read).*?:\n((?:\s+#\d+ .*\n){1,4})",
+            block)
+
+        def innermost(access):
+            for frame in access.strip().splitlines():
+                if "libtsan" in frame:
+                    continue          # an interceptor, not the access itself
+                return frame
+            return ""
+
+        mine = any(re.search(r"src/(Egss|Platform)/|src/\w+\.(h|cpp)", frame)
+                   and not any(lib in frame for lib in THIRD_PARTY_LIBS)
+                   for frame in (innermost(access) for access in accesses))
+
+        (ours if mine else theirs).append(block)
+
+    return ours, theirs
+
+
 def demo_shortnames():
     """The demos, read out of DemoRegistry.h rather than repeated here.
 
@@ -453,9 +504,16 @@ def sanitize_sweep(config, jobs, steps, mode="address", allow_fetch=True,
     findings = 0
 
     for name in demos:
+        # The race detector gets the audio stress as well: the demos on their
+        # own play a handful of sounds, and the voice-pool races found on
+        # 2026-08-21 only appear once slots are being recycled under pressure.
+        # Nothing to add for ASan -- it sees a use-after-free whether the
+        # allocation churns or not.
+        extra = ["--audio-stress"] if mode == "thread" else []
+
         result = subprocess.run(
             [executable, "--demo", name, "--lockstep", "--hide-ui",
-             "--hide-window", "--exit-after", str(steps)],
+             "--hide-window", "--exit-after", str(steps)] + extra,
             cwd=directory, env=sanitizer_env(mode),
             capture_output=True, text=True)
 
@@ -465,21 +523,44 @@ def sanitize_sweep(config, jobs, steps, mode="address", allow_fetch=True,
         # aborts; TSan prints "WARNING: ThreadSanitizer: <what>" per racing
         # pair. All matched rather than relying on the exit code, because a
         # recoverable report leaves it at zero.
-        reports = [line for line in output.splitlines()
-                   if "runtime error:" in line or "ERROR: AddressSanitizer" in line
-                   or "ERROR: LeakSanitizer" in line
-                   or "WARNING: ThreadSanitizer" in line]
+        if mode == "thread":
+            # Classified rather than counted. A TSan run against a desktop
+            # driver stack is never empty, and a sweep that reports "5 findings"
+            # every time is a sweep nobody reads.
+            mine, other = classify_tsan(output)
+
+            reports = [re.search(r"SUMMARY: ThreadSanitizer: (.*)", block).group(1)
+                       for block in mine
+                       if re.search(r"SUMMARY: ThreadSanitizer: (.*)", block)]
+
+            noise = len(other)
+        else:
+            reports = [line for line in output.splitlines()
+                       if "runtime error:" in line or "ERROR: AddressSanitizer" in line
+                       or "ERROR: LeakSanitizer" in line]
+            noise = 0
 
         unique = list(dict.fromkeys(reports))
 
-        if unique or result.returncode != 0:
+        # TSan exits 66 when it reported anything at all, including reports this
+        # sweep has classified as somebody else's. That is not a crash.
+        expected_exit = (0, 66) if mode == "thread" else (0,)
+
+        if unique or unexpected_exit:
             findings += len(unique)
             status = "\033[31mFAIL\033[0m"
         else:
             status = "\033[32m ok \033[0m"
 
+        # The exit code is only worth printing when it is not the one this mode
+        # expects -- TSan exits 66 whenever it reported anything at all, our
+        # findings or somebody else's, so printing it every line trains the eye
+        # to ignore the one time it means something.
+        unexpected_exit = result.returncode not in expected_exit
+
         print(f"  [{status}] {name}"
-              + (f"  (exit {result.returncode})" if result.returncode else ""))
+              + (f"  ({noise} third-party)" if noise else "")
+              + (f"  (exit {result.returncode})" if unexpected_exit else ""))
 
         for line in unique[:12]:
             print(f"           {line.strip()}")
@@ -494,7 +575,7 @@ def sanitize_sweep(config, jobs, steps, mode="address", allow_fetch=True,
 def main():
     parser = argparse.ArgumentParser(description="Build and run EGSS.")
     parser.add_argument("command", nargs="?", default="run",
-                        choices=["build", "run", "clean", "gen", "sanitize"])
+                        choices=["build", "run", "clean", "gen", "sanitize", "windows"])
     parser.add_argument("config", nargs="?", default="debug",
                         choices=CONFIGS + ["all"])
     parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
@@ -534,6 +615,12 @@ def main():
     mode = "thread" if args.thread else ("address" if args.sanitize else None)
     if args.command == "sanitize" and mode is None:
         mode = "address"
+
+    if args.command == "windows":
+        # Runs until interrupted. Its own script rather than something built in
+        # here, because it needs a D-Bus main loop and this does not.
+        bridge = os.path.join(ROOT, "tools", "egss-windows.py")
+        return subprocess.call([sys.executable, bridge])
 
     if args.command == "gen":
         return generate(allow_fetch=not args.no_fetch, sanitize=mode)

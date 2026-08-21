@@ -234,6 +234,14 @@ namespace Egss {
 			float GainR[s_MaxReflections] = {};
 		};
 
+		enum class VoicePhase : unsigned int
+		{
+			Free = 0,      // the mixer is not touching it; main may write it
+			Claimed = 1,   // main is writing it; the mixer skips it
+			Playing = 2,   // the mixer owns it
+			Stopping = 3   // main wants it back; the mixer will hand it over
+		};
+
 		struct Voice
 		{
 			Voice()
@@ -245,10 +253,30 @@ namespace Egss {
 					(size_t)(s_MaxReflectionDelay * (float)s_SampleRate), 0.0f);
 			}
 
-			// The handshake between threads. Main writes the non-atomic fields
-			// only while this is false, then publishes with a release store;
-			// the audio thread acquires it before touching anything.
-			std::atomic<bool> Active{ false };
+			// **Which thread owns this voice's non-atomic fields.**
+			//
+			// This was one bool called `Active`, and the rule written beside it
+			// -- "main writes the fields only while this is false" -- was not
+			// the rule the mixer actually follows. `Active == false` means the
+			// mixer will not *start* the voice next block; it says nothing
+			// about the block it is in the middle of. So `Stop` could clear the
+			// flag mid-block, `ClaimVoice` would see a free slot, and
+			// `voice.Clip = clip` would drop the last reference to the samples
+			// the mixer was still interpolating from. ThreadSanitizer found
+			// eight distinct racing pairs of it, all between `ClaimVoice` and
+			// `MixInto`.
+			//
+			// **Only the mixer may return a slot to Free**, and it does that
+			// when it is provably finished with it. Main claims free slots and
+			// publishes; main *asks* for a stop; the mixer retires. No lock,
+			// and the audio thread still never frees memory.
+			//
+			//     Free     -> Claimed    main, in ClaimVoice
+			//     Claimed  -> Playing    main, once the parameters are written
+			//     Playing  -> Stopping   main, in Stop
+			//     Playing  -> Free       mixer, when the clip runs out
+			//     Stopping -> Free       mixer, at the next block boundary
+			std::atomic<VoicePhase> Phase{ VoicePhase::Free };
 
 			// Bumped every time the slot is claimed, so a handle issued for an
 			// earlier sound can be recognised as stale.
@@ -582,8 +610,10 @@ namespace Egss {
 
 			if (state.StopRequested.exchange(false))
 			{
+				// The mixer is the thread that frees slots, and this is the
+				// mixer, so it can do it outright.
 				for (Voice& voice : state.Voices)
-					voice.Active.store(false, std::memory_order_release);
+					voice.Phase.store(VoicePhase::Free, std::memory_order_release);
 				return;
 			}
 
@@ -591,8 +621,26 @@ namespace Egss {
 
 			for (Voice& voice : state.Voices)
 			{
-				if (!voice.Active.load(std::memory_order_acquire))
+				VoicePhase phase = voice.Phase.load(std::memory_order_acquire);
+
+				// A stop costs one silent block before the slot goes back. That
+				// block is the whole point: it is what guarantees the mixer is
+				// not inside this voice when main next writes to it.
+				if (phase == VoicePhase::Stopping)
+				{
+					voice.Phase.store(VoicePhase::Free, std::memory_order_release);
 					continue;
+				}
+
+				// Free, or claimed and not yet published.
+				if (phase != VoicePhase::Playing)
+					continue;
+
+				// Set when the clip runs out, and acted on after this voice is
+				// completely finished with -- releasing the slot at the point
+				// the sample loop breaks would hand it to main while the code
+				// below still had the voice open.
+				bool finished = false;
 
 				float volume = voice.Volume.load(std::memory_order_relaxed);
 				float pan = voice.Pan.load(std::memory_order_relaxed);
@@ -666,9 +714,7 @@ namespace Egss {
 					{
 						if (!loop)
 						{
-							// Releasing here is what lets the main thread
-							// safely reuse this slot.
-							voice.Active.store(false, std::memory_order_release);
+							finished = true;
 							break;
 						}
 
@@ -736,6 +782,11 @@ namespace Egss {
 
 					voice.Cursor += pitch;
 				}
+
+				// Everything this block reads from the voice is done. Handing
+				// the slot back is the last thing that happens to it.
+				if (finished)
+					voice.Phase.store(VoicePhase::Free, std::memory_order_release);
 			}
 
 			// --- Reverb ---
@@ -877,7 +928,10 @@ namespace Egss {
 			// controlled by an old handle.
 			if (voice.Generation.load(std::memory_order_acquire) != generation)
 				return nullptr;
-			if (!voice.Active.load(std::memory_order_acquire))
+			// A stopping voice is on its way out and its handle is spent:
+			// answering with it would let a caller set parameters on a sound
+			// that will never be heard again.
+			if (voice.Phase.load(std::memory_order_acquire) != VoicePhase::Playing)
 				return nullptr;
 
 			return &voice;
@@ -891,10 +945,25 @@ namespace Egss {
 			{
 				Voice& voice = state.Voices[i];
 
-				// Only an inactive voice may be written to; the audio thread
-				// is guaranteed not to be reading it.
-				if (voice.Active.load(std::memory_order_acquire))
+				// Only a free voice may be written to, and free now means the
+				// mixer has *said* it is finished rather than main inferring it
+				// from a flag main itself cleared.
+				VoicePhase phase = voice.Phase.load(std::memory_order_acquire);
+
+				// With no device there is no mixer to retire anything, so main
+				// is the only owner and may take a stopping slot back itself.
+				// Without this, stopping sounds while the device is down runs
+				// the pool dry and never refills it.
+				bool reclaimable = phase == VoicePhase::Free
+					|| (!state.DeviceReady && phase == VoicePhase::Stopping);
+
+				if (!reclaimable)
 					continue;
+
+				// Marked before anything is written, so two Play calls in one
+				// frame cannot be handed the same slot -- the second sees
+				// Claimed rather than Free.
+				voice.Phase.store(VoicePhase::Claimed, std::memory_order_relaxed);
 
 				unsigned int generation = voice.Generation.load(std::memory_order_relaxed) + 1;
 				if (generation > 0x00ffffffu)
@@ -915,8 +984,8 @@ namespace Egss {
 				voice.Occlusion.store(0.0f, std::memory_order_relaxed);
 
 				// The previous sound's echoes must not leak into this one.
-				// Safe to touch here: the voice is inactive, so the mixer is
-				// not reading it.
+				// Safe to touch here: the slot is free, which only the mixer
+				// can have declared.
 				std::fill(voice.ReflectionHistory.begin(), voice.ReflectionHistory.end(), 0.0f);
 				voice.ReflectionWrite = 0;
 				voice.TapSets[voice.ActiveTapSet.load(std::memory_order_relaxed)].Count = 0;
@@ -990,9 +1059,10 @@ namespace Egss {
 			state.DeviceReady = false;
 		}
 
+		// The callback is stopped by now, so main owns every slot outright.
 		for (Voice& voice : state.Voices)
 		{
-			voice.Active.store(false, std::memory_order_release);
+			voice.Phase.store(VoicePhase::Free, std::memory_order_relaxed);
 			voice.Clip.reset();
 		}
 
@@ -1035,7 +1105,7 @@ namespace Egss {
 		voice.Is3D.store(false, std::memory_order_relaxed);
 
 		// Everything above must be visible before the voice goes live.
-		voice.Active.store(true, std::memory_order_release);
+		voice.Phase.store(VoicePhase::Playing, std::memory_order_release);
 		return handle;
 	}
 
@@ -1064,7 +1134,7 @@ namespace Egss {
 		voice.DopplerFactor.store(params.DopplerFactor, std::memory_order_relaxed);
 		voice.Is3D.store(true, std::memory_order_relaxed);
 
-		voice.Active.store(true, std::memory_order_release);
+		voice.Phase.store(VoicePhase::Playing, std::memory_order_release);
 		return handle;
 	}
 
@@ -1075,8 +1145,15 @@ namespace Egss {
 
 	void AudioEngine::Stop(VoiceHandle handle)
 	{
+		// **Asked for, not taken.** Compare-exchange rather than a plain store,
+		// so a handle to a voice that has since finished and been re-used
+		// cannot drag the new sound out of Playing.
 		if (Voice* voice = Resolve(handle))
-			voice->Active.store(false, std::memory_order_release);
+		{
+			VoicePhase expected = VoicePhase::Playing;
+			voice->Phase.compare_exchange_strong(expected, VoicePhase::Stopping,
+				std::memory_order_release, std::memory_order_relaxed);
+		}
 	}
 
 	void AudioEngine::StopAll()
@@ -1305,7 +1382,7 @@ namespace Egss {
 		unsigned int count = 0;
 		for (Voice& voice : State().Voices)
 		{
-			if (voice.Active.load(std::memory_order_acquire))
+			if (voice.Phase.load(std::memory_order_acquire) == VoicePhase::Playing)
 				count++;
 		}
 		return count;

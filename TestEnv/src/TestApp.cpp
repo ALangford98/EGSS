@@ -24,7 +24,7 @@
 #include "DemoSelector.h"
 #include "DemoWarmup.h"
 #include "ProfilerPanel.h"
-#include "AudioRaceStress.h"   // TEMPORARY
+#include "AudioRaceStress.h"
 
 class TestEnv : public Egss::Application
 {
@@ -45,7 +45,10 @@ public:
 		// above the demos and consumes F1 before any of them.
 		PushLayer(new DemoSelector());
 		PushLayer(new ProfilerPanel());
-		PushLayer(new AudioRaceStress());   // TEMPORARY
+		// Inert without --audio-stress. Pushed unconditionally so
+		// `./egss.py sanitize --thread` can turn it on from the command line --
+		// see the note in AudioRaceStress.h for why a race sweep needs it.
+		PushLayer(new AudioRaceStress());
 	}
 };
 

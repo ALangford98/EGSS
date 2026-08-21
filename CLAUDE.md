@@ -51,6 +51,7 @@ an earlier command persists.
 ./egss.py sanitize         # ASan + UBSan, then every demo under it
 ./egss.py sanitize release # the same at -O2, where UB actually bites
 ./egss.py build --sanitize # just the instrumented build
+./egss.py windows          # bridge KWin's window list to the wallpaper
 
 # Flags for TestEnv go after a bare --
 ./egss.py run -- --demo Breakout --record run.rec

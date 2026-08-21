@@ -29,6 +29,10 @@ namespace Egss {
 		// Length of one simulation step, in seconds. Shorter is more accurate
 		// and more expensive; 1/60 is the usual compromise.
 		inline float GetFixedTimestep() const { return m_FixedTimestep; }
+
+		// Running as the desktop background (--wallpaper). Demos ask so they
+		// can size themselves to the whole arrangement rather than to a window.
+		inline bool IsWallpaper() const { return m_Wallpaper; }
 		inline void SetFixedTimestep(float seconds) { m_FixedTimestep = seconds; }
 
 		// How far the current frame sits between the last simulation step and
@@ -112,6 +116,7 @@ namespace Egss {
 		ImGuiLayer* m_ImGuiLayer;
 		float m_LastFrameTime = 0.0f;
 
+		bool m_Wallpaper = false;
 		float m_FixedTimestep = 1.0f / 60.0f;
 		// Unspent real time carried between frames, always < m_FixedTimestep
 		// once the step loop has run.

@@ -6,6 +6,20 @@
 #include "Egss/Events/Event.h"
 
 namespace Egss {
+	// One display, in the desktop's own coordinate space: where its top-left
+	// corner sits and how many pixels it holds.
+	//
+	// The coordinates are the *arrangement's*, not each screen's own -- a second
+	// monitor to the right of a 3840-wide one starts at x = 3840 -- which is
+	// what makes a window spanning several of them expressible as one rectangle.
+	struct MonitorInfo
+	{
+		int X = 0, Y = 0;
+		unsigned int Width = 0, Height = 0;
+		bool Primary = false;
+		std::string Name;
+	};
+
 	struct WindowProps
 	{
 		std::string Title;
@@ -22,6 +36,14 @@ namespace Egss {
 		// while the machine is being used for something else should not steal
 		// focus mid-sentence. See `Application::WantsHiddenWindow`.
 		bool Visible = true;
+
+		// Ask the window manager to treat this as the desktop background.
+		//
+		// Undecorated, screen-sized, and marked `_NET_WM_WINDOW_TYPE_DESKTOP`,
+		// which is the EWMH way of saying "this is the wallpaper". Whether a
+		// given window manager honours it is the window manager's business --
+		// see LinuxWindow::Init.
+		bool Wallpaper = false;
 
 		WindowProps(const std::string& t = "Every Game Starts Somewhere",
 			unsigned int w = 1280,
@@ -63,5 +85,15 @@ namespace Egss {
 		virtual void* GetNativeWindow() const = 0;
 
 		static Window* Create(const WindowProps& props = WindowProps());
+
+		// Every connected display, in arrangement coordinates. Safe to call
+		// before a window exists.
+		//
+		// **The union of these is not always a rectangle.** Three monitors in
+		// an L -- two 4K side by side with a laptop screen below and between
+		// them -- span a box with two corners that are not on any screen at
+		// all. Anything sizing itself to "all the monitors" gets that box and
+		// has to accept that parts of it are never seen.
+		static std::vector<MonitorInfo> GetMonitors();
 	};
 }

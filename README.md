@@ -197,6 +197,22 @@ build is 1 m 05 s against 2 m 20 s, and 300 lockstep steps of Physics3D are 6.1
 to 6.3 s against 32.5 to 33.0 s. That is why it is a command you reach for
 rather than something the normal build does.
 
+### The wallpaper, and the window bridge
+
+```sh
+./egss.py run release -- --demo Slime --wallpaper
+./egss.py windows        # in another terminal: react to open windows
+```
+
+`--wallpaper` marks the window `_NET_WM_WINDOW_TYPE_DESKTOP` and sizes it to the
+union of every monitor. `--wallpaper-scale N` and `--wallpaper-density F` trade
+detail against cost; `--show-ui` puts the panels back so the breeds can be tuned
+while it runs; `--no-windows` ignores the desk even when the bridge is up.
+
+`./egss.py windows` is the KWin bridge described in the 2026-08-21 changelog
+entry. It runs until interrupted and unloads its KWin script on the way out. It
+is not required: without it the colonies simply do not know about your windows.
+
 ### Output layout
 
 ```
@@ -1079,6 +1095,228 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-21 (the colonies get out of the way of your windows)
+
+**The wallpaper reads the desk now.** Open windows are ground the colonies will
+not grow on: agents read them as strongly repellent rather than merely empty, so
+the structure crowds up to a window's edge and reorganises around what is
+actually on screen. Move the window and the cells under it come back as *empty*
+land, which the three breeds then race for.
+
+Getting the geometry at all is the interesting part. **On a Wayland session the
+X11 client list is useless** -- it holds XWayland clients and nothing else, which
+on this desk was two windows out of twenty. The only component that can see them
+all is the compositor, and KWin scripts cannot open a file or a socket. So the
+chain is three links:
+
+```
+KWin script  --callDBus-->  tools/egss-windows.py  --file-->  the wallpaper
+```
+
+`./egss.py windows` runs the middle one: it owns `org.egss.Wallpaper`, loads the
+script into KWin, and writes what arrives to `$XDG_RUNTIME_DIR/egss-windows` by
+atomic rename. A file rather than a socket because the wallpaper is a game loop:
+it wants to read the current state when it happens to look, not to service a
+connection. Nothing starts it automatically, and with it absent the wallpaper
+behaves exactly as it did before -- the right failure for a decoration.
+
+**KWin's coordinates are not the wallpaper's**, which is the trap worth
+recording. KWin works in *logical* pixels: a 3840x2160 monitor at scale 1.5 is
+2560x1440 to a script, and this desk's laptop panel sits at 1631,1440 logical
+against 2447,2160 physical. The wallpaper is an XWayland client living in
+physical pixels. Each line therefore carries the window's rectangle *and* its
+output's, and the scale is derived as the ratio of that output's logical size to
+the physical size XRandR reported for the monitor of the same name -- derived
+rather than assumed, because a desk can mix scales.
+
+Verified against arithmetic done outside the engine. With three windows open,
+the engine reported **178,789 of 304,128 cells covered (58.8%)** and an
+independent calculation from the monitor table gave **178,789**. Then the
+picture itself, sampled out of a captured frame:
+
+| region | pixels lit |
+| --- | --- |
+| inside the DP-1 window | 0.0% |
+| inside the HDMI-A-1 window | 0.0% |
+| inside the small eDP-1 window | 4.5% (the edge ring; blocking is cell-granular) |
+| uncovered patch of eDP-1 | 92.6% |
+
+**One bug worth keeping**, because it failed silently in both directions. The
+first parser read a line with one `sscanf` and a `%*[^,]` for a scale field, and
+KWin sent that field *empty*. `%*[^,]` needs at least one character, so
+conversion stopped there, the output name came back empty, every rectangle was
+dropped for matching no monitor, and the wallpaper reported no windows at all --
+while the bridge was receiving them perfectly and writing them to disk. The
+field is gone from the protocol (the reader derives the scale anyway) and lines
+are split on commas rather than scanned.
+
+**This is the one thing in the demo that is not deterministic**, and it cannot
+be: the desk is external state. It is confined to wallpaper mode, so a recorded
+session of the demo still replays exactly, and `--no-windows` turns it off.
+Polled every eighth fixed step -- a `stat` is cheap but not free, and a
+wallpaper reacting an eighth of a second late is a wallpaper reacting
+immediately.
+
+### 2026-08-21 (three breeds, and a fight over the desk)
+
+**The wallpaper spans the whole arrangement now**, read from XRandR rather than
+assumed: three monitors, 7,680 x 3,960, one continuous field positioned at the
+union's own origin. The previous version took the *primary* monitor's video mode
+-- 2,880 x 1,800 -- and dropped it at 0,0 on a 3,840 x 2,160 screen, which is
+where "it only covers two thirds of one monitor" came from. The arrangement here
+is an L rather than a rectangle, so the span includes two corners that are on no
+screen at all; the colony grows into them unseen, which is what one spanning
+surface costs.
+
+**A cell has an owner now, and that is what makes it a fight.** The trail map
+carries a strength and the breed that laid it. An agent depositing on a rival's
+cell *subtracts* instead of adding, and takes the cell when it drives the
+strength through zero -- so fronts exist, they move, and the breed depositing
+harder eats into the other. Ownership diffuses by strength rather than by
+majority: a cell's next owner is whichever neighbour holds the most trail, which
+makes a front advance where one side is denser and hold where they are even.
+Majority voting jitters, because nine cells vote in ninths.
+
+One float and one byte per cell. The obvious alternative -- a trail map per
+breed -- triples the blur, which is the expensive part.
+
+**Three breeds, differing in parameters only**, one seeded per monitor:
+
+| | sensors | look | toward rivals |
+| --- | --- | --- | --- |
+| Veins | narrow, long reach | branching network | avoids (-0.6) |
+| Foam | wide, short reach, inhibited | cellular, area-filling | pushes in (+0.35) |
+| Filigree | narrow, fast turning, faint | restless thin filaments | mildly avoids |
+
+`RivalWeight` is the parameter with no single-colony meaning and it is what makes
+them behave differently *toward each other*: negative avoids enemy ground,
+positive is drawn to it, so an avoider beside an attacker is a border that only
+moves one way. `Inhibition` is the other new one -- above `Peak` it bends the
+sensed value back down, so ground that is already busy stops being attractive
+and agents spread to fill an area instead of piling onto its spine. At zero the
+classic behaviour is exactly as it was.
+
+**The tuning lesson, which cost most of the session: deposit over decay is the
+equilibrium strength.** Foam started at 6 against 4.5 -- a ratio of 1.33, above
+the clamp -- so every visited cell pinned at white and the picture was binary. I
+swept sensor angle against sensor distance for an afternoon looking for
+structure in an image that *could not change*, because the structural parameters
+were being flattened by saturation downstream of them. Veins was 3/9 = 0.33 and
+had been fine all along, which is why the problem read as "foam is wrong" rather
+than "the ratio is wrong". Check the ratio first; it is one division.
+
+Costs, measured across the span per fixed step at 30 Hz, differencing 200-frame
+and 1,200-frame runs so startup is not in the number: **24.2 ms at 8 px/cell,
+16.8 at 10, 13.0 at 12**. Ten is the default, at half a core. Fusing the blur's
+sum and strongest-neighbour search into one pass over the nine neighbours was
+worth about 4 ms of that -- the split version wrote an `offsets[9]` array to the
+stack and read the field twice, at 475,000 cells a step.
+
+Still deterministic: byte-identical across two runs at step 500.
+
+### 2026-08-21 (the slime mould, as an actual wallpaper)
+
+**`--wallpaper` puts the running demo on the desktop**, and on Plasma 6.7.3 /
+KWin 6.7.3 it works: the window sits above the desktop icons and below every
+other window, sticky across virtual desktops, no taskbar entry, no focus stolen.
+
+It is three EWMH properties and a hint, not a new backend. The window is created
+**hidden**, marked `_NET_WM_WINDOW_TYPE_DESKTOP` plus `_NET_WM_STATE_BELOW`,
+`STICKY`, `SKIP_TASKBAR` and `SKIP_PAGER`, and only then mapped -- the order
+matters, because a window manager reads the type when it takes the window over,
+and a desktop window that arrives as an ordinary one has already been stacked,
+framed and focused by the time the property lands.
+
+**This works on a Wayland session because GLFW here is built `_GLFW_X11` only**,
+so every EGSS window is already an XWayland client and has been all along.
+Nobody had noticed, because nothing until now cared which display server it was
+talking to.
+
+What KWin actually did with it, read back with `xprop` rather than assumed:
+`_NET_WM_WINDOW_TYPE_DESKTOP` accepted unmodified, all four state hints kept,
+and the window first in `_NET_CLIENT_LIST_STACKING` -- the bottom. Confirmed on
+screen: icons covered, ordinary windows on top.
+
+`--wallpaper` implies `--hide-ui`, because a wallpaper with a debug panel on it
+is not a wallpaper; `--show-ui` puts the panels back, which is how you tune the
+thing while looking at it.
+
+**Known limits, none of them fixed yet.** The primary monitor only. It renders
+at the full frame rate whether or not anything is covering it, which is about
+36% of a core at 60 Hz. And it goes through XWayland rather than talking to the
+compositor directly. All three are what a native `zwlr_layer_shell_v1` client
+would fix -- KWin advertises version 5 -- and none of them stop this being
+usable today.
+
+### 2026-08-21 (the audio thread was racing the main thread, and had been all along)
+
+**ThreadSanitizer found eight distinct data races between `ClaimVoice` and
+`MixInto`**, which is the pair the sanitizer work was aimed at and the one this
+project had reasoned about most carefully. The comment in `ClaimVoice` said it
+outright:
+
+> Only an inactive voice may be written to; the audio thread is guaranteed not
+> to be reading it.
+
+That is not what `Active == false` means. It means the mixer will not *start*
+this voice at the top of the next block; it says nothing about the block the
+mixer is in the middle of. So `Stop` could clear the flag while `MixInto` was
+interpolating a voice, `ClaimVoice` would then see a free slot, and
+`voice.Clip = clip` would drop the last reference to the very samples the mixer
+was reading. **A use-after-free in the audio callback, reachable by playing and
+stopping sounds quickly enough** -- which is what a game does.
+
+The fix is an ownership protocol rather than a lock, because a lock in a device
+callback is how you get priority inversion:
+
+```
+Free     -> Claimed    main, in ClaimVoice
+Claimed  -> Playing    main, once the parameters are written
+Playing  -> Stopping   main, in Stop
+Playing  -> Free       mixer, when the clip runs out
+Stopping -> Free       mixer, at the next block boundary
+```
+
+**Only the mixer may return a slot to `Free`**, and only after it is provably
+finished with it -- so a stop costs one silent block, and that block is the
+entire point. `Stop` compare-exchanges `Playing -> Stopping` rather than
+storing, so a stale handle cannot drag a slot that has since been re-used back
+out of `Playing`. The audio thread still never frees memory: main overwrites
+`Clip` when it claims, and by then the mixer has said it is done.
+
+Verified both ways, because a protocol bug here is as likely to produce silence
+as a race, and **nothing else in this project would notice a silent mixer** --
+no capture shows sound:
+
+- **TSan, same stress, before and after: 13 reports down to 5**, and none of the
+  five involve our audio code (four are ALSA and TSan internals, one is libxcb
+  inside `glfwCreateWindow`). The eight `ClaimVoice`/`MixInto` pairs are gone.
+- **Offline through `RenderForTest`, six checks**: silence with nothing playing,
+  peak 0.3536 while playing, silence immediately after `Stop`, 200 play/stop
+  cycles all finding a slot (the pool does not run dry), and a stale handle
+  failing to stop the sound that reused its slot.
+
+**The classifier was wrong before it was right**, in the way these things
+usually are. The first version asked whether our source appeared in the top
+three frames of a racing access, and called all fourteen demos a failure: the
+libxcb race during `glfwCreateWindow` puts `recvmsg` at frame #0, `_xcb_in_read`
+at #1 and our window constructor at #2 -- where it is the *caller* of the racing
+read, not the thing that raced. It now asks for the **innermost** frame,
+skipping TSan's own interceptors, which sit at #0 for anything it wraps. Checked
+against two logs whose answers were already known: the run before the fix
+classifies 8 ours / 5 theirs, the run after 0 / 5.
+
+Two pieces of tooling came out of it. `AudioRaceStress` claims six voices a step
+and stops the oldest, alternating between two clips so a stolen voice's old
+buffer is a *different* allocation -- **silence from a race detector is only
+evidence if the window was open**, and the demos on their own play a handful of
+sounds. And the sweep now **classifies** TSan reports rather than counting them:
+a report is ours when our source appears in the top frames of a racing access,
+and somebody else's otherwise. Deliberately not a suppression file -- a
+suppression matching `libasound` would also swallow a real race of ours that
+passes through ALSA on its way to the mixer, which is precisely where these
+races lived.
 
 ### 2026-08-20 (demos get folders, and a slime mould)
 

@@ -31,6 +31,12 @@ namespace Egss {
 		virtual void Init(const WindowProps& props);
 		virtual void Shutdown();
 		void SetGLFWCallbacks();
+		void MakeDesktopWindow(bool show);
+
+		// Top-left of the union of every monitor, which is where a wallpaper
+		// window goes. Not always (0, 0).
+		int m_WallpaperX = 0;
+		int m_WallpaperY = 0;
 	private:
 		GLFWwindow* m_Window;
 

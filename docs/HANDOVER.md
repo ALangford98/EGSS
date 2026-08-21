@@ -997,6 +997,57 @@ look caught immediately.
   bodies on the way, because the terrain body is a candidate for everything
   whatever the broadphase does, so the grid has nothing to reject and pays for
   the rebuild anyway. It stays at 200; measure both curves before touching it.
+- **"Not active" is not "not in use", and the audio engine believed otherwise
+  for a long time.** A voice's `Active` flag told the mixer whether to *start*
+  the voice at the top of a block; `ClaimVoice` read it as "the mixer is not
+  touching this", and overwrote the slot -- including the `shared_ptr` keeping
+  the samples alive -- while the mixer was mid-block on it. TSan found eight
+  racing pairs. The rule now is an ownership protocol: **only the mixer returns
+  a slot to `Free`**, main claims free slots and *asks* for stops, and a stop
+  costs one silent block. Any new field on `Voice` inherits that rule: written
+  by main only while the phase is `Free` or `Claimed`.
+- **Silence from a race detector is only evidence if the window was open.** The
+  demos play a handful of sounds; the races only appeared under
+  `--audio-stress`, which claims six voices a step and stops the oldest,
+  alternating two clips so a stolen voice's old buffer is a different
+  allocation. Before believing a clean TSan run of anything, ask what in it
+  actually exercised the two threads against each other.
+- **A sanitizer report names a stack, and only its innermost frame did the
+  thing.** A classifier that looked for our source anywhere in the top three
+  frames called every demo a failure, because the libxcb race during
+  `glfwCreateWindow` has our window constructor at frame #2 as the *caller*.
+  Skip TSan's interceptors (`libtsan` at #0, for anything it wraps) and judge
+  the first real frame. Validate a classifier against a log whose answer you
+  already know -- both directions, a run with real findings and a run without.
+- **Classify sanitizer reports, do not suppress them.** A TSan run against a
+  desktop driver stack is never empty -- ALSA and libxcb produce a handful at
+  startup every time. The sweep sorts reports by whether our source appears in
+  the *top* frames of a racing access. A suppression file keyed on `libasound`
+  would have been easier and would also have swallowed the real races, which
+  reach the mixer through exactly that library.
+- **A protocol bug in the mixer is as likely to be silence as a race**, and
+  nothing else here would notice: no capture shows sound. Check both directions
+  offline through `AudioEngine::RenderForTest` -- audible while playing, silent
+  after `Stop`, and the pool not running dry over a few hundred play/stop
+  cycles.
+- **On a Wayland session, X11 sees almost nothing.** `_NET_CLIENT_LIST` held two
+  windows out of twenty here, because everything native is invisible to
+  XWayland. Window geometry has to come from the compositor: a KWin script over
+  D-Bus, bridged by `tools/egss-windows.py`, because KWin scripts can neither
+  open files nor own a bus name. The engine is still an X11 client throughout --
+  GLFW is built `_GLFW_X11` only -- which is why the wallpaper works at all.
+- **KWin reports logical pixels; XWayland lives in physical ones.** A 3840x2160
+  monitor at scale 1.5 is 2560x1440 to a script, and this desk's laptop panel is
+  at 1631,1440 logical against 2447,2160 physical. Convert with the ratio of the
+  output's logical size to the monitor's physical size, matched by output name.
+  Assuming a single scale for the desk works until somebody plugs in a monitor
+  with a different one.
+- **`%*[^,]` does not match an empty field**, and a partly-successful `sscanf`
+  fails quietly. A scale field KWin sent empty stopped conversion mid-line, the
+  output name came back empty, every window was dropped for matching no monitor,
+  and the wallpaper reported an empty desk while the bridge was receiving
+  windows correctly. When a parser reports *nothing* rather than something
+  wrong, suspect the format string before the data.
 - **A heightfield has two boxes, and using the wrong one drops pairs.**
   `BodyBounds` is what the collider *contains* -- the map and everything under
   it, `outMin.y` = `-infinity`, because the narrowphase is solid to any depth

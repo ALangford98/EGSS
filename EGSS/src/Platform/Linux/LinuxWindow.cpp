@@ -1,6 +1,14 @@
 #include "egsspch.h"
 #include "LinuxWindow.h"
 
+// The native handle, for wallpaper mode. GLFW here is built `_GLFW_X11` only,
+// so this is the X11 window even inside a Wayland session -- the session runs
+// it through XWayland, and XWayland windows are managed by the compositor like
+// any other X11 client.
+#define GLFW_EXPOSE_NATIVE_X11
+#include <GLFW/glfw3native.h>
+#include <X11/Xatom.h>
+
 #include "Egss/Events/ApplicationEvent.h"
 #include "Egss/Events/KeyEvent.h"
 #include "Egss/Events/MouseEvent.h"
@@ -13,9 +21,55 @@ namespace Egss {
 		EGSS_CORE_ERROR("GLFW error ({0}): {1}", error, description);
 	}
 
+	static void EnsureGLFW()
+	{
+		if (s_GLFWInitialized)
+			return;
+
+		//TODO: glfwTerminate guard clause
+		int success = glfwInit();
+		EGSS_CORE_ASSERT(success, "Could not initialize GLFW");
+		glfwSetErrorCallback(GLFWErrorCallback);
+		s_GLFWInitialized = true;
+	}
+
 	Window* Window::Create(const WindowProps& props)
 	{
 		return new LinuxWindow(props);
+	}
+
+	std::vector<MonitorInfo> Window::GetMonitors()
+	{
+		// Callable before the first window, which is the point: the wallpaper
+		// needs the arrangement to decide how big the window should be.
+		EnsureGLFW();
+
+		std::vector<MonitorInfo> monitors;
+
+		int count = 0;
+		GLFWmonitor** handles = glfwGetMonitors(&count);
+		GLFWmonitor* primary = glfwGetPrimaryMonitor();
+
+		for (int i = 0; i < count; i++)
+		{
+			const GLFWvidmode* mode = glfwGetVideoMode(handles[i]);
+			if (!mode)
+				continue;
+
+			MonitorInfo info;
+			glfwGetMonitorPos(handles[i], &info.X, &info.Y);
+
+			info.Width = (unsigned int)mode->width;
+			info.Height = (unsigned int)mode->height;
+			info.Primary = handles[i] == primary;
+
+			if (const char* name = glfwGetMonitorName(handles[i]))
+				info.Name = name;
+
+			monitors.push_back(info);
+		}
+
+		return monitors;
 	}
 
 	LinuxWindow::LinuxWindow(const WindowProps& props)
@@ -36,14 +90,7 @@ namespace Egss {
 
 		EGSS_CORE_INFO("Creating Window {0} ({1}, {2})", props.Title, props.Width, props.Height);
 
-		if (!s_GLFWInitialized)
-		{
-			//TODO: glfwTerminate guard clause
-			int success = glfwInit();
-			EGSS_CORE_ASSERT(success, "Could not initialize GLFW");
-			glfwSetErrorCallback(GLFWErrorCallback);
-			s_GLFWInitialized = true;
-		}
+		EnsureGLFW();
 
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -59,7 +106,63 @@ namespace Egss {
 		// which is exactly the flicker this exists to remove.
 		glfwWindowHint(GLFW_VISIBLE, props.Visible ? GLFW_TRUE : GLFW_FALSE);
 
-		m_Window = glfwCreateWindow((int)props.Width, (int)props.Height, m_Data.Title.c_str(), nullptr, nullptr);
+		unsigned int width = props.Width;
+		unsigned int height = props.Height;
+
+		if (props.Wallpaper)
+		{
+			// Created hidden whatever was asked for, because the window type
+			// has to be set *before* the window is mapped: a window manager
+			// reads `_NET_WM_WINDOW_TYPE` when it takes the window over, and a
+			// desktop window that arrives as an ordinary one has already been
+			// stacked, focused and given a frame by then.
+			glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+			glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+			glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+			glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+
+			// **Every screen, as one window.** The first version took the
+			// primary monitor's video mode, which on a three-monitor desk meant
+			// a 2880x1800 window sitting on a 3840x2160 screen -- covering
+			// three quarters of one display and none of the other two.
+			//
+			// The union can start left of or above the origin, so the origin is
+			// carried and applied after the window exists: GLFW sizes at
+			// creation and positions afterwards.
+			std::vector<MonitorInfo> monitors = GetMonitors();
+
+			if (!monitors.empty())
+			{
+				int minX = monitors[0].X, minY = monitors[0].Y;
+				int maxX = minX, maxY = minY;
+
+				for (const MonitorInfo& monitor : monitors)
+				{
+					minX = std::min(minX, monitor.X);
+					minY = std::min(minY, monitor.Y);
+					maxX = std::max(maxX, monitor.X + (int)monitor.Width);
+					maxY = std::max(maxY, monitor.Y + (int)monitor.Height);
+				}
+
+				m_WallpaperX = minX;
+				m_WallpaperY = minY;
+
+				width = (unsigned int)(maxX - minX);
+				height = (unsigned int)(maxY - minY);
+
+				EGSS_CORE_INFO("Wallpaper: {0} monitors spanning {1}x{2} at ({3}, {4})",
+					monitors.size(), width, height, minX, minY);
+			}
+
+			m_Data.Width = width;
+			m_Data.Height = height;
+		}
+
+		m_Window = glfwCreateWindow((int)width, (int)height, m_Data.Title.c_str(), nullptr, nullptr);
+
+		if (props.Wallpaper)
+			MakeDesktopWindow(props.Visible);
+
 		glfwMakeContextCurrent(m_Window);
 
 		int gladStatus = gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
@@ -70,6 +173,64 @@ namespace Egss {
 		SetVSync(true);
 
 		SetGLFWCallbacks();
+	}
+
+	// Ask the window manager to treat this window as the desktop background.
+	//
+	// `_NET_WM_WINDOW_TYPE_DESKTOP` is the EWMH way of saying "wallpaper": the
+	// window is stacked at the bottom, gets no frame, no taskbar entry, and no
+	// focus. `xwinwrap` and every animated-wallpaper tool on X11 works this way.
+	//
+	// The state hints beside it are for window managers that honour the states
+	// but not the type; setting both costs three atoms and removes a whole class
+	// of "it works on mine".
+	//
+	// **Whether it is honoured is the compositor's decision, not ours.** On a
+	// Wayland session this arrives through XWayland, and KWin may well stack it
+	// as an ordinary window instead -- in which case what you get is a
+	// borderless fullscreen window rather than a wallpaper, and the answer is a
+	// native layer-shell surface instead. That is the experiment.
+	void LinuxWindow::MakeDesktopWindow(bool show)
+	{
+		Display* display = glfwGetX11Display();
+		::Window handle = glfwGetX11Window(m_Window);
+
+		if (!display || !handle)
+		{
+			EGSS_CORE_WARN("--wallpaper: no X11 window to mark (not an X11 session?)");
+			return;
+		}
+
+		Atom typeProperty = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
+		Atom desktop = XInternAtom(display, "_NET_WM_WINDOW_TYPE_DESKTOP", False);
+
+		XChangeProperty(display, handle, typeProperty, XA_ATOM, 32,
+			PropModeReplace, (const unsigned char*)&desktop, 1);
+
+		Atom states[] =
+		{
+			XInternAtom(display, "_NET_WM_STATE_BELOW", False),
+			XInternAtom(display, "_NET_WM_STATE_SKIP_TASKBAR", False),
+			XInternAtom(display, "_NET_WM_STATE_SKIP_PAGER", False),
+			XInternAtom(display, "_NET_WM_STATE_STICKY", False)
+		};
+
+		XChangeProperty(display, handle, XInternAtom(display, "_NET_WM_STATE", False),
+			XA_ATOM, 32, PropModeReplace, (const unsigned char*)states, 4);
+
+		XFlush(display);
+
+		EGSS_CORE_INFO("Wallpaper mode: window 0x{0:x} marked as desktop", (unsigned long)handle);
+
+		if (show)
+		{
+			glfwShowWindow(m_Window);
+
+			// Positioned after mapping, and at the union's own origin rather
+			// than at 0,0 -- an arrangement with a monitor left of or above the
+			// primary starts at negative coordinates.
+			glfwSetWindowPos(m_Window, m_WallpaperX, m_WallpaperY);
+		}
 	}
 
 	// Each callback recovers the WindowData from the user pointer, builds the

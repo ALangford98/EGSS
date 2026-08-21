@@ -1,17 +1,17 @@
-// TEMPORARY -- delete after the TSan sweep.
+// Load for the voice pool, so a race detector has something to detect.
 //
 // **Silence from a race detector is only evidence if the race window was
-// actually open.** TSan reports a pair of accesses it *observed*; a sweep where
+// actually open.** TSan reports pairs of accesses it *observed*; a sweep where
 // the demos happen to play three sounds proves very little about a voice pool
-// under churn.
+// under churn. `./egss.py sanitize --thread` runs every demo with
+// `--audio-stress` for exactly this reason.
 //
-// The specific window this aims at: `AudioEngine::Stop` only flips a voice's
-// `Active` flag, and `ClaimVoice` then reuses that slot -- reassigning
-// `voice.Clip` (a shared_ptr, so the old buffer can be freed) and the raw
-// `voice.Samples` pointer the mixer reads from. The mixer latches `Active` once
-// per block. Whether reuse can land inside a block that already decided to read
-// the slot is the question; this makes the attempt thousands of times a run
-// rather than a handful.
+// It earned its place on 2026-08-21: under this load TSan found eight racing
+// pairs between `ClaimVoice` on the main thread and `MixInto` on the device
+// thread -- `Stop` cleared a voice's flag mid-block, `ClaimVoice` took the slot
+// as free, and reassigning `voice.Clip` dropped the last reference to samples
+// the mixer was still reading. See the voice-phase protocol in `AudioEngine.cpp`
+// for what replaced it. Without this layer the same sweep is clean.
 //
 // Two clips, alternating, so a stolen voice's old buffer is a *different*
 // allocation from the new one -- reusing one clip would hide a use-after-free
