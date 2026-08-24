@@ -49,6 +49,29 @@ public:
 		int Octaves = 4;
 		unsigned int Seed = 1;
 
+		// **Local roughness, which is not the same spectrum as the planet.**
+		//
+		// The relief above is a 1/f fractal anchored at `FeatureSize`, and on a
+		// body the size of a real planet that leaves nothing underfoot: nine
+		// kilometres of relief spread over a 732 km base means the octave at a
+		// 45 m wavelength carries half a metre and the one at 3 m carries four
+		// centimetres. That is *correct* -- a real planet is smooth at the
+		// scale of a stride -- but a demo you walk around in wants ground with
+		// shape to it, and adding octaves to the planetary spectrum cannot
+		// give it any without making the mountains absurd.
+		//
+		// So local roughness is its own layer with its own amplitude, three
+		// octaves from `RoughnessSize` down. Zero is the old behaviour.
+		//
+		// It also stops where the arithmetic does. The noise is sampled at
+		// `direction * Radius / wavelength`, so a metre-scale wavelength on a
+		// 6,371 km planet asks for coordinates near 10^6, where a float's
+		// spacing is a sixteenth of a noise cell and the field comes out
+		// quantised. Keeping the finest octave above about 25 m keeps the
+		// sampling comfortably inside what a float can say.
+		float Roughness = 0.0f;        // metres, peak to trough
+		float RoughnessSize = 0.0f;    // metres, the coarsest of its octaves
+
 		// **Ridges make mountains; they do not make continents.** The relief
 		// is `1 - |noise|`, which puts high ground along the lines where the
 		// noise crosses zero -- excellent ridgelines, and hopeless coastlines,
@@ -110,7 +133,10 @@ public:
 
 		// The lattice has to hold the whole planet plus its tallest mountain,
 		// plus a chunk of margin so the outermost cells have neighbours.
-		float reach = settings.Radius + settings.Amplitude + 4.0f * settings.VoxelSize;
+		// The lattice has to hold the deepest valley as well as the tallest
+		// peak, and those are not symmetric -- see `ReliefReach`.
+		float reach = settings.Radius + settings.Amplitude
+			+ settings.Roughness + 4.0f * settings.VoxelSize;
 		int half = (int)std::ceil(reach / settings.VoxelSize);
 
 		int side = half * 2 + 1;
@@ -145,7 +171,28 @@ public:
 			float p = m_Settings.LandFraction;
 			float sigma = std::sqrt(p * (1.0f - p) * (1.0f / 8192.0f + 1.0f / (float)check));
 
-			EGSS_TRACE("  sea level {0:+.2f} m about the mean radius, land {1:.1f}% "
+			// **The shell test's bound, against a sample of what it is bounding.**
+		// `ReliefReach` is analytic and the range below is measured, and the
+		// one has to contain the other -- a chunk holding ground outside the
+		// bound is a chunk filled with solid rock where a valley should be,
+		// which draws as a wall. Said out loud at generation because it is
+		// cheap and because the failure is invisible until it is enormous.
+		{
+			float low = 1e30f, high = -1e30f;
+
+			for (int i = 0; i < 8192; i++)
+			{
+				float r = Relief(SpiralDirection(i, 8192, 0.31f));
+				low = glm::min(low, r);
+				high = glm::max(high, r);
+			}
+
+			EGSS_TRACE("  relief {0:+.1f} to {1:+.1f} m sampled, bound {2:.1f} m, "
+				"bias {3:+.1f} m{4}", low, high, ReliefReach(), m_ReliefBias,
+				glm::max(-low, high) <= ReliefReach() ? "" : "  -- OUTSIDE THE BOUND");
+		}
+
+		EGSS_TRACE("  sea level {0:+.2f} m about the mean radius, land {1:.1f}% "
 				"(asked {2:.1f}%, {3:.1f} sigma on other directions)",
 				m_Settings.OceanRadius - m_Settings.Radius,
 				achieved * 100.0f, p * 100.0f, std::abs(achieved - p) / sigma);
@@ -209,6 +256,155 @@ public:
 		return 0.5f * (low + high);
 	}
 
+	// --- Somewhere to stand -------------------------------------------------
+
+	// **The nearest direction that is dry land.**
+	//
+	// A lander aimed at the sunward point of this planet is under water seven
+	// times in ten, because that is what a 29.2% land fraction means -- and
+	// nothing here swims. You arrive standing on the seabed with the sea
+	// closed over your head, which reads as a rendering fault and is not one.
+	//
+	// The search is the same Fibonacci spiral the sea level was bisected on,
+	// offset clear of both of the sample sets that produced it. Even coverage
+	// is what makes it enough to keep the passing direction with the largest
+	// dot against `preferred`: that is the globally nearest one to within the
+	// spacing, which at 8,192 samples is 2.3 degrees, or 14 m of arc on Earth.
+	//
+	// **One dry sample is not a landing site.** Relief is continuous, so the
+	// first direction that clears the water on the way out of a bay is a beach
+	// a metre wide, and a lander put there walks straight back into the sea.
+	// `clearMetres` of arc has to be dry in four directions as well, so what
+	// comes back is ground you can stand in the middle of. If nothing that
+	// generous exists the requirement is halved twice and then dropped, and
+	// what was achieved is logged rather than quietly substituted.
+	glm::vec3 NearestLand(const glm::vec3& preferred, float clearMetres) const
+	{
+		glm::vec3 want = glm::normalize(preferred);
+
+		if (!m_Settings.HasOcean)
+			return want;
+
+		float sea = m_Settings.OceanRadius - m_Settings.Radius;
+
+		const int samples = 8192;
+
+		// **Where you were already pointing, if it will do.** Otherwise the
+		// answer is a point on a grid, and a lander aimed squarely at the
+		// middle of a continent would be shifted to whichever sample happened
+		// to be nearest -- up to a spiral spacing away for no reason at all.
+		if (Relief(want) > sea
+			&& DryAround(want, sea, clearMetres / std::max(1.0f, m_Settings.Radius)))
+			return want;
+
+		for (float share : { 1.0f, 0.5f, 0.25f, 0.0f })
+		{
+			float arc = clearMetres * share / std::max(1.0f, m_Settings.Radius);
+
+			glm::vec3 best(0.0f);
+			float bestDot = -2.0f;
+
+			for (int i = 0; i < samples; i++)
+			{
+				glm::vec3 direction = SpiralDirection(i, samples, 0.25f);
+
+				// The dot is three multiplies and each probe is five octaves
+				// of 3D noise, so reject on the cheap test first.
+				float dot = glm::dot(direction, want);
+
+				if (dot <= bestDot || Relief(direction) <= sea)
+					continue;
+
+				if (share > 0.0f && !DryAround(direction, sea, arc))
+					continue;
+
+				best = direction;
+				bestDot = dot;
+			}
+
+			if (bestDot > -2.0f)
+			{
+				EGSS_TRACE("  landing site {0:.1f} deg off the approach, {1:+.1f} m "
+					"above sea, dry for {2:.0f} m around",
+					glm::degrees(std::acos(glm::clamp(bestDot, -1.0f, 1.0f))),
+					Relief(best) - sea, clearMetres * share);
+
+				return best;
+			}
+		}
+
+		// Reachable only on a world with no land above water anywhere, which
+		// this generator does not make at any land fraction above zero. Said
+		// out loud rather than handing back `preferred` and letting the lander
+		// drown quietly.
+		EGSS_WARN("no dry land anywhere on this planet");
+
+		return want;
+	}
+
+	// **A disc, and not a cross -- sampled against the terrain's own finest
+	// detail rather than against the size of the disc.**
+	//
+	// Two earlier versions were wrong in ways worth keeping written down.
+	// Four probes on two axes let diagonal inlets through, which an
+	// independent probe set caught in 3% of the sites it accepted. Rings at
+	// fixed *fractions* of the arc then left the middle unprobed -- at a 10 m
+	// clearance the innermost ring sat 4.5 m out, so a pond three metres from
+	// the site was invisible, and 20 of 512 sites had water inside 3 m.
+	//
+	// What sets the spacing is the relief, not the disc. The noise runs for
+	// `Octaves` octaves from a base wavelength of `FeatureSize`, so the finest
+	// thing in it is `FeatureSize / 2^(Octaves-1)` across -- 2.6 m on Earth.
+	// Probes half of that apart cannot step over a feature entirely, which is
+	// the most any finite set can promise. It works out at eight rings and
+	// about 220 points for a 10 m disc, and they are only ever evaluated for a
+	// candidate that has already beaten the best angle so far.
+	bool DryAround(const glm::vec3& direction, float sea, float arc) const
+	{
+		// Any vector not parallel to the direction will do to start the frame,
+		// and near the poles +Y is parallel to it.
+		glm::vec3 pole = std::abs(direction.y) > 0.9f
+			? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+
+		glm::vec3 east = glm::normalize(glm::cross(pole, direction));
+		glm::vec3 north = glm::cross(direction, east);
+
+		const float pi = 3.14159265358979323846f;
+
+		float finest = m_Settings.FeatureSize
+			/ (float)(1 << glm::max(m_Settings.Octaves - 1, 0));
+
+		float step = glm::max(0.5f * finest, 0.05f) / glm::max(m_Settings.Radius, 1.0f);
+
+		int rings = glm::clamp((int)std::ceil(arc / step), 1, 12);
+
+		for (int ring = 1; ring <= rings; ring++)
+		{
+			float radius = arc * (float)ring / (float)rings;
+
+			// As many points as it takes to keep the gap around the ring to
+			// the same step as the gap between rings.
+			int count = glm::clamp((int)std::ceil(2.0f * pi * radius / step), 4, 64);
+
+			float c = std::cos(radius), s = std::sin(radius);
+
+			for (int i = 0; i < count; i++)
+			{
+				// Half a step of phase per ring, so the rings do not line up
+				// into spokes with wedges of unprobed ground between them.
+				float angle = 2.0f * pi * ((float)i + 0.5f * (float)ring) / (float)count;
+
+				glm::vec3 sideways = east * std::cos(angle) + north * std::sin(angle);
+
+				// The combination is already unit length, which `Relief` wants.
+				if (Relief(direction * c + sideways * s) <= sea)
+					return false;
+			}
+		}
+
+		return true;
+	}
+
 	// **The relief's mean, measured rather than assumed.**
 	//
 	// `Relief` is built from `1 - |noise|`, which makes ridges instead of
@@ -250,6 +446,33 @@ public:
 		m_ReliefBias = (float)(sum / samples);
 	}
 
+	// **How far the ground can get from the mean radius, and it is not half
+	// the amplitude.**
+	//
+	// `shape` is bounded to ±1/2, so `shape * Amplitude` is bounded to ±A/2 --
+	// and then the measured bias is *subtracted*, which slides the whole range
+	// down by about a third of A without narrowing it. The ground therefore
+	// reaches `A/2 + bias` below the mean radius and only `A/2 - bias` above:
+	// the relief of this generator is skewed, because `1 - |noise|` is.
+	//
+	// **The shell test used A/2 and had done since the start.** At a 31 m
+	// amplitude the third of A it was missing was ten metres -- less than half
+	// a chunk, so almost nothing fell in it and nothing was ever seen. At
+	// 625 m it is 209 metres, which is eight chunks of valley floor classified
+	// as "nowhere near the surface" and filled with solid rock. That is a
+	// **wall**, and the walls scale with the amplitude, which scales with the
+	// radius: invisible at 360 m, a fine grid at 250 km, slabs the height of a
+	// house at 1,000 km.
+	//
+	// Analytic rather than sampled: a min and max over a few thousand
+	// directions would find *most* of the range, and the chunks it missed
+	// would be exactly the rare deep ones nobody would think to look at.
+	float ReliefReach() const
+	{
+		return 0.5f * m_Settings.Amplitude + std::abs(m_ReliefBias)
+			+ 0.5f * m_Settings.Roughness;
+	}
+
 	const Settings& Get() const { return m_Settings; }
 	const std::shared_ptr<Egss::VoxelField3D>& Field() const { return m_Field; }
 
@@ -270,7 +493,12 @@ public:
 	}
 
 	// Metres of ground above the mean radius in a given direction.
-	float Relief(const glm::vec3& direction) const
+	//
+	// `maxOctaves` caps how fine the sum goes. The colour map passes it: one
+	// of its texels is tens of kilometres of ground on a real planet, so
+	// octaves below that are not detail, they are aliasing -- and they are the
+	// expensive ones, because there are more of them than of everything else.
+	float Relief(const glm::vec3& direction, int maxOctaves = 0) const
 	{
 		float amplitude = 1.0f;
 
@@ -282,7 +510,10 @@ public:
 		float sum = 0.0f;
 		float total = 0.0f;
 
-		for (int i = 0; i < m_Settings.Octaves; i++)
+		int octaves = maxOctaves > 0
+			? glm::min(maxOctaves, m_Settings.Octaves) : m_Settings.Octaves;
+
+		for (int i = 0; i < octaves; i++)
 		{
 			sum += Noise3D(direction * frequency, m_Settings.Seed + (unsigned int)i) * amplitude;
 			total += amplitude;
@@ -310,7 +541,32 @@ public:
 			shape = glm::mix(shape, broad / 3.0f, m_Settings.ContinentShare);
 		}
 
-		return shape * m_Settings.Amplitude - m_ReliefBias;
+		float relief = shape * m_Settings.Amplitude - m_ReliefBias;
+
+		// The local layer, added rather than mixed: it is small next to the
+		// planetary relief by construction, so it cannot push the surface
+		// outside the shell the lattice was sized for.
+		if (m_Settings.Roughness > 0.0f && m_Settings.RoughnessSize > 0.0f)
+		{
+			float f = m_Settings.Radius / m_Settings.RoughnessSize;
+			float weight = 1.0f;
+			float local = 0.0f;
+			float total = 0.0f;
+
+			for (int i = 0; i < 3; i++)
+			{
+				local += Noise3D(direction * f, m_Settings.Seed + 401u + (unsigned int)i)
+					* weight;
+				total += weight;
+
+				weight *= 0.5f;
+				f *= 2.0f;
+			}
+
+			relief += (local / total) * m_Settings.Roughness * 0.5f;
+		}
+
+		return relief;
 	}
 
 	// --- The height map -----------------------------------------------------
@@ -358,8 +614,21 @@ public:
 				// Metres about the mean radius, folded into a byte across the
 				// full relief. That is 0.12 m a step on Earth here -- coarse
 				// for something underfoot, and this is never underfoot.
+				// Capped at the octave whose wavelength is two texels: below
+				// that the map cannot represent what it is sampling, and on a
+				// real planet that is most of the octaves and nearly all of
+				// the cost.
+				float texel = 2.0f * 3.14159265f * m_Settings.Radius / (float)width;
+
+				int useful = 1;
+
+				while (useful < m_Settings.Octaves
+					&& m_Settings.FeatureSize / (float)(1 << useful) > 2.0f * texel)
+					useful++;
+
 				float unit = glm::clamp(
-					Relief(direction) / (2.0f * m_Settings.Amplitude) + 0.5f, 0.0f, 1.0f);
+					Relief(direction, useful) / (2.0f * m_Settings.Amplitude) + 0.5f,
+					0.0f, 1.0f);
 
 				unsigned char level = (unsigned char)(unit * 255.0f);
 
@@ -708,6 +977,32 @@ public:
 		}
 	}
 
+	// **And give the voxels back, not only the meshes.**
+	//
+	// Dropping a mesh leaves the chunk it was built from filled, which on a
+	// field a few hundred metres across is a rounding error and on a planet is
+	// unbounded: walk far enough and every chunk you have ever passed is still
+	// resident. The mesh radius is the smaller one, so this runs wider -- a
+	// chunk just out of sight keeps its voxels and costs one re-mesh to come
+	// back, where one just outside this radius costs a re-fill.
+	void ReleaseBeyond(const glm::vec3& focus, float radius)
+	{
+		for (auto it = m_Filled.begin(); it != m_Filled.end(); )
+		{
+			glm::ivec3 chunk = Unkey(*it);
+
+			if (glm::length(ChunkCentre(chunk) - focus) > radius)
+			{
+				m_Field->ClearChunk(chunk);
+				it = m_Filled.erase(it);
+			}
+			else
+			{
+				++it;
+			}
+		}
+	}
+
 	struct Chunk
 	{
 		std::shared_ptr<Egss::Mesh> MeshPtr;
@@ -758,17 +1053,29 @@ public:
 	}
 
 private:
+	// **Twenty-one bits an axis, not sixteen.**
+	//
+	// Sixteen tops out at 65,535 chunks, which is a body 25 km across at
+	// 1.5 m voxels -- fine for the 360 m planet this started as and silently
+	// catastrophic above it, because the mask does not overflow, it *wraps*:
+	// chunk 65,536 and chunk 0 get the same key, so a streamer walking a real
+	// planet would find the far side of the world already filled. Twenty-one
+	// bits reaches 2,097,152, which is 3,145 km of chunks -- Earth's 531,000
+	// with room to spare -- and still fits three of them in a 64-bit word.
+	static constexpr int KeyBits = 21;
+	static constexpr size_t KeyMask = (size_t(1) << KeyBits) - 1;
+
 	static size_t Key(const glm::ivec3& chunk)
 	{
-		return ((size_t)(chunk.x & 0xFFFF) << 32)
-			| ((size_t)(chunk.y & 0xFFFF) << 16)
-			| (size_t)(chunk.z & 0xFFFF);
+		return ((size_t)chunk.x & KeyMask) << (2 * KeyBits)
+			| ((size_t)chunk.y & KeyMask) << KeyBits
+			| ((size_t)chunk.z & KeyMask);
 	}
 
 	static glm::ivec3 Unkey(size_t key)
 	{
-		return glm::ivec3((int)((key >> 32) & 0xFFFF),
-			(int)((key >> 16) & 0xFFFF), (int)(key & 0xFFFF));
+		return glm::ivec3((int)((key >> (2 * KeyBits)) & KeyMask),
+			(int)((key >> KeyBits) & KeyMask), (int)(key & KeyMask));
 	}
 
 	glm::vec3 ChunkCentre(const glm::ivec3& chunk) const
@@ -782,10 +1089,11 @@ private:
 		// Half the diagonal, because a chunk is a cube and its far corner is
 		// what decides whether the shell clips it.
 		float chunkReach = m_ChunkWorld * 0.8660254f;
-		float band = m_Settings.Amplitude * 0.5f + chunkReach + m_Settings.VoxelSize;
 
-		return std::abs(glm::length(chunkCentre) - m_Settings.Radius) <= band;
+		return std::abs(glm::length(chunkCentre) - m_Settings.Radius)
+			<= ReliefReach() + chunkReach + m_Settings.VoxelSize;
 	}
+
 
 	// 3D value noise. **The cast is inside the multiply on purpose** -- see the
 	// 2026-08-17 changelog entry for what `(uint32_t)(x * 374761393)` does to a

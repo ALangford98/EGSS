@@ -45,6 +45,15 @@ namespace Egss {
 		// turning white. Additive cannot express that -- it can only ever make
 		// things brighter, never tint them.
 		Multiply,
+		// Source added, destination scaled by what the source did *not* cover.
+		// The composite for anything that both emits and hides -- air, fog,
+		// smoke -- where `Additive` can only add: an additive atmosphere
+		// brightens a planet's limb and then leaves the surface showing
+		// through in full, which is exactly wrong for a body that has no
+		// surface. Colour must arrive already multiplied by its own coverage
+		// ("premultiplied"), which is what the scattering integral produces
+		// anyway, and alpha carries `1 - transmittance`.
+		Premultiplied,
 		None
 	};
 

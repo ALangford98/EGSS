@@ -208,6 +208,15 @@ namespace Egss {
 				glBlendFunc(GL_DST_COLOR, GL_ZERO);
 				return;
 
+			case BlendMode::Premultiplied:
+				// No source factor, because the colour arrives already
+				// scaled by its coverage. `GL_SRC_ALPHA` here would apply
+				// that scaling a second time and a thick atmosphere would
+				// come out dark instead of opaque.
+				glEnable(GL_BLEND);
+				glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+				return;
+
 			case BlendMode::None:
 				glDisable(GL_BLEND);
 				return;

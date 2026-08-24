@@ -875,6 +875,67 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       L-shaped piece of 2,695 voxels becomes 2 boxes that tile it exactly, where
       one box round it is 60% air. Inertia matches the analytic tensor to six
       figures including the off-diagonal terms
+- [x] **A landing that is not in the sea** — the approach asks the planet for
+      the nearest dry ground rather than aiming at the sunward point and hoping,
+      which on a planet that is 29.2% land failed seven times in ten. The
+      clearance it promises is 10 m because that is where two independent probe
+      sets stop agreeing about the shoreline (100% of directions at 3 m, 98.8%
+      at 10, 92.7% at 28), and the arrival height is the ground at the site plus
+      20 m rather than a multiple of the mean radius. 15 checks, four mutations
+      caught
+- [x] **Rings for Saturn and Uranus** — one annulus mesh with the radii as
+      uniforms, banded by 1D noise of the radius alone, with the Cassini
+      division, the planet's shadow, the opposition surge, and the negative
+      seen from the shadowed side. The tilt is on the ring rather than on the
+      body, which on two planets with opaque atmospheres is a difference
+      nothing can observe — see the changelog for when that stops being true
+- [x] **Body scale, and gas giants with no ground under the air** — a second
+      exponent for everything local to a body (`q = 3/4`, against `p = 1/2` for
+      heliocentric distance) puts Jupiter at 6.03 Earths instead of 3.3 and
+      improves every clearance in the table; deep, dense atmospheres put 5.9
+      optical depths over a surface that should not be there. Needed
+      `BlendMode::Premultiplied` in the engine, a multiple-scattering term, and
+      a step count set by the scale height
+- [x] **An hour to the day, 365 hours to the year**, and a craft that turns with
+      the air it is hovering in — the second only became reasonable once the
+      first made the frame turn a tenth of a degree a step instead of six
+- [ ] **Axial tilt, and therefore seasons.** The ring tilt is currently carried
+      by the ring. Doing it properly means a general spin axis through
+      `ToScene`/`ToFixed`, `SpinMatrix` and the co-rotating air, at which point
+      retrograde rotation stops being a negative period and becomes an
+      obliquity past 90 degrees, which is what it actually is
+- [ ] **A moon's orbit in its planet's equator**, once there is an equator to
+      speak of. Moon orbits are in the ecliptic here, so Titan does not go round
+      Saturn the way the rings do
+- [x] **A starfield** — 44 real stars at J2000 coordinates through Earth's
+      obliquity into the ecliptic, a procedural field of about 5,000 behind
+      them, and the Milky Way on the real galactic pole. Verified against
+      published ecliptic latitudes to 0.003 degrees and against Orion's belt.
+      The stated reason for wanting it was wrong, though: stars are at infinity
+      and give no parallax, so they are an *orientation* reference and never a
+      speed one — see the changelog
+- [x] **A planet the size of a planet** — both exponents at one, so every ratio
+      in the system is true, and Earth at 250 km: a 3.92 km atmosphere, 2,216 m/s
+      to escape it, a 949 m horizon and a Sun half a degree across. Needed a
+      sparse chunk store in the engine (the dense one wanted 1.1e10 GB at true
+      scale), a 21-bit chunk key, a relief spectrum with a local layer on top,
+      and distance proxies so one depth buffer covers 0.15 m to 4.5e12 m
+- [ ] **A local origin for the surface, which is what 1:1 needs.** Chunk meshes,
+      plant positions and physics bodies are planet-fixed floats, so the spacing
+      of representable positions at the surface is `R / 2^23` — 30 mm at 250 km
+      and 0.76 m at Earth's own radius, which is half a voxel and turns the
+      meshes to rubble. Carrying them about an origin that follows the player
+      lifts the ceiling; it touches `VoxelField3D`, the mesher, the SDF collider
+      and the plant placement
+- [ ] **Terrain LOD on a sphere.** Streamed ground reaches 400 m and the horizon
+      is 949, so the outer half of the view is the stand-in sphere with its
+      colour map. OpenWorld has stride-based LOD for a flat field; a planet wants
+      the same idea with the shell's curvature in it
+- [ ] **Swimming, or a coast that stops you.** The sea is a shell drawn over the
+      terrain and the player walks under it. Landing avoids that now and the
+      panel warns before you press `L` over water, but walking into the sea from
+      a beach still puts the eye underwater with no buoyancy and no tint
+
 - [ ] **Acoustics: a surface is a mesh's bounds, not its triangles.** Fine for
       rooms, which are made of walls, but a sphere currently sounds like the cube
       around it. Wants `Raycast3D` to test triangles for meshes it is worth
@@ -1095,6 +1156,403 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-24 (a planet the size of a planet)
+
+**Earth was 360 m across and everything wrong with it was one thing.** The
+atmosphere was 16 m deep, twice the height of a tree. Venus hung in the sky as a
+disc the size of a moon. Escape velocity was 84 m/s, which is not a rocket, it is
+a jump. Those are not three complaints; they are a body too small for anything
+about it to feel like a body.
+
+Both exponents are **one** now, so the scale map is the identity and every ratio
+in the system is the true one: the Sun is its real half a degree across, Venus is
+a point of light, the Moon's orbit is 60 Earth radii, and Phobos clears Mars by
+the 2.76 it actually clears it by. Earth is **250 km**, which is 1/25.5 of true
+size -- the metre is the only thing left that is not real, and the reason is
+exact, below.
+
+What that buys, in the numbers that matter to standing on it:
+
+| | before | now |
+|---|---|---|
+| Earth's radius | 360 m | 250,000 m |
+| atmosphere | 16 m | 3.92 km |
+| escape velocity | 84 m/s | 2,216 m/s |
+| horizon, eye height 1.8 m | 36 m | 949 m |
+| Sun's apparent diameter | 24.9° | 0.53° |
+
+**The chunk store had to become sparse first.** `VoxelField3D` kept one `Chunk`
+per chunk of the lattice in a `std::vector`, written to or not, at 56 bytes
+each -- nothing for a field a few hundred voxels across, and the entire reason a
+planet could not grow. Earth at its own radius and 1.5 m voxels is 578,699 chunks
+a side, which is 1.9e17 of them and **1.1e10 GB of empty structs**; even a 31 km
+planet needs 1,250 GB. An `unordered_map` keyed by the packed chunk index holds
+only what has been filled, which is what the streamer keeps near the player.
+Verified by the three voxel demos coming back byte-identical.
+
+**And the chunk key had to get wider.** `VoxelPlanet` packed each axis into 16
+bits, which tops out at 65,535 -- a body 25 km across. It does not overflow, it
+*wraps*, so a streamer on a real planet would find the far side of the world
+already filled. Twenty-one bits reaches 2,097,152, which is 3,145 km of chunks.
+
+**Terrain needed a different spectrum, and a second one.** Relief was 8.5% of the
+radius: 31 m of hills on the old planet and 541 km -- sixty Everests -- on this
+one. A quarter of a percent gives 625 m, which is Earth's real range with the
+trench filled in. But a 1/f fractal anchored at a continent leaves nothing
+underfoot, so local roughness is its own layer with its own amplitude, and it
+stops where the arithmetic does: the noise is sampled at `direction * Radius /
+wavelength`, so a metre-scale wavelength on a planet asks for coordinates near
+10^6, where a float's spacing is a sixteenth of a noise cell. The colour map
+also stops early now, at the octave whose wavelength is two texels -- below that
+it is not detail, it is aliasing, and it is most of the cost.
+
+**Distant bodies are drawn nearer and smaller.** No depth buffer spans 4.5e12 m
+and 0.15 m, so everything except the body you are at is moved in along its own
+direction and scaled by the same factor: same direction, same ratio of radius to
+distance, therefore the same picture, in a depth bucket that exists. The map is
+logarithmic past 200 km and the identity below, so it is continuous and monotone
+-- and monotone is the property that matters, because it means ordinary depth
+testing still sorts one body against another.
+
+**Three bugs, and each was invisible at 360 m for the same reason.**
+
+- **A landing arrived at a fraction of the radius rather than at a height.**
+  `max(1.06 radii, ground + 20 m)` is a sensible-looking expression while those
+  are the same order of thing -- 1.06 radii of a 360 m planet is 21 m up. At
+  250 km it is **15 km**, so `--land Earth` returned a photograph of the horizon
+  from orbit.
+- **The shell test bounded the relief at half the amplitude, and the relief is
+  skewed.** `shape * Amplitude` is bounded to ±A/2 and then the measured bias is
+  *subtracted*, which slides the range down without narrowing it -- so ground
+  reaches `A/2 + bias` below the mean radius and only `A/2 - bias` above. Chunks
+  in the difference were classified "nowhere near the surface" and filled with
+  solid rock, which draws as a wall. At a 31 m amplitude the gap was ten metres,
+  less than half a chunk. The bound is analytic now and printed at generation
+  beside a sample of what it is bounding, because a sampled min and max would
+  miss exactly the rare deep chunks nobody would think to look at.
+- **The near plane was 0.4 of the height above the *mean radius*.** On a 360 m
+  planet with 15 m hills that is 3.5 m while standing: a sliver of ground missing
+  at the very bottom of the frame, which nobody ever noticed. At 250 km the hills
+  are 380 m and the same expression put the near plane **76 metres** out. It
+  clipped away the grass underfoot and the trees you were standing among, leaving
+  a hard horizontal line across the frame with the stand-in sphere and the
+  insides of the chunk meshes showing through beneath it -- which reads as a
+  mesher bug, and was a camera one. On foot the answer is the eye height.
+
+**The ceiling is a float, and it is exact.** The chunk meshes, the plant
+positions and the physics bodies of a surface all live in planet-fixed
+coordinates whose magnitude is the radius, and a float carries 24 bits -- so the
+spacing of representable positions at the surface is `R / 2^23`. At Earth's own
+radius that is **0.76 m**, half a voxel: the meshes come out as rubble and the
+physics with them, and a capture from the ground shows the smooth stand-in sphere
+and nothing else, because nothing else survived. This was measured rather than
+predicted -- 6,371 km, 1,000 km and 60 km were built and photographed, and the
+artefacts scale with the radius exactly as the spacing does. 250 km puts it at
+**30 mm**, under the collider's own slop and a fiftieth of a voxel.
+
+Lifting it means carrying the surface about a local origin that follows the
+player, through `VoxelField3D`, the mesher, the SDF collider and the plant
+placement. That is what stands between this and 1:1, and it is on the roadmap
+with these numbers. So is terrain LOD: streamed ground reaches 400 m and the
+horizon is 949, so the last half of the view is the stand-in sphere.
+
+All three configs build clean and byte-identical, repeated runs are identical,
+and the three other voxel demos are unchanged by the sparse store.
+
+
+### 2026-08-24 (a sky with real stars in it)
+
+**Forty-four of them are real, at J2000 coordinates.** Right ascension and
+declination through Earth's 23.44-degree obliquity into the ecliptic, then into
+this demo's axes, so Orion is Orion, the Plough points at Polaris, and Dubhe is
+orange because its B-V is 1.07. A made-up star is a star nobody can check, and
+the entire reason to type coordinates in is that the angle between two of them is
+a number the code does not contain.
+
+**What is not real is where the planets sit against it.** The bodies start at
+longitudes this demo chose rather than at an epoch, so the constellation behind
+Jupiter means nothing. The sky is right relative to itself.
+
+Behind the catalogue is a procedural field of about **5,000 anonymous stars** --
+what the naked eye gets on a good night -- on a cube-face grid so they do not
+bunch at the poles, sized by the screen-space derivative so a star is a couple of
+pixels at any field of view, and scaled to sit under Megrez at magnitude 3.31,
+which is where the catalogue stops. The Milky Way is a band about the real
+galactic pole, which is why it crosses Cassiopeia and Crux the way it does.
+
+**And the roadmap's reason for wanting it was wrong.** It said 40 km/s looked
+like standing still and a starfield would fix it. It does not: stars are at
+infinity, which is exactly why they give no parallax, and you cannot tell you are
+moving by looking at them in life either. What they give is an *orientation*
+reference -- turning is now visible where it was not -- and a background for the
+planets to be objects against. The speed cue was always the planets themselves.
+
+**Verification.** A temporary self-test, since deleted, ended at 15 of 15. All
+**946 pairwise separations** survive the conversion to within 2.7e-13 degrees,
+which says the tilt was applied as a rotation; a rotation that preserves angles
+can still be the wrong rotation, so the rest are facts about the ecliptic that
+nothing in the table states. Regulus comes out **+0.465** degrees off it against
++0.465 published, Spica -2.054 against -2.055, Antares -4.570 against -4.567,
+Aldebaran -5.467 against -5.467. Polaris lands **23.899** degrees from the
+ecliptic pole, which is the obliquity plus its own 0.74 from the celestial one.
+Orion's belt is spaced 1.39 and 1.36 degrees with a 172.4-degree bend -- it is
+bent, and by about that. The pointers are 5.37 degrees apart with Polaris 5.3
+times that beyond Dubhe, which is the rule every child is taught.
+
+Three mutations, each caught by the number naming it: skipping the obliquity put
+Regulus at **+11.967** degrees off the ecliptic, which is exactly its
+declination and is the tell; applying it backwards doubled the error to +21.862;
+and confusing the demo's north with the ecliptic's gave +30.170. The separation
+check passed under all three, which is the point of having both kinds.
+
+**Five things looked wrong before they were right**, and each was a different
+kind of wrong:
+
+- **49,000 stars is a wall of noise.** Two layers at 90 and 200 cells a face
+  left no black in the sky at all. The count is `cells^2 * share * 6`, and the
+  number to aim at is what the eye actually sees.
+- **A sub-pixel Gaussian is not a small star, it is an aliased one.** At 0.8
+  pixels of sigma the sky came out as **dashes**, each a point source caught by
+  a scanline. The floor is 1.5.
+- **`fract(sin(dot(...)) * 43758.5)` fails at the magnitudes a starfield uses.**
+  Cell index times a few hundred plus a layer salt reaches eighteen thousand,
+  where a float carries a thousandth of absolute precision and `sin` needs a
+  millionth of phase to decorrelate neighbours. The sky came out as **grey
+  rectangles** -- whole cells sharing a hash. Replaced with an integer hash;
+  same family as the `Hash2D` overflow of 2026-08-17, reached from the other
+  direction.
+- **A cube root squashed 86:1 of flux to 4.4:1**, at which the faintest
+  catalogue star and the brightest anonymous one behind it are the same dot.
+  **Orion was not findable in a frame pointed straight at it.** Two fifths gives
+  5.9:1. Even then the Plough was invisible until the quads went from half a
+  degree to 0.85 -- the pattern had been exactly right and two pixels wide, which
+  a debug capture at four times the size settled in one look.
+- **Daylight has to be saturating, not proportional.** The fade started as
+  `1 - air * day`, and an exponential with a scale height a quarter of the shell
+  is down to 0.21 six metres up -- so a player standing on the ground in the
+  afternoon kept a fifth of the starfield. **Stars, in a blue daytime sky.** The
+  error is in what `air` measures: the density at the eye is not what outshines
+  a star, the lit column above it is, and a fiftieth of that column still wins.
+
+**And one that cost bit-reproducibility, which is the one worth reading.** Three
+runs of the same binary on the same scene produced three different PNGs --
+twelve faint pixels, always the same twelve, flickering between two values. With
+the sky switched off the same scene was byte-identical across three runs and all
+three configs, so it was the starfield and not the demo.
+
+The cause is that `fwidth` was called **after** the early return for a cell with
+no star in it. GLSL leaves derivatives undefined in non-uniform control flow, and
+that return is exactly that: a 2x2 quad straddling a cell boundary has helper
+invocations that took the other path, and what they contribute to the derivative
+is whatever the driver had lying around. Hoisting the one line above the branch
+is the whole fix, and all three configs are byte-identical again over repeated
+runs.
+
+
+### 2026-08-24 (a second exponent, rings, and air that carries you)
+
+**Jupiter was 3.3 Earths across, where it is really 11.** One exponent applied
+to every length is what kept the system 302 km wide instead of 8,453, and it was
+also what made the gas giants read as another Earth in a different colour. There
+are two now: heliocentric distance keeps `p = 1/2`, and everything *inside* a
+body's own system -- its radius, its moons' radii, its moons' orbits -- goes
+through `q = 3/4`. Jupiter is **6.03 Earths**, the Sun 33.8, and within any one
+system the map is still a single uniform power, which is the property the whole
+design rests on: nothing overtakes anything and no moon needs special-casing to
+stay outside its planet.
+
+`q = 3/4` is where two constraints meet. Below it the giants shrink back toward
+Earth. Above it the Sun grows as `109.24^q` while Mercury's orbit is pinned at
+`9088^p`, and it **swallows Mercury outright at `q = 0.97`**. Three quarters
+leaves Mercury 2.8 solar radii clear, and every clearance in the table improved:
+the tightest is now Phobos at **2.04**, where it used to be 1.57.
+
+What it costs, stated rather than hidden. A moon's orbit grows with its planet's
+system rather than with the Sun's, so the Jovian system is 26 km across where
+Jupiter's own orbit is 126 km -- really that ratio is 0.24% and here it is 20%.
+And the Sun is **24.9 degrees across seen from Earth**, against 0.53 in life,
+because its radius went up by `q` while the orbit it is seen from did not. Both
+exponents are sliders.
+
+**An hour to the day and 365 hours to the year.** The clock near a body is set so
+that body's day takes `SecondsPerDay`, and far from one it runs at the orbital
+rate; asking for a 3,600 s day on Earth implies 7.584e-7 yr/s, and 365 hours to
+the year is 7.610e-7. They agree to **0.34%**, so the handover at six radii is no
+longer a change of pace -- at the 60 s day this started with the two differed by
+four orders of magnitude and leaving a planet made the sky lurch. The sliders are
+logarithmic now, because a linear one cannot represent 7.6e-7 at all. The cost is
+that nothing completes an orbit while you watch and the Kepler column stays
+empty until you drag the rate up.
+
+**A craft in an atmosphere turns with the atmosphere.** The ship's position is
+held in the frame body's inertial frame, which is right for an orbit and wrong
+for a hover: the coastline slid out from under a stationary ship at a full turn a
+day. It is carried round now, weighted by how much air there is to be carried by
+-- full at the surface, nothing at the top of the shell, on the same exponential
+the scattering uses. **This was not worth having until the day got longer**: at
+60 s to the day the frame turned six degrees a step, which is a fairground ride,
+and the note that used to sit here rejecting co-rotation was right at the time.
+
+**Gas giants get air deep enough to have no ground under it.** Jupiter's visible
+air is really about 1.4% of its radius, no deeper in proportion than Earth's --
+the thing that is actually true about a gas giant is that there is no altitude at
+which you land. This demo builds every body out of voxels, so there is a surface
+down there whether it belongs or not, and the honest way to draw a planet with no
+ground is air you never get through. Straight down through Jupiter's shell is now
+5.9 optical depths.
+
+That took three fixes, each of which was a different way of being wrong:
+
+- **An additive atmosphere cannot hide anything.** Air both adds light and stops
+  it, and `BlendMode::Additive` can only do the first, so Jupiter came out as a
+  hard disc of *ground* with a bright halo round it. The engine has a
+  `Premultiplied` mode now -- `src + dst * (1 - src.a)` -- and the shader fills
+  alpha with the extinction along the same path the scattering integral walks.
+- **Single scattering makes thick air dark.** Every photon that bounces twice is
+  dropped by the integral, and at Jupiter's optical depth almost all of them do,
+  so the planet went from a hard disc to a **grey ball dimmer than Earth beside
+  it**. One extra term stands in for the bounces: it appears only where the air
+  is thick and is lit by where the deepest visible air sits relative to the star,
+  so there is still a terminator. It is zero for Earth and Mars, so nothing about
+  a thin atmosphere changed.
+- **A fixed step count over a path length that jumps is two different
+  quadratures.** Stopping the ray at the voxel surface drew a **hard circle
+  across Saturn**; moving the stop below the surface only moved the circle. What
+  steps is the path, not the ground. A body with no surface does not stop at all
+  now -- density saturates below the drawn radius, so the far half buries itself
+  -- and the step count comes from the scale height rather than from the
+  constant 8 that suited a shell 4.5% of Earth's radius.
+
+**Rings, on Saturn and Uranus.** One annulus mesh; the radii are uniforms, so the
+fragment shader gets the radius in units of planet radii, which is the unit every
+published number about a ring is quoted in. Banding is 1D value noise of that
+radius alone, which is what makes it read as orbits rather than as a texture, and
+the **Cassini division** is a smoothed notch at 1.95 to 2.02. Seen from the
+shadowed side the ring is a negative of itself -- thin parts pass light, thick
+parts stop it -- which is one line and the whole difference between a ring system
+and a grey band. The planet's shadow falls across it, and the opposition surge
+is there because ring particles really do throw light back the way it came, and
+because without it a ring tilted 26.73 degrees sits at a third of the brightness
+of the planet lighting it.
+
+**The tilt is on the ring, not on the planet, and that is deliberate.** Every
+body here spins about +Y, so an untilted ring lies in the ecliptic with the star
+in its plane: drawn that way Saturn's rings came out **dark grey**, which is not
+a shading bug but a flat annulus receiving nothing. Tilting the body is the
+accurate fix and a much larger change -- the spin drives the terrain's frame, the
+walking player and the co-rotating air. It is also, on these two bodies, a change
+nobody could see: their atmospheres are opaque, so there is no observation in this
+demo that distinguishes a tilted Saturn from a Saturn with a tilted ring. If a
+body with a visible surface ever gets rings, that is the line that has to change.
+
+**Verification.** A temporary self-test, since deleted, ended at 21 of 21. The
+two exponents were checked against arithmetic written out longhand rather than
+against `DrawnLength` agreeing with itself, and the sharpest of them is that **a
+moon's orbit measured in its planet's radii is the true ratio raised to `q`** --
+`(a/R_e)^q / (R_p/R_e)^q` collapses to `(a/R_p)^q` with nothing about Earth left
+in it, and that holds only because the orbit and the radius go through the same
+exponent. The clearance check is not a substitute for it: a moon compressed on
+the wrong exponent still clears its planet, it is merely in the wrong place, and
+the mutation proving that was the one mutation the first version of the test
+missed. It puts Io at 1.35 Jupiter radii, inside the air.
+
+The air that carries a ship is measured by **where the ground is, not by what the
+code did**: a ship on the deck is over the same patch a moment later (0.0000 of a
+turn), one above the atmosphere sweeps the planet's whole rotation (1.0000), and
+half way up it is 0.8808 -- both ends compared against numbers this code does not
+contain. That test also found a real fault: the weighting was a bare `exp(-h/H)`,
+which is still 0.018 at the top of the shell where the early-out drops it to
+nothing, so the rate of the ground's drift **stepped by 1.8%** at the one
+altitude every ship crosses on the way in. Normalising it so it reaches exactly
+zero removed the step.
+
+Four mutations, each caught by the number naming it: the air turning the ship the
+wrong way moved the ground **2.0000** of a turn instead of zero, which is exactly
+double and is the signature of a reversed rotation; no weighting at all froze the
+ground at every altitude; the wrong exponent on moon orbits put the Moon at 7.77
+Earth radii against 21.65; and Io inside Jupiter's atmosphere as above.
+
+All three configs build clean and their captures of Saturn are byte-identical.
+
+
+### 2026-08-24 (a landing that is not in the sea)
+
+**`--land Earth` put you underwater, and had done since the day Earth got an
+ocean.** The approach aims at the sunward point so that the landing site is lit;
+Earth is 29.2% land; the two facts multiply. The panel read `on Earth, 0.0 m up`
+and `on the ground`, both true -- the seabed is ground -- while the sea, which is
+a shell drawn *over* the terrain rather than a surface anything stands on, closed
+1.5 m over the eye. The whole screen was the underside of the water with the
+shore visible through it, which reads as a broken water shader and is not one.
+
+**The landing approach now asks the planet where the land is.**
+`VoxelPlanet::NearestLand` walks the same Fibonacci spiral the sea level was
+bisected on and keeps the direction with the largest dot against where the
+lander was pointed, so what comes back is the nearest dry ground rather than
+merely some. The site moves **9.4 degrees off the approach on average and 27.5
+at worst** -- still lit, still the hemisphere you aimed at. A direction that is
+already good comes back untouched rather than being snapped to the nearest
+sample, which is the difference between "nearest" and "nearest on a grid".
+
+**One dry sample is not a landing site, and the probe set to prove it is set by
+the terrain rather than by the disc.** Two versions were wrong first. Four
+probes on two axes let diagonal inlets through, which an independent probe set
+caught in 3% of accepted sites. Rings at fixed *fractions* of the arc then left
+the middle unprobed -- at 10 m the innermost ring sat 4.5 m out, so a pond three
+metres away was invisible, and 20 of 512 sites had water inside 3 m. What sets
+the spacing is the relief: five octaves from a 41 m base wavelength makes the
+finest feature 2.6 m across, and probes half of that apart cannot step over one.
+That works out at eight rings and 225 points for a 10 m disc, evaluated only for
+a candidate that has already beaten the best angle so far.
+
+**The clearance is 10 m because that is where two independent probe sets stop
+agreeing.** A sunflower of 397 points, sharing no radius and no angle with the
+search's rings, agrees about **every one of 812 directions at 3 m, 98.8% at 10 m
+and 92.7% at 28 m** -- the shore is fractal down to that finest octave and no
+finite probe set closes it. From the other side, 8.4% of Earth is 10 m clear of
+water against 1.3% at 28 m, and a rarer site is a site further from where you
+pointed: 28 m moved the landing 43 degrees on average. Ten is the largest
+clearance the search can actually see, and it costs nine degrees.
+
+**The arrival height was wrong too, and nothing had noticed.** `1.06 radii` is a
+multiple of the *mean* radius while relief is 8.5% of it, so the same number is
+10 m over a valley on Earth and 21 m *inside* a ridge on Jupiter. The arrival
+radius is now the ground at the chosen site plus a flat 20 m, since it is a
+distance to fall and not a fraction of anything.
+
+**Pressing `L` over water still lands you there.** Landing is where you already
+are -- that is the whole reason there is no teleport left in it -- so the panel
+says `over water -- 9 m of it, and nothing here swims` before you press the key,
+and the log says it after. Refusing would be the wrong fix for a demo where a
+seabed is a place somebody might want to look at.
+
+**Verification, and the two measurements that were wrong before the code was.**
+A temporary self-test, since deleted, ended at 15 of 15. Its first reading said
+24.56% of the sphere was above sea level against the 29.2% the sea level had been
+fitted to -- 4.6 sigma, which is not a sampling difference. The test was walking
+indices 0 to 2047 of a 4,096-point spiral, and a Fibonacci spiral is ordered by
+z, so it had measured one hemisphere. Over the whole sphere it reads 29.57%,
+0.4 sigma from a number produced by unrelated code. The second wrong measurement
+was the probe comparison itself: the counts jumped 0, 11, 1, 36, 16, 37 as the
+disc grew, which is not how a fractal coastline behaves. A handful of sites serve
+hundreds of approaches, so it was counting the same bad site over and over;
+comparing the two predicates *per direction* gives a monotone 99.3%, 98.5%, 95.7%,
+91.6%, 91.3%, 86.1% -- and that is the curve the 10 m clearance was read off.
+
+Four deliberate mutations, each caught by the number that identifies it: the
+planet-fixed rotation dropped on the way in put the landing **170.2 degrees from
+the sunward point**, on the night side, which nothing else noticed because every
+site the search returns is dry whichever direction it was asked about -- the
+check that catches it had to be added, and that is what the mutation was for; the
+height correction dropped gave **17.769 m** of clearance instead of 20; the
+surroundings test removed left **299 of 512** sites with water inside 3 m; and
+taking an eligible site rather than the nearest one landed **163.72 degrees**
+away, most of the way to the antipode.
+
+All three configs build clean, and the Debug and Release captures of the landing
+are byte-identical.
+
 
 ### 2026-08-21 (one continuous space, and flying across it)
 

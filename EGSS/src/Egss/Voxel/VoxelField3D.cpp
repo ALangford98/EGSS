@@ -18,16 +18,35 @@ namespace Egss {
 			(m_Size.y + ChunkSize - 1) / ChunkSize,
 			(m_Size.z + ChunkSize - 1) / ChunkSize);
 
+		// Nothing is allocated here any more. The map fills as chunks are
+		// written to, which is what lets the lattice be a planet across.
 		m_Storage.clear();
-		m_Storage.resize((size_t)glm::max(m_Chunks.x, 0)
-			* glm::max(m_Chunks.y, 0) * glm::max(m_Chunks.z, 0));
+	}
+
+	const VoxelField3D::Chunk VoxelField3D::s_Absent;
+
+	// **The const path must not create.** The non-const one below does, which
+	// is why the two are written out separately rather than one delegating to
+	// the other through a `const_cast` -- that older shape would have handed a
+	// writer a reference to the shared absent chunk and let it scribble on
+	// every unwritten chunk in the field at once.
+	const VoxelField3D::Chunk& VoxelField3D::ChunkAt(int cx, int cy, int cz) const
+	{
+		auto it = m_Storage.find(ChunkIndexOf(cx, cy, cz));
+
+		return it == m_Storage.end() ? s_Absent : it->second;
 	}
 
 	VoxelField3D::Chunk& VoxelField3D::ChunkFor(int x, int y, int z,
 		int& outLocalX, int& outLocalY, int& outLocalZ)
 	{
-		const VoxelField3D* self = this;
-		return const_cast<Chunk&>(self->ChunkFor(x, y, z, outLocalX, outLocalY, outLocalZ));
+		outLocalX = x % ChunkSize;
+		outLocalY = y % ChunkSize;
+		outLocalZ = z % ChunkSize;
+
+		// Creates the entry if it is not there, which is what a writer wants
+		// and exactly what the const path above must never do.
+		return m_Storage[ChunkIndexOf(x / ChunkSize, y / ChunkSize, z / ChunkSize)];
 	}
 
 	const VoxelField3D::Chunk& VoxelField3D::ChunkFor(int x, int y, int z,
@@ -37,12 +56,12 @@ namespace Egss {
 		outLocalY = y % ChunkSize;
 		outLocalZ = z % ChunkSize;
 
-		return m_Storage[ChunkIndexOf(x / ChunkSize, y / ChunkSize, z / ChunkSize)];
+		return ChunkAt(x / ChunkSize, y / ChunkSize, z / ChunkSize);
 	}
 
 	float VoxelField3D::DistanceAt(int x, int y, int z) const
 	{
-		if (m_Storage.empty())
+		if (m_Chunks.x <= 0)
 			return Far;
 
 		x = glm::clamp(x, 0, m_Size.x - 1);
@@ -59,7 +78,7 @@ namespace Egss {
 
 	unsigned char VoxelField3D::MaterialAt(int x, int y, int z) const
 	{
-		if (m_Storage.empty())
+		if (m_Chunks.x <= 0)
 			return 0;
 
 		x = glm::clamp(x, 0, m_Size.x - 1);
@@ -76,7 +95,7 @@ namespace Egss {
 
 	void VoxelField3D::Set(int x, int y, int z, float distance, unsigned char material)
 	{
-		if (m_Storage.empty() || !Contains(x, y, z))
+		if (m_Chunks.x <= 0 || !Contains(x, y, z))
 			return;
 
 		int lx, ly, lz;
@@ -227,7 +246,7 @@ namespace Egss {
 	void VoxelField3D::Fill(const std::function<float(const glm::vec3&)>& sdf,
 		unsigned char material)
 	{
-		if (m_Storage.empty() || !sdf)
+		if (m_Chunks.x <= 0 || !sdf)
 			return;
 
 		for (int cz = 0; cz < m_Chunks.z; cz++)
@@ -239,7 +258,7 @@ namespace Egss {
 	void VoxelField3D::FillChunk(const glm::ivec3& chunk,
 		const std::function<float(const glm::vec3&)>& sdf, unsigned char material)
 	{
-		if (m_Storage.empty() || !sdf)
+		if (m_Chunks.x <= 0 || !sdf)
 			return;
 
 		if (chunk.x < 0 || chunk.y < 0 || chunk.z < 0
@@ -383,7 +402,7 @@ namespace Egss {
 
 	int VoxelField3D::EditSphere(const glm::vec3& centre, float radius, bool add)
 	{
-		if (m_Storage.empty() || radius <= 0.0f)
+		if (m_Chunks.x <= 0 || radius <= 0.0f)
 			return 0;
 
 		// Only the lattice points the sphere can reach, plus a margin so the
@@ -437,10 +456,19 @@ namespace Egss {
 		return changed;
 	}
 
+	void VoxelField3D::ClearChunk(const glm::ivec3& chunk)
+	{
+		if (chunk.x < 0 || chunk.y < 0 || chunk.z < 0
+			|| chunk.x >= m_Chunks.x || chunk.y >= m_Chunks.y || chunk.z >= m_Chunks.z)
+			return;
+
+		m_Storage.erase(ChunkIndexOf(chunk.x, chunk.y, chunk.z));
+	}
+
 	size_t VoxelField3D::AllocatedChunks() const
 	{
 		size_t count = 0;
-		for (const Chunk& chunk : m_Storage)
+		for (const auto& [key, chunk] : m_Storage)
 			count += chunk.Distance.empty() ? 0 : 1;
 
 		return count;
@@ -470,7 +498,7 @@ namespace Egss {
 			|| chunk.x >= m_Chunks.x || chunk.y >= m_Chunks.y || chunk.z >= m_Chunks.z)
 			return;
 
-		const Chunk& c = m_Storage[ChunkIndexOf(chunk.x, chunk.y, chunk.z)];
+		const Chunk& c = ChunkAt(chunk.x, chunk.y, chunk.z);
 		bool dense = !c.Distance.empty();
 
 		out.resize(dense ? s_DenseBytes : s_HeaderBytes);
@@ -536,7 +564,7 @@ namespace Egss {
 	{
 		size_t bytes = m_Storage.size() * sizeof(Chunk);
 
-		for (const Chunk& chunk : m_Storage)
+		for (const auto& [key, chunk] : m_Storage)
 		{
 			bytes += chunk.Distance.size() * sizeof(float);
 			bytes += chunk.Material.size() * sizeof(unsigned char);

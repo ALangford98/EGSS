@@ -95,12 +95,70 @@ public:
 		double RotationHours;   // sidereal day; negative for a retrograde spin
 		glm::vec3 Colour;
 
-		// Atmosphere: its depth as a fraction of the body's radius, and the
-		// colour it scatters. Zero depth means airless -- Mercury, the Moon,
-		// the small moons -- and those get no shell at all rather than a
-		// transparent one.
+		// Atmosphere: its depth as a fraction of the body's radius, a density
+		// multiplier on top of the global one, and the colour it scatters.
+		//
+		// **The two multiply, and what matters is their product.** Optical
+		// depth straight up is `0.25 * AirDensity * Fraction * Density` -- the
+		// quarter is the scale height as a share of the shell. Earth's real
+		// Rayleigh optical depth is about 0.1 and this uses 0.3, which is the
+		// exaggeration that has always been here. Shrinking the shell from
+		// 4.5% of the radius to its real 1.57% without dividing the density
+		// out again took the horizontal path to twenty optical depths, and
+		// the sky came out **brown**: at that thickness every horizon is a
+		// sunset, because all the blue has been scattered out of it.
+		// Zero depth means airless -- Mercury, the Moon, the small moons --
+		// and those get no shell at all rather than a transparent one.
+		//
+		// **The gas giants' numbers are not measured atmosphere depths, and
+		// should not be read as any.** Jupiter's visible air is about 1,000 km
+		// over a 69,911 km radius, which is 1.4% -- no deeper in proportion
+		// than Earth's. What is actually true about a gas giant is that it has
+		// *no surface*: pressure rises until hydrogen stops being a gas, and
+		// there is no altitude at which you land. This demo builds every body
+		// out of voxels, so there is a surface down there whether it belongs
+		// or not, and the honest way to draw a planet with no ground is air
+		// deep enough and thick enough that you never reach it. Straight down
+		// through Jupiter's shell is 5.9 optical depths, which leaves 0.3% of
+		// whatever is underneath showing.
 		float AtmosphereFraction;
+		float AtmosphereDensity;
+
+		// How much multiply-scattered light the air gives back. Zero for a
+		// thin atmosphere, where single scattering is the whole story; one for
+		// air deep enough that light bounces around inside it before leaving,
+		// which is every gas giant and Venus. See the note in the fragment
+		// shader for what it is standing in for.
+		float AtmosphereGlow;
 		glm::vec3 Scatter;
+
+		// Rings: inner and outer edge in units of the body's own radius, the
+		// tilt of their plane out of the ecliptic, and the colour of the
+		// material. Zero inner means no rings. Saturn's 1.24 to 2.27 is the C
+		// ring's inner edge to the A ring's outer one, which is the span you
+		// can actually see; Uranus's are narrow, dark and were not found until
+		// 1977 for that reason.
+		//
+		// **The tilt is the body's real obliquity, and it is on the ring
+		// rather than on the planet.** Every body here spins about +Y -- see
+		// the note on `SpinAngle` -- so an untilted ring lies in the ecliptic
+		// with the star in its plane, edge-on to the light. Drawn that way
+		// Saturn's rings came out **dark grey**, which is not a shading bug:
+		// a flat annulus lit from within its own plane receives nothing.
+		//
+		// Tilting the whole body is the accurate fix and a much larger change:
+		// the spin drives the terrain's frame, the walking player and the
+		// co-rotating air. It is also, on these two bodies, a change nobody
+		// could see. Their atmospheres are opaque, so the surface whose
+		// rotation the tilt would matter to is not visible from anywhere --
+		// there is no observation in this demo that distinguishes a tilted
+		// Saturn from a Saturn with a tilted ring. Stated here so that if a
+		// body with a *visible* surface ever gets rings, this is the line that
+		// has to change first.
+		float RingInner;
+		float RingOuter;
+		float RingTiltDegrees;
+		glm::vec3 RingColour;
 	};
 
 	// Real numbers, because they cost nothing and the check at the bottom of
@@ -115,24 +173,24 @@ public:
 	{
 		static const std::vector<BodyDescription> table =
 		{
-			{ "Sun",      -1, 0.0,       696000.0, 1.0, 609.0,         { 1.00f, 0.86f, 0.42f }, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Sun",      -1, 0.0,       696000.0, 1.0, 609.0,         { 1.00f, 0.86f, 0.42f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
 
-			{ "Mercury",   0, 0.387,       2440.0, 1.660e-7, 1407.6,    { 0.62f, 0.58f, 0.54f }, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Venus",     0, 0.723,       6052.0, 2.448e-6, -5832.5,    { 0.92f, 0.80f, 0.55f }, 0.055f, { 0.85f, 0.62f, 0.25f } },
-			{ "Earth",     0, 1.000,       6371.0, 3.003e-6, 23.934,    { 0.28f, 0.48f, 0.85f }, 0.045f, { 0.22f, 0.45f, 1.00f } },
-			{ "Mars",      0, 1.524,       3390.0, 3.227e-7, 24.623,    { 0.80f, 0.38f, 0.24f }, 0.020f, { 0.80f, 0.45f, 0.30f } },
-			{ "Jupiter",   0, 5.203,      69911.0, 9.545e-4, 9.925,    { 0.80f, 0.68f, 0.52f }, 0.035f, { 0.75f, 0.62f, 0.45f } },
-			{ "Saturn",    0, 9.537,      58232.0, 2.858e-4, 10.656,    { 0.88f, 0.80f, 0.60f }, 0.038f, { 0.80f, 0.72f, 0.50f } },
-			{ "Uranus",    0, 19.191,     25362.0, 4.366e-5, -17.24,    { 0.60f, 0.85f, 0.88f }, 0.040f, { 0.40f, 0.80f, 0.85f } },
-			{ "Neptune",   0, 30.070,     24622.0, 5.151e-5, 16.11,    { 0.30f, 0.44f, 0.86f }, 0.040f, { 0.25f, 0.42f, 0.95f } },
+			{ "Mercury",   0, 0.387,       2440.0, 1.660e-7, 1407.6,    { 0.62f, 0.58f, 0.54f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Venus",     0, 0.723,       6052.0, 2.448e-6, -5832.5,    { 0.92f, 0.80f, 0.55f }, 0.0410f, 22.5f, 1.0f, { 0.85f, 0.62f, 0.25f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Earth",     0, 1.000,       6371.0, 3.003e-6, 23.934,    { 0.28f, 0.48f, 0.85f }, 0.0157f, 3.0f, 0.0f, { 0.22f, 0.45f, 1.00f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Mars",      0, 1.524,       3390.0, 3.227e-7, 24.623,    { 0.80f, 0.38f, 0.24f }, 0.0150f, 0.5f, 0.0f, { 0.80f, 0.45f, 0.30f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Jupiter",   0, 5.203,      69911.0, 9.545e-4, 9.925,    { 0.80f, 0.68f, 0.52f }, 0.0700f, 11.0f, 1.0f, { 0.75f, 0.62f, 0.45f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Saturn",    0, 9.537,      58232.0, 2.858e-4, 10.656,    { 0.88f, 0.80f, 0.60f }, 0.0800f, 9.6f, 1.0f, { 0.80f, 0.72f, 0.50f }, 1.24f, 2.27f, 26.73f, { 0.94f, 0.88f, 0.76f } },
+			{ "Uranus",    0, 19.191,     25362.0, 4.366e-5, -17.24,    { 0.60f, 0.85f, 0.88f }, 0.0700f, 11.0f, 1.0f, { 0.40f, 0.80f, 0.85f }, 1.60f, 2.01f, 97.77f, { 0.34f, 0.34f, 0.36f } },
+			{ "Neptune",   0, 30.070,     24622.0, 5.151e-5, 16.11,    { 0.30f, 0.44f, 0.86f }, 0.0700f, 11.0f, 1.0f, { 0.25f, 0.42f, 0.95f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
 
-			{ "Moon",      3, 0.002570,    1737.0, 3.694e-8, 655.7,    { 0.72f, 0.71f, 0.68f }, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Phobos",    4, 0.0000627,     11.3, 5.0e-15, 7.65,     { 0.55f, 0.50f, 0.46f }, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Io",        5, 0.002819,    1822.0, 4.490e-8, 42.46,    { 0.88f, 0.82f, 0.45f }, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Europa",    5, 0.004486,    1561.0, 2.413e-8, 85.2,    { 0.80f, 0.78f, 0.72f }, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Ganymede",  5, 0.007155,    2634.0, 7.450e-8, 171.7,    { 0.66f, 0.62f, 0.58f }, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Callisto",  5, 0.012585,    2410.0, 5.410e-8, 400.5,    { 0.48f, 0.45f, 0.44f }, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Titan",     6, 0.008168,    2575.0, 6.766e-8, 382.7,    { 0.85f, 0.65f, 0.30f }, 0.060f, { 0.90f, 0.60f, 0.25f } },
+			{ "Moon",      3, 0.002570,    1737.0, 3.694e-8, 655.7,    { 0.72f, 0.71f, 0.68f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Phobos",    4, 0.0000627,     11.3, 5.0e-15, 7.65,     { 0.55f, 0.50f, 0.46f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Io",        5, 0.002819,    1822.0, 4.490e-8, 42.46,    { 0.88f, 0.82f, 0.45f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Europa",    5, 0.004486,    1561.0, 2.413e-8, 85.2,    { 0.80f, 0.78f, 0.72f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Ganymede",  5, 0.007155,    2634.0, 7.450e-8, 171.7,    { 0.66f, 0.62f, 0.58f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Callisto",  5, 0.012585,    2410.0, 5.410e-8, 400.5,    { 0.48f, 0.45f, 0.44f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Titan",     6, 0.008168,    2575.0, 6.766e-8, 382.7,    { 0.85f, 0.65f, 0.30f }, 0.2300f, 2.7f, 0.8f, { 0.90f, 0.60f, 0.25f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
 		};
 
 		return table;
@@ -156,6 +214,8 @@ public:
 		m_Sphere.reset(Egss::Mesh::CreateSphere(1.0f, 128, 64));
 
 		BuildShader();
+		BuildRings();
+		BuildStars();
 		BuildTrees();
 		Reset();
 
@@ -171,6 +231,7 @@ public:
 		// so eight put the ship level with it and the frame changed hands
 		// every time the Moon came round.
 		GoTo(3, 4.0);
+
 		PlaceFromCommandLine();
 	}
 
@@ -183,8 +244,10 @@ public:
 	// one at 1.66, because it really is a tight orbit -- 2.77 Mars radii.
 	void ReportScale() const
 	{
-		EGSS_TRACE("Solar system: p = {0:.3f}, Earth {1:.1f} m, 1 AU = {2:.0f} m",
-			m_Compression, DrawnRadius(3), DrawnLength(s_AuKm));
+		EGSS_TRACE("Solar system: p = {0:.3f} (orbits), q = {1:.3f} (bodies), "
+			"Earth {2:.1f} m, 1 AU = {3:.0f} m",
+			m_Compression, m_BodyScale, DrawnRadius(3),
+			DrawnLength(s_AuKm, (double)m_Compression));
 
 		for (size_t i = 0; i < m_Bodies.size(); i++)
 		{
@@ -195,7 +258,7 @@ public:
 			}
 
 			size_t parent = (size_t)m_Bodies[i].Parent;
-			double orbit = DrawnLength(m_Bodies[i].SemiMajorAu * s_AuKm);
+			double orbit = DrawnLength(m_Bodies[i].SemiMajorAu * s_AuKm, OrbitExponent(i));
 			double clearance = orbit / (DrawnRadius(parent) + DrawnRadius(i));
 
 			EGSS_TRACE("  {0:<9} r = {1:8.1f} m, a = {2:9.1f} m, {3:.2f}x clear of {4}",
@@ -226,7 +289,7 @@ public:
 
 				// Approached from the star's side, so the landing site is lit
 				// rather than in the middle of its night.
-				GoTo(body, land ? 1.06 : 6.0, land ? 0.0 : 55.0);
+				GoTo(body, land ? 1.06 : 6.0, land ? 0.0 : 55.0, land);
 
 				if (land)
 					Land();
@@ -242,7 +305,12 @@ public:
 	// on the sunward side, looking at it. A teleport, and said to be one: it
 	// is how the panel's buttons work and how a capture gets framed. Flying
 	// there is the point of the demo, but not of a screenshot.
-	void GoTo(size_t index, double radii, double tiltDegrees = 55.0)
+	//
+	// `landing` says the arrival is meant to be walked away from, which asks
+	// two things of it that a flyby does not care about: that there is dry
+	// land underneath, and that the height clears the ground that is actually
+	// there rather than a multiple of the mean radius.
+	void GoTo(size_t index, double radii, double tiltDegrees = 55.0, bool landing = false)
 	{
 		glm::dvec3 toStar = BodyScene(0) - BodyScene(index);
 		double length = glm::length(toStar);
@@ -260,6 +328,9 @@ public:
 		double tilt = glm::radians(tiltDegrees);
 		glm::dvec3 direction = glm::normalize(
 			sunward * std::cos(tilt) + glm::dvec3(north) * std::sin(tilt));
+
+		if (landing)
+			direction = LandingApproach(index, direction, radii);
 
 		m_Frame = index;
 		m_Local = direction * (DrawnRadius(index) * radii);
@@ -303,6 +374,65 @@ public:
 		m_YearsPerSecond = TargetYearsPerSecond();
 	}
 
+	// **Where a lander should actually arrive**, given where it was aiming.
+	//
+	// Two corrections, and the order matters only in that the second needs the
+	// first's answer.
+	//
+	// *Dry land.* Earth is 29.2% land, so the sunward point the approach aims
+	// at is sea seven times in ten -- and the sea is not a surface here, it is
+	// a shell drawn over the ground, so landing under it puts the eye 1.5 m
+	// below the water with the seabed underfoot. `NearestLand` moves the site
+	// the smallest angle that fixes it, which keeps the landing on the lit
+	// half that the zero tilt was chosen for.
+	//
+	// *Height.* `radii` is a multiple of the *mean* radius, and relief here is
+	// 8.5% of it: 1.06 radii is 10 m over a valley on Earth and 21 m *inside*
+	// a ridge on Jupiter. So the arrival radius is the ground at the site plus
+	// a fixed drop -- 20 m whatever the body, since it is a distance to fall
+	// and not a fraction of anything.
+	//
+	// **The search runs in planet-fixed coordinates**, which is where the
+	// terrain is; the direction goes in through `ToFixed` and comes back out
+	// through `ToScene`. Skipping either would land on the right patch of
+	// ground at t = 0, where the spin is the identity, and somewhere else at
+	// every other moment -- and a day here is sixty seconds.
+	glm::dvec3 LandingApproach(size_t index, const glm::dvec3& aimed, double& radii)
+	{
+		VoxelPlanet& planet = PlanetFor(index);
+
+		glm::vec3 wanted = glm::vec3(ToFixed(index, aimed));
+
+		// **Ten metres of dry ground, and the number was measured rather than
+		// picked.** Two things bound it from opposite sides.
+		//
+		// Above, the shoreline: relief runs for five octaves, so the finest
+		// thing in it is 2.6 m across and the coast wanders by about a metre
+		// at that scale. Two independent probe sets -- 225 points on rings
+		// against a 397-point sunflower -- agreed about every one of 812
+		// directions at 3 m, on 98.8% at 10 m and on 92.7% at 28 m. Past ten
+		// metres the search is asserting more than it can see.
+		//
+		// Below, how much planet is left to land on: 8.4% of Earth's surface
+		// is 10 m clear of water against 1.3% at 28 m, and a rarer site is a
+		// site further from where the lander was pointed. At ten the landing
+		// moves 9.4 degrees off the approach on average and 27.5 at worst,
+		// which is still the lit half and still the hemisphere you aimed at.
+		glm::vec3 site = planet.NearestLand(wanted, 10.0f);
+
+		double surface = (double)planet.Get().Radius + (double)planet.Relief(site);
+
+		// **Replaces the caller's multiple, and does not take the larger.**
+		// `max` was right while a multiple of the radius and a fixed drop were
+		// the same order of thing: 1.06 radii of a 360 m planet is 21 m up.
+		// At Earth's own radius it is **382 km**, so `--land Earth` put the
+		// ship in orbit and the capture came back a picture of the horizon.
+		// A landing arrives at a height, not at a fraction.
+		radii = (surface + 20.0) / DrawnRadius(index);
+
+		return glm::normalize(ToScene(index, glm::dvec3(site)));
+	}
+
 	// Said once, and only if this demo is the one being looked at: `OnAttach`
 	// runs for every layer, so anything logged there is logged whichever demo
 	// you asked for.
@@ -317,35 +447,71 @@ public:
 
 	// --- The scale map ------------------------------------------------------
 
-	// One expression, and every length in the demo goes through it.
-	double DrawnLength(double km) const
+	// **Two exponents, and the split is between systems rather than between
+	// kinds of length.**
+	//
+	// One exponent was the original design and it had a cost that showed:
+	// `p = 1/2` applied to radii as well as orbits made Jupiter 3.3 times
+	// Earth where it is really 11, so the gas giants read as another Earth
+	// with a different colour. Raising `p` on its own is not available -- it
+	// is what keeps the system 302 km wide instead of 8,453.
+	//
+	// So heliocentric distance keeps `p`, and everything *inside* a body's own
+	// system -- its radius, its moons' radii, its moons' orbits -- goes
+	// through `q`. Within one system the map is still a single uniform power,
+	// which is the property the original design was built on: nothing
+	// overtakes anything and no moon needs special-casing to stay outside its
+	// planet, because the clearance `a^q / (R^q + r^q)` is monotone in every
+	// one of its arguments.
+	//
+	// `q = 3/4` is where two constraints meet. Below it the giants shrink back
+	// toward Earth; above it the Sun -- which grows as `109.3^q` while
+	// Mercury's orbit is fixed at `9088^p` -- eats the inner planets, and it
+	// swallows Mercury outright at `q = 0.97`. Three quarters puts Jupiter at
+	// 6.0 Earths and leaves Mercury 2.8 solar radii clear.
+	//
+	// What it costs, stated rather than hidden: a moon's orbit now grows with
+	// its planet's system rather than with the Sun's, so the Jovian system is
+	// 25 km across where Jupiter's own orbit is 126 km. Really that ratio is
+	// 0.24%, and here it is 20%. The moons are a *place* at this scale, which
+	// is the trade -- and both exponents are sliders if you want to see it.
+	double DrawnLength(double km, double exponent) const
 	{
 		if (km <= 0.0)
 			return 0.0;
 
-		return (double)s_EarthDrawn * std::pow(km / s_EarthRadiusKm, (double)m_Compression);
+		return (double)s_EarthDrawn * std::pow(km / s_EarthRadiusKm, exponent);
 	}
 
+	// Radii are local geometry, whoever the body orbits.
 	double DrawnRadius(size_t index) const
 	{
-		// A floor, because Phobos is 11.3 km across and lands at 15 m: small
+		// A floor, because Phobos is 11.3 km across and lands at 3 m: small
 		// enough to fly past without seeing, but not so small that the voxel
 		// lattice under it has nothing to say.
-		return std::max(12.0, DrawnLength(m_Bodies[index].RadiusKm));
+		return std::max(12.0, DrawnLength(m_Bodies[index].RadiusKm, (double)m_BodyScale));
+	}
+
+	// Which exponent an orbit is drawn with: a planet's is a distance across
+	// the solar system, a moon's is a distance across its planet's.
+	double OrbitExponent(size_t index) const
+	{
+		return m_Bodies[index].Parent > 0
+			? (double)m_BodyScale : (double)m_Compression;
 	}
 
 	// An offset in AU, compressed along its own direction. Applied per level of
 	// the hierarchy, so a moon's offset is compressed as a moon-sized distance
 	// and its planet's as a planet-sized one, which is what keeps Phobos above
 	// Mars while Neptune is still 302 km out.
-	glm::dvec3 DrawnOffset(const glm::dvec3& au) const
+	glm::dvec3 DrawnOffset(const glm::dvec3& au, double exponent) const
 	{
 		double length = glm::length(au);
 
 		if (length <= 0.0)
 			return glm::dvec3(0.0);
 
-		return au * (DrawnLength(length * s_AuKm) / length);
+		return au * (DrawnLength(length * s_AuKm, exponent) / length);
 	}
 
 	glm::dvec3 BodyScene(size_t index) const
@@ -355,7 +521,7 @@ public:
 		// Walked up the hierarchy rather than stored, so a moon is exactly its
 		// planet's position plus its own and cannot drift away from it.
 		for (int i = (int)index; i >= 0; i = m_Bodies[(size_t)i].Parent)
-			at += DrawnOffset(m_Bodies[(size_t)i].Position);
+			at += DrawnOffset(m_Bodies[(size_t)i].Position, OrbitExponent((size_t)i));
 
 		return at;
 	}
@@ -365,6 +531,75 @@ public:
 	// Which body the ship's position is measured from.
 	size_t FrameBody() const { return m_Frame; }
 	bool Walking() const { return m_Walking; }
+
+	// --- Drawing a system that is 10^12 metres across ------------------------
+	//
+	// **A distant body is drawn nearer and smaller, at the same angular size.**
+	//
+	// At true scale Neptune is 4.5e12 m away and the ground under your boots
+	// is 0.15 m. No depth buffer spans that, and a far plane that reaches
+	// Neptune leaves the terrain in one depth value. So everything except the
+	// body you are actually at is moved in along its own direction and scaled
+	// by the same factor: the direction is unchanged, the ratio of radius to
+	// distance is unchanged, and therefore *the picture is unchanged* -- what
+	// changes is only which depth bucket it lands in.
+	//
+	// The map is logarithmic past `s_NearRange` and the identity below it, so
+	// it is continuous, and monotone -- which is the property that matters,
+	// because it means a body in front of another still comes out in front and
+	// ordinary depth testing keeps working between them.
+	//
+	// The body whose terrain is streamed is never compressed: its chunks are
+	// drawn at their true positions and a scaled sphere underneath them would
+	// not line up. Everything else may be, and once terrain is evicted -- which
+	// is the same test -- nothing is left to disagree with.
+	static constexpr double s_NearRange = 2.0e5;
+
+	double CompressedDistance(double distance) const
+	{
+		if (distance <= s_NearRange)
+			return distance;
+
+		return s_NearRange * (1.0 + std::log(distance / s_NearRange));
+	}
+
+	// True whenever this body's own geometry is being drawn around the camera,
+	// which is exactly the condition `StreamTerrain` uses to decide whether to
+	// keep its chunks.
+	bool NearField(size_t index) const
+	{
+		if (index == 0 || index != (m_Walking ? (size_t)m_Ground : m_Frame))
+			return false;
+
+		if (m_Walking)
+			return true;
+
+		double radius = DrawnRadius(index);
+
+		return glm::length(m_Local) - radius <= radius * 0.5 + (double)m_LoadRadius;
+	}
+
+	// Where to draw a body and what to multiply its own lengths by. One is
+	// useless without the other: scaling the offset without the radius moves a
+	// planet, and scaling both keeps it exactly where it looked.
+	float BodyPlacement(size_t index, const glm::dvec3& origin, glm::vec3& outCentre) const
+	{
+		glm::dvec3 offset = BodyScene(index) - origin;
+
+		double distance = glm::length(offset);
+
+		if (NearField(index) || distance <= s_NearRange || distance <= 0.0)
+		{
+			outCentre = glm::vec3(offset);
+			return 1.0f;
+		}
+
+		double scale = CompressedDistance(distance) / distance;
+
+		outCentre = glm::vec3(offset * scale);
+
+		return (float)scale;
+	}
 
 	// --- Spin ---------------------------------------------------------------
 	//
@@ -391,15 +626,20 @@ public:
 	//
 	// Axis is +Y: no axial tilt, so no seasons. Venus and Uranus have negative
 	// rotation periods in the table and turn the other way for free.
-	double SpinAngle(size_t index) const
+	// Radians of spin per year. The year is 8,766 hours.
+	double SpinRate(size_t index) const
 	{
 		double hours = m_Bodies[index].RotationHours;
 
 		if (std::abs(hours) < 1e-6)
 			return 0.0;
 
-		// Days elapsed, times two pi. The year is 8,766 hours.
-		return m_Time * (365.25 * 24.0) / hours * 2.0 * 3.14159265358979323846;
+		return (365.25 * 24.0) / hours * 2.0 * 3.14159265358979323846;
+	}
+
+	double SpinAngle(size_t index) const
+	{
+		return m_Time * SpinRate(index);
 	}
 
 	// Prograde is +x toward +z, the same sense the orbits start in.
@@ -450,13 +690,19 @@ public:
 
 	// --- Planets ------------------------------------------------------------
 
-	// Voxels get bigger on bigger planets, which keeps the chunk count roughly
-	// constant: the lattice spans the whole body, so at a fixed voxel size
-	// Jupiter would cost eleven times Earth's memory for terrain no closer to
-	// the eye. 1.5 m on Earth is the reference.
+	// **Voxel size is set by how many chunks the index can name, not by
+	// memory.** The chunk store is sparse now, so a body's lattice costs
+	// nothing until something is written to it -- what is finite is the chunk
+	// *key*, which packs three axes into 21 bits each and so tops out at
+	// 2,097,152 chunks a side.
+	//
+	// `R / 4e6` keeps every body inside a million: Earth lands at 1.59 m, which
+	// is a size you can walk on, and Jupiter at 17.5 m, which nobody stands on
+	// anyway. The floor is what a stride wants; the ceiling is arbitrary and
+	// has never been reached.
 	float VoxelSizeFor(size_t index) const
 	{
-		return glm::clamp((float)DrawnRadius(index) / 240.0f, 0.5f, 6.0f);
+		return glm::clamp((float)DrawnRadius(index) / 4.0e6f, 1.5f, 32.0f);
 	}
 
 	VoxelPlanet& PlanetFor(size_t index)
@@ -470,8 +716,25 @@ public:
 		VoxelPlanet::Settings settings;
 		settings.Radius = radius;
 		settings.VoxelSize = VoxelSizeFor(index);
-		settings.Amplitude = radius * 0.085f;
+		// **Relief as a fraction of the radius, and the real one is small.**
+		// It was 8.5%, which on a 360 m planet is 31 m of hills and on a real
+		// one is 541 km -- sixty Everests. Earth's whole range, Everest to the
+		// Marianas, is 0.31% of its radius; a quarter of a percent here gives
+		// 15.9 km of relief, which is that with the trench filled in.
+		settings.Amplitude = radius * 0.0025f;
 		settings.FeatureSize = radius * 0.195f;
+
+		// Enough octaves to reach about 50 m of wavelength, and no more: past
+		// that the amplitude is under a centimetre and the sampling coordinate
+		// is where a float stops resolving a noise cell.
+		settings.Octaves = glm::clamp(
+			(int)std::ceil(std::log2(glm::max(settings.FeatureSize / 50.0f, 2.0f))),
+			4, 16);
+
+		// The local layer. A 1/f fractal anchored at a continent has nothing
+		// underfoot on a body this size -- see the note on `Roughness`.
+		settings.Roughness = glm::min(radius * 3.0e-5f, 25.0f);
+		settings.RoughnessSize = 320.0f;
 		settings.Seed = (unsigned int)(index * 7919 + 13);
 		settings.LowColour = m_Bodies[index].Colour * 0.55f;
 		settings.HighColour = glm::mix(m_Bodies[index].Colour, glm::vec3(1.0f), 0.35f);
@@ -498,7 +761,10 @@ public:
 			// are already carrying the large shapes here -- without this the
 			// ground you walk on is a lawn.
 			settings.FeatureSize = radius * 0.115f;
-			settings.Octaves = 5;
+
+			settings.Octaves = glm::clamp(
+				(int)std::ceil(std::log2(glm::max(settings.FeatureSize / 50.0f, 2.0f))),
+				4, 16);
 		}
 
 		EGSS_TRACE("{0}: voxel planet, radius {1:.0f} m, relief {2:.0f} m, voxel {3:.2f} m",
@@ -662,16 +928,45 @@ public:
 		m_Up = glm::normalize(m_Up - m_Forward * glm::dot(m_Forward, m_Up));
 	}
 
-	// Height above the nearest body's *drawn surface*, over every body rather
-	// than just the frame's -- it is what sets the flight speed, and passing
-	// close to a moon should slow you down whoever's frame you are in.
+	// Height above the nearest body's *ground*, over every body rather than
+	// just the frame's -- it is what sets the flight speed, and passing close
+	// to a moon should slow you down whoever's frame you are in. It also sets
+	// the near plane, which is where getting it wrong shows.
+	//
+	// **The mean radius is not the ground, and the difference is the relief.**
+	// This used to return the height above `DrawnRadius`, and the near plane
+	// is 0.4 of it. On a 360 m planet whose hills are 15 m that put the near
+	// plane 3.5 m out while standing -- a sliver of ground missing at the very
+	// bottom of the frame, which nobody ever noticed. At 250 km the hills are
+	// 380 m, so the same expression put the near plane **76 metres** out and
+	// clipped away everything within seventy-six metres of the camera: the
+	// grass under your boots, the trees you were standing among, all of it,
+	// leaving a hard horizontal line across the frame with the stand-in sphere
+	// and the insides of the chunk meshes showing through underneath.
+	//
+	// On foot the answer is simply the eye height. The ground is right there;
+	// nothing about the mean radius enters into it.
 	double AltitudeAboveAnything() const
 	{
+		if (m_Walking)
+			return (double)m_EyeHeight;
+
 		glm::dvec3 ship = ShipScene();
 		double best = 1e30;
 
 		for (size_t i = 0; i < m_Bodies.size(); i++)
-			best = std::min(best, glm::length(BodyScene(i) - ship) - DrawnRadius(i));
+		{
+			double surface = DrawnRadius(i);
+
+			// The tallest thing that body can put in the way, which is what
+			// "above the ground" has to mean when you are not on it.
+			auto it = m_Planets.find(i);
+
+			if (it != m_Planets.end())
+				surface += it->second.ReliefReach();
+
+			best = std::min(best, glm::length(BodyScene(i) - ship) - surface);
+		}
 
 		return std::max(best, 1.0);
 	}
@@ -759,6 +1054,38 @@ public:
 	// off deletes the capsule and hands the same position and the same basis
 	// back to the flight controller. Step out at 300 m and you fall 300 m.
 
+	// **Metres the ground under the ship stands above that planet's sea**,
+	// or false where there is no sea to be over.
+	//
+	// Landing is where you already are and not where it would be nice to be --
+	// that is the whole reason there is no teleport left in it -- so the only
+	// thing to be done about a player hovering over an ocean is to say so
+	// before they press the key. The sea is a shell drawn over the ground
+	// rather than a surface you stand on, so what happens otherwise is that
+	// the eye ends up under it, and a screenshot of that looks like a broken
+	// water shader rather than like drowning.
+	bool GroundUnderShip(double& aboveSea) const
+	{
+		auto it = m_Planets.find(m_Frame);
+
+		if (m_Frame == 0 || it == m_Planets.end() || !it->second.Get().HasOcean)
+			return false;
+
+		double distance = glm::length(m_Local);
+
+		if (distance < 1e-6)
+			return false;
+
+		const VoxelPlanet::Settings& settings = it->second.Get();
+
+		glm::vec3 direction = glm::vec3(ToFixed(m_Frame, m_Local / distance));
+
+		aboveSea = (double)settings.Radius + (double)it->second.Relief(direction)
+			- (double)settings.OceanRadius;
+
+		return true;
+	}
+
 	void Land()
 	{
 		if (m_Frame == 0)
@@ -777,6 +1104,13 @@ public:
 				m_Bodies[m_Frame].Name, distance - planet.Get().Radius);
 			return;
 		}
+
+		double aboveSea = 0.0;
+
+		// Not refused: a seabed is a place, and somebody may want to look at
+		// one. Only said, because it is not what the key was pressed for.
+		if (GroundUnderShip(aboveSea) && aboveSea < 0.0)
+			EGSS_WARN("landing under {0:.0f} m of water", -aboveSea);
 
 		m_Walking = true;
 		m_Ground = (int)m_Frame;
@@ -1139,6 +1473,75 @@ public:
 			m_Time += h;
 			TrackPeriods(h);
 		}
+
+		CarryWithTheAir(dt);
+	}
+
+	// **A craft inside an atmosphere turns with the atmosphere.**
+	//
+	// The ship's position is held in the frame body's *inertial* frame, which
+	// is right for a spacecraft: an orbit does not care which way the planet
+	// under it is pointing. It is wrong for anything in air. Hovering over a
+	// coastline, the coastline slid out from under the ship at a full turn a
+	// day, which nothing that flies does -- a balloon over a city is over the
+	// city an hour later.
+	//
+	// **This was not worth having until the day got longer.** At the sixty
+	// seconds to the day this demo started with, the frame turned six degrees
+	// a step: carrying the ship round at that rate is a fairground ride, not a
+	// hover, and the note that used to be here rejecting co-rotation was right
+	// at the time. At an hour to the day it is a tenth of a degree a step and
+	// it reads as air.
+	//
+	// Weighted by how much air there is to be carried by, on the same
+	// exponential the scattering uses -- full at the surface, a fiftieth at the
+	// top of the shell -- so leaving the atmosphere hands you back to the
+	// inertial frame without a boundary to cross. That weighting also disposes
+	// of the old objection about the clock: the rate only speeds up outside six
+	// radii, and there is no air out there to hold on to.
+	void CarryWithTheAir(double years)
+	{
+		if (m_Walking || m_Frame == 0 || years <= 0.0)
+			return;
+
+		const Body& body = m_Bodies[m_Frame];
+
+		if (body.AtmosphereFraction <= 0.0f)
+			return;
+
+		double radius = DrawnRadius(m_Frame);
+		double top = radius * (1.0 + (double)body.AtmosphereFraction * (double)m_AirScale);
+		double height = glm::length(m_Local);
+
+		if (height >= top)
+			return;
+
+		// **Normalised so it reaches exactly zero at the top**, not merely
+		// nearly. A bare `exp(-h/H)` is still 0.018 at the top of the shell,
+		// where the early-out above drops it to nothing -- a 1.8% step in how
+		// fast the ground moves, at the one altitude a ship crosses on its way
+		// in. Small, and a step is a step; the test that found it was looking
+		// for a value strictly between the two ends and got exactly one end.
+		double thickness = std::max(top - radius, 1e-6);
+		double scale = thickness * 0.25;
+
+		double floor = std::exp(-thickness / scale);
+
+		double share = (std::exp(-std::max(height - radius, 0.0) / scale) - floor)
+			/ (1.0 - floor);
+
+		// Straight from the rate rather than by differencing two angles: the
+		// absolute spin angle runs to tens of radians over a session and the
+		// increment is a millionth of one, which is a subtraction worth not
+		// doing.
+		double turned = SpinRate(m_Frame) * years * share;
+
+		m_Local = RotateY(m_Local, turned);
+
+		// The view goes with it, or the ground slides sideways under a ship
+		// that is holding station over it -- which is the bug, moved.
+		m_Forward = glm::vec3(RotateY(glm::dvec3(m_Forward), turned));
+		m_Up = glm::vec3(RotateY(glm::dvec3(m_Up), turned));
 	}
 
 	// Close to a body the clock comes from `SecondsPerDay`; far from one it is
@@ -1214,6 +1617,14 @@ public:
 
 		planet.StreamAround(focus, m_LoadRadius * scale, m_ChunksPerStep);
 		planet.EvictBeyond(focus, m_LoadRadius * scale * 1.6f);
+
+		// **And hand the voxels back further out.** Dropping a mesh leaves the
+		// chunk it came from filled, which on a 360 m planet was every chunk
+		// there is and cost nothing. At 250 km a walk accumulates every chunk
+		// it has ever passed. Three times the load radius, so a chunk that
+		// goes out of sight costs one re-mesh to come back and only one that
+		// goes well out of range costs a re-fill.
+		planet.ReleaseBeyond(focus, m_LoadRadius * scale * 3.0f);
 	}
 
 	// --- Drawing ------------------------------------------------------------
@@ -1236,31 +1647,68 @@ public:
 		// standing on a planet needs -- leaves two bodies 10 km apart at 300 km
 		// range indistinguishable in depth. Out where that matters the near
 		// plane can be hundreds of metres, because nothing is close.
-		float nearClip = (float)glm::clamp(AltitudeAboveAnything() * 0.4, 0.15, 400.0);
+		// **The near plane follows the altitude; the far plane holds the
+		// proxies.** Depth precision at distance z goes as `z^2 / (near *
+		// 2^24)`, so standing on the ground with a 0.15 m near plane gives
+		// 6 cm at the 400 m edge of the streamed terrain and ten metres at
+		// five kilometres -- where there is nothing but the horizon sphere,
+		// eight kilometres below the surface it stands in for. The far plane
+		// only has to reach the compressed sky, which tops out under 4e6 m.
+		float nearClip = (float)glm::clamp(AltitudeAboveAnything() * 0.4, 0.15, 5000.0);
 
-		m_Camera.SetProjection(m_Walking ? 65.0f : 55.0f, Aspect(), nearClip, 900000.0f);
+		m_Camera.SetProjection(m_Walking ? 65.0f : 55.0f, Aspect(), nearClip, 1.4e7f);
 		m_Camera.SetPosition(glm::vec3(0.0f));
 		m_Camera.SetOrientation(m_Forward, m_Up);
 
 		Egss::Renderer::BeginScene(m_Camera);
 
+		// Before anything that writes depth, so everything else is in front of
+		// it by construction rather than by comparison.
+		DrawStars();
+
 		size_t terrain = m_Walking ? (size_t)m_Ground : m_Frame;
 
 		for (size_t i = 0; i < m_Bodies.size(); i++)
-			DrawBody(i, glm::vec3(BodyScene(i) - origin), i == terrain);
+		{
+			glm::vec3 centre;
+			float scale = BodyPlacement(i, origin, centre);
+
+			DrawBody(i, centre, i == terrain, scale);
+		}
 
 		DrawRocks(origin);
+
+		// After the bodies, so the far half of a ring is occluded by the planet
+		// it goes round; before the air, so a ring seen through an atmosphere
+		// is veiled by it.
+		for (size_t i = 1; i < m_Bodies.size(); i++)
+		{
+			glm::vec3 centre;
+			float scale = BodyPlacement(i, origin, centre);
+
+			DrawRings(i, centre, scale);
+		}
 
 		// Then the water, then the air. Both are blended and neither writes
 		// depth, so the order they go down in is the order they are read in,
 		// and sea has to be under sky.
 		for (size_t i = 1; i < m_Bodies.size(); i++)
-			DrawOcean(i, glm::vec3(BodyScene(i) - origin));
+		{
+			glm::vec3 centre;
+			float scale = BodyPlacement(i, origin, centre);
+
+			DrawOcean(i, centre, scale);
+		}
 
 		// After the solid bodies, so the depth buffer already holds them and a
 		// planet occludes the air behind it.
 		for (size_t i = 1; i < m_Bodies.size(); i++)
-			DrawAtmosphere(i, glm::vec3(BodyScene(i) - origin), (float)DrawnRadius(i));
+		{
+			glm::vec3 centre;
+			float scale = BodyPlacement(i, origin, centre);
+
+			DrawAtmosphere(i, centre, (float)DrawnRadius(i) * scale, scale);
+		}
 
 		Egss::Renderer::EndScene();
 	}
@@ -1278,9 +1726,9 @@ public:
 	//
 	// A skirt or a fog would hide the edge; this shows what is actually there,
 	// which is a planet.
-	void DrawBody(size_t index, const glm::vec3& centre, bool isNear)
+	void DrawBody(size_t index, const glm::vec3& centre, bool isNear, float scale)
 	{
-		float radius = (float)DrawnRadius(index);
+		float radius = (float)DrawnRadius(index) * scale;
 
 		if (index == 0)
 		{
@@ -1303,7 +1751,15 @@ public:
 		bool generated = it != m_Planets.end();
 		bool meshed = isNear && generated && it->second.MeshedChunks() > 0;
 
-		float relief = generated ? it->second.Get().Amplitude : radius * 0.085f;
+		// **How far below the mean radius the stand-in sphere has to sit**, and
+		// it is the generator's own answer rather than half the amplitude:
+		// the relief is skewed, so the deepest valley is further down than the
+		// tallest peak is up. Half the amplitude left the sphere *inside* the
+		// valley floors, which is a smooth surface pushing up through terrain.
+		//
+		// Scaled with the radius, or a compressed planet keeps full-size hills.
+		float relief = (generated ? it->second.ReliefReach() * 2.0f
+			: (float)DrawnRadius(index) * 0.005f) * scale;
 
 		// **Inset as soon as the planet exists, not only once it is meshed.**
 		// The sphere has to sit below the lowest valley so real terrain hides
@@ -1326,7 +1782,7 @@ public:
 		// A planet with no sea gets a waterline below its deepest valley, so
 		// every point on it is "land" and the altitude ramp is all that runs.
 		SetBiome(material, index, generated
-			? it->second.Get() : VoxelPlanet::Settings());
+			? it->second.Get() : VoxelPlanet::Settings(), scale);
 
 		// **The sphere reads the map; the chunks do not.** Same material
 		// otherwise, and the flag is the only thing that differs -- which is
@@ -1357,13 +1813,13 @@ public:
 	// The palette and the waterline, which the terrain and the sea both need
 	// and neither owns.
 	void SetBiome(const std::shared_ptr<Egss::Material>& material, size_t index,
-		const VoxelPlanet::Settings& settings) const
+		const VoxelPlanet::Settings& settings, float scale = 1.0f) const
 	{
 		float radius = (float)DrawnRadius(index);
 
 		material->Set("u_Vegetated", settings.Vegetated ? 1.0f : 0.0f);
-		material->Set("u_SeaRadius", settings.HasOcean
-			? settings.OceanRadius : radius - ReliefOf(settings, radius));
+		material->Set("u_SeaRadius", scale * (settings.HasOcean
+			? settings.OceanRadius : radius - ReliefOf(settings, radius)));
 
 		material->Set("u_Shallow", settings.Shallow);
 		material->Set("u_Deep", settings.Deep);
@@ -1477,7 +1933,858 @@ public:
 	// The sea. Drawn after every opaque thing in the frame, because it is
 	// blended and writes no depth -- ground in front of it has to be in the
 	// depth buffer already or the water goes over the top of it.
-	void DrawOcean(size_t index, const glm::vec3& centre)
+	// --- The sky -------------------------------------------------------------
+	//
+	// **Real stars, in their real places.**
+	//
+	// The bright ones are a table of J2000 right ascension and declination, so
+	// Orion is Orion and the Plough points at Polaris. Nothing about the sky is
+	// procedural except the faint background behind it -- a made-up star is a
+	// star nobody can check, and the whole reason to type coordinates in is
+	// that the angle between two of them is a number this code does not
+	// contain.
+	//
+	// **What is not real is where the planets are against it.** The bodies
+	// start at longitudes this demo chose, not at an epoch, so the constellation
+	// behind Jupiter means nothing. The sky is right relative to itself.
+	struct StarDescription
+	{
+		const char* Name;
+		double RaHours;        // J2000
+		double DecDegrees;
+		float Magnitude;       // apparent visual
+		float ColourIndex;     // B-V, which is what fixes the colour below
+	};
+
+	static const std::vector<StarDescription>& Stars()
+	{
+		// The brightest two dozen, plus the ones that make four constellations
+		// readable rather than merely present: Orion including its belt, the
+		// Plough, Cassiopeia's W, and the Southern Cross.
+		static const std::vector<StarDescription> table =
+		{
+			{ "Sirius",     6.75248, -16.7161, -1.46f,  0.00f },
+			{ "Canopus",    6.39920, -52.6957, -0.74f,  0.15f },
+			{ "Rigil Kent",14.66014, -60.8340, -0.27f,  0.71f },
+			{ "Arcturus",  14.26103,  19.1825, -0.05f,  1.23f },
+			{ "Vega",      18.61564,  38.7837,  0.03f,  0.00f },
+			{ "Capella",    5.27815,  45.9980,  0.08f,  0.80f },
+			{ "Rigel",      5.24230,  -8.2016,  0.13f, -0.03f },
+			{ "Procyon",    7.65503,   5.2250,  0.34f,  0.42f },
+			{ "Achernar",   1.62857, -57.2367,  0.46f, -0.16f },
+			{ "Betelgeuse", 5.91953,   7.4070,  0.50f,  1.85f },
+			{ "Hadar",     14.06373, -60.3730,  0.61f, -0.23f },
+			{ "Altair",    19.84639,   8.8683,  0.77f,  0.22f },
+			{ "Acrux",     12.44331, -63.0991,  0.77f, -0.24f },
+			{ "Aldebaran",  4.59867,  16.5093,  0.85f,  1.54f },
+			{ "Spica",     13.41989, -11.1613,  1.04f, -0.23f },
+			{ "Antares",   16.49013, -26.4320,  1.09f,  1.83f },
+			{ "Pollux",     7.75534,  28.0262,  1.14f,  1.00f },
+			{ "Fomalhaut", 22.96084, -29.6222,  1.16f,  0.09f },
+			{ "Deneb",     20.69053,  45.2803,  1.25f,  0.09f },
+			{ "Mimosa",    12.79537, -59.6888,  1.25f, -0.24f },
+			{ "Regulus",   10.13953,  11.9672,  1.35f, -0.11f },
+			{ "Castor",     7.57667,  31.8883,  1.58f,  0.03f },
+			{ "Gacrux",    12.51944, -57.1133,  1.63f,  1.59f },
+			{ "Bellatrix",  5.41885,   6.3497,  1.64f, -0.22f },
+			{ "Elnath",     5.43819,  28.6075,  1.65f, -0.13f },
+			{ "Alnilam",    5.60356,  -1.2019,  1.69f, -0.18f },
+			{ "Alnitak",    5.67931,  -1.9426,  1.77f, -0.20f },
+			{ "Alioth",    12.90049,  55.9598,  1.77f, -0.02f },
+			{ "Dubhe",     11.06213,  61.7511,  1.79f,  1.07f },
+			{ "Alkaid",    13.79235,  49.3133,  1.86f, -0.19f },
+			{ "Alphard",    9.45979,  -8.6586,  1.98f,  1.44f },
+			{ "Polaris",    2.53030,  89.2641,  1.98f,  0.60f },
+			{ "Saiph",      5.79594,  -9.6696,  2.07f, -0.17f },
+			{ "Denebola",  11.81766,  14.5720,  2.14f,  0.09f },
+			{ "Mintaka",    5.53344,  -0.2991,  2.23f, -0.18f },
+			{ "Mizar",     13.39873,  54.9254,  2.23f,  0.06f },
+			{ "Schedar",    0.67511,  56.5373,  2.24f,  1.17f },
+			{ "Caph",       0.15297,  59.1498,  2.28f,  0.38f },
+			{ "Merak",     11.03069,  56.3825,  2.37f,  0.03f },
+			{ "Phecda",    11.89717,  53.6948,  2.44f,  0.04f },
+			{ "Gamma Cas",  0.94515,  60.7167,  2.47f, -0.15f },
+			{ "Ruchbah",    1.43022,  60.2353,  2.68f,  0.13f },
+			{ "Megrez",    12.25707,  57.0326,  3.31f,  0.08f },
+			{ "Segin",      1.90661,  63.6701,  3.37f, -0.15f },
+		};
+
+		return table;
+	}
+
+	// **Equatorial to the plane the planets are actually in.**
+	//
+	// Right ascension and declination are measured from Earth's equator, and
+	// everything else in this demo is measured from the ecliptic -- the two are
+	// 23.44 degrees apart, which is Earth's axial tilt, and it is the one place
+	// in the demo where that number is used for anything. Skip the rotation and
+	// the whole sky is tilted by it: Polaris comes out at the pole of the solar
+	// system, where the ecliptic pole is really 23.44 degrees away from it.
+	//
+	// Then into this demo's axes, which are not glm's: +Y is the north ecliptic
+	// pole, and longitude increases from +x toward +z because that is the
+	// direction the orbits run. See the note on `SpinMatrix` for the same trap
+	// caught the hard way.
+	static glm::dvec3 SkyDirection(double raHours, double decDegrees)
+	{
+		const double pi = 3.14159265358979323846;
+
+		double ra = raHours * (pi / 12.0);
+		double dec = decDegrees * (pi / 180.0);
+
+		// Equatorial: +z toward the north celestial pole, +x at the vernal
+		// equinox, which is the axis the two systems share.
+		double x = std::cos(dec) * std::cos(ra);
+		double y = std::cos(dec) * std::sin(ra);
+		double z = std::sin(dec);
+
+		const double obliquity = 23.4392911 * (pi / 180.0);
+
+		double c = std::cos(obliquity), s = std::sin(obliquity);
+
+		// About the shared +x axis, which leaves the equinox alone.
+		double yEcliptic = y * c + z * s;
+		double zEcliptic = -y * s + z * c;
+
+		return glm::dvec3(x, zEcliptic, yEcliptic);
+	}
+
+	// Colour from B-V, which is what a colour index is for: how much bluer a
+	// star is in B than in V, so negative is hot and positive is cool. The
+	// breakpoints are Vega at 0.00 (white by definition -- the scale is built
+	// on it), the Sun at 0.65, and Betelgeuse at 1.85.
+	static glm::vec3 StarColour(float bv)
+	{
+		if (bv < 0.0f)
+			return glm::mix(glm::vec3(0.66f, 0.76f, 1.00f),
+				glm::vec3(1.00f, 1.00f, 1.00f), glm::clamp(bv / -0.35f, 0.0f, 1.0f));
+
+		if (bv < 0.65f)
+			return glm::mix(glm::vec3(1.00f, 1.00f, 1.00f),
+				glm::vec3(1.00f, 0.96f, 0.86f), bv / 0.65f);
+
+		return glm::mix(glm::vec3(1.00f, 0.96f, 0.86f),
+			glm::vec3(1.00f, 0.76f, 0.55f), glm::clamp((bv - 0.65f) / 1.2f, 0.0f, 1.0f));
+	}
+
+	// **Two layers, because they are two different problems.**
+	//
+	// The catalogue is 44 real stars and wants to be exactly where it says it
+	// is, which is geometry. The background is thousands of anonymous faint
+	// ones and wants to be even, resolution-independent and free, which is a
+	// function of the view direction. So the first is a mesh and the second is
+	// a shader on the sphere behind it.
+	void BuildStars()
+	{
+		// --- The catalogue, as billboarded quads ---------------------------
+		//
+		// **A star has no size, and its size on screen is entirely the point
+		// spread of whatever looked at it.** So every quad here is the same
+		// angular size and only the brightness differs -- and the visible disc
+		// still grows with brightness, because a brighter Gaussian crosses the
+		// eye's threshold further out. That is what makes Sirius look bigger
+		// than Megrez without a single per-star size being stored.
+		Egss::MeshData data;
+
+		const std::vector<StarDescription>& stars = Stars();
+
+		for (const StarDescription& star : stars)
+		{
+			glm::vec3 direction = glm::vec3(SkyDirection(star.RaHours, star.DecDegrees));
+
+			// Magnitude is a logarithm of flux with 2.512 per step and the
+			// bright end negative, so this is the flux, normalised to put
+			// Sirius at one.
+			float flux = std::pow(2.512f, -(star.Magnitude - stars[0].Magnitude));
+
+			// **Compressed, and the exponent is the whole argument.** The flux
+			// range across this table is 86:1 and an 8-bit display's is not,
+			// so it has to be squashed; the question is by how much, and both
+			// ends of the answer are visible in a capture.
+			//
+			// A cube root gives 4.4:1, at which the faintest catalogue star
+			// and the brightest anonymous one behind it are the same dot --
+			// **Orion was not findable in a frame pointed straight at it.** A
+			// square root gives 9.3:1 and puts Orion's belt at 0.235, only
+			// 1.5 times the field's brightest. Two fifths gives 5.9:1, the
+			// belt at 0.322 and Megrez -- the faintest star in the table -- at
+			// 0.169, which is the number the background is then scaled to sit
+			// under.
+			float brightness = std::pow(flux, 0.4f);
+
+			// **Sirius is allowed to clip, on purpose.** Every photograph of
+			// the sky ever taken has a saturated core on its brightest star,
+			// and holding the top of the range below white to avoid it would
+			// mean putting magnitude 2 down at 0.28 -- which is where the
+			// Plough became invisible. Gained so that the middle of the table
+			// lands around two thirds and the top three or four run over.
+			glm::vec3 colour = StarColour(star.ColourIndex) * (brightness * 2.2f);
+
+			for (int corner = 0; corner < 4; corner++)
+			{
+				glm::vec2 offset((corner == 1 || corner == 2) ? 1.0f : -1.0f,
+					(corner >= 2) ? 1.0f : -1.0f);
+
+				data.Vertices.push_back({ direction, colour, offset });
+			}
+		}
+
+		for (size_t i = 0; i < stars.size(); i++)
+		{
+			unsigned int at = (unsigned int)i * 4;
+
+			data.Indices.insert(data.Indices.end(),
+				{ at, at + 1, at + 2, at, at + 2, at + 3 });
+		}
+
+		data.Submeshes.push_back({ "", -1, 0, (unsigned int)data.Indices.size() });
+
+		m_Stars.reset(new Egss::Mesh(data, "Stars"));
+
+		std::string brightVertex = R"(
+			#version 330 core
+			layout(location = 0) in vec3 a_Direction;
+			layout(location = 1) in vec3 a_Colour;
+			layout(location = 2) in vec2 a_Corner;
+
+			uniform mat4 u_ViewProjection;
+			uniform mat4 u_Transform;
+			uniform vec3 u_Right;
+			uniform vec3 u_Up;
+			uniform float u_Distance;
+			uniform float u_Size;
+
+			out vec3 v_Colour;
+			out vec2 v_Corner;
+
+			void main()
+			{
+				v_Colour = a_Colour;
+				v_Corner = a_Corner;
+
+				// Billboarded against the camera's own basis rather than by a
+				// matrix trick, because the camera here has no fixed up: it is
+				// a basis carried around by the flight controller.
+				vec3 at = a_Direction * u_Distance
+					+ (u_Right * a_Corner.x + u_Up * a_Corner.y) * u_Distance * u_Size;
+
+				gl_Position = u_ViewProjection * u_Transform * vec4(at, 1.0);
+			}
+		)";
+
+		std::string brightFragment = R"(
+			#version 330 core
+			layout(location = 0) out vec4 color;
+
+			in vec3 v_Colour;
+			in vec2 v_Corner;
+
+			uniform float u_Fade;
+
+			void main()
+			{
+				// A Gaussian point spread. The 0.34 is the width in units of
+				// the quad's half-size, chosen so the brightest star's visible
+				// disc is a few pixels and the faintest is one.
+				float r = length(v_Corner);
+
+				float spread = exp(-(r * r) / (0.34 * 0.34));
+
+				vec3 result = v_Colour * spread * u_Fade;
+
+				// Additive: stars overlap by being in front of each other, not
+				// by hiding each other, and the sky behind them is black.
+				color = vec4(result, 1.0);
+			}
+		)";
+
+		m_StarShader.reset(Egss::Shader::Create("Stars", brightVertex, brightFragment));
+		m_StarMaterial = Egss::Material::Create(m_StarShader);
+
+		// --- The background, on the sphere ---------------------------------
+
+		std::string fieldVertex = R"(
+			#version 330 core
+			layout(location = 0) in vec3 a_Position;
+
+			uniform mat4 u_ViewProjection;
+			uniform mat4 u_Transform;
+
+			out vec3 v_Direction;
+
+			void main()
+			{
+				v_Direction = a_Position;
+
+				gl_Position = u_ViewProjection * u_Transform * vec4(a_Position, 1.0);
+			}
+		)";
+
+		std::string fieldFragment = R"(
+			#version 330 core
+			layout(location = 0) out vec4 color;
+
+			in vec3 v_Direction;
+
+			uniform float u_Fade;
+			uniform vec3 u_GalacticPole;
+
+			// **An integer hash, because `fract(sin(dot(...)) * 43758.5)` fails
+			// exactly where a starfield needs it.**
+			//
+			// That idiom works while its argument is small. Here the argument
+			// is a cell index times a few hundred plus a layer salt, which
+			// reaches eighteen thousand -- and a float carries about a
+			// thousandth of absolute precision there, while `sin` needs the
+			// phase to a millionth to decorrelate neighbours. The result was a
+			// sky of **grey rectangles**: whole cells sharing a hash with
+			// their neighbours because the phase could not tell them apart.
+			// Same family as the `Hash2D` trap in the handover, arrived at
+			// from the other direction.
+			//
+			// The integer version has no such range: every bit of the input
+			// reaches every bit of the output, at any magnitude.
+			float hash(ivec3 cell, uint salt)
+			{
+				// Shifted positive first: the conversion to unsigned is
+				// defined either way, but a negative index and its positive
+				// twin must not collide.
+				uvec3 key = uvec3(cell + ivec3(4096));
+
+				uint h = key.x * 374761393u + key.y * 668265263u
+					+ key.z * 2246822519u + salt * 3266489917u;
+
+				h = (h ^ (h >> 13)) * 1274126177u;
+				h ^= h >> 16;
+
+				return float(h & 0xFFFFFFu) / float(0xFFFFFFu);
+			}
+
+			// **A cube face, not a latitude and a longitude.** Cells cut from
+			// `atan` and `asin` bunch at the poles, and a starfield built that
+			// way has two obvious clumps in it. Dividing the two smaller
+			// components by the largest is the cube-map parameterisation, whose
+			// worst distortion is the 1.5x between a face's middle and its
+			// corner -- invisible in a field of points.
+			vec3 face(vec3 direction, out vec2 uv)
+			{
+				vec3 a = abs(direction);
+
+				if (a.x >= a.y && a.x >= a.z)
+				{
+					uv = direction.yz / a.x;
+					return vec3(direction.x > 0.0 ? 1.0 : 2.0, 0.0, 0.0);
+				}
+
+				if (a.y >= a.z)
+				{
+					uv = direction.xz / a.y;
+					return vec3(direction.y > 0.0 ? 3.0 : 4.0, 0.0, 0.0);
+				}
+
+				uv = direction.xy / a.z;
+				return vec3(direction.z > 0.0 ? 5.0 : 6.0, 0.0, 0.0);
+			}
+
+			// Smooth value noise in three dimensions, on the direction rather
+			// than on anything the cube faces know about, so it has no seams.
+			// Eight corners and a smoothstep, which is the cheapest thing that
+			// is continuous.
+			float noise(vec3 at, uint salt)
+			{
+				vec3 base = floor(at);
+				vec3 f = at - base;
+
+				f = f * f * (3.0 - 2.0 * f);
+
+				ivec3 b = ivec3(base);
+
+				float x00 = mix(hash(b + ivec3(0, 0, 0), salt),
+					hash(b + ivec3(1, 0, 0), salt), f.x);
+				float x10 = mix(hash(b + ivec3(0, 1, 0), salt),
+					hash(b + ivec3(1, 1, 0), salt), f.x);
+				float x01 = mix(hash(b + ivec3(0, 0, 1), salt),
+					hash(b + ivec3(1, 0, 1), salt), f.x);
+				float x11 = mix(hash(b + ivec3(0, 1, 1), salt),
+					hash(b + ivec3(1, 1, 1), salt), f.x);
+
+				return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
+			}
+
+			// One layer of the field: a grid over the face, one star per cell
+			// that passes the threshold, jittered inside it.
+			vec3 layer(vec2 uv, int which, float density, float share)
+			{
+				vec2 scaled = uv * density;
+
+				// **The derivative is taken here, before anything branches.**
+				//
+				// GLSL leaves `fwidth` undefined in non-uniform control flow,
+				// and a cell with no star in it returning early *is* non-
+				// uniform: a 2x2 quad straddling a cell boundary then has
+				// helper invocations that took the other path, and the
+				// derivative they contribute is whatever the driver had lying
+				// around. It cost run-to-run reproducibility -- twelve faint
+				// pixels, always the same twelve, flickering between two
+				// values from one run of the same binary to the next, on a
+				// scene that was byte-identical with the sky switched off.
+				//
+				// Hoisting it above the branch is the whole fix. Everything
+				// below may diverge as much as it likes.
+				float pixel = max(fwidth(scaled.x), 1.0e-6);
+
+				vec2 cell = floor(scaled);
+				vec2 f = scaled - cell;
+
+				ivec3 key = ivec3(int(cell.x), int(cell.y), which);
+
+				if (hash(key, 0u) < 1.0 - share)
+					return vec3(0.0);
+
+				// Kept to the middle of the cell so a star is never cut in half
+				// by a boundary this shader does not look across.
+				vec2 at = vec2(0.25 + 0.5 * hash(key, 1u),
+					0.25 + 0.5 * hash(key, 2u));
+
+				// **Sized in pixels, not in cells.** `pixel` above is how far
+				// the cell coordinate moves between neighbouring fragments, so
+				// this is a star a fixed couple of pixels across at any field
+				// of view -- which is what a point source looks like, and it
+				// stops the whole sky swelling when the camera zooms.
+				//
+				// The 1.5 is a floor and not a taste: below about one pixel of
+				// sigma the Gaussian is narrower than the sampling grid, and
+				// what gets drawn is not a small star but an aliased one --
+				// the first version used 0.8 and produced a sky of **dashes**,
+				// each one a point source caught by a scanline.
+				//
+				// Capped as well as floored: where the projection stretches --
+				// a cube face's corner, or a grazing view -- the derivative
+				// grows, and a sigma approaching a whole cell lights the cell
+				// rather than a point in it.
+				float sigma = clamp(pixel * 1.5, 1.0e-5, 0.2);
+
+				float r = length(f - at);
+
+				float spread = exp(-(r * r) / (sigma * sigma));
+
+				// Faint ones far outnumber bright ones, which a cube does well
+				// enough and a uniform does not -- a linear brightness gives a
+				// flat grey haze rather than a scattering of points.
+				float magnitude = hash(key, 3u);
+
+				float brightness = magnitude * magnitude * magnitude;
+
+				// A little colour, on the same warm-to-cool axis the catalogue
+				// uses, but weaker: faint stars are near the eye's colour
+				// threshold and read as white.
+				float tint = hash(key, 4u);
+
+				vec3 colour = mix(vec3(0.82f, 0.88f, 1.0), vec3(1.0, 0.90f, 0.78f), tint);
+
+				return colour * (brightness * spread);
+			}
+
+			void main()
+			{
+				vec3 direction = normalize(v_Direction);
+
+				vec2 uv;
+				int which = int(face(direction, uv).x);
+
+				// **About 5,000 stars over the whole sphere**, which is what
+				// the naked eye gets on a good night: `cells^2 * share * 6
+				// faces` for each layer. The first draft ran two layers at 90
+				// and 200 cells, which is 49,000, and the sky came out as a
+				// wall of noise with no black in it.
+				// **Faint, because these are the ones the catalogue leaves
+				// out.** Left at full brightness the field's best cells came
+				// out as bright as Sirius, and the forty-four stars that are
+				// really there vanished into four thousand that are not --
+				// Orion was not findable in a capture pointed straight at it.
+				// 0.15 puts the whole field under the faintest catalogue star
+				// -- Megrez at magnitude 3.31 draws at 0.169 -- which is where
+				// it belongs, since the field *is* the stars the catalogue
+				// stops before. Most of it is far below that: the cube of a
+				// uniform has a median of an eighth, so the typical star here
+				// is 0.019 and Orion's belt is seventeen times it.
+				vec3 result = 0.15 * (layer(uv, which, 24.0, 0.30)
+					+ layer(uv, which + 8, 55.0, 0.22));
+
+				// **The Milky Way**, which is a band because the galaxy is a
+				// disc and we are inside it. The pole is a real direction --
+				// RA 12h51m, Dec +27.13 -- so the band lies where it lies, and
+				// crosses Cassiopeia and Crux the way it should.
+				float latitude = asin(clamp(dot(direction, u_GalacticPole), -1.0, 1.0));
+
+				float band = exp(-(latitude * latitude) / (0.28 * 0.28));
+
+				// Broken up, or it is an airbrushed stripe. Two octaves of the
+				// same cheap hash, quantised coarsely enough to read as clouds.
+				// Broken up, or it is an airbrushed stripe. Smooth 3D value
+				// noise on the direction itself rather than on the face
+				// coordinate: quantised per-cell hashes drew the band as
+				// **grey squares**, and anything indexed by the face has a
+				// seam down every cube edge the band crosses.
+				float mottle = 0.55
+					+ 0.30 * noise(direction * 7.0, 5u)
+					+ 0.15 * noise(direction * 19.0, 6u);
+
+				result += vec3(0.055, 0.056, 0.068) * band * mottle;
+
+				color = vec4(result * u_Fade, 1.0);
+			}
+		)";
+
+		m_FieldShader.reset(Egss::Shader::Create("Starfield", fieldVertex, fieldFragment));
+		m_FieldMaterial = Egss::Material::Create(m_FieldShader);
+	}
+
+	// **How much of the sky is drowned out by daylight.**
+	//
+	// Stars are not hidden in the day by air blocking them -- Rayleigh
+	// extinction at the zenith is about a tenth of a magnitude, which is
+	// nothing. They are hidden by being *outshone*: the daytime sky is some
+	// thousands of times brighter than the brightest of them, and a display
+	// with no headroom above white cannot say that. So the fade is explicit,
+	// and it is driven by the two things that decide it -- how much air is
+	// above you, and how far the star is above the horizon.
+	//
+	// The window is chosen from what it is standing in for: full daylight with
+	// the star more than three degrees up, full darkness below about eleven,
+	// which is astronomical twilight to within a couple of degrees.
+	float SkyFade() const
+	{
+		size_t index = m_Walking ? (size_t)m_Ground : m_Frame;
+
+		if (index == 0 || index >= m_Bodies.size())
+			return 1.0f;
+
+		const Body& body = m_Bodies[index];
+
+		if (body.AtmosphereFraction <= 0.0f)
+			return 1.0f;
+
+		double radius = DrawnRadius(index);
+		double top = radius * (1.0 + (double)body.AtmosphereFraction * (double)m_AirScale);
+		double height = glm::length(m_Local);
+
+		if (height >= top || height < 1e-6)
+			return 1.0f;
+
+		double thickness = std::max(top - radius, 1e-6);
+		double air = std::exp(-std::max(height - radius, 0.0) / (thickness * 0.25));
+
+		glm::vec3 up = glm::vec3(m_Local / height);
+
+		float elevation = glm::dot(up, SunDirection(index));
+
+		float day = glm::smoothstep(-0.20f, 0.05f, elevation);
+
+		// **Saturating, because the sky does not have to be at full brightness
+		// to win.** The first version returned `1 - air * day`, which reads
+		// like the right shape and is not: an exponential with a scale height
+		// a quarter of the shell is down to 0.21 six metres up, so a player
+		// standing on the ground in the middle of the afternoon kept a fifth
+		// of the starfield -- **stars, in a blue daytime sky**.
+		//
+		// The physical error is in what `air` measures. The density at the eye
+		// is not what outshines a star; the column of lit air above it is, and
+		// a fiftieth of that column is still thousands of times brighter than
+		// anything in the catalogue. So the threshold is small and the rolloff
+		// is sharp: full daylight kills the sky whether there is a whole
+		// atmosphere overhead or a twentieth of one, and it takes real
+		// altitude or a real sunset to get the stars back.
+		float sky = (float)air * day;
+
+		return 1.0f - glm::smoothstep(0.0f, 0.05f, sky);
+	}
+
+	// Drawn first, before anything that writes depth. The sphere is centred on
+	// the camera and writes no depth of its own, so everything else lands in
+	// front of it whatever its distance -- which is what "at infinity" has to
+	// mean when the far plane is 900 km.
+	void DrawStars()
+	{
+		float fade = SkyFade();
+
+		if (fade <= 0.001f)
+			return;
+
+		// Comfortably inside the far plane. The number does not matter beyond
+		// that: nothing is ever drawn behind it and it never moves relative to
+		// the camera, so no parallax can reveal it.
+		const float distance = 600000.0f;
+
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Additive);
+		Egss::RenderCommand::SetDepthWrite(false);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+
+		auto field = Egss::Material::CreateInstance(m_FieldMaterial);
+		field->Set("u_Fade", fade);
+		field->Set("u_GalacticPole",
+			glm::vec3(SkyDirection(12.85694, 27.1283)));
+
+		Egss::Renderer::Submit(field, m_Sphere,
+			glm::scale(glm::mat4(1.0f), glm::vec3(distance)));
+
+		glm::vec3 right = glm::normalize(glm::cross(m_Forward, m_Up));
+
+		auto bright = Egss::Material::CreateInstance(m_StarMaterial);
+		bright->Set("u_Distance", distance);
+		bright->Set("u_Fade", fade);
+		bright->Set("u_Right", right);
+		bright->Set("u_Up", m_Up);
+
+		// Half a degree of quad, which is the room the point spread needs at
+		// the bright end. The star inside it is a couple of pixels.
+		// **Nearly a degree of quad, which is far more than a star subtends
+		// and exactly what a star looks like.** A point source is drawn by
+		// whatever spread the eye or the lens gives it, and at half a degree
+		// the Plough -- seven stars between magnitude 1.8 and 3.3 -- was a
+		// capture pointed straight at it with nothing findable in the frame.
+		// The pattern was exactly right; it was two pixels wide.
+		bright->Set("u_Size", glm::radians(0.85f));
+
+		Egss::Renderer::Submit(bright, m_Stars, glm::mat4(1.0f));
+
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
+		Egss::RenderCommand::SetDepthWrite(true);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+	}
+
+	// --- Rings ---------------------------------------------------------------
+	//
+	// **One annulus mesh, and the radii are a uniform.**
+	//
+	// Vertices carry a direction on the unit circle and a parameter in
+	// `TexCoord.x` saying which edge they belong to; the vertex shader puts
+	// them at `mix(inner, outer, t)`. So Saturn and Uranus share one mesh with
+	// nothing scaled non-uniformly, and the fragment shader gets the radius in
+	// units of planet radii, which is the only coordinate the band structure
+	// is naturally described in.
+	//
+	// **The plane is the equator, which here is `y = 0` for everything.** The
+	// demo gives no body an axial tilt, so Saturn's rings sit in the ecliptic
+	// rather than 26.7 degrees out of it -- edge-on from another planet, where
+	// really they are what you see first through a small telescope. Tilting
+	// one body would mean the terrain generator, the surface gravity, the
+	// walking frame and the spin all stopped agreeing about which way is up,
+	// which is a bigger change than a ring is worth. Flying above the plane
+	// shows them exactly as they should be.
+	void BuildRings()
+	{
+		Egss::MeshData data;
+
+		const int segments = 256;
+		const float pi = 3.14159265358979323846f;
+
+		for (int i = 0; i <= segments; i++)
+		{
+			float angle = 2.0f * pi * (float)i / (float)segments;
+			glm::vec3 direction(std::cos(angle), 0.0f, std::sin(angle));
+
+			// The position is the *direction*; the vertex shader turns it into
+			// a radius. Normal is up for both edges -- a ring is flat.
+			data.Vertices.push_back({ direction, glm::vec3(0.0f, 1.0f, 0.0f),
+				glm::vec2(0.0f, (float)i / (float)segments) });
+			data.Vertices.push_back({ direction, glm::vec3(0.0f, 1.0f, 0.0f),
+				glm::vec2(1.0f, (float)i / (float)segments) });
+		}
+
+		for (int i = 0; i < segments; i++)
+		{
+			unsigned int at = (unsigned int)i * 2;
+
+			data.Indices.insert(data.Indices.end(),
+				{ at, at + 1, at + 3, at, at + 3, at + 2 });
+		}
+
+		data.Submeshes.push_back({ "", -1, 0, (unsigned int)data.Indices.size() });
+
+		m_Ring.reset(new Egss::Mesh(data, "Ring"));
+
+		std::string vertexSrc = R"(
+			#version 330 core
+			layout(location = 0) in vec3 a_Direction;
+			layout(location = 1) in vec3 a_Normal;
+			layout(location = 2) in vec2 a_TexCoord;
+
+			uniform mat4 u_ViewProjection;
+			uniform mat4 u_Transform;
+			uniform vec3 u_Centre;
+			uniform float u_Inner;
+			uniform float u_Outer;
+
+			out vec3 v_World;
+			out float v_Radius;
+
+			void main()
+			{
+				v_Radius = mix(u_Inner, u_Outer, a_TexCoord.x);
+				v_World = u_Centre + mat3(u_Transform) * (a_Direction * v_Radius);
+
+				gl_Position = u_ViewProjection * vec4(v_World, 1.0);
+			}
+		)";
+
+		std::string fragmentSrc = R"(
+			#version 330 core
+			layout(location = 0) out vec4 color;
+
+			in vec3 v_World;
+			in float v_Radius;
+
+			uniform vec3 u_Centre;
+			uniform vec3 u_Normal;
+			uniform vec3 u_LightDirection;
+			uniform vec3 u_LightColor;
+			uniform vec3 u_Colour;
+			uniform float u_PlanetRadius;
+			uniform float u_Inner;
+			uniform float u_Outer;
+
+			float hash(float x)
+			{
+				return fract(sin(x * 127.1) * 43758.5453);
+			}
+
+			// Value noise in one dimension: the bands are a radial function and
+			// nothing else, which is what makes them look like orbits rather
+			// than like a texture.
+			float bands(float x)
+			{
+				float low = floor(x);
+				float f = fract(x);
+
+				f = f * f * (3.0 - 2.0 * f);
+
+				return mix(hash(low), hash(low + 1.0), f);
+			}
+
+			void main()
+			{
+				// Radius in planet radii, which is the unit every published
+				// number about a ring system is quoted in.
+				float u = v_Radius / u_PlanetRadius;
+
+				float opacity = 0.35 * bands(u * 9.0)
+					+ 0.35 * bands(u * 27.0)
+					+ 0.30 * bands(u * 71.0);
+
+				// **The Cassini division**, at 1.95 to 2.02 Saturn radii -- the
+				// one gap anybody can name, and the reason a ring reads as a
+				// ring system rather than as a disc. Smoothed rather than cut,
+				// because its edges are not sharp either.
+				opacity *= 1.0 - 0.92 * (smoothstep(1.93, 1.96, u)
+					- smoothstep(2.00, 2.04, u));
+
+				// Fade at both edges so the annulus does not end on a hard
+				// circle where the geometry does.
+				float span = u_Outer - u_Inner;
+				opacity *= smoothstep(0.0, 0.06, (v_Radius - u_Inner) / span);
+				opacity *= 1.0 - smoothstep(0.90, 1.0, (v_Radius - u_Inner) / span);
+
+				vec3 normal = u_Normal;
+
+				// The ring is flat, so which side the star is on and which side
+				// the eye is on are one number each.
+				float sunSide = dot(normal, u_LightDirection);
+				float viewSide = dot(normal, normalize(-v_World));
+
+				float lit = abs(sunSide);
+
+				// **Seen from the shadowed side a ring is a negative of
+				// itself**: the thin parts pass light and the thick parts stop
+				// it, so the Cassini division is *bright* from underneath.
+				// That is one line here and it is the whole difference between
+				// a ring and a grey band.
+				float through = sunSide * viewSide < 0.0
+					? mix(1.0, 0.12, opacity) * 0.6 : 1.0;
+
+				// The planet's shadow, cast along the direction of the star.
+				// A point is in it when the planet is between it and the star:
+				// on the far side along the light, and inside the cylinder.
+				vec3 at = v_World - u_Centre;
+				float along = dot(at, u_LightDirection);
+				float across = length(at - u_LightDirection * along);
+
+				float shadow = along < 0.0
+					? smoothstep(u_PlanetRadius * 0.97, u_PlanetRadius * 1.03, across)
+					: 1.0;
+
+				// **The opposition surge.** Ring particles throw light back the
+				// way it came far more strongly than a diffuse surface does --
+				// each one hides its own shadow when you look along the
+				// sunbeam -- and Saturn's rings brighten sharply within a
+				// degree or two of opposition because of it. Here it is worth
+				// having for a second reason: a ring tilted 26.73 degrees
+				// receives `sin(26.73) = 0.45` of normal incidence at best, so
+				// without it the rings sit at a third of the brightness of the
+				// planet they are lit by.
+				float back = max(dot(normalize(-v_World), u_LightDirection), 0.0);
+				float surge = 1.0 + 0.8 * pow(back, 3.0);
+
+				vec3 result = u_Colour * u_LightColor * lit * surge * through * shadow;
+
+				color = vec4(result, clamp(opacity, 0.0, 1.0));
+			}
+		)";
+
+		m_RingShader.reset(Egss::Shader::Create("Ring", vertexSrc, fragmentSrc));
+		m_RingMaterial = Egss::Material::Create(m_RingShader);
+	}
+
+	void DrawRings(size_t index, const glm::vec3& centre, float scale)
+	{
+		const Body& body = m_Bodies[index];
+
+		if (body.RingInner <= 0.0f)
+			return;
+
+		float radius = (float)DrawnRadius(index) * scale;
+
+		auto material = Egss::Material::CreateInstance(m_RingMaterial);
+		// The ring's own basis: +Y taken to the tilted normal, the other two
+		// axes anywhere consistent, since an annulus has no preferred azimuth.
+		float tilt = glm::radians(body.RingTiltDegrees);
+
+		glm::vec3 normal(std::sin(tilt), std::cos(tilt), 0.0f);
+		glm::vec3 across = glm::normalize(glm::cross(normal, glm::vec3(0.0f, 0.0f, 1.0f)));
+
+		// Passed as the mesh's own transform rather than as a uniform of its
+		// own -- it is exactly what a model matrix is for, and `Renderer` sets
+		// `u_Transform` on every submission whether a shader asks or not.
+		glm::mat4 basis(1.0f);
+		basis[0] = glm::vec4(across, 0.0f);
+		basis[1] = glm::vec4(normal, 0.0f);
+		basis[2] = glm::vec4(glm::cross(across, normal), 0.0f);
+
+		material->Set("u_Normal", normal);
+		material->Set("u_Centre", centre);
+		material->Set("u_LightDirection", SunDirection(index));
+		material->Set("u_LightColor", m_SunLight * m_StarBrightness);
+		material->Set("u_Colour", body.RingColour);
+		material->Set("u_PlanetRadius", radius);
+		material->Set("u_Inner", radius * body.RingInner);
+		material->Set("u_Outer", radius * body.RingOuter);
+
+		// Alpha, no depth write, no culling: a ring is thin enough to see
+		// through, thin enough to have no back, and the far half of it has to
+		// be occluded by the planet -- which depth *testing* does, since the
+		// bodies were drawn first and wrote depth.
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
+		Egss::RenderCommand::SetDepthWrite(false);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+
+		Egss::Renderer::Submit(material, m_Ring, basis);
+
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
+		Egss::RenderCommand::SetDepthWrite(true);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+	}
+
+	void DrawOcean(size_t index, const glm::vec3& centre, float scale)
 	{
 		auto it = m_Planets.find(index);
 
@@ -1489,9 +2796,9 @@ public:
 		auto material = Egss::Material::CreateInstance(m_WaterMaterial);
 		material->SetTexture("u_Map", it->second.Map(), 0);
 		material->Set("u_Spin", MapSpin(index));
-		material->Set("u_Radius", settings.Radius);
-		material->Set("u_Relief", settings.Amplitude);
-		material->Set("u_SeaRadius", settings.OceanRadius);
+		material->Set("u_Radius", settings.Radius * scale);
+		material->Set("u_Relief", settings.Amplitude * scale);
+		material->Set("u_SeaRadius", settings.OceanRadius * scale);
 		material->Set("u_LightDirection", SunDirection(index));
 		material->Set("u_LightColor", m_SunLight * m_StarBrightness);
 		material->Set("u_Origin", centre);
@@ -1509,7 +2816,7 @@ public:
 
 		Egss::Renderer::Submit(material, m_Sphere,
 			glm::scale(glm::translate(glm::mat4(1.0f), centre),
-				glm::vec3(settings.OceanRadius)));
+				glm::vec3(settings.OceanRadius * scale)));
 
 		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
 		Egss::RenderCommand::SetDepthWrite(true);
@@ -1574,10 +2881,34 @@ private:
 	static constexpr double s_AuKm = 149597870.0;
 	static constexpr double s_EarthRadiusKm = 6371.0;
 
-	// The one length the scale map leaves alone: Earth's radius, drawn at
-	// 360 m. Big enough to walk on with 1.5 m voxels and a horizon that is
-	// visibly close; small enough that the whole system fits in 302 km.
-	static constexpr float s_EarthDrawn = 360.0f;
+	// **250 km, with both exponents at one -- so every ratio in the system is
+	// the true one and only the absolute size is not.**
+	//
+	// It was 360 m. That made the atmosphere 16 m deep, twice the height of a
+	// tree; it put Venus in the sky as a disc the size of a moon; and escape
+	// velocity was 84 m/s. Those are not three problems, they are one: a body
+	// too small for anything about it to feel like a body.
+	//
+	// With `p = q = 1` the map is the identity, so the Sun is its real half a
+	// degree across, Venus is a point of light, the Moon's orbit is 60 Earth
+	// radii and Phobos clears Mars by the 2.76 it actually clears it by. What
+	// is not real is the metre: everything is 1/25.5 of true size.
+	//
+	// **The limit is a float, and it is exact.** The chunk meshes, the plant
+	// positions and the physics bodies of the surface all live in planet-fixed
+	// coordinates whose magnitude is the radius, and a float carries 24 bits --
+	// so the spacing of representable positions at the surface is `R / 2^23`.
+	// At Earth's own radius that is **0.76 m**, which is half a voxel: the
+	// meshes come out as rubble and the physics with them, and a capture from
+	// the ground shows the smooth stand-in sphere and nothing else, because
+	// nothing else survived. 250 km puts it at 30 mm, which is under the
+	// collider's own slop and a fiftieth of a voxel.
+	//
+	// Lifting it means carrying the surface in doubles or about a local origin
+	// that follows the player -- through `VoxelField3D`, the mesher, the SDF
+	// collider and the plant placement. That is the next thing this wants, and
+	// it is on the roadmap with these numbers.
+	static constexpr float s_EarthDrawn = 250000.0f;
 
 	struct Body
 	{
@@ -1586,7 +2917,13 @@ private:
 		double Gm = 0.0;          // GM of *this* body, for whatever orbits it
 		double RotationHours = 24.0;
 		float AtmosphereFraction = 0.0f;
+		float AtmosphereDensity = 1.0f;
+		float AtmosphereGlow = 0.0f;
 		glm::vec3 Scatter = glm::vec3(0.0f);
+		float RingInner = 0.0f;
+		float RingOuter = 0.0f;
+		float RingTiltDegrees = 0.0f;
+		glm::vec3 RingColour = glm::vec3(1.0f);
 		double RadiusKm = 0.0;
 		glm::vec3 Colour = glm::vec3(1.0f);
 
@@ -1628,6 +2965,12 @@ private:
 			body.RadiusKm = description.RadiusKm;
 			body.RotationHours = description.RotationHours;
 			body.AtmosphereFraction = description.AtmosphereFraction;
+			body.AtmosphereDensity = description.AtmosphereDensity;
+			body.AtmosphereGlow = description.AtmosphereGlow;
+			body.RingInner = description.RingInner;
+			body.RingOuter = description.RingOuter;
+			body.RingTiltDegrees = description.RingTiltDegrees;
+			body.RingColour = description.RingColour;
 			body.Scatter = description.Scatter;
 			body.Colour = description.Colour;
 			body.SemiMajorAu = description.SemiMajorAu;
@@ -2255,6 +3598,7 @@ private:
 			uniform float u_PlanetRadius;
 			uniform float u_AtmosphereRadius;
 			uniform float u_Density;
+			uniform float u_Glow;
 
 			// Distances to a sphere's two intersections, or a miss.
 			bool hitSphere(vec3 origin, vec3 direction, float radius,
@@ -2297,22 +3641,79 @@ private:
 				// far side of a sphere behind it.
 				near = max(near, 0.0);
 
-				// Stop at the ground: air in front of a planet is lit, air
-				// behind it is not there to be seen.
-				float groundNear, groundFar;
-				if (hitSphere(origin, direction, u_PlanetRadius, groundNear, groundFar)
-					&& groundNear > 0.0)
-					far = min(far, groundNear);
+				// **Stop where the light stops, which is not always the ground.**
+				//
+				// For a planet with a surface, that is the surface: air in
+				// front of it is lit, air behind it is not there to be seen,
+				// and the step in path length across the edge of the disc is
+				// *correct* -- there is a hard edge there, and it is drawn.
+				//
+				// A gas giant has no surface, and stopping at the one the
+				// voxel lattice happens to provide put a **hard circle across
+				// Saturn**. Moving the stop below the surface only moved the
+				// circle: what jumps is not the ground, it is the path length,
+				// and eight fixed steps over a path that doubles at a boundary
+				// are a different quadrature on either side of it. So a body
+				// with no surface does not stop -- the ray crosses the whole
+				// shell, `density` saturates below the drawn radius, and the
+				// far half is buried under twenty-nine optical depths without
+				// anything having to special-case it.
+				if (u_Glow <= 0.0)
+				{
+					float groundNear, groundFar;
+
+					if (hitSphere(origin, direction, u_PlanetRadius, groundNear, groundFar)
+						&& groundNear > 0.0)
+						far = min(far, groundNear);
+				}
 
 				if (far <= near)
 					discard;
 
-				const int steps = 8;
+				// **Steps set by the scale height, not by a constant.** Eight
+				// was enough for a shell 4.5% of Earth's radius and is not
+				// enough for one that is 35% of Saturn's: what has to be
+				// resolved is the scale height, which is a quarter of the
+				// shell, and a step longer than half of that turns the limb
+				// into bands. Two samples per scale height, capped so a ray
+				// straight through a gas giant cannot cost more than 48.
+				float thickness = u_AtmosphereRadius - u_PlanetRadius;
+
+				int steps = int(clamp((far - near) / max(thickness * 0.125, 1e-4),
+					8.0, 48.0));
+
 				const int sunSteps = 4;
 
 				float segment = (far - near) / float(steps);
 				vec3 accumulated = vec3(0.0);
 				float viewDepth = 0.0;
+
+				// **Where to ask which way the star is.** The front of the drawn
+				// sphere where the ray reaches it, and the closest approach to
+				// the centre where it does not. The two agree at the limb, so
+				// the terminator does not step across the edge of the disc.
+				//
+				// It has to be a point on a *shell*. Using the closest
+				// approach everywhere is what the first version did, and for a
+				// ray aimed at the middle of the planet that point is the
+				// centre -- where `normalize` of very nearly zero swings
+				// through every direction there is, and Saturn grew a bright
+				// **cone** out of its terminator. Anchoring to the sphere
+				// keeps `|deepest|` at or above the drawn radius everywhere.
+				vec3 deepest;
+
+				float surfaceNear, surfaceFar;
+
+				if (hitSphere(origin, direction, u_PlanetRadius, surfaceNear, surfaceFar)
+					&& surfaceNear > 0.0)
+				{
+					deepest = origin + direction * surfaceNear;
+				}
+				else
+				{
+					float approach = clamp(dot(-origin, direction), near, far);
+					deepest = origin + direction * approach;
+				}
 
 				for (int i = 0; i < steps; i++)
 				{
@@ -2350,7 +3751,64 @@ private:
 
 				vec3 result = accumulated * u_Scatter * u_Density * phase * u_LightColor;
 
-				color = vec4(result, 1.0);
+				// **Multiple scattering, as one term rather than a second
+				// integral -- because single scattering makes thick air
+				// *dark*.**
+				//
+				// Every photon that bounces twice is dropped by the loop
+				// above, and at Jupiter's optical depth almost all of them do:
+				// the `exp(-(sunDepth + viewDepth))` inside kills the deep
+				// samples, which are the ones carrying most of the mass. The
+				// planet came out a **grey ball**, dimmer than the thin-aired
+				// Earth beside it, which is backwards -- a gas giant is bright
+				// precisely because its air is deep enough for light to bounce
+				// around inside it before it leaves.
+				//
+				// Modelling that properly is a second scattering order at
+				// least. What it is replaced with is one term with the two
+				// properties that matter: it appears only where the air is
+				// thick, because it is scaled by the same extinction that
+				// fills the alpha channel, and it is lit by where the deepest
+				// visible air sits relative to the star, so there is still a
+				// terminator. The colour is the scattering colour with its
+				// brightest channel at one, which is what the medium's albedo
+				// would be.
+				//
+				// `u_Glow` is zero for Earth and Mars, so nothing about a thin
+				// atmosphere changed when this was added.
+				float lit = max(dot(normalize(deepest), u_LightDirection), 0.0);
+
+				float brightest = max(max(u_Scatter.r, u_Scatter.g), u_Scatter.b);
+				vec3 albedo = u_Scatter / max(brightest, 1e-4);
+
+				// **And what the air hid on the way through.**
+				//
+				// The scattering integral above says how much light the air
+				// sends to the eye. It says nothing about what the air stops,
+				// and drawn additively it *cannot*: Jupiter came out as a hard
+				// disc of ground with a bright halo round it, because 5.9
+				// optical depths of hydrogen added a glow and then let every
+				// bit of the surface through underneath.
+				//
+				// Alpha is the extinction along the same path -- one minus the
+				// transmittance -- and the colour is already premultiplied by
+				// its own coverage, because an integral of in-scattered light
+				// is exactly that. `BlendMode::Premultiplied` composites the
+				// two: `result + background * (1 - alpha)`. Where the air is
+				// thin this is what additive already did; where it is thick
+				// the planet stops being visible, which is the whole point of
+				// a body with no surface.
+				//
+				// Grey rather than per-channel: the alpha channel is one
+				// number, so a wavelength-dependent extinction cannot be
+				// expressed here. The colour of what shows through is carried
+				// by `result`, which is per-channel; the *amount* is the mean.
+				float hidden = dot(u_Scatter * u_Density, vec3(1.0 / 3.0));
+				float alpha = 1.0 - exp(-viewDepth * hidden);
+
+				result += albedo * u_LightColor * lit * alpha * u_Glow;
+
+				color = vec4(result, alpha);
 			}
 		)";
 
@@ -2362,7 +3820,7 @@ private:
 
 	// Draws one body's air, in camera-relative coordinates like everything
 	// else -- so the camera is at the origin and the centre carries the offset.
-	void DrawAtmosphere(size_t index, const glm::vec3& centre, float radius)
+	void DrawAtmosphere(size_t index, const glm::vec3& centre, float radius, float scale)
 	{
 		const Body& body = m_Bodies[index];
 
@@ -2370,6 +3828,8 @@ private:
 			return;
 
 		float outer = radius * (1.0f + body.AtmosphereFraction * m_AirScale);
+
+		(void)scale;
 
 		// Nothing to see from far enough away that the whole shell is under a
 		// pixel, and 32 samples a pixel is worth skipping.
@@ -2383,15 +3843,20 @@ private:
 		material->Set("u_LightColor", m_SunLight * m_StarBrightness);
 		material->Set("u_Scatter", body.Scatter);
 		material->Set("u_PlanetRadius", radius);
-		material->Set("u_AtmosphereRadius", outer);
-		material->Set("u_Density", m_AirDensity / std::max(1.0f, radius));
 
-		// **Additive, no depth write, no culling.** Additive because air adds
-		// light rather than hiding what is behind it; no depth write so one
-		// shell does not occlude the next; and no culling because the camera
+		material->Set("u_AtmosphereRadius", outer);
+		material->Set("u_Density",
+			m_AirDensity * body.AtmosphereDensity / std::max(1.0f, radius));
+		material->Set("u_Glow", body.AtmosphereGlow);
+
+		// **Premultiplied, no depth write, no culling.** Premultiplied because
+		// air both adds light and hides what is behind it, and additive can
+		// only do the first -- see the note at the bottom of the fragment
+		// shader for what that looked like on Jupiter. No depth write so one
+		// shell does not occlude the next, and no culling because the camera
 		// can be inside the shell, where only its back faces are visible.
 		// Depth *testing* stays on, so terrain in front still occludes the sky.
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Additive);
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Premultiplied);
 		Egss::RenderCommand::SetDepthWrite(false);
 		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
 
@@ -2493,29 +3958,51 @@ private:
 		{
 			ImGui::Text("%.0f m/s  (WASD, space/ctrl, shift to boost)", m_FlightSpeed);
 
+			double aboveSea = 0.0;
+
+			if (GroundUnderShip(aboveSea) && aboveSea < 0.0)
+				ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
+					"over water -- %.0f m of it, and nothing here swims", -aboveSea);
+
 			if (ImGui::Button("Land  (L)"))
 				Land();
 		}
 
 		ImGui::Separator();
 
-		ImGui::SliderFloat("Years per second", &m_OrbitalYearsPerSecond, 0.0f, 2.0f, "%.4f");
-		ImGui::SliderFloat("Seconds per day", &m_SecondsPerDay, 4.0f, 600.0f, "%.0f s");
-		ImGui::Text("now running at %.5f yr/s", m_YearsPerSecond);
+		// Logarithmic, because the useful range spans seven decades: the
+		// default is 7.6e-7 and a linear slider cannot represent it at all.
+		ImGui::SliderFloat("Years per second", &m_OrbitalYearsPerSecond, 1.0e-7f, 2.0f,
+			"%.3g", ImGuiSliderFlags_Logarithmic);
+		ImGui::SliderFloat("Seconds per day", &m_SecondsPerDay, 4.0f, 7200.0f, "%.0f s",
+			ImGuiSliderFlags_Logarithmic);
 
-		if (ImGui::SliderFloat("Compression p", &m_Compression, 0.3f, 1.0f, "%.3f"))
+		// Said as durations rather than as rates, because "7.6e-7 yr/s" is not
+		// a thing anybody can picture and "a year takes 365 h" is.
+		ImGui::Text("a year takes %.4g h, and %s day %.0f s",
+			1.0 / (glm::max(m_YearsPerSecond, 1e-12) * 3600.0),
+			m_Frame == 0 ? "the Sun's" : m_Bodies[m_Frame].Name.c_str(),
+			std::abs(m_Bodies[m_Frame].RotationHours) / (365.25 * 24.0)
+				/ glm::max(m_YearsPerSecond, 1e-12));
+
+		if (ImGui::SliderFloat("Orbits p", &m_Compression, 0.3f, 1.0f, "%.3f"))
+			ReportScale();
+
+		// Past about 0.97 the Sun reaches Mercury's orbit, which the clearance
+		// column in the startup log is there to show you happening.
+		if (ImGui::SliderFloat("Bodies q", &m_BodyScale, 0.4f, 1.0f, "%.3f"))
 			ReportScale();
 
 		ImGui::SliderFloat("Star brightness", &m_StarBrightness, 0.2f, 3.0f);
 		ImGui::SliderFloat("Air depth", &m_AirScale, 0.2f, 6.0f, "%.1fx");
 		ImGui::SliderFloat("Air density", &m_AirDensity, 1.0f, 120.0f, "%.0f");
-		ImGui::SliderFloat("Load radius", &m_LoadRadius, 40.0f, 260.0f, "%.0f m");
-		ImGui::SliderInt("Chunks per step", &m_ChunksPerStep, 1, 12);
+		ImGui::SliderFloat("Load radius", &m_LoadRadius, 80.0f, 900.0f, "%.0f m");
+		ImGui::SliderInt("Chunks per step", &m_ChunksPerStep, 1, 48);
 		ImGui::Checkbox("Labels", &m_ShowLabels);
 
 		ImGui::TextDisabled("Earth %.0f m across, 1 AU = %.1f km, system %.0f km wide",
-			2.0 * DrawnRadius(3), DrawnLength(s_AuKm) / 1000.0,
-			2.0 * DrawnLength(30.07 * s_AuKm) / 1000.0);
+			2.0 * DrawnRadius(3), DrawnLength(s_AuKm, (double)m_Compression) / 1000.0,
+			2.0 * DrawnLength(30.07 * s_AuKm, (double)m_Compression) / 1000.0);
 
 		if (m_HandoverResidual > 0.0)
 			ImGui::TextDisabled("worst frame handover: %.3e m", m_HandoverResidual);
@@ -2602,6 +4089,14 @@ private:
 	std::shared_ptr<Egss::Shader> m_Shader;
 	std::shared_ptr<Egss::Material> m_Material;
 	std::shared_ptr<Egss::Mesh> m_Sphere;
+	std::shared_ptr<Egss::Mesh> m_Ring;
+	std::shared_ptr<Egss::Mesh> m_Stars;
+	std::shared_ptr<Egss::Shader> m_StarShader;
+	std::shared_ptr<Egss::Material> m_StarMaterial;
+	std::shared_ptr<Egss::Shader> m_FieldShader;
+	std::shared_ptr<Egss::Material> m_FieldMaterial;
+	std::shared_ptr<Egss::Shader> m_RingShader;
+	std::shared_ptr<Egss::Material> m_RingMaterial;
 
 	std::shared_ptr<Egss::Shader> m_AtmosphereShader;
 	std::shared_ptr<Egss::Material> m_AtmosphereMaterial;
@@ -2637,7 +4132,11 @@ private:
 
 	// --- Where the camera is ------------------------------------------------
 
-	float m_Compression = 0.5f;
+	float m_Compression = 1.0f;
+
+	// The body exponent. See `DrawnLength` for why it is three quarters and
+	// what breaks on either side of that.
+	float m_BodyScale = 1.0f;
 
 	size_t m_Frame = 3;                       // whose frame m_Local is in
 	glm::dvec3 m_Local = glm::dvec3(0.0);     // ship, relative to that body
@@ -2651,7 +4150,7 @@ private:
 
 	double m_SpeedPerMetre = 0.6;
 	float m_MinSpeed = 6.0f;
-	float m_MaxSpeed = 40000.0f;
+	float m_MaxSpeed = 3.0e7f;
 	float m_LevelRate = 2.0f;
 	bool m_ShowLabels = true;
 
@@ -2679,14 +4178,30 @@ private:
 	bool m_WasToggling = false;
 	float m_LookRate = 90.0f;         // degrees a second, for the arrow keys
 
-	float m_LoadRadius = 110.0f;
-	int m_ChunksPerStep = 4;
+	float m_LoadRadius = 400.0f;
+	int m_ChunksPerStep = 12;
 
 	// --- The clocks ---------------------------------------------------------
 
-	float m_SecondsPerDay = 60.0f;
-	float m_OrbitalYearsPerSecond = 0.02f;
-	double m_YearsPerSecond = 0.02;
+	// **An hour to the day, and 365 hours to the year.**
+	//
+	// Both numbers are one number: near a body the clock is set so *that
+	// body's* day takes `m_SecondsPerDay`, and far from one it runs at
+	// `m_OrbitalYearsPerSecond`. Asking for a 3,600 s day on Earth implies
+	// `(23.934 / 8766) / 3600 = 7.584e-7` yr/s, and 365 hours to the year is
+	// `1 / (365 * 3600) = 7.610e-7`. They agree to a third of a percent, so
+	// the handover at six radii is not a visible change of pace -- which was
+	// not true of the 60 s day this started with, where the two differed by
+	// four orders of magnitude and leaving a planet made the sky lurch.
+	//
+	// The cost is that nothing completes an orbit while you watch: Mercury's
+	// 88 days is 88 hours of sitting there, so the Kepler column on the panel
+	// stays empty at this rate. That is what the slider is for, and it is
+	// logarithmic so the seven decades between "a year in a fortnight" and "a
+	// year in half a second" are all reachable.
+	float m_SecondsPerDay = 3600.0f;
+	float m_OrbitalYearsPerSecond = 1.0f / (365.0f * 3600.0f);
+	double m_YearsPerSecond = 1.0 / (365.0 * 3600.0);
 
 	std::vector<Body> m_Bodies;
 

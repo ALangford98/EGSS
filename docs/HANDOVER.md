@@ -257,6 +257,117 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **A near plane derived from the height above the *mean radius* clips the
+  ground you are standing on.** `near = 0.4 * altitude` is fine while the relief
+  is small next to the altitude and wrong the moment it is not: standing on a
+  hill 190 m above the mean puts the near plane 76 m out and removes everything
+  within seventy-six metres of the camera. What it looks like is a hard
+  horizontal line across the frame with the horizon sphere and the *insides* of
+  the chunk meshes showing through beneath it — which reads as a mesher bug and
+  is a camera one. The altitude that matters is the height above the *ground*;
+  on foot it is the eye height and nothing else.
+
+- **`shape * Amplitude - bias` is skewed, so ±A/2 does not bound it.** The relief
+  generator is bounded to ±A/2 and then has its measured mean subtracted, which
+  slides the range down without narrowing it — ground reaches `A/2 + bias` below
+  the mean radius and only `A/2 - bias` above. Anything that bounds the relief by
+  half the amplitude (the shell test that decides which chunks to generate, the
+  inset of the stand-in sphere) is wrong by the bias, and what that draws is a
+  **wall**: a chunk holding a valley floor, classified as nowhere near the
+  surface and filled with solid rock. It scales with the amplitude, so it hides
+  until the planet is big.
+
+- **A bit mask does not overflow, it wraps.** `VoxelPlanet`'s chunk key packed
+  each axis into 16 bits, which is 65,535 chunks — a body 25 km across. Past
+  that, chunk 65,536 and chunk 0 share a key, so a streamer finds the far side of
+  the world already filled and never generates it. Nothing warns; the terrain
+  simply is not there. Check what a packed key can actually name before assuming
+  the thing it names cannot get that big.
+
+- **`fwidth` after a branch is undefined, and it costs reproducibility rather
+  than correctness.** GLSL computes derivatives over 2x2 quads, and leaves them
+  undefined in non-uniform control flow — so a shader that returns early for
+  some pixels and then calls `fwidth` gets, for any quad straddling that
+  boundary, whatever the helper invocations left behind. It does not look like a
+  bug: it was **twelve faint pixels out of 921,600**, always the same twelve,
+  differing between runs of the *same binary* on a scene that was byte-identical
+  with the feature switched off. Hoist every derivative above every branch.
+  Symptom to watch for: a capture that stops being reproducible while still
+  looking right.
+
+- **`fract(sin(dot(v, k)) * 43758.5)` breaks down at large arguments.** The
+  idiom works while `dot` stays small. Multiply a grid index by a few hundred
+  and add a salt and it reaches five figures, where a float carries about a
+  thousandth of absolute precision and `sin` needs the phase to a millionth to
+  decorrelate neighbours — so adjacent cells share a hash and the output comes
+  out in **blocks**. Use an integer hash (multiply-xor-shift over `uvec`), which
+  has no range at which it degrades. Same family as the `Hash2D` overflow below,
+  reached from the other direction.
+
+- **A point source narrower than a pixel is not a small dot, it is an aliased
+  one.** A Gaussian with sigma below about one pixel gets sampled once per
+  fragment and what appears is a **dash** — the point caught by a scanline —
+  rather than a small round star. Anything drawn at the sampling limit needs its
+  width floored at the sampling rate, which `fwidth` is there to supply.
+
+- **An additive blend cannot hide anything, so additive air is not air.**
+  `BlendMode::Additive` only ever brightens. Drawn that way, an atmosphere five
+  optical depths thick still lets every bit of the ground through underneath —
+  Jupiter came out as a hard disc of rock with a halo round it. Anything that
+  both emits and occludes (air, fog, smoke) wants `BlendMode::Premultiplied`:
+  `src + dst * (1 - src.a)`, colour already scaled by its own coverage, alpha
+  carrying `1 - transmittance`.
+
+- **Single scattering makes optically thick media dark, not bright.** Every
+  photon that bounces twice is dropped, and in deep air almost all of them do,
+  so the more air you add the darker the planet gets — Jupiter went from a hard
+  disc to a grey ball dimmer than Earth. Real thick air is bright for exactly
+  the reason the integral cannot see. If a scattering shader gets worse as you
+  thicken it, this is why, and one isotropic term scaled by the extinction is
+  enough to stand in for the bounces.
+
+- **A fixed step count over a path length that jumps is two different
+  quadratures.** A ray-marched shell that stops at a surface has a path length
+  that steps across the edge of that surface's disc, and `(far - near) / 8`
+  steps with it — so the two sides of the boundary are integrated at different
+  resolutions and a **hard circle** appears where nothing physical changes.
+  Moving the stop somewhere else only moves the circle. Either make the path
+  continuous, or set the step count from the medium's own scale rather than
+  from a constant.
+
+- **`normalize` of a point on a view ray is not safe when the ray points at the
+  centre.** Taking the closest-approach point along a ray and normalising it to
+  get a surface direction works everywhere except through the middle of the
+  body, where the closest approach *is* the centre and the direction swings
+  through everything — which drew a bright cone out of Saturn's terminator.
+  Anchor such a sample to a shell (the front hit on the sphere, falling back to
+  closest approach only where the ray misses) so its length is bounded below.
+
+- **A Fibonacci spiral is ordered by z, so the first half of it is one
+  hemisphere.** `SpiralDirection(i, n, offset)` sets `z = 1 - 2(i+offset)/n`, so
+  walking `i` from 0 to `n/2` samples the northern half and nothing else. A land
+  fraction measured that way read 24.56% against the 29.2% the sea level had been
+  fitted to — 4.6 sigma, which looked like a real disagreement between two
+  samplers and was one sampler looking at half a planet. Walk the whole spiral,
+  or index it by a stride coprime with `n` (`i * 7 % n`) if you want a subset.
+
+- **A rate measured per *outcome* is not a rate.** Comparing two probe sets by
+  running the search 128 times and testing each site it returned gave 0, 11, 1,
+  36, 16, 37 disagreements as the disc grew — not monotone, which for a fractal
+  coastline is impossible. A handful of sites serve hundreds of approaches, so it
+  was weighting one bad site by how often it happened to be nearest. Compare the
+  two predicates *per direction* over the sphere and the curve is monotone. If a
+  rate refuses to behave, check whether its denominator counts distinct things.
+
+- **Every landing site is dry, so "is it dry" cannot catch a dropped rotation.**
+  The landing search runs in planet-fixed coordinates and its answer is used in
+  scene ones. Dropping `ToFixed` on the way in makes it find the nearest dry
+  ground to *the wrong direction* — which is still dry, still passes every check
+  about the ground, and at a third of a turn is on the night side. The check that
+  catches it is that the arrival is still on the lit hemisphere. A postcondition
+  that every possible output satisfies is not a test; the mutation is what said
+  so.
+
 - **An unallocated voxel chunk reads as air, not as rock.** `VoxelField3D`'s
   `Chunk::Uniform` defaults to `Far`, which is *positive* — outside the
   surface. A streamer that skips chunks the shell does not reach, on the
@@ -1225,6 +1336,22 @@ actually exercising them. `Raycast3D` answers "what is in the way" in 3D, which
 is what Cube3D's emitter occlusion now runs on — and what unblocks 3D acoustics
 whenever that is wanted.
 
+**The solar system** — **the scale is real now**: both exponents are one, Earth
+is 250 km with a 3.92 km atmosphere and 2,216 m/s of escape velocity, and the
+planets are points of light because that is what they are. Getting there needed a
+sparse chunk store in `VoxelField3D` (the dense one wanted 1.1e10 GB), a wider
+chunk key, and distance proxies for drawing. What is left is a local origin for
+the surface, which is what 1:1 needs, and terrain LOD. The landing approach picks
+dry ground; the gas giants have air deep enough to have no ground under
+it, which needed a premultiplied blend in the engine and a multiple-scattering
+term in the shader; Saturn and Uranus have rings; a day is an hour and a year is
+365 of them; and a ship hovering in an atmosphere is carried round with it. What
+is left in this cluster is real axial tilt (the ring tilt is currently on
+the ring), moon orbits in their planet's equator, and something for a player who
+walks into the water off a beach — all on the roadmap with what they need. The
+sky is done: 44 real stars, a procedural field behind them and the Milky Way on
+the real galactic pole.
+
 **2D** — per-pixel lighting is done and verified (light map, then
 `BlendMode::Multiply` for surfaces; 27 checks through `ReadPixelRGBA`). Nothing
 outstanding in this cluster, which makes it the thinnest one on the list.
@@ -1838,6 +1965,61 @@ inside a box gets a hit at distance zero, so a source in a single-box room never
 gets anywhere.
 
 ### Known approximations, stated so they are not mistaken for bugs
+
+- **The solar system is true in every ratio and 1/25.5 in size.** Both scale
+  exponents are one, so the Sun really does subtend half a degree from Earth and
+  Phobos really does clear Mars by 2.76 — only the metre is scaled. The limit is
+  a float: chunk meshes, plant positions and physics bodies are planet-fixed, so
+  representable positions at the surface are spaced `R / 2^23`, which is 30 mm at
+  250 km and 0.76 m at Earth's own radius. It was measured, not predicted —
+  6,371 km and 1,000 km were both built and photographed, and the meshes come
+  apart exactly as fast as the spacing grows.
+
+- **Streamed ground reaches 400 m; the horizon is 949 m.** The outer half of the
+  view from the surface is the stand-in sphere shaded from a colour map at about
+  1.5 km a texel, not meshed terrain. It curves correctly and carries the large
+  shapes, and it has no detail. Terrain LOD is the roadmap item that closes it.
+
+- **The stars are real; where the planets sit against them is not.** The
+  catalogue is J2000 and the conversion through the obliquity is checked against
+  published ecliptic latitudes to 0.003 degrees, so the constellations are right
+  relative to each other. The bodies, though, start at longitudes this demo chose
+  rather than at an epoch, so the constellation behind Jupiter means nothing.
+
+- **A starfield is an orientation reference and never a speed one.** Stars are
+  at infinity, so translating past them produces no parallax — which is exactly
+  what happens in life, and why the roadmap's reason for wanting one ("40 km/s
+  looks like standing still") was not something a sky could fix. The speed cue
+  is the planets.
+
+- **Two exponents, and the Sun is too big in the sky because of it.** Radii and
+  satellite orbits use `q = 3/4`; heliocentric distance uses `p = 1/2`. The Sun's
+  radius therefore grew with `q` while the orbit it is seen from did not, so it
+  is **24.9 degrees across from Earth** against 0.53 in life. The same asymmetry
+  makes the Jovian system 26 km wide against a 126 km orbit, where the true ratio
+  is 0.24%. Both are sliders; `q` above 0.97 puts Mercury inside the Sun.
+
+- **The ring tilt is carried by the ring, not by the planet.** Saturn and Uranus
+  spin about +Y like everything else, and only their ring planes are inclined.
+  On a body whose atmosphere is opaque no observation distinguishes the two, and
+  the accurate version means a general spin axis through `ToScene`, `ToFixed`,
+  `SpinMatrix` and `CarryWithTheAir`. It is on the roadmap. A ringed body with a
+  *visible* surface would make this a real error rather than an unobservable one.
+
+- **A gas giant's atmosphere depth is not a measured atmosphere depth.**
+  Jupiter's visible air is about 1.4% of its radius, no deeper in proportion than
+  Earth's. The 25% used here stands in for the fact that a gas giant has no
+  surface at all, which a demo that builds every body out of voxels cannot
+  otherwise express.
+
+- **A landing site is certified dry for 10 m, and that is the limit of what any
+  probe set can say.** The relief runs five octaves from a 41 m base wavelength,
+  so its finest detail is 2.6 m across and the shoreline wanders at that scale.
+  Two independent probe sets — 225 points on rings against a 397-point sunflower
+  — agree about every one of 812 directions at 3 m, 98.8% at 10 m and 92.7% at
+  28 m. The search promises 10 m because that is the largest disc it can actually
+  see; about one site in eighty has water somewhere inside that disc, and no
+  finite probe count closes the gap.
 
 - **The solar system's distances are square-rooted, and that is the design.**
   Every length in the demo -- body radii and orbital distances alike -- is

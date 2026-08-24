@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 
 #include <functional>
+#include <unordered_map>
 
 namespace Egss {
 
@@ -150,11 +151,24 @@ namespace Egss {
 			const std::function<float(const glm::vec3&)>& sdf,
 			unsigned char material = 1);
 
-		// Allocated chunks, and the total. For checking that the sparse storage
-		// is actually sparse rather than assuming it.
+		// Allocated chunks, and the total the lattice could hold. For checking
+		// that the sparse storage is actually sparse rather than assuming it.
 		size_t AllocatedChunks() const;
-		size_t TotalChunks() const { return m_Storage.size(); }
+		size_t TotalChunks() const
+		{
+			return (size_t)glm::max(m_Chunks.x, 0) * glm::max(m_Chunks.y, 0)
+				* glm::max(m_Chunks.z, 0);
+		}
+		// Chunks the map is actually holding, uniform ones included.
+		size_t StoredChunks() const { return m_Storage.size(); }
 		size_t AllocatedBytes() const;
+
+		// **Forget one chunk entirely**, so it goes back to reading as `Far`.
+		//
+		// A streamer that walks a body of any size has to give storage back or
+		// it accumulates every chunk it ever touched. On a small field that is
+		// a rounding error; on a planet it is the whole planet.
+		void ClearChunk(const glm::ivec3& chunk);
 
 		// --- Persistence ---------------------------------------------------
 		//
@@ -226,6 +240,16 @@ namespace Egss {
 			outMax = glm::min(outMin + glm::ivec3(ChunkSize), m_Size - glm::ivec3(1));
 		}
 	private:
+		// **Sparse, keyed by the packed chunk index.**
+		//
+		// It was a dense `std::vector<Chunk>`, one entry per chunk of the
+		// lattice whether anything was ever written to it or not. That is 56
+		// bytes a chunk, which is nothing for a field a few hundred voxels
+		// across and is the reason a planet could not be bigger than about
+		// 20 km: Earth at its own radius and 1.5 m voxels is 5.8e5 chunks a
+		// side, which is 1.9e17 of them and 1.1e10 GB of empty structs. The
+		// map holds only what has been filled, which is what the streamer
+		// keeps near the player and nothing else.
 		struct Chunk
 		{
 			// Empty while the chunk is uniform. Allocated on the first write,
@@ -246,6 +270,9 @@ namespace Egss {
 			return ((size_t)z * ChunkSize + y) * ChunkSize + x;
 		}
 
+		// Whole-chunk lookup that never creates. The read paths go through it.
+		const Chunk& ChunkAt(int cx, int cy, int cz) const;
+
 		Chunk& ChunkFor(int x, int y, int z, int& outLocalX, int& outLocalY, int& outLocalZ);
 		const Chunk& ChunkFor(int x, int y, int z, int& outLocalX, int& outLocalY, int& outLocalZ) const;
 
@@ -260,7 +287,11 @@ namespace Egss {
 
 		void MarkDirty(int x, int y, int z);
 
-		std::vector<Chunk> m_Storage;
+		std::unordered_map<size_t, Chunk> m_Storage;
+
+		// Returned for any chunk the map has never been given, so a read of
+		// untouched space is the same `Far` it always was.
+		static const Chunk s_Absent;
 		std::vector<glm::ivec3> m_Dirty;
 	};
 
