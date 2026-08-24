@@ -135,6 +135,13 @@ namespace Egss {
 			glDeleteTextures(1, &m_RendererID);
 	}
 
+	void OpenGLTexture2D::SetSmooth(bool smooth)
+	{
+		glBindTexture(GL_TEXTURE_2D, m_RendererID);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+			smooth ? GL_LINEAR : GL_NEAREST);
+	}
+
 	void OpenGLTexture2D::SetData(void* data, unsigned int size)
 	{
 		unsigned int bytesPerPixel = (m_DataFormat == GL_RGBA) ? 4 : 3;

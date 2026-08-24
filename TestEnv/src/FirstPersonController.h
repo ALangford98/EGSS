@@ -186,6 +186,18 @@ public:
 	}
 
 	// Free movement along the camera's own axes plus world-vertical E/Q.
+	// Point it somewhere, in the same world angles the look control uses.
+	// Needed by anything that repositions the camera itself -- landing on a
+	// planet, most obviously, where the direction that counts as "level"
+	// depends on where on the sphere you arrived.
+	void SetRotation(float yaw, float pitch)
+	{
+		m_Yaw = yaw;
+		m_Pitch = glm::clamp(pitch, -89.0f, 89.0f);
+
+		m_Camera.SetRotation(m_Yaw, m_Pitch);
+	}
+
 	void UpdateFly(float dt)
 	{
 		glm::vec3 forward = m_Camera.GetForward();

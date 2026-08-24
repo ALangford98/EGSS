@@ -41,6 +41,24 @@ namespace Egss {
 		// matrix would otherwise be degenerate.
 		void SetRotation(float yawDegrees, float pitchDegrees);
 
+		// Point the camera with an explicit basis instead of yaw and pitch.
+		//
+		// **This is what a spherical world needs.** Yaw and pitch are measured
+		// against a fixed world up of +Y, which is right for a flat world and
+		// meaningless on a planet: standing on the equator of a sphere whose
+		// axis is +Y, local up is horizontal in world terms, and a yaw/pitch
+		// camera renders the ground up the side of the screen. Passing the
+		// local up directly is the only way to keep the horizon level.
+		//
+		// `up` need not be perpendicular to `forward`; it is orthogonalised
+		// against it, the way a look-at does.
+		void SetOrientation(const glm::vec3& forward, const glm::vec3& up);
+
+		// True once SetOrientation has been called, until SetRotation is used
+		// again -- the two are alternatives, and mixing them silently would
+		// leave the camera pointing wherever the last one said.
+		bool HasExplicitOrientation() const { return m_ExplicitBasis; }
+
 		// Unit vectors in world space, derived from yaw/pitch. Movement code
 		// wants these rather than the matrix.
 		glm::vec3 GetForward() const;
@@ -57,6 +75,11 @@ namespace Egss {
 		glm::vec3 m_Position = { 0.0f, 0.0f, 0.0f };
 		float m_Yaw = -90.0f;   // -90 looks down -Z, which is GL's default forward
 		float m_Pitch = 0.0f;
+
+		bool m_ExplicitBasis = false;
+		glm::vec3 m_Forward = { 0.0f, 0.0f, -1.0f };
+		glm::vec3 m_Up = { 0.0f, 1.0f, 0.0f };
+		glm::vec3 m_Right = { 1.0f, 0.0f, 0.0f };
 	};
 
 }

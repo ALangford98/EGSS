@@ -50,6 +50,8 @@
 // (nothing reachable in a session) without that risk.
 
 #include <Egss.h>
+
+#include "Vegetation.h"
 #include <imgui.h>
 
 #include "Demo.h"
@@ -415,217 +417,49 @@ public:
 
 	// --- Trees -------------------------------------------------------------
 	//
-	// A trunk that splits into branches that split into branches. Each segment
-	// is a tapered prism; each tip spawns `s_TreeChildren` children, shorter
-	// and thinner by a fixed ratio, until `s_TreeDepth` runs out.
+	// **The generator moved to `Vegetation.h`** so the solar system's Earth
+	// could grow the same trees instead of a second implementation of them.
+	// What is left here is the demo's own use of it: where a tree stands, how
+	// hard it is to fell, and what happens when it is.
 	//
-	// The ratios are the whole model. Length and radius shrinking by a constant
-	// factor per generation is what makes the thing read as a tree rather than
-	// as a bundle of sticks, and it also means the result has closed forms to
-	// be checked against: the segment count is a geometric series in the
-	// branching factor, and the height is bounded by one in the length ratio.
-	// Neither is computed anywhere in the generator.
-	struct TreeParams
+	// The names below are forwarders rather than the call sites being rewritten
+	// -- forty-odd of them use `Hash2DUnit` alone. Moving code and renaming its
+	// callers in one change would have thrown away the check that makes a move
+	// safe, which is that the picture does not change.
+	using TreeParams = Veg::TreeParams;
+
+	static uint32_t Hash2D(int x, int y, uint32_t seed) { return Veg::Hash2D(x, y, seed); }
+	static float Hash2DUnit(int x, int y, uint32_t seed) { return Veg::Hash2DUnit(x, y, seed); }
+
+	static void Basis(const glm::vec3& dir, glm::vec3& outU, glm::vec3& outV)
 	{
-		int Depth = s_TreeDepth;
-		int Children = s_TreeChildren;
-		int Sides = 6;
+		Veg::Basis(dir, outU, outV);
+	}
 
-		float Length = 2.6f;
-		float Radius = 0.20f;
-
-		float LengthRatio = 0.74f;
-		float RadiusRatio = 0.62f;
-
-		float Spread = 36.0f;     // degrees a child leans off its parent
-
-		// Foliage. One cluster per terminal branch, which makes the leaf count
-		// a closed form too: a complete c-ary tree of depth d has c^d tips.
-		float LeafRadius = 0.55f;
-		int LeafSegments = 5;
-		int LeafRings = 3;
-	};
-
-	// A ring of `sides` points around `centre`, in the plane perpendicular to
-	// `dir`.
 	static void Ring(const glm::vec3& centre, const glm::vec3& dir, float radius,
 		int sides, const glm::vec3& u, const glm::vec3& v, std::vector<glm::vec3>& out)
 	{
-		out.clear();
-		for (int i = 0; i < sides; i++)
-		{
-			float a = (float)i / (float)sides * 6.2831853f;
-			out.push_back(centre + (u * std::cos(a) + v * std::sin(a)) * radius);
-		}
-	}
-
-	// Any two vectors perpendicular to `dir` and to each other. Picked from
-	// whichever axis `dir` is least aligned with, so the cross product never
-	// collapses.
-	static void Basis(const glm::vec3& dir, glm::vec3& outU, glm::vec3& outV)
-	{
-		glm::vec3 away = std::fabs(dir.y) < 0.9f
-			? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
-
-		outU = glm::normalize(glm::cross(dir, away));
-		outV = glm::normalize(glm::cross(dir, outU));
-	}
-
-	// A lump of foliage: the same jittered blob the rocks are made of, smaller
-	// and coarser. Deliberately not leaf-shaped -- at the size these are drawn
-	// a cluster reads as foliage and a hundred individual leaves would be a
-	// hundred times the triangles to say the same thing.
-	static void LeafCluster(Egss::MeshData& data, const glm::vec3& centre, float radius,
-		int segments, int rings, unsigned int seed, int path)
-	{
-		auto point = [&](int i, int j)
-		{
-			int wrapped = i % segments;
-
-			float u = (float)wrapped / (float)segments * 6.2831853f;
-			float v = (float)j / (float)rings * 3.14159265f;
-
-			float r = radius * (0.72f + Hash2DUnit(path * 31 + wrapped, j, seed) * 0.5f);
-
-			return centre + glm::vec3(std::sin(v) * std::cos(u), std::cos(v),
-				std::sin(v) * std::sin(u)) * r;
-		};
-
-		auto face = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
-		{
-			glm::vec3 n = glm::cross(b - a, c - a);
-			if (glm::length(n) < 1e-9f)
-				return;
-
-			n = glm::normalize(n);
-
-			unsigned int at = (unsigned int)data.Vertices.size();
-			data.Vertices.push_back({ a, n, { 0.0f, 0.0f } });
-			data.Vertices.push_back({ b, n, { 1.0f, 0.0f } });
-			data.Vertices.push_back({ c, n, { 0.5f, 1.0f } });
-			data.Indices.push_back(at);
-			data.Indices.push_back(at + 1);
-			data.Indices.push_back(at + 2);
-		};
-
-		for (int j = 0; j < rings; j++)
-			for (int i = 0; i < segments; i++)
-			{
-				glm::vec3 a = point(i, j), b = point(i + 1, j);
-				glm::vec3 c = point(i + 1, j + 1), d = point(i, j + 1);
-
-				face(a, b, c);
-				face(a, c, d);
-			}
+		Veg::Ring(centre, dir, radius, sides, u, v, out);
 	}
 
 	static void Segment(Egss::MeshData& data, const glm::vec3& base, const glm::vec3& tip,
 		float baseRadius, float tipRadius, int sides)
 	{
-		glm::vec3 dir = tip - base;
-		float length = glm::length(dir);
-		if (length < 1e-5f)
-			return;
-
-		dir /= length;
-
-		glm::vec3 u, v;
-		Basis(dir, u, v);
-
-		std::vector<glm::vec3> lower, upper;
-		Ring(base, dir, baseRadius, sides, u, v, lower);
-		Ring(tip, dir, tipRadius, sides, u, v, upper);
-
-		for (int i = 0; i < sides; i++)
-		{
-			int j = (i + 1) % sides;
-
-			// Flat per face, which suits the banded shading the rest of the
-			// world uses -- a smooth trunk under four bands is two stripes.
-			glm::vec3 n = glm::cross(lower[j] - lower[i], upper[i] - lower[i]);
-			if (glm::length(n) < 1e-8f)
-				continue;
-
-			n = glm::normalize(n);
-
-			unsigned int at = (unsigned int)data.Vertices.size();
-			data.Vertices.push_back({ lower[i], n, { 0.0f, 0.0f } });
-			data.Vertices.push_back({ lower[j], n, { 1.0f, 0.0f } });
-			data.Vertices.push_back({ upper[j], n, { 1.0f, 1.0f } });
-			data.Vertices.push_back({ upper[i], n, { 0.0f, 1.0f } });
-
-			data.Indices.push_back(at);
-			data.Indices.push_back(at + 1);
-			data.Indices.push_back(at + 2);
-			data.Indices.push_back(at);
-			data.Indices.push_back(at + 2);
-			data.Indices.push_back(at + 3);
-		}
+		Veg::Segment(data, base, tip, baseRadius, tipRadius, sides);
 	}
 
-	static void Branch(Egss::MeshData& bark, Egss::MeshData& leaves, const TreeParams& tree,
-		const glm::vec3& base, const glm::vec3& dir, float length, float radius,
-		int depth, unsigned int seed, int path)
+	static void LeafCluster(Egss::MeshData& data, const glm::vec3& centre, float radius,
+		int segments, int rings, unsigned int seed, int path)
 	{
-		glm::vec3 tip = base + dir * length;
-
-		Segment(bark, base, tip, radius, radius * tree.RadiusRatio, tree.Sides);
-
-		if (depth <= 0)
-		{
-			// A terminal branch carries the foliage, set a little past the tip
-			// so the twig disappears into it rather than poking out the far
-			// side.
-			LeafCluster(leaves, tip + dir * (tree.LeafRadius * 0.35f),
-				tree.LeafRadius * (0.75f + Hash2DUnit(path, 9, seed) * 0.5f),
-				tree.LeafSegments, tree.LeafRings, seed, path);
-			return;
-		}
-
-		glm::vec3 u, v;
-		Basis(dir, u, v);
-
-		for (int i = 0; i < tree.Children; i++)
-		{
-			// Spread evenly around the parent, then jittered -- evenly spaced
-			// children look like a lamp, and unjittered ones repeat visibly at
-			// every level because every node uses the same angles.
-			float around = ((float)i / (float)tree.Children) * 6.2831853f
-				+ Hash2DUnit(path, i * 3 + depth, seed) * 1.7f;
-
-			float lean = glm::radians(tree.Spread
-				* (0.65f + Hash2DUnit(path, i * 3 + 1 + depth, seed) * 0.7f));
-
-			glm::vec3 side = u * std::cos(around) + v * std::sin(around);
-			glm::vec3 childDir = glm::normalize(dir * std::cos(lean) + side * std::sin(lean));
-
-			Branch(bark, leaves, tree, tip, childDir, length * tree.LengthRatio,
-				radius * tree.RadiusRatio, depth - 1, seed, path * tree.Children + i + 1);
-		}
+		Veg::LeafCluster(data, centre, radius, segments, rings, seed, path);
 	}
 
-	static void Finish(Egss::MeshData& data)
-	{
-		if (data.Indices.empty())
-			return;
+	static void Finish(Egss::MeshData& data) { Veg::Finish(data); }
 
-		Egss::Submesh all;
-		all.IndexCount = (unsigned int)data.Indices.size();
-		data.Submeshes.push_back(all);
-		data.RecalculateBounds();
-	}
-
-	// Bark and foliage come out as separate meshes rather than one, because
-	// they are two different colours and the leaves are the half worth being
-	// able to turn off when counting triangles.
 	static void MakeTreeMesh(unsigned int seed, const TreeParams& tree,
 		Egss::MeshData& outBark, Egss::MeshData& outLeaves)
 	{
-		Branch(outBark, outLeaves, tree, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
-			tree.Length, tree.Radius, tree.Depth, seed, 0);
-
-		Finish(outBark);
-		Finish(outLeaves);
+		Veg::MakeTreeMesh(seed, tree, outBark, outLeaves);
 	}
 
 	struct Tree
@@ -2410,21 +2244,6 @@ public:
 	// until the process was OOM killed at 17 GB. Release only; Debug was fine.
 	// See the trap in HANDOVER. Terrain::Hash always had the cast in the right
 	// place; these two copies of the idiom did not.
-	static uint32_t Hash2D(int x, int y, uint32_t seed)
-	{
-		uint32_t h = seed;
-		h ^= (uint32_t)x * 374761393u;
-		h ^= (uint32_t)y * 668265263u;
-		h = (h ^ (h >> 13)) * 1274126177u;
-		h ^= h >> 16;
-		return h;
-	}
-
-	static float Hash2DUnit(int x, int y, uint32_t seed)
-	{
-		return (float)(Hash2D(x, y, seed) & 0xFFFFFF) / (float)0xFFFFFF;
-	}
-
 	static float Noise2D(float x, float y, uint32_t seed)
 	{
 		float xi = std::floor(x), yi = std::floor(y);

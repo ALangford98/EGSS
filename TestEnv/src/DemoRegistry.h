@@ -28,6 +28,7 @@
 #include "OpenWorld.h"
 #include "CelShading.h"
 #include "SlimeMold.h"
+#include "SolarSystem.h"
 
 struct DemoEntry
 {
@@ -61,7 +62,9 @@ inline const DemoEntry s_Demos[] =
 	{ "Engine",   "Open World (streaming islands)", "OpenWorld", []() -> DemoLayer* { return new OpenWorld(); } },
 	{ "Engine",   "Cel shading (bands + outlines)", "Cel",      []() -> DemoLayer* { return new CelShading(); } },
 
-	{ "Life",     "Slime mould (physarum agents)", "Slime",    []() -> DemoLayer* { return new SlimeMold(); } }
+	{ "Life",     "Slime mould (physarum agents)", "Slime",    []() -> DemoLayer* { return new SlimeMold(); } },
+
+	{ "Space",    "Solar system (fly between voxel planets)", "Solar",   []() -> DemoLayer* { return new SolarSystem(); } }
 };
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));

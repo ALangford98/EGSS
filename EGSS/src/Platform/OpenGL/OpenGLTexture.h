@@ -20,6 +20,7 @@ namespace Egss {
 		unsigned int GetHeight() const override { return m_Height; }
 
 		void SetData(void* data, unsigned int size) override;
+		void SetSmooth(bool smooth) override;
 		void Bind(unsigned int slot = 0) const override;
 	private:
 		// Shared by the path and memory constructors: everything from decoded

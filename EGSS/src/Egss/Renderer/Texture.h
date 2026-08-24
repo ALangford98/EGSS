@@ -45,6 +45,14 @@ namespace Egss {
 			unsigned int width, unsigned int height);
 
 		virtual void SetData(void* data, unsigned int size) = 0;
+
+		// Magnification filter. **The default is nearest**, which is what a
+		// font atlas and a checkerboard want -- a sampled texel should be the
+		// texel, not a blur of four. A texture standing in for something
+		// continuous wants the opposite: a planet's biome map is one texel
+		// every couple of metres of ground, and nearest turns a coastline into
+		// a staircase you can count. Minification stays linear either way.
+		virtual void SetSmooth(bool smooth) = 0;
 	};
 
 }

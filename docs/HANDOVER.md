@@ -257,6 +257,59 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **An unallocated voxel chunk reads as air, not as rock.** `VoxelField3D`'s
+  `Chunk::Uniform` defaults to `Far`, which is *positive* — outside the
+  surface. A streamer that skips chunks the shell does not reach, on the
+  grounds that they are uniform, therefore leaves the planet's whole interior
+  reading as empty space, and any surface chunk whose +x/+y/+z neighbour points
+  inward closes its own rock against that vacuum and produces a **wall**. The
+  slabs stood out of the ground on one hemisphere only, which is the tell: a
+  mesh reads one plane past itself in the three *positive* directions, so only
+  the bodies' negative-facing side is affected. Skipping the generator is fine;
+  skipping the *value* is not. Fill with a constant instead — it costs the loop
+  but not the noise and collapses to the same one float.
+
+- **A chunk meshed before its high neighbours exist is not a crack, it is a
+  wall — and repairing it later is not the same as never drawing it.**
+  `ChunkRange` includes one plane past the chunk, so a mesh built before its
+  +x/+y/+z neighbours are filled meshes against nothing. Marking those
+  neighbours dirty and re-meshing does fix it, but filling runs four chunks a
+  step and the re-mesh queue drains five, so a backlog of a couple of hundred
+  takes seconds to clear and all of it is on screen. Gate the mesh on the
+  neighbours being filled instead. The cost is one chunk of terrain at the
+  streaming edge; the alternative is black geometry that a screenshot at the
+  wrong moment will make you doubt the mesher for.
+
+- **`OnDemoActivated` runs after the frame's fixed steps, not before them.**
+  Activation is an edge detected in `OnUpdate`, and `OnFixedUpdate` comes
+  first — so a demo that positions its camera there has already taken one full
+  step from wherever its members were default-constructed. For the solar system
+  that was the origin, which is the middle of the Earth: the first step streamed
+  a planet's worth of chunks around a camera buried inside it and only then
+  moved the camera out. Anything the *first step* depends on belongs in
+  `OnDemoAttach`.
+
+- **Reading the mouse without a gate breaks step determinism.** Two identical
+  `--lockstep` runs of the same demo captured at the same step produced
+  different frames — one looking at the sky, one at the ground — because the
+  controller took raw cursor deltas every step and the desktop pointer was
+  drifting during an unattended run. Nothing about the simulation was
+  non-deterministic; the *input* was. Use the project's convention: Tab toggles
+  mouse-look, Escape releases, arrows always turn, and the mouse does nothing
+  until it is captured. Also worth knowing that `Input::IsPlayingBack()` exists
+  precisely so capture is not attempted during a replay.
+
+- **On a sphere, the spin belongs to the planet and not to the light.**
+  Terrain is generated in planet-fixed coordinates, so it is tempting to
+  produce day and night by rotating the sunlight backwards, and while the
+  surface is its own scene nothing can tell. Put the surface and the orbit in
+  one space and it is immediately wrong: the lit hemisphere follows the *spin*
+  rather than the Sun, so a planet with the star behind the camera shows its
+  night side. Rotate the planet-fixed things — terrain, loose bodies, the
+  standing player — into scene coordinates instead, and leave the light as the
+  direction the star is in. A player standing still is then carried round once
+  a day, which is what makes the Sun cross their sky.
+
 - **Signed overflow in a hash deleted a loop's exit test, in Release only.**
   `Hash2D` wrote `h ^= (uint32_t)(x * 374761393)` — the cast is *outside* the
   multiply, so the multiply happens in `int` and overflows for any |x| above 5.
@@ -1030,6 +1083,43 @@ look caught immediately.
   offline through `AudioEngine::RenderForTest` -- audible while playing, silent
   after `Stop`, and the pool not running dry over a few hundred play/stop
   cycles.
+- **A star's apparent colour is not the light it emits.** The Sun looks warm
+  because an atmosphere scattered its blue away; feeding that apparent colour
+  into a scattering shader applies the reddening a second time, and Earth's sky
+  comes out green. Light the scattering with near-white and let the shader
+  produce the warmth -- the star's own disc can keep the colour it appears.
+- **`LinearDamping` defaults to 0.01, and it destroys orbits silently.** One
+  percent of velocity a second is a fair stand-in for air around a crate and
+  invisible in any short fall -- free fall measured 0.05% against `GM/r^2` with
+  it switched on. Over an eighty-second orbit it removes 44% of the speed: the
+  orbit spiralled into the ground and a launch above escape velocity fell back.
+  Anything ballistic or orbital wants `LinearDamping = 0`, and if a long-running
+  trajectory decays while a short one is exact, look here first.
+- **World gravity is one vector, which a planet is not.** `PhysicsWorld3D` has a
+  single `Gravity` for everything in it. For a sphere, zero it and apply
+  `GM/r^2` toward the centre per body per step; leaving the default -9.81 Y in
+  place adds a second, invisible gravity pointing at the planet's north pole.
+  A capsule's orientation has to be *set* to local up each step too -- solved,
+  it tips on a slope and rolls toward the equator, because on a sphere there is
+  always a downhill.
+- **A yaw/pitch camera cannot stand on a sphere.** Both angles are measured
+  against a fixed world up, so anywhere except the poles the horizon comes out
+  tilted -- at the equator of a +Y-axis planet the ground renders up the side of
+  the screen. `PerspectiveCamera::SetOrientation` takes an explicit basis for
+  this; local up is `normalize(position)`, and forward, strafe, slope and
+  "level" are all built in the tangent plane.
+- **A sphere of the wrong radius looks exactly like a sphere.** Relief built from
+  `1 - |noise|` has a mean that is not a half -- about 0.165 for this generator
+  -- so subtracting a half left the mean surface 8.71 m above the radius asked
+  for, invisibly. Measure the bias over a spread of directions at generation and
+  subtract it, then check with a *different* sample set so the check is not the
+  generator restated.
+- **Filling a voxel chunk stales its low neighbours' meshes.** `ChunkRange`
+  includes one plane past the chunk's own cells, so a mesh reads the first plane
+  of the chunks above it in x, y and z. Mesh before those are filled and the
+  surface stops at the boundary: a black grid of cracks, one per chunk, which
+  reads as a mesher bug and is an ordering bug. OpenWorld already knew this; the
+  planet streamer had to learn it again.
 - **On a Wayland session, X11 sees almost nothing.** `_NET_CLIENT_LIST` held two
   windows out of twenty here, because everything native is invisible to
   XWayland. Window geometry has to come from the compositor: a KWin script over
@@ -1748,6 +1838,25 @@ inside a box gets a hit at distance zero, so a source in a single-box room never
 gets anywhere.
 
 ### Known approximations, stated so they are not mistaken for bugs
+
+- **The solar system's distances are square-rooted, and that is the design.**
+  Every length in the demo -- body radii and orbital distances alike -- is
+  `360 m * (true / Earth's radius) ^ 0.5`, so that one space can hold both a
+  planet you can walk on and the orbit it runs in. It is monotone and uniform,
+  so nothing overtakes anything and no moon needs special-casing to stay
+  outside its planet, but true ratios come out square-rooted: Neptune is 8.8x
+  further out than Mercury here where really it is 77.7x. The `p` slider goes
+  to 1.0 if you want to see the real emptiness. **Nothing in the simulation is
+  compressed** -- the integrator works in AU and years throughout, and the
+  Kepler column on the panel is unaffected by any of this.
+- **Moons orbit their planet and ignore the star.** A real moon's path around
+  the Sun is a wavy line, never a loop. The alternative is a full N-body
+  integration in which the Sun's pull on the Moon is *twice* the Earth's, which
+  needs a much smaller step to stay stable and buys nothing visible at this
+  scale.
+- **No axial tilt, so no seasons.** The spin axis is +Y for every body. Venus
+  and Uranus carry negative rotation periods in the table and turn retrograde
+  for free, which is the part of the real picture that was cheap.
 
 - The traced RT60 sits **~10% above** the diffuse-field formula *when every
   surface is a mirror*. Sabine and Eyring assume a diffuse field; a rectangle

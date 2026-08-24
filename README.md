@@ -1096,6 +1096,333 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-21 (one continuous space, and flying across it)
+
+**The two spaces are gone.** The solar system used to be two scenes with a key
+between them: an orbital view at 500 m to the AU where the Earth was 8.5 m
+across, and a surface view where it was 360 m across and made of voxels. That
+is the standard way out of the problem and it has one fatal property -- you
+cannot fly from one to the other, because they are not the same place. There is
+now one space from the star to a footprint on a planet, and `L` no longer
+teleports: it stands you up where you already are, or puts you back in the ship
+where you were standing.
+
+**One exponent does the compressing.** Every length -- body radii and orbital
+distances alike -- goes through
+
+```
+drawn = 360 m * (true length / Earth's radius) ^ p,   p = 1/2
+```
+
+so Earth is 360 m across (which is what makes it a place you can stand on), its
+orbit is 55.2 km rather than the 8,453 km true scale demands, the Sun is 3.76 km
+across and Neptune is 302 km out. The whole system is 302 km in radius, which is
+minutes across at the speeds below.
+
+Square root rather than a log or a hand-tuned table because it is one parameter,
+it is monotone -- nothing overtakes anything -- and it is *uniform*, so no orbit
+needs special-casing to keep its moon outside its planet. The tightest case in
+the system is Phobos, which really does orbit at 2.77 Mars radii; here it comes
+out at 1.57 times the sum of the two drawn radii, still clear. The startup log
+prints that column for every body, because "does everything still fit" is the
+one thing this map can get wrong. What it costs is stated rather than hidden:
+true ratios are square-rooted, so Neptune is 8.8x further out than Mercury here
+where really it is 77.7x. The `p` slider goes to 1.0 if you want to see how
+empty it really is.
+
+**Frames, so a planet does not fly out from under you.** The ship's position is
+stored relative to whichever body dominates where it is -- smallest
+`distance / radius`, which is scale-free and picks the body filling the most of
+your sky -- and re-based when that changes. The handover has to be exact or
+flight is not continuous, so the offset is added to the position in the same
+statement it stops being applied, and the residual is measured rather than
+assumed: **0.000e+00 m**, and the worst one of a session is on the panel.
+
+**A floating origin, and a near plane that follows the altitude.** At 302 km a
+float's spacing is 3.6 cm, so everything is drawn relative to the camera with
+the subtraction done in double first. Depth precision at distance `z` goes as
+`z^2 / (near * 2^24)`, so the 15 cm near plane that standing on a planet needs
+would leave two bodies 10 km apart at 300 km range indistinguishable -- out
+there it opens to 400 m, because nothing is close.
+
+**The spin belongs to the planet, not to the light.** Terrain is generated in
+planet-fixed coordinates, and the first version produced day and night by
+rotating the *light direction* backwards. Correct as far as the surface can
+tell, and invisible while the surface was its own scene -- but in one space the
+lit hemisphere is then whichever way the spin points rather than whichever way
+the Sun is, and a planet seen from four radii out with the Sun behind the camera
+showed its **night side**. Now the spin rotates the things that are planet-fixed
+on their way into scene coordinates, the light is simply the direction the star
+is in, and a standing player is carried round once a day so the Sun crosses
+their sky without ever being moved.
+
+**An unallocated voxel chunk is air, not rock.** Streaming skips chunks the
+surface shell does not reach, on the grounds that they are uniform -- but it was
+skipping them without giving them a value, and an unfilled chunk reads `Far`,
+which is empty. The planet's deep interior was therefore *hollow* as far as the
+mesher was concerned, so a surface chunk whose +x, +y or +z neighbour pointed
+inward closed its own rock against that air and produced a wall. That is where
+the black slabs standing out of the ground came from, and the tell was that they
+were on one hemisphere only: the three neighbours a mesh reads are all in the
+positive direction. A constant generator costs the loop but not the noise and
+collapses to the same one float.
+
+**And chunks now wait for their neighbours instead of being repaired.** Filling
+a chunk stales its low neighbours' meshes, which was already handled by
+re-meshing them -- but not before the wrong mesh had been on screen, because
+filling runs four chunks a step and the re-mesh queue drains five. Flying down
+to a planet, that is seconds of black slabs. Holding a mesh back until its three
+high neighbours exist costs one chunk of terrain at the streaming edge, where
+the horizon sphere is drawn anyway, and nothing wrong is ever drawn.
+
+**The demo was not step-deterministic, and the reason was the mouse.** Two
+identical `--lockstep --land Earth` runs captured at step 300 produced different
+frames -- one looking at the sky, one at the ground. The surface controller read
+raw cursor deltas every step with no gate, so the desktop pointer drifting
+during an unattended run was steering the camera. Both modes now use the
+project's convention: Tab toggles mouse-look, Escape releases, arrows always
+turn. Fixing it also surfaced that the surface look was inverted horizontally --
+yaw is measured from north toward east and east is the camera's right, so
+turning right is a *positive* yaw, and it had been subtracting.
+
+**Verification.** A temporary self-test, since deleted, checked the map by its
+properties rather than by re-deriving `pow`: that Earth's radius is its fixed
+point, that `f(a)f(b) = f(ab/R)f(R)` -- true for a power law and for nothing
+else monotone -- that the exponent recovered from two of its own outputs is 0.5,
+that it is monotone over ten decades, that every orbit clears its parent, that
+prograde is +x toward +z, that a frame handover does not move the ship, and that
+landing and taking off returns it to where it was. 12 of 12, and three
+deliberate mutations were each caught by the number that identified them: the
+dropped handover offset by **2796.58 m**, which is exactly the Moon's drawn
+orbit; a reversed rotation by 2.0, which is the diameter of the unit circle; and
+a forgotten eye height by **1.20 m**, which is the eye height.
+
+The land-and-take-off residual is **1.2e-5 m** rather than zero, and should be:
+the ship's position is a double and a rigid body's is a float, so the round trip
+quantises to a float at the planet's radius -- `367 * 2^-23 = 4.4e-5 m`. A
+tolerance of zero there would have been measuring the storage rather than the
+arithmetic.
+
+All three configs build clean, and the release captures are byte-identical to
+the debug ones for both the orbital and the landed frame.
+
+
+### 2026-08-21 (atmospheres, and a horizon that is a planet)
+
+**The black horizon is gone.** Streamed chunks stop at the load radius, and past
+that there was nothing -- a world you were standing on ended at a hard edge a
+hundred metres away. The planet's own sphere is now drawn again underneath,
+shrunk to `R - amplitude/2` so it sits below the lowest valley: wherever real
+terrain exists it is strictly in front and the depth test hides the sphere
+entirely, and where terrain has not streamed, the sphere *is* the horizon --
+right shape, right colour, curving away as the ground would. A fog would have
+hidden the edge; this shows what is actually there.
+
+**Atmospheres, by marching one integral.** A shell sphere around each body with
+air, and every pixel of it is a ray through a thin gas: eight steps along the
+view ray, four toward the sun at each, with density falling off exponentially
+with height. Scattering goes as 1/lambda^4, so blue is thrown sideways out of
+the beam far more than red -- and a sunset is the same fact along a path so long
+the blue has already gone. Neither is a special case; both fall out of the
+integral.
+
+The same shader serves both views. From outside, the ray enters and leaves the
+shell and you get a rim of air around a planet; from inside, the near end of the
+ray is the camera and you get a sky. The only difference is where the segment
+starts, which the sphere intersection already knows. Airless bodies -- Mercury,
+the Moon, the small moons -- get no shell rather than an invisible one.
+
+Measured out of the rendered frame, standing on Earth:
+
+```
+zenith    (24, 42, 70)     blue:red 2.9
+mid sky   (32, 54, 84)
+horizon   (61, 90, 113)    blue:red 1.85
+```
+
+Brightness rises 2.5x from zenith to horizon, which is the longer path, and the
+blue-to-red ratio falls from 2.9 to 1.85 along it, which is the sunset.
+
+**One physics slip worth keeping.** The first sky came out *green*. The star is
+drawn warm, at (1.00, 0.86, 0.42), and I fed that to the scattering as the
+incoming light -- but the reason the Sun looks warm is that air scatters the
+blue out on the way in, which is precisely what the shader computes. Applying it
+twice gives scatter (0.22, 0.45, 1.00) times (1.00, 0.86, 0.42) = a cyan-green.
+Sunlight above the air is very nearly white, and the star's own disc keeps its
+apparent colour.
+
+### 2026-08-21 (spherical gravity, and the damping that hid inside it)
+
+**Gravity is a force per body now, not a direction for the world.**
+`PhysicsWorld3D::Gravity` is one vector for everything in it, which is right for
+a room and meaningless on a planet: down is a different direction for every body
+and weaker the higher it is. So the world's own gravity is switched off on a
+surface and each body is pulled toward the centre at `GM/r^2` every step. On a
+360 m planet that is 40% weaker a hundred metres up, which is what makes a
+thrown rock arc the way it does here rather than the way it would on a flat
+world with the same g.
+
+**Surface gravity is derived, not tabulated.** `g = GM/R^2` from the mass in
+solar masses and the radius in kilometres that the orbital table already
+carried, so Earth comes out at 9.82 m/s^2, Mars 3.71 and the Moon 1.62 -- none
+of which is written down anywhere. Then `GM_local = g * R_local^2` keeps that
+real surface acceleration on a planet a few hundred metres across, so a jump
+feels like a jump while the horizon stays close.
+
+The player is a rigid body: walking steers the *tangential* component of its
+velocity and leaves the radial one to the solver, so falling, landing and being
+knocked about are physics rather than animation. The capsule's orientation is
+set to local up each step rather than solved -- left to the solver it tips on a
+slope and rolls toward the equator, because on a sphere there is always a
+downhill.
+
+Checked against three formulas the solver does not contain:
+
+```
+free fall  at 0 m up:    9.8209 m/s^2 against GM/r^2 = 9.8200   (+0.009%)
+           at 200 m up:  4.0584            "         = 4.0583   (+0.002%)
+           at 640 m up:  1.2727            "         = 1.2727   (+0.000%)
+orbit      radius 599.87 m to 600.13 m about 600.0             (0.04% spread)
+           period 81.863 s against 2*pi*sqrt(r^3/GM) = 81.856   (+0.010%)
+escape     102% of sqrt(2GM/r) does not fall back; 90% does, from 1,557 m up
+```
+
+**The first run of that failed in a way worth keeping.** Free fall passed at
+0.05% while the orbit spiralled from 600 m into the ground and a launch *above*
+escape velocity fell back. The cause was `RigidBody3D::LinearDamping`, which
+defaults to 0.01 -- one percent of velocity a second. Over a tenth of a second
+of free fall that is a factor of 0.999 and invisible; over an eighty-second
+orbit it is 44% of the speed. The three checks disagreed with each other, and
+the one that failed was the only one that integrates long enough to notice.
+Probes and loose rocks set it to zero now: a planet with no atmosphere has no
+drag, and the default is a stand-in for air.
+
+### 2026-08-21 (voxel planets, and landing on one)
+
+**The planets are signed distance fields now**, `|p| - R - relief(p)`, so down is
+toward the centre from everywhere and there is no edge to fall off. Press **L**
+near a body and the camera moves into that planet's own frame, where it is a few
+hundred metres across and made of voxels, while the orbits keep being integrated
+behind it. `--land Earth` does it from the command line, which is how an
+unattended capture reaches a surface.
+
+**Two spaces and two clocks, both forced by arithmetic.** The orbital view is
+500 m to the AU, where the Earth is 8.5 cm across; a planet you can stand on
+wants a few hundred metres of radius, and one continuous space cannot hold both.
+Landing switches spaces -- and time scales, because a day is 1/365 of a year, so
+at an orbital rate it passes in a fiftieth of a second. On landing the clock
+slows until a day takes about a minute, and leaving puts it back.
+
+**Only the shell of a planet is ever generated.** A chunk whose distance from the
+centre misses the band `R +/- (relief + chunk radius)` cannot contain a crossing,
+which is a test on one number. Without it a 300 m planet at 1.5 m voxels is
+17,576 chunks of 4,096 samples -- 72 million density evaluations for a world you
+can see 200 m of.
+
+Four things went wrong, and each is the kind that looks like something else:
+
+- **The mean surface was 8.71 m too high.** Relief is built from `1 - |noise|` to
+  make ridges rather than blobs, and the obvious recentring subtracts a half. The
+  mean of `|noise|` for this generator is about 0.165, not 0.5. A sphere of the
+  wrong radius still looks exactly like a sphere, and everything derived from the
+  radius -- sea level, where a lander stops, surface gravity when it arrives --
+  would have carried the error. The bias is measured over 2,048 directions at
+  generation and subtracted; a check sampling a *different* 4,000 directions with
+  a different generator reports a mean radius of 299.94 m against 300 asked for.
+- **The terrain was made of spikes**, because the noise was sampled at
+  `direction * 90` with five octaves -- putting the finest octave at 1.5 m on a
+  1.5 m lattice, which is noise per voxel. Features are specified in metres now,
+  so the octaves land where you can say where they land: 70 m down to about 9 m.
+- **The sun crossed the sky in two seconds** and captures kept landing at
+  midnight. Terrain is generated in planet-fixed coordinates and the surface
+  frame did not rotate, so the only thing moving the light was the *orbit*. Real
+  planets have days because they spin: rotation periods are in the table now
+  (Venus and Uranus retrograde, as negative values) and the sunlight is rotated
+  into the planet's turning frame.
+- **A black grid of cracks, one line per chunk boundary.** `ChunkRange` includes
+  one plane past a chunk's own cells, so a mesh reads the first plane of the
+  chunks above it -- and a chunk meshed before those were filled meshed against
+  empty space. Filling a chunk now marks its three low neighbours stale and they
+  are re-meshed. It looked like a mesher fault and was an ordering one.
+
+**`PerspectiveCamera::SetOrientation`** is new, and the header comment reading
+"roll is deliberately absent; add it when something needs it" is why. Yaw and
+pitch are measured against a fixed world up of +Y, which is meaningless on a
+sphere: standing where local up is horizontal in world terms, a yaw/pitch camera
+renders the ground *up the side of the screen*, which is precisely what the first
+landing did. The surface controller builds a tangent frame wherever you are
+standing and hands the camera that basis directly.
+
+Walking is kinematic -- move along the tangent, then snap to the ground found by
+bisecting the density field. Spherical gravity through the rigid-body solver is
+the next piece, and the ground query it will need is the one already here.
+
+### 2026-08-21 (a solar system, and Kepler as the test)
+
+**Nothing in the new Solar system demo contains an orbit.** The integrator knows
+one law -- `a = -GM r / |r|^3` -- and the ellipses, the periods and their ratios
+are all consequences. Driving each planet round a circle with a sine and a
+cosine would look identical and prove nothing, which is the point: because the
+paths are integrated, Kepler's third law is available as a *check* rather than
+as the implementation.
+
+Units are astronomical and chosen so that check is free: distance in AU, time in
+years, and `GM` for the Sun as `4*pi^2 AU^3/yr^2` -- not a fudge but what `GM`
+is in those units, since the Earth orbits at 1 AU in 1 year. Sixteen bodies with
+real data: eight planets, the Moon, Phobos, the four Galilean moons and Titan.
+The panel puts the measured period beside `2*pi*sqrt(a^3/GM)` for every one.
+
+Measured against predicted, after the measurement was fixed twice:
+
+```
+Mercury  0.240750 vs 0.240750   +0.0000%      Moon      0.075184 vs 0.075183  +0.0002%
+Earth    1.000000 vs 1.000000   +0.0000%      Titan     0.043666 vs 0.043666  +0.0006%
+Jupiter 11.868087 vs 11.868087  +0.0000%      Ganymede  0.019590 vs 0.019590  +0.0028%
+Saturn  29.452195 vs 29.452195  +0.0000%      Io        0.004845 vs 0.004845  +0.0454%
+                                              Phobos    0.000875 vs 0.000874  +0.0872%
+```
+
+Those are also the real periods -- Jupiter's year is 11.86 of ours, Saturn's
+29.46 -- which nothing in the code was told either.
+
+**The measurement was wrong twice before the physics was ever in question**,
+which is becoming the pattern in this project:
+
+- Every one of the sixteen bodies reported a period **50.0% short**. A constant
+  factor across sixteen independent orbits is not physics: an integrator that
+  was actually wrong would be wrong by different amounts at different radii. The
+  clock started at t=0 and stopped at the first wrap of `atan2` from +pi to -pi,
+  and a body starting on the +x axis reaches that wrap at *half* an orbit.
+- Then Phobos, Io and Europa reported errors of **+3,000% to +4,000%** while
+  everything else was exact. Those are the bodies whose period is shorter than
+  the sampling interval -- Io goes round Jupiter in half of one fixed step at a
+  modest time scale, so the angle was aliased and an aliased angle can report
+  any period at all. Periods are tracked per *substep* now, and a sample that
+  turns more than pi is refused outright rather than reported: the panel says
+  "too fast" instead of a number.
+
+Crossing times are interpolated within the step they happen in. Without it every
+period came out an exact multiple of the step -- 1/60 yr -- and Mercury, the
+fastest at 14 steps an orbit, read 3.1% short for that reason alone.
+
+**With the measurement honest, the residual turned out to be a property of the
+integrator worth knowing.** Quadrupling the substeps took Phobos from +1.3815%
+to +0.0872%, a factor of **15.8**. Semi-implicit Euler is first order, so the
+naive expectation is 4; the observed 15.8 is 4^2, because a symplectic
+integrator's *frequency* error is second order even though its trajectory error
+is not. The error ranking across the table is monotone in substeps-per-orbit,
+which is the same statement seen sideways.
+
+Three scales, and the arithmetic that forces them, because the first attempt put
+the camera inside the Sun. 500 m to the AU. At that distance scale the Earth is
+**2 cm** across and the Sun 4.7 m; at the planets' 400x exaggeration the Sun
+would have a 930 m radius, which is nearly five times Mercury's entire orbit --
+the inner planets would be inside it. So the star gets its own, much smaller
+exaggeration, and the numbers are on the panel rather than hidden.
+
+Still to come: the planets as voxel terrain close up, atmospheres lit by the
+star, and landing on them.
+
 ### 2026-08-21 (the colonies get out of the way of your windows)
 
 **The wallpaper reads the desk now.** Open windows are ground the colonies will
