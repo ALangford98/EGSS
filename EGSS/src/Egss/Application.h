@@ -84,6 +84,17 @@ namespace Egss {
 		// constructor can read its own flags.
 		static void SetCommandLine(int argc, char** argv);
 		static const std::vector<std::string>& GetCommandLine();
+
+		// **Is the loop being driven by steps rather than by the clock?**
+		//
+		// Anything that budgets work against the wall clock has to ask. A
+		// frame-time-adaptive budget is the right thing while somebody is
+		// playing and the wrong thing while a run is being recorded, replayed
+		// or captured -- there, how much got done by a given step has to be a
+		// property of the step and not of the machine. Lockstep is what makes
+		// a capture reproducible, so it is also what such a budget must switch
+		// itself off for.
+		bool IsLockstep() const { return m_Lockstep; }
 	private:
 		// --capture <path>        write a PNG, by default at frame 60
 		// --capture-frame <n>     which frame to write it at

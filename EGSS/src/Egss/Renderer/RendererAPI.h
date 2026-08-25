@@ -102,6 +102,16 @@ namespace Egss {
 		virtual void DrawIndexed(const std::shared_ptr<VertexArray>& vertexArray,
 			unsigned int indexCount = 0, unsigned int firstIndex = 0) = 0;
 
+		// **The same draw, `instances` times, with the per-instance attributes
+		// advancing once each.** Everything that differs between the copies --
+		// a transform, a colour -- comes from a vertex buffer whose layout
+		// carries a divisor. What it saves is not GPU work, which is the same
+		// triangles either way, but the submission: a forest is one call
+		// instead of one call a tree.
+		virtual void DrawIndexedInstanced(const std::shared_ptr<VertexArray>& vertexArray,
+			unsigned int instances, unsigned int indexCount = 0,
+			unsigned int firstIndex = 0) = 0;
+
 		// Lines are drawn unindexed: consecutive vertex pairs, one segment
 		// each. Sharing an index buffer would only pay off if segments shared
 		// endpoints, which debug geometry generally doesn't.

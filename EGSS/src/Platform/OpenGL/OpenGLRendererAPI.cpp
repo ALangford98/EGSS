@@ -105,6 +105,23 @@ namespace Egss {
 		// draws -- the second draw onwards sampled nothing and came out black.
 	}
 
+	void OpenGLRendererAPI::DrawIndexedInstanced(
+		const std::shared_ptr<VertexArray>& vertexArray, unsigned int instances,
+		unsigned int indexCount, unsigned int firstIndex)
+	{
+		// Zero is a legitimate answer -- a chunk with no trees in it -- and GL
+		// treats it as a no-op anyway, but returning early keeps a pointless
+		// state change out of the driver.
+		if (instances == 0)
+			return;
+
+		unsigned int count = indexCount ? indexCount : vertexArray->GetIndexBuffer()->GetCount();
+
+		const void* offset = (const void*)(uintptr_t)(firstIndex * sizeof(unsigned int));
+
+		glDrawElementsInstanced(GL_TRIANGLES, count, GL_UNSIGNED_INT, offset, instances);
+	}
+
 	void OpenGLRendererAPI::DrawLines(const std::shared_ptr<VertexArray>& vertexArray, unsigned int vertexCount)
 	{
 		vertexArray->Bind();

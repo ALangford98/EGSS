@@ -131,6 +131,27 @@ namespace Egss {
 
 		const std::shared_ptr<VertexArray>& GetVertexArray() const { return m_VertexArray; }
 
+		// **Per-instance data, attached once and refilled as often as you
+		// like.** The buffer's layout carries a divisor, so its attributes
+		// advance once per copy of the mesh rather than once per vertex --
+		// see `BufferLayout` and `Renderer::SubmitInstanced`.
+		//
+		// It becomes part of this mesh's vertex array, which is the whole
+		// point and also the caveat: a mesh with one attached should be drawn
+		// instanced. A plain `Submit` still works and draws one copy using the
+		// first entry in the buffer, which is a sensible thing to see and not
+		// a sensible thing to rely on.
+		void SetInstanceBuffer(const std::shared_ptr<VertexBuffer>& buffer)
+		{
+			m_InstanceBuffer = buffer;
+			m_VertexArray->AddVertexBuffer(buffer);
+		}
+
+		const std::shared_ptr<VertexBuffer>& GetInstanceBuffer() const
+		{
+			return m_InstanceBuffer;
+		}
+
 		// One entry per material the file switched to, in draw order. Always at
 		// least one: a mesh with no materials has a single unnamed submesh
 		// covering everything, so a caller can loop unconditionally.
@@ -149,6 +170,7 @@ namespace Egss {
 		float GetBoundsRadius() const { return glm::length(m_BoundsMax - m_BoundsMin) * 0.5f; }
 	private:
 		std::shared_ptr<VertexArray> m_VertexArray;
+		std::shared_ptr<VertexBuffer> m_InstanceBuffer;
 		std::string m_Name;
 
 		std::vector<Submesh> m_Submeshes;

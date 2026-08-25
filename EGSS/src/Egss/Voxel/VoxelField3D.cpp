@@ -456,6 +456,25 @@ namespace Egss {
 		return changed;
 	}
 
+	void VoxelField3D::SetUniform(const glm::ivec3& chunk, float distance,
+		unsigned char material)
+	{
+		if (chunk.x < 0 || chunk.y < 0 || chunk.z < 0
+			|| chunk.x >= m_Chunks.x || chunk.y >= m_Chunks.y || chunk.z >= m_Chunks.z)
+			return;
+
+		Chunk& c = m_Storage[ChunkIndexOf(chunk.x, chunk.y, chunk.z)];
+
+		c.Uniform = distance;
+		c.UniformMaterial = material;
+
+		// Whatever it used to hold is gone, and the point is to hold nothing.
+		c.Distance.clear();
+		c.Distance.shrink_to_fit();
+		c.Material.clear();
+		c.Material.shrink_to_fit();
+	}
+
 	void VoxelField3D::ClearChunk(const glm::ivec3& chunk)
 	{
 		if (chunk.x < 0 || chunk.y < 0 || chunk.z < 0

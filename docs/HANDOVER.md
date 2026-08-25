@@ -211,6 +211,22 @@ Check the measurement first. Real examples from this project:
 - An object appeared to move on its own; it was a leftover held mouse button
   from a previous automated run. (It did reveal a real gap — the gizmo grabbed
   a button that was already down — so the fix was still worth making.)
+- A landed frame reported *exactly* 16.7 ms with zero variance across every
+  sample. That is the frame pacing, not the frame — under `--lockstep` the
+  timestep a layer is handed is the fixed step. To find out what a frame
+  actually costs, put a `GL_TIME_ELAPSED` query around it
+  (`RenderCommand::BeginGpuTimer` / `EndGpuTimerMs`, which blocks, which is
+  the point) and time the CPU side separately with `std::chrono`. The landed
+  Solar frame was 5.26 ms of CPU against 26.30 of GPU.
+
+**Ablation is the fastest way to find where a frame goes**, and its numbers do
+not add up on purpose. Dropping one category at a time out of the landed Solar
+frame gave: trees 9.59 ms, terrain 6.35, atmosphere 0.53, stars 0.12 — against
+a 26.30 ms frame with a 1.30 ms floor when everything is dropped. The deltas
+sum to well under the total because removing an occluder makes whatever was
+behind it shade instead. *Dropping the sea made the frame a millisecond
+slower*, for exactly that reason. Ablation gives you a ranking, not a budget;
+do not present the deltas as a breakdown.
 
 ### Capturing frames
 
@@ -256,6 +272,57 @@ look caught immediately.
 ---
 
 ## Traps that have bitten more than once
+
+- **A `mat4` vertex attribute is four locations, not one.** GL caps an attribute
+  at four components, so `glVertexAttribPointer` with sixteen is an error rather
+  than a matrix — `ShaderDataType::Mat4` was in the enum and could not be used
+  until `AddVertexBuffer` learned to emit four consecutive locations sixteen
+  bytes apart. If a shader reading a `mat4` attribute gets garbage, count the
+  locations it is actually consuming and check what the next buffer thinks it
+  starts at.
+
+- **Attribute locations are handed out in the order vertex buffers are added, so
+  an instance buffer cannot be grown.** Replacing one to make it bigger adds it
+  to the vertex array a second time, and the new copy lands after every
+  attribute already declared — location 7 while the shader still reads 3.
+  Allocate it once at full size, or rebuild the whole vertex array.
+
+- **What differs between instances goes in the buffer; what is *shared* must
+  still be a uniform.** `SubmitInstanced` first forced `u_Transform` to the
+  identity, reasoning that the transform is the thing that differs. Half right:
+  a forest's per-tree placement cannot be a uniform, but the planet's placement
+  and spin — common to every tree on it — has to be, and wiping it drew the whole
+  forest at the camera's own position. Nothing appeared on screen at all, which
+  reads as instancing not working rather than as one uniform too many.
+
+- **A GPU falling to idle during a stall means the CPU is the bottleneck.** It
+  reads like the opposite — the machine locks up while the graphics card is doing
+  nothing — but a starved GPU is a GPU with no frames being submitted to it. A
+  GPU that is actually the limit sits pinned near 100%. Everything in this
+  project is GLSL; when a demo hitches, measure the CPU side of the frame first
+  and do not go looking at shaders.
+
+- **A work budget has to count the work, not the successes.** Streaming counted
+  chunks *filled*, so a step that rejected four hundred candidates and meshed
+  five recorded one chunk of work and cost six milliseconds. Every phase that
+  touches the same clock has to spend the same budget, weighted by what it
+  actually costs — and the phases have to be ordered, because a budget of one
+  spent fill-first means the mesh queue never drains and terrain is generated
+  and never drawn.
+
+- **A budget whose atom is expensive needs a fractional allowance.** One chunk of
+  terrain is about four milliseconds here and cannot be divided, so an integer
+  budget has a four-millisecond floor — and seven times that in Debug. Banking
+  the unspent fraction between steps lets the answer be "one chunk every third
+  step", which is what a machine that cannot afford one a step should do.
+
+- **Anything the physics reads is part of the simulation, however much it looks
+  like scenery.** The ground collider is an SDF over the voxel *field*, so an
+  unstreamed chunk reads as air and the player falls through it. That makes the
+  streaming budget simulation state: a wall-clock-adaptive one is right while
+  somebody is playing and wrong under `--lockstep`, where how much got done by a
+  given step has to be a property of the step. `Application::IsLockstep()` is
+  what such a budget asks.
 
 - **A near plane derived from the height above the *mean radius* clips the
   ground you are standing on.** `near = 0.4 * altitude` is fine while the relief
@@ -1965,6 +2032,21 @@ inside a box gets a hit at distance zero, so a source in a single-box room never
 gets anywhere.
 
 ### Known approximations, stated so they are not mistaken for bugs
+
+- **Trees are culled against a cone, not a frustum.** 75 degrees against a
+  camera half-angle of about 50, tested per chunk and widened by the chunk's own
+  reach plus a canopy. It therefore keeps some trees that a real frustum test
+  would drop, which is the intended direction to be wrong in — the capture is
+  byte-identical with it on, so nothing it removes was ever visible.
+
+- **A surface frame costs about 1,001 draw calls**, of which 963 are terrain
+  chunks and six are the entire forest. It was ~23,000 before the trees were
+  instanced. Merging or LOD-ing the chunk meshes is what would move it again,
+  and it is a much smaller lever than the trees were.
+
+- **Debug is about seven times slower than Release on the streaming path**, and
+  `./egss.py run` builds Debug. 40 FPS against 60 for the same landed scene. Do
+  not conclude anything about frame rate from a Debug build.
 
 - **The solar system is true in every ratio and 1/25.5 in size.** Both scale
   exponents are one, so the Sun really does subtend half a degree from Earth and

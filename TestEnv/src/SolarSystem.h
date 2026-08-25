@@ -69,6 +69,8 @@
 #include <Egss.h>
 #include <imgui.h>
 
+#include <chrono>
+
 #include "Demo.h"
 #include "Vegetation.h"
 #include "VoxelPlanet.h"
@@ -282,7 +284,12 @@ public:
 
 			const std::string& wanted = arguments[i + 1];
 
-			for (size_t body = 1; body < m_Bodies.size(); body++)
+			// From zero, so `--goto Sun` finds the Sun. It used to start at
+			// one -- the star is not somewhere you land, so the loop that
+			// serves both flags skipped it -- and `--goto Sun` reported that
+			// the Sun matches no body. `Land` refuses the star on its own and
+			// says why, which is the better place for that to be decided.
+			for (size_t body = 0; body < m_Bodies.size(); body++)
 			{
 				if (m_Bodies[body].Name != wanted)
 					continue;
@@ -1615,7 +1622,75 @@ public:
 		float scale = planet.Get().VoxelSize / 1.5f;
 		glm::vec3 focus = glm::vec3(ToFixed(index, m_Local));
 
-		planet.StreamAround(focus, m_LoadRadius * scale, m_ChunksPerStep);
+		// **A budget in milliseconds, except where a millisecond is not
+		// allowed to matter.**
+		//
+		// Generating a chunk is 4,096 evaluations of thirteen octaves of
+		// noise, and a landing needs about nine hundred of them. At a fixed
+		// twelve a step that is 21 ms of the 16.7 ms frame in Release and
+		// **150 ms in Debug**, which is not a slow frame, it is a freeze --
+		// and the tell is that the GPU falls to idle while it happens, because
+		// nothing is being submitted to it.
+		//
+		// So the count is derived from what the last step actually cost. It is
+		// proportional and damped: aim at the target, and never move by more
+		// than a factor of two in a step, so one expensive chunk does not
+		// collapse the rate and one cheap one does not spike it.
+		//
+		// **Not under lockstep.** The ground collider reads the *field*, so
+		// how much has streamed is part of the simulation, not just of the
+		// picture -- a budget that depends on the wall clock would make a
+		// replay depend on the machine. Lockstep keeps the fixed count, which
+		// is what every capture and every recording runs under anyway.
+		bool timed = !Egss::Application::Get().IsLockstep()
+			&& !Egss::Input::IsPlayingBack();
+
+		// **The allowance is a fraction, and it is banked.**
+		//
+		// One chunk is the atom of this work and it costs about four
+		// milliseconds here, so an integer budget has a floor of four
+		// milliseconds -- on a slower machine, or in Debug where it is seven
+		// times that, no integer can hold the frame. Carrying the unspent
+		// fraction from step to step lets the answer be "a chunk every third
+		// step", which is what a machine that cannot afford one a step should
+		// do: fill in more slowly, at frame rate, instead of stopping.
+		float budget = (float)m_ChunksPerStep;
+
+		if (timed)
+		{
+			m_StreamCredit = glm::min(m_StreamCredit + m_StreamAllowance, 8.0f);
+
+			budget = std::floor(m_StreamCredit);
+
+			if (budget < 1.0f)
+			{
+				m_StreamMs = 0.0;
+				return;
+			}
+
+			m_StreamCredit -= budget;
+		}
+
+		auto before = std::chrono::high_resolution_clock::now();
+
+		planet.StreamAround(focus, m_LoadRadius * scale, budget);
+
+		m_StreamMs = std::chrono::duration<double, std::milli>(
+			std::chrono::high_resolution_clock::now() - before).count();
+
+		if (timed)
+		{
+			// Proportional and damped: aim at the target, and never move by
+			// more than a factor of two in a step, so one expensive chunk does
+			// not collapse the rate and one cheap one does not spike it.
+			double want = (double)budget
+				* (double)m_StreamTargetMs / glm::max(m_StreamMs, 0.05);
+
+			double next = glm::clamp(want, budget * 0.5, budget * 2.0 + 1.0);
+
+			m_StreamAllowance = glm::clamp((float)next, 0.02f, 96.0f);
+
+		}
 		planet.EvictBeyond(focus, m_LoadRadius * scale * 1.6f);
 
 		// **And hand the voxels back further out.** Dropping a mesh leaves the
@@ -1631,6 +1706,12 @@ public:
 
 	void OnDemoUpdate(Egss::Timestep) override
 	{
+		// Reset is the caller's job here, and the panel reads the total back
+		// at the end of the frame -- without this it counts every frame since
+		// the demo started, which is exactly the shape of a plausible-looking
+		// number that is not measuring what you think.
+		Egss::Renderer::ResetStats();
+
 		Egss::RenderCommand::SetClearColor({ 0.01f, 0.01f, 0.02f, 1.0f });
 		Egss::RenderCommand::Clear();
 
@@ -1707,10 +1788,12 @@ public:
 			glm::vec3 centre;
 			float scale = BodyPlacement(i, origin, centre);
 
-			DrawAtmosphere(i, centre, (float)DrawnRadius(i) * scale, scale);
+			DrawAtmosphere(i, centre, (float)DrawnRadius(i) * scale);
 		}
 
 		Egss::Renderer::EndScene();
+
+		m_Stats = Egss::Renderer::GetStats();
 	}
 
 	// One body: its sphere, and its terrain if any has been meshed.
@@ -1847,31 +1930,78 @@ public:
 	//
 	// Depth three at five sides is 40 and 27, which is about a third of the
 	// triangles for something you mostly see against the sky.
-	void BuildTrees()
+	// The same tree at three levels of detail. `lod` 0 is the one you stand
+	// under; 2 is the one thirteen pixels tall on the horizon.
+	//
+	// **Only the tessellation changes between 0 and 1, not the structure.**
+	// A tree's shape is its branching, and the branching is a function of the
+	// seed -- so dropping `Sides` from five to three and coarsening the leaf
+	// blobs leaves the silhouette where it was and the switch is invisible.
+	// Level 2 does change the structure (a shallower tree has 9 tips instead
+	// of 27), which is why its leaf clusters are grown to cover the crown the
+	// missing generation used to fill: 27/9 the count wants (27/9)^(1/3) the
+	// radius.
+	static Veg::TreeParams TreeShape(int lod)
 	{
 		Veg::TreeParams params;
-		params.Depth = 3;
-		params.Sides = 5;
+		params.Depth = lod < 2 ? 3 : 2;
+		params.Sides = lod < 1 ? 5 : 3;
 		params.Length = 2.1f;
 		params.Radius = 0.16f;
-		params.LeafSegments = 5;
-		params.LeafRings = 3;
+		params.LeafSegments = lod < 1 ? 5 : 4;
+		params.LeafRings = lod < 1 ? 3 : 2;
 
+		if (lod >= 2)
+			params.LeafRadius *= 1.44f;
+
+		return params;
+	}
+
+	void BuildTrees()
+	{
 		size_t triangles = 0;
 
 		for (int i = 0; i < s_TreeShapes; i++)
 		{
+			for (int lod = 0; lod < s_TreeLods; lod++)
+			{
 			Egss::MeshData bark, leaves;
-			Veg::MakeTreeMesh(521u + (unsigned int)i * 97u, params, bark, leaves);
+			Veg::MakeTreeMesh(521u + (unsigned int)i * 97u, TreeShape(lod),
+				bark, leaves);
 
-			m_TreeBark[i].reset(new Egss::Mesh(bark, "PlanetTree"));
-			m_TreeLeaves[i].reset(new Egss::Mesh(leaves, "PlanetTreeLeaves"));
+			m_TreeBark[i][lod].reset(new Egss::Mesh(bark, "PlanetTree"));
+			m_TreeLeaves[i][lod].reset(new Egss::Mesh(leaves, "PlanetTreeLeaves"));
+
+			// **One buffer of transforms, attached to both meshes of the
+			// shape.** A trunk and its leaves are separate geometry with
+			// separate materials but they stand in the same place, so they
+			// share the instance data -- a `VertexBuffer` can belong to any
+			// number of vertex arrays.
+			//
+			// Allocated once at full size rather than grown, because growing
+			// it would mean adding it to the vertex arrays a second time and
+			// the attribute locations are assigned in the order buffers are
+			// added: the new one would land at 7 and the shader would still be
+			// reading 3.
+			m_TreeInstances[i][lod].reset(
+				Egss::VertexBuffer::Create(s_MaxTreesPerShape * sizeof(glm::mat4)));
+
+			// The divisor is what makes it per-instance, and it has to be set
+			// before the buffer joins a vertex array -- that is when the
+			// attribute pointers are declared.
+			m_TreeInstances[i][lod]->SetLayout(
+				Egss::BufferLayout({ { Egss::ShaderDataType::Mat4, "a_Model" } }, 1));
+
+			m_TreeBark[i][lod]->SetInstanceBuffer(m_TreeInstances[i][lod]);
+			m_TreeLeaves[i][lod]->SetInstanceBuffer(m_TreeInstances[i][lod]);
 
 			triangles += (bark.Indices.size() + leaves.Indices.size()) / 3;
+			}
 		}
 
-		EGSS_TRACE("Planet trees: {0} shapes, {1} triangles each on average",
-			s_TreeShapes, triangles / s_TreeShapes);
+		EGSS_TRACE("Planet trees: {0} shapes x {1} levels, {2} triangles each "
+			"on average", s_TreeShapes, s_TreeLods,
+			triangles / (s_TreeShapes * s_TreeLods));
 	}
 
 	// One planet's trees, in the frame the chunks are already drawn in.
@@ -1880,12 +2010,12 @@ public:
 		if (planet.Get().PlantsPerChunk <= 0)
 			return;
 
-		auto bark = Egss::Material::CreateInstance(m_Material);
+		auto bark = Egss::Material::CreateInstance(m_TreeMaterial);
 		bark->Set("u_Color", glm::vec4(0.30f, 0.22f, 0.15f, 1.0f));
 		bark->Set("u_Emissive", 0.0f);
 		bark->Set("u_LightColor", m_SunLight * m_StarBrightness);
 
-		auto leaves = Egss::Material::CreateInstance(m_Material);
+		auto leaves = Egss::Material::CreateInstance(m_TreeMaterial);
 		leaves->Set("u_Color", glm::vec4(0.16f, 0.34f, 0.13f, 1.0f));
 		leaves->Set("u_Emissive", 0.0f);
 		leaves->Set("u_LightColor", m_SunLight * m_StarBrightness);
@@ -1899,23 +2029,105 @@ public:
 		bark->Set("u_LightPosition", lamp);
 		leaves->Set("u_LightPosition", lamp);
 
-		int drawn = 0;
+
+
+		// **Gathered by shape, then drawn six times.**
+		//
+		// It used to be two `Submit`s a tree -- bark and leaves -- which on a
+		// landed frame was 3,556 trees and **7,112 draw calls**, next to 1,174
+		// for the terrain itself. That is what a surface frame's 16.65 ms was
+		// spent on, and why an integrated GPU sat at 60% without being the
+		// thing that was slow: the cost is submission, not shading.
+		//
+		// Three shapes times two materials is six, whatever the forest does.
+		for (int shape = 0; shape < s_TreeShapes; shape++)
+			for (int lod = 0; lod < s_TreeLods; lod++)
+				m_TreeBatch[shape][lod].clear();
+
+		// **Nothing behind you, tested a chunk at a time.**
+		//
+		// There was no culling of any kind here -- every tree in every
+		// resident chunk was submitted, which while it was two draw calls each
+		// was not the thing worth fixing. Now that they are one buffer, the
+		// buffer may as well hold only what can be seen: 11,010 trees at 1,210
+		// triangles apiece is 13.3 million triangles a frame, and well over
+		// half of them are behind the camera.
+		//
+		// Per chunk rather than per tree, which is 963 tests instead of 11,010
+		// for the same answer -- the trees in a chunk are within 24 m of each
+		// other, so whatever the chunk is, they are. A cone rather than a
+		// frustum, at 75 degrees against a half-angle of about 50, widened by
+		// the chunk's own reach and a canopy so nothing whose leaves are in
+		// view is dropped for having its trunk outside.
+		const float chunkReach = 30.0f;
 
 		for (const auto& [key, chunk] : planet.Chunks())
 		{
+			glm::vec3 towards = glm::vec3(frame * glm::vec4(chunk.Centre, 1.0f));
+
+			float away = glm::length(towards);
+
+			if (away > 60.0f && glm::dot(towards / away, m_Forward)
+				< 0.26f - chunkReach / away)
+				continue;
+
 			for (const VoxelPlanet::Plant& plant : chunk.Plants)
 			{
-				glm::mat4 model = frame
-					* glm::translate(glm::mat4(1.0f), plant.Position)
+				// **Level of detail per tree, not per chunk.** The cull above
+				// is per chunk because the answer is the same for everything
+				// in one; this is not, because a 24 m chunk straddling a band
+				// would flip thirty trees at once and that pops. It costs one
+				// matrix-vector product a tree, which is the same product the
+				// instance matrix below needs anyway.
+				//
+				// Divided by the tree's own scale, because what decides how
+				// much geometry a tree is worth is how large it is on screen,
+				// and these range 0.6 to 1.15 -- distance alone would give the
+				// smallest tree in a stand more triangles than the largest.
+				float apart = glm::length(
+					glm::vec3(frame * glm::vec4(plant.Position, 1.0f)))
+					/ plant.Scale;
+
+				int lod = apart < s_TreeLodNear ? 0 : (apart < s_TreeLodFar ? 1 : 2);
+
+				std::vector<glm::mat4>& batch = m_TreeBatch[plant.Shape][lod];
+
+				if (batch.size() >= s_MaxTreesPerShape)
+					continue;
+
+				// **The planet's frame stays a uniform.** Only what differs
+				// between trees goes in the buffer, so the big translation is
+				// applied once on the GPU instead of being multiplied into
+				// every tree's matrix on the CPU.
+				batch.push_back(
+					glm::translate(glm::mat4(1.0f), plant.Position)
 					* glm::mat4_cast(UprightAt(plant.Up))
 					* glm::rotate(glm::mat4(1.0f), plant.Yaw, glm::vec3(0.0f, 1.0f, 0.0f))
-					* glm::scale(glm::mat4(1.0f), glm::vec3(plant.Scale));
-
-				Egss::Renderer::Submit(bark, m_TreeBark[plant.Shape], model);
-				Egss::Renderer::Submit(leaves, m_TreeLeaves[plant.Shape], model);
-
-				drawn++;
+					* glm::scale(glm::mat4(1.0f), glm::vec3(plant.Scale)));
 			}
+		}
+
+		int drawn = 0;
+
+		for (int shape = 0; shape < s_TreeShapes; shape++)
+		for (int lod = 0; lod < s_TreeLods; lod++)
+		{
+			const std::vector<glm::mat4>& batch = m_TreeBatch[shape][lod];
+
+			if (batch.empty())
+				continue;
+
+			m_TreeInstances[shape][lod]->SetData(batch.data(),
+				(unsigned int)(batch.size() * sizeof(glm::mat4)));
+
+			// `frame` is the planet's placement and spin: what every tree on
+			// this body has in common, and the only thing left in a uniform.
+			Egss::Renderer::SubmitInstanced(bark, m_TreeBark[shape][lod],
+				(unsigned int)batch.size(), frame);
+			Egss::Renderer::SubmitInstanced(leaves, m_TreeLeaves[shape][lod],
+				(unsigned int)batch.size(), frame);
+
+			drawn += (int)batch.size();
 		}
 
 		m_PlantsDrawn = drawn;
@@ -3243,6 +3455,48 @@ private:
 		)";
 
 		m_Shader.reset(Egss::Shader::Create("SolarSystem", vertexSrc, fragmentSrc));
+
+		// **The same lighting, fed a transform per copy instead of per draw.**
+		//
+		// Locations 0 to 2 are the mesh's own position, normal and texture
+		// coordinate; a `mat4` attribute is four consecutive locations, so
+		// `a_Model` occupies 3 through 6. `u_Transform` is still a uniform and
+		// still carries the planet's placement and spin, because that is the
+		// part every tree on a body shares -- only what differs goes down the
+		// buffer.
+		//
+		// The fragment shader is the one above, unchanged. It reads a world
+		// position and a normal and does not care where they came from.
+		std::string treeVertexSrc = R"(
+			#version 330 core
+			layout(location = 0) in vec3 a_Position;
+			layout(location = 1) in vec3 a_Normal;
+			layout(location = 2) in vec2 a_TexCoord;
+			layout(location = 3) in mat4 a_Model;
+
+			uniform mat4 u_ViewProjection;
+			uniform mat4 u_Transform;
+
+			out vec3 v_WorldPosition;
+			out vec3 v_Normal;
+
+			void main()
+			{
+				mat4 model = u_Transform * a_Model;
+
+				vec4 world = model * vec4(a_Position, 1.0);
+
+				v_WorldPosition = world.xyz;
+				v_Normal = mat3(model) * a_Normal;
+
+				gl_Position = u_ViewProjection * world;
+			}
+		)";
+
+		m_TreeShader.reset(
+			Egss::Shader::Create("SolarSystemTrees", treeVertexSrc, fragmentSrc));
+
+		m_TreeMaterial = Egss::Material::Create(m_TreeShader);
 		m_Material = Egss::Material::Create(m_Shader);
 
 		BuildTerrainShader();
@@ -3820,7 +4074,7 @@ private:
 
 	// Draws one body's air, in camera-relative coordinates like everything
 	// else -- so the camera is at the origin and the centre carries the offset.
-	void DrawAtmosphere(size_t index, const glm::vec3& centre, float radius, float scale)
+	void DrawAtmosphere(size_t index, const glm::vec3& centre, float radius)
 	{
 		const Body& body = m_Bodies[index];
 
@@ -3828,8 +4082,6 @@ private:
 			return;
 
 		float outer = radius * (1.0f + body.AtmosphereFraction * m_AirScale);
-
-		(void)scale;
 
 		// Nothing to see from far enough away that the whole shell is under a
 		// pixel, and 32 samples a pixel is worth skipping.
@@ -3949,7 +4201,17 @@ private:
 				std::sqrt(2.0 * gm / here), std::sqrt(gm / here));
 
 			ImGui::Text("%s", m_Grounded ? "on the ground" : "falling");
-		ImGui::Text("%d trees in view", m_PlantsDrawn);
+
+			ImGui::Text("%d trees in view (%d / %d / %d by detail)",
+				m_PlantsDrawn, (int)(m_TreeBatch[0][0].size() + m_TreeBatch[1][0].size()
+					+ m_TreeBatch[2][0].size()),
+				(int)(m_TreeBatch[0][1].size() + m_TreeBatch[1][1].size()
+					+ m_TreeBatch[2][1].size()),
+				(int)(m_TreeBatch[0][2].size() + m_TreeBatch[1][2].size()
+					+ m_TreeBatch[2][2].size()));
+
+			ImGui::Text("%u draws, %.2f M triangles", m_Stats.DrawCalls,
+				m_Stats.TriangleCount / 1.0e6f);
 
 			if (ImGui::Button("Take off  (L)"))
 				TakeOff();
@@ -3998,6 +4260,12 @@ private:
 		ImGui::SliderFloat("Air density", &m_AirDensity, 1.0f, 120.0f, "%.0f");
 		ImGui::SliderFloat("Load radius", &m_LoadRadius, 80.0f, 900.0f, "%.0f m");
 		ImGui::SliderInt("Chunks per step", &m_ChunksPerStep, 1, 48);
+		ImGui::SliderFloat("Stream budget", &m_StreamTargetMs, 0.5f, 12.0f, "%.1f ms");
+
+		ImGui::TextDisabled("streaming %.2f ms, %.2f chunks a step%s", m_StreamMs,
+			Egss::Application::Get().IsLockstep()
+				? (float)m_ChunksPerStep : m_StreamAllowance,
+			Egss::Application::Get().IsLockstep() ? " (lockstep: fixed)" : "");
 		ImGui::Checkbox("Labels", &m_ShowLabels);
 
 		ImGui::TextDisabled("Earth %.0f m across, 1 AU = %.1f km, system %.0f km wide",
@@ -4122,9 +4390,36 @@ private:
 	std::shared_ptr<Egss::Material> m_WaterMaterial;
 
 	static constexpr int s_TreeShapes = 3;
-	std::shared_ptr<Egss::Mesh> m_TreeBark[s_TreeShapes];
-	std::shared_ptr<Egss::Mesh> m_TreeLeaves[s_TreeShapes];
+
+	// Three levels, switching at these distances over the tree's own scale.
+	// 45 m is about a hundred pixels of tree at this field of view and 150 m
+	// is about forty; past that a trunk is three pixels wide and five sides
+	// of it are four more than anyone can see.
+	static constexpr int s_TreeLods = 3;
+	static constexpr float s_TreeLodNear = 45.0f;
+	static constexpr float s_TreeLodFar = 150.0f;
+
+	// One instance buffer per level, because a buffer belongs to the vertex
+	// arrays it was added to and the levels are different vertex arrays. Nine
+	// buffers of 16,384 matrices is 9.4 MB of VRAM that is mostly never
+	// written -- cheap next to the alternative of re-declaring attributes.
+	std::shared_ptr<Egss::Mesh> m_TreeBark[s_TreeShapes][s_TreeLods];
+	std::shared_ptr<Egss::Mesh> m_TreeLeaves[s_TreeShapes][s_TreeLods];
+	std::shared_ptr<Egss::VertexBuffer> m_TreeInstances[s_TreeShapes][s_TreeLods];
+	std::vector<glm::mat4> m_TreeBatch[s_TreeShapes][s_TreeLods];
+
+	std::shared_ptr<Egss::Shader> m_TreeShader;
+	std::shared_ptr<Egss::Material> m_TreeMaterial;
+
+	// Room for every tree the streaming radius can hold: 14 a chunk over a few
+	// thousand chunks, with headroom. A megabyte of matrices a shape.
+	static constexpr size_t s_MaxTreesPerShape = 16384;
 	int m_PlantsDrawn = 0;
+
+	// Last frame's totals, read back after EndScene. The panel is the only
+	// consumer, but it is the number every performance question here has
+	// started from.
+	Egss::Renderer::Statistics m_Stats;
 
 	// Generated on approach and kept: regenerating a planet is a density
 	// evaluation for every voxel of its shell.
@@ -4177,6 +4472,14 @@ private:
 	bool m_MouseLook = false;
 	bool m_WasToggling = false;
 	float m_LookRate = 90.0f;         // degrees a second, for the arrow keys
+
+	// What the last step's streaming cost, and how many chunks that bought.
+	double m_StreamMs = 0.0;
+	float m_StreamAllowance = 1.0f;
+	float m_StreamCredit = 0.0f;
+
+	// Of a 16.7 ms frame. The rest of it has to draw the planet.
+	float m_StreamTargetMs = 5.0f;
 
 	float m_LoadRadius = 400.0f;
 	int m_ChunksPerStep = 12;

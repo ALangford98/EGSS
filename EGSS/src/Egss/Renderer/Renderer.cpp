@@ -86,6 +86,35 @@ namespace Egss {
 		Submit(material, mesh->GetVertexArray(), transform);
 	}
 
+	void Renderer::SubmitInstanced(const std::shared_ptr<Material>& material,
+		const std::shared_ptr<Mesh>& mesh, unsigned int instances,
+		const glm::mat4& transform)
+	{
+		if (!material || !mesh || instances == 0)
+			return;
+
+		material->Bind();
+
+		const std::shared_ptr<Shader>& shader = material->GetShader();
+		shader->SetMat4("u_ViewProjection", s_SceneData->ViewProjectionMatrix);
+
+		// What the copies share. It has to be set rather than left alone --
+		// leaving whatever the previous draw put there is how a forest ends up
+		// wearing another planet's spin.
+		shader->SetMat4("u_Transform", transform);
+
+		const std::shared_ptr<VertexArray>& vertexArray = mesh->GetVertexArray();
+
+		vertexArray->Bind();
+		RenderCommand::DrawIndexedInstanced(vertexArray, instances);
+
+		// **One draw call, and the triangles counted honestly.** The whole
+		// point is that the first number stops tracking the second.
+		s_Stats.DrawCalls++;
+		s_Stats.TriangleCount +=
+			(size_t)instances * vertexArray->GetIndexBuffer()->GetCount() / 3;
+	}
+
 	void Renderer::SubmitSubmesh(const std::shared_ptr<Material>& material,
 		const std::shared_ptr<Mesh>& mesh, unsigned int submesh, const glm::mat4& transform)
 	{

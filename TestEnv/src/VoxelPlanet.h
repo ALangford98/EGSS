@@ -766,8 +766,19 @@ public:
 
 	// Fills and meshes up to `budget` chunks within `radius` of `focus`,
 	// nearest first. Returns how many were meshed.
-	int StreamAround(const glm::vec3& focus, float radius, int budget)
+	// **The budget counts work, not chunks.**
+	//
+	// A chunk that gets generated and a chunk that gets rejected are not the
+	// same expense -- one is 53,000 noise evaluations and the other is 27 --
+	// but the rejected ones are not free either, and there are three of them
+	// for every chunk kept. Counting only the fills let a step reject four
+	// hundred chunks and call it one chunk of work, which is how a budget of
+	// *one* still cost six milliseconds.
+	static constexpr float s_RejectCost = 0.02f;
+
+	int StreamAround(const glm::vec3& focus, float radius, float budget)
 	{
+		float spent = 0.0f;
 		glm::ivec3 count = m_Field->ChunkCount();
 		glm::vec3 local = focus - m_Field->Origin();
 
@@ -778,111 +789,21 @@ public:
 
 		int meshed = 0;
 
-		// Sorted by distance once per reach, so the ground under the camera
-		// arrives before the horizon does.
-		if (reach != m_SortedReach)
-		{
-			m_Offsets.clear();
-
-			for (int z = -reach; z <= reach; z++)
-				for (int y = -reach; y <= reach; y++)
-					for (int x = -reach; x <= reach; x++)
-						m_Offsets.push_back({ x, y, z });
-
-			std::sort(m_Offsets.begin(), m_Offsets.end(),
-				[](const glm::ivec3& a, const glm::ivec3& b)
-				{
-					return (a.x * a.x + a.y * a.y + a.z * a.z)
-						< (b.x * b.x + b.y * b.y + b.z * b.z);
-				});
-
-			m_SortedReach = reach;
-		}
-
-		for (const glm::ivec3& offset : m_Offsets)
-		{
-			if (budget <= 0)
-				break;
-
-			glm::ivec3 chunk = centre + offset;
-
-			if (chunk.x < 0 || chunk.y < 0 || chunk.z < 0
-				|| chunk.x >= count.x || chunk.y >= count.y || chunk.z >= count.z)
-				continue;
-
-			size_t key = Key(chunk);
-			if (m_Filled.count(key))
-				continue;
-
-			glm::vec3 chunkCentre = ChunkCentre(chunk);
-
-			if (glm::length(chunkCentre - focus) > radius)
-				continue;
-
-			m_Filled.insert(key);
-
-			// **The shell test.** Everything outside the band is either solid
-			// rock or empty sky, and a chunk of one uniform value costs one
-			// float in VoxelField3D rather than 4,096.
-			//
-			// **But it still has to be given that value.** Leaving it
-			// unallocated is not "solid rock" -- an unallocated chunk reads
-			// `Far`, which is *air*, so the deep interior of the planet was
-			// empty as far as the mesher was concerned. A surface chunk whose
-			// +x, +y or +z neighbour happened to point inward then meshed its
-			// own rock against that air and closed the surface with a wall,
-			// which is where the black slabs standing out of the ground came
-			// from. They were on one hemisphere only, which is the tell: the
-			// three neighbours a mesh reads are all in the positive direction.
-			//
-			// A constant generator costs the loop but not the noise, and
-			// collapses to the same one float.
-			if (!TouchesSurface(chunkCentre))
-			{
-				float uniform = glm::length(chunkCentre) < m_Settings.Radius
-					? -Egss::VoxelField3D::Far : Egss::VoxelField3D::Far;
-
-				m_Field->FillChunk(chunk,
-					[uniform](const glm::vec3&) { return uniform; }, 1);
-
-				continue;
-			}
-
-			m_Field->FillChunk(chunk, sdf, 1);
-
-			// **Filling a chunk stales its low neighbours' meshes.**
-			// `ChunkRange` includes one plane past the chunk's own cells, so a
-			// mesh reads the *first* plane of the chunks above it in x, y and
-			// z. Mesh a chunk before those exist and it meshes against empty
-			// space -- which is what put a black grid of cracks across the
-			// first planet, one line per chunk boundary, looking for all the
-			// world like a mesher bug rather than an ordering one.
-			m_Dirty.insert(key);
-
-			for (int axis = 0; axis < 3; axis++)
-			{
-				glm::ivec3 lower = chunk;
-				lower[axis] -= 1;
-
-				if (lower[axis] < 0)
-					continue;
-
-				size_t lowerKey = Key(lower);
-
-				// Only ones already built: a chunk not yet filled will mesh
-				// against this one when its own turn comes.
-				if (m_Chunks.count(lowerKey))
-					m_Dirty.insert(lowerKey);
-			}
-
-			budget--;
-		}
-
-		// Meshing is the expensive half, and a re-mesh is as expensive as the
-		// first one, so it gets the same budget rather than being unbounded.
-		int meshBudget = std::max(1, budget) + 4;
-
-		for (auto it = m_Dirty.begin(); it != m_Dirty.end() && meshBudget > 0; )
+		// **Meshing spends the same budget, and it goes first.**
+		//
+		// It used to have its own, floored at five chunks a step, so a caller
+		// who asked for one chunk of work got one fill *and* five
+		// marching-tetrahedra passes over 4,913 cells each -- which is why a
+		// budget of one still cost six milliseconds. Marching a chunk costs
+		// about what generating one does, so it counts the same.
+		//
+		// First, and on half the budget, because otherwise the two starve each
+		// other: filling first means a budget of one is always spent on a fill,
+		// the dirty queue is never drained, and terrain is generated and never
+		// drawn. Turning a chunk that already exists into something visible
+		// beats making another one that is not.
+		for (auto it = m_Dirty.begin();
+			it != m_Dirty.end() && spent < budget * 0.5f; )
 		{
 			size_t key = *it;
 			glm::ivec3 chunk = Unkey(key);
@@ -915,7 +836,7 @@ public:
 
 			Egss::MeshData data = Egss::MarchingTetrahedra::Mesh(*m_Field, min, max, 1);
 
-			meshBudget--;
+			spent += 1.0f;
 
 			if (data.Indices.empty())
 			{
@@ -934,6 +855,137 @@ public:
 
 			m_Chunks[key] = entry;
 			meshed++;
+		}
+
+		// Sorted by distance once per reach, so the ground under the camera
+		// arrives before the horizon does.
+		if (reach != m_SortedReach)
+		{
+			m_Offsets.clear();
+
+			for (int z = -reach; z <= reach; z++)
+				for (int y = -reach; y <= reach; y++)
+					for (int x = -reach; x <= reach; x++)
+						m_Offsets.push_back({ x, y, z });
+
+			std::sort(m_Offsets.begin(), m_Offsets.end(),
+				[](const glm::ivec3& a, const glm::ivec3& b)
+				{
+					return (a.x * a.x + a.y * a.y + a.z * a.z)
+						< (b.x * b.x + b.y * b.y + b.z * b.z);
+				});
+
+			m_SortedReach = reach;
+		}
+
+		// **The scan resumes where it left off.**
+		//
+		// `m_Offsets` is sorted by distance and filling proceeds outward, so
+		// once a prefix of it is filled that prefix stays filled while the
+		// focus chunk does not move -- chunks are only ever released at three
+		// times the load radius, which is outside this reach entirely. Walking
+		// all 50,653 of them every step to rediscover that cost **2.9 ms a
+		// step forever**, which is a floor no budget could get under: the demo
+		// converged to a stable three milliseconds of finding nothing.
+		if (centre != m_ScanCentre)
+		{
+			m_ScanCentre = centre;
+			m_ScanFrom = 0;
+		}
+
+		for (size_t at = m_ScanFrom; at < m_Offsets.size(); at++)
+		{
+			const glm::ivec3& offset = m_Offsets[at];
+
+			if (spent >= budget)
+				break;
+
+			glm::ivec3 chunk = centre + offset;
+
+			if (chunk.x < 0 || chunk.y < 0 || chunk.z < 0
+				|| chunk.x >= count.x || chunk.y >= count.y || chunk.z >= count.z)
+				continue;
+
+			size_t key = Key(chunk);
+
+			if (m_Filled.count(key))
+			{
+				// Everything before the first unfilled entry is done with, and
+				// saying so is what makes the next scan start there.
+				if (at == m_ScanFrom)
+					m_ScanFrom = at + 1;
+
+				continue;
+			}
+
+			glm::vec3 chunkCentre = ChunkCentre(chunk);
+
+			if (glm::length(chunkCentre - focus) > radius)
+				continue;
+
+			m_Filled.insert(key);
+
+			// **The shell test.** Everything outside the band is either solid
+			// rock or empty sky, and a chunk of one uniform value costs one
+			// float in VoxelField3D rather than 4,096.
+			//
+			// **But it still has to be given that value.** Leaving it
+			// unallocated is not "solid rock" -- an unallocated chunk reads
+			// `Far`, which is *air*, so the deep interior of the planet was
+			// empty as far as the mesher was concerned. A surface chunk whose
+			// +x, +y or +z neighbour happened to point inward then meshed its
+			// own rock against that air and closed the surface with a wall,
+			// which is where the black slabs standing out of the ground came
+			// from. They were on one hemisphere only, which is the tell: the
+			// three neighbours a mesh reads are all in the positive direction.
+			//
+			// A constant generator costs the loop but not the noise, and
+			// collapses to the same one float.
+			if (!TouchesSurface(chunkCentre))
+			{
+				float uniform = glm::length(chunkCentre) < m_Settings.Radius
+					? -Egss::VoxelField3D::Far : Egss::VoxelField3D::Far;
+
+				// Set, not generated. The old form ran the constant through
+				// `FillChunk`, which allocates a 16 KB scratch buffer and
+				// writes 4,096 copies of it -- and on a planet these outnumber
+				// the chunks that hold anything three to one, so that was most
+				// of the streaming cost while the ground filled in.
+				m_Field->SetUniform(chunk, uniform, 1);
+
+				spent += s_RejectCost;
+
+				continue;
+			}
+
+			m_Field->FillChunk(chunk, sdf, 1);
+
+			// **Filling a chunk stales its low neighbours' meshes.**
+			// `ChunkRange` includes one plane past the chunk's own cells, so a
+			// mesh reads the *first* plane of the chunks above it in x, y and
+			// z. Mesh a chunk before those exist and it meshes against empty
+			// space -- which is what put a black grid of cracks across the
+			// first planet, one line per chunk boundary, looking for all the
+			// world like a mesher bug rather than an ordering one.
+			m_Dirty.insert(key);
+
+			for (int axis = 0; axis < 3; axis++)
+			{
+				glm::ivec3 lower = chunk;
+				lower[axis] -= 1;
+
+				if (lower[axis] < 0)
+					continue;
+
+				size_t lowerKey = Key(lower);
+
+				// Only ones already built: a chunk not yet filled will mesh
+				// against this one when its own turn comes.
+				if (m_Chunks.count(lowerKey))
+					m_Dirty.insert(lowerKey);
+			}
+
+			spent += 1.0f;
 		}
 
 		return meshed;
@@ -1084,14 +1136,80 @@ private:
 			+ (glm::vec3(chunk) + glm::vec3(0.5f)) * m_ChunkWorld;
 	}
 
+	// **Where the ground is here, not where the ground is on average.**
+	//
+	// This used to test the chunk against the *mean* radius, with the whole
+	// relief range as its band -- so on a planet whose hills are 380 m it
+	// accepted a shell 800 m thick and ran the full noise generator over every
+	// chunk in it. Measured while landing: **7,200 chunks filled to produce
+	// 808 that had any surface in them**, and 150 ms a step in Debug against a
+	// 16.7 ms budget. Nine chunks of solid rock or open sky generated in full
+	// for every one that was worth generating.
+	//
+	// The band is a property of the whole planet; the surface is a property of
+	// the direction. Sampling `Relief` at the chunk's own corners costs nine
+	// evaluations -- about 120 noise calls -- against the 53,000 a fill costs,
+	// so rejecting a chunk this way is 450 times cheaper than filling it and
+	// finding out.
+	//
+	// The margin is a chunk width past the corner samples. The corners bound
+	// the relief *between* them but not a bump between two of them, and the
+	// relief's slope is under one, so half a chunk of extra depth covers any
+	// extremum they stepped over; doubling that costs a few percent of the
+	// chunks and buys the certainty. The check that it is enough is that a
+	// capture taken with this in place is byte-identical to one taken without,
+	// because the only chunks it may skip are chunks with nothing in them.
 	bool TouchesSurface(const glm::vec3& chunkCentre) const
 	{
-		// Half the diagonal, because a chunk is a cube and its far corner is
-		// what decides whether the shell clips it.
+		float distance = glm::length(chunkCentre);
+
+		// The centre of the planet has no direction to ask about, and is solid
+		// rock in every case that matters.
+		if (distance < m_ChunkWorld)
+			return false;
+
+		// Cheap reject first: nothing outside the whole planet's relief range
+		// can be near the surface, whatever direction it is in.
 		float chunkReach = m_ChunkWorld * 0.8660254f;
 
-		return std::abs(glm::length(chunkCentre) - m_Settings.Radius)
-			<= ReliefReach() + chunkReach + m_Settings.VoxelSize;
+		if (std::abs(distance - m_Settings.Radius)
+			> ReliefReach() + chunkReach + m_Settings.VoxelSize)
+			return false;
+
+		// **Twenty-seven samples, not nine.** Eight corners bound the relief
+		// between them and not a bump between two of them, which had to be
+		// paid for with a whole chunk of extra margin -- and margin is waste:
+		// it accepted 452 empty chunks for every 169 that held any surface. A
+		// 3x3x3 grid includes the face and edge midpoints, so the widest
+		// unsampled gap is half a chunk instead of a whole one and the margin
+		// comes off. Both counts are hundreds of times cheaper than the fill
+		// they are avoiding, so the denser one is free.
+		float low = 1e30f, high = -1e30f;
+		float half = m_ChunkWorld * 0.5f;
+
+		for (int k = 0; k < 3; k++)
+		for (int j = 0; j < 3; j++)
+		for (int i = 0; i < 3; i++)
+		{
+			glm::vec3 at = chunkCentre + glm::vec3(i - 1, j - 1, k - 1) * half;
+
+			float length = glm::length(at);
+
+			if (length < 1e-3f)
+				continue;
+
+			float relief = Relief(at / length);
+
+			low = glm::min(low, relief);
+			high = glm::max(high, relief);
+		}
+
+		// The radii the ground occupies over this chunk, against the radii the
+		// chunk occupies. They have to overlap for the surface to be in it.
+		float margin = chunkReach + m_Settings.VoxelSize;
+
+		return distance - margin <= m_Settings.Radius + high
+			&& distance + margin >= m_Settings.Radius + low;
 	}
 
 
@@ -1143,6 +1261,10 @@ private:
 	std::shared_ptr<Egss::VoxelField3D> m_Field;
 
 	std::unordered_map<size_t, Chunk> m_Chunks;
+	// How far the outward scan got while the focus chunk stayed put.
+	glm::ivec3 m_ScanCentre = glm::ivec3(0x7fffffff);
+	size_t m_ScanFrom = 0;
+
 	std::unordered_set<size_t> m_Filled;
 
 	// Chunks whose mesh is missing or stale. Meshed on the next stream, so a

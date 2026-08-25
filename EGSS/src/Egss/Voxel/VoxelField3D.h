@@ -151,6 +151,17 @@ namespace Egss {
 			const std::function<float(const glm::vec3&)>& sdf,
 			unsigned char material = 1);
 
+		// **One value for the whole chunk, without visiting its voxels.**
+		//
+		// A caller that already knows a chunk is solid rock or open sky can
+		// say so directly. Going through `FillChunk` with a constant generator
+		// gets the same answer by allocating a 16 KB scratch buffer, writing
+		// 4,096 identical floats into it and then discovering they are all the
+		// same -- which is most of the cost of a chunk that has nothing in it,
+		// and on a planet most chunks have nothing in them.
+		void SetUniform(const glm::ivec3& chunk, float distance,
+			unsigned char material = 1);
+
 		// Allocated chunks, and the total the lattice could hold. For checking
 		// that the sparse storage is actually sparse rather than assuming it.
 		size_t AllocatedChunks() const;

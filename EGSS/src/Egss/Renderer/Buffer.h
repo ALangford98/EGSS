@@ -84,13 +84,24 @@ namespace Egss {
 	public:
 		BufferLayout() {}
 
-		BufferLayout(const std::initializer_list<BufferElement>& elements)
-			: m_Elements(elements)
+		// **`divisor` makes the whole buffer per-instance.** Zero -- the
+		// default -- advances an attribute once per vertex, which is what a
+		// vertex buffer is. One advances it once per *instance*, which is what
+		// turns three thousand draw calls into one: the mesh is bound once and
+		// the buffer supplies whatever differs between copies of it.
+		//
+		// It is a property of the layout rather than of each element because a
+		// buffer is one or the other. Mixing the two in one buffer is legal in
+		// GL and has never once been what somebody meant.
+		BufferLayout(const std::initializer_list<BufferElement>& elements,
+			unsigned int divisor = 0)
+			: m_Elements(elements), m_Divisor(divisor)
 		{
 			CalculateOffsetsAndStride();
 		}
 
 		inline unsigned int GetStride() const { return m_Stride; }
+		inline unsigned int GetDivisor() const { return m_Divisor; }
 		inline const std::vector<BufferElement>& GetElements() const { return m_Elements; }
 
 		std::vector<BufferElement>::const_iterator begin() const { return m_Elements.begin(); }
@@ -110,6 +121,7 @@ namespace Egss {
 	private:
 		std::vector<BufferElement> m_Elements;
 		unsigned int m_Stride = 0;
+		unsigned int m_Divisor = 0;
 	};
 
 	class EGSS_API VertexBuffer

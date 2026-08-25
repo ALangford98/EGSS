@@ -64,6 +64,36 @@ namespace Egss {
 		const auto& layout = vertexBuffer->GetLayout();
 		for (const auto& element : layout)
 		{
+			// **A matrix is not one attribute, it is a column each.** GL caps
+			// an attribute at four components, so `glVertexAttribPointer` with
+			// sixteen is an error rather than a matrix -- `ShaderDataType::Mat4`
+			// existed in the enum and could not be used. It is four
+			// consecutive locations, sixteen bytes apart, and the shader
+			// declares one `mat4` that spans them.
+			if (element.Type == ShaderDataType::Mat3
+				|| element.Type == ShaderDataType::Mat4)
+			{
+				int columns = element.Type == ShaderDataType::Mat4 ? 4 : 3;
+
+				for (int column = 0; column < columns; column++)
+				{
+					glEnableVertexAttribArray(m_VertexBufferIndex);
+
+					glVertexAttribPointer(m_VertexBufferIndex, columns, GL_FLOAT,
+						element.Normalized ? GL_TRUE : GL_FALSE,
+						layout.GetStride(),
+						(const void*)(element.Offset
+							+ sizeof(float) * (size_t)columns * column));
+
+					if (layout.GetDivisor())
+						glVertexAttribDivisor(m_VertexBufferIndex, layout.GetDivisor());
+
+					m_VertexBufferIndex++;
+				}
+
+				continue;
+			}
+
 			glEnableVertexAttribArray(m_VertexBufferIndex);
 
 			switch (element.Type)
@@ -92,6 +122,9 @@ namespace Egss {
 						(const void*)element.Offset);
 					break;
 			}
+
+			if (layout.GetDivisor())
+				glVertexAttribDivisor(m_VertexBufferIndex, layout.GetDivisor());
 
 			m_VertexBufferIndex++;
 		}

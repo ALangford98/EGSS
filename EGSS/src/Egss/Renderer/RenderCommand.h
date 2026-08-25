@@ -43,6 +43,14 @@ namespace Egss {
 			s_RendererAPI->DrawIndexed(vertexArray, indexCount, firstIndex);
 		}
 
+		inline static void DrawIndexedInstanced(
+			const std::shared_ptr<VertexArray>& vertexArray, unsigned int instances,
+			unsigned int indexCount = 0, unsigned int firstIndex = 0)
+		{
+			s_RendererAPI->DrawIndexedInstanced(vertexArray, instances,
+				indexCount, firstIndex);
+		}
+
 		inline static void DrawLines(const std::shared_ptr<VertexArray>& vertexArray, unsigned int vertexCount)
 		{
 			s_RendererAPI->DrawLines(vertexArray, vertexCount);

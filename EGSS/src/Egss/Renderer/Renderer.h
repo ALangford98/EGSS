@@ -47,6 +47,20 @@ namespace Egss {
 			const std::shared_ptr<Mesh>& mesh,
 			const glm::mat4& transform = glm::mat4(1.0f));
 
+		// **The same mesh, `instances` times, differing by whatever its
+		// instance buffer carries.**
+		//
+		// `Mesh::SetInstanceBuffer` attaches that buffer; this draws through
+		// it. `transform` is whatever the copies have in *common* -- for a
+		// forest, the planet's placement and spin -- and goes to `u_Transform`
+		// as usual; what differs comes down the buffer and the shader combines
+		// the two. Splitting it that way keeps the big translation out of
+		// every instance's matrix, which is a multiply per copy on the CPU
+		// saved and a good deal of float precision kept.
+		static void SubmitInstanced(const std::shared_ptr<Material>& material,
+			const std::shared_ptr<Mesh>& mesh, unsigned int instances,
+			const glm::mat4& transform = glm::mat4(1.0f));
+
 		// One submesh out of a mesh's shared buffers, so a model whose file
 		// switched material partway through can be drawn a range at a time
 		// with a different material each. `submesh` indexes GetSubmeshes().

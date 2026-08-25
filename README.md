@@ -927,10 +927,30 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       meshes to rubble. Carrying them about an origin that follows the player
       lifts the ceiling; it touches `VoxelField3D`, the mesher, the SDF collider
       and the plant placement
+- [x] **Instance the trees** — a landed frame went from about 23,000 draw calls
+      to 1,001, and from 16.66 M triangles to 9.49 M once trees behind the camera
+      stopped being submitted. Needed instancing in the engine: a divisor on
+      `BufferLayout`, `mat4` as a vertex attribute (four locations, which the
+      enum offered and the backend rejected), `DrawIndexedInstanced`,
+      `Mesh::SetInstanceBuffer` and `Renderer::SubmitInstanced`. CPU per frame
+      halved
+- [x] **Tree level of detail** — three levels per shape, chosen per tree from
+      distance over its own scale, which took the landed frame from 26.30 ms of
+      GPU to 15.74 and under the 60 fps budget. Levels 0 and 1 differ only in
+      tessellation so the near switch is invisible; level 2 is a generation
+      shallower and grows its leaf clusters by the cube root of the tips it
+      lost. Found by ablation: trees were 6.14 M of the frame's 9.07 M triangles
+- [ ] **Merge or LOD the chunk meshes.** 963 of the remaining 1,001 draw calls
+      are terrain chunks. They are distinct geometry so instancing does not
+      apply — they want merging into larger buffers, or a coarser mesh past a
+      distance, which is the same machinery terrain LOD needs anyway
 - [ ] **Terrain LOD on a sphere.** Streamed ground reaches 400 m and the horizon
       is 949, so the outer half of the view is the stand-in sphere with its
       colour map. OpenWorld has stride-based LOD for a flat field; a planet wants
-      the same idea with the shell's curvature in it
+      the same idea with the shell's curvature in it. **This is now the largest
+      thing in a landed frame** — 2.86 M triangles over 963 chunks, about 6 ms
+      of a 15.74 ms GPU frame, and the trees that used to dwarf it are down to
+      1.55 M
 - [ ] **Swimming, or a coast that stops you.** The sea is a shell drawn over the
       terrain and the player walks under it. Landing avoids that now and the
       panel warns before you press `L` over water, but walking into the sea from
@@ -1156,6 +1176,234 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-25 (the forest was two thirds of the frame)
+
+**The landed frame was GPU-bound at 26.30 ms, and 9.59 of them were trees.**
+Instancing had already taken the submission cost out — 963 chunks and six tree
+draws, 5.26 ms of CPU — so what was left had to be the GPU, and it was. A
+`GL_TIME_ELAPSED` query around the frame said 26.30 ms against a 16.67 ms
+budget: 37 fps, which is what "we need to maintain 60" was measuring against.
+
+**The split came from ablation, one category at a time.** Skipping the trees
+took the frame to 16.71 ms; skipping the terrain chunks, 19.95; the atmosphere,
+25.77; the starfield, 26.18. Skipping everything left 1.30 ms, so the deltas do
+not add up to the total and are not meant to — removing an occluder makes what
+was behind it shade, which is also why *dropping* the sea made the frame 1 ms
+slower. What the numbers do establish is the ranking, and trees won it twice
+over: 5,077 of them at 1,210 triangles each is 6.14 M of the frame's 9.07 M,
+against 2.86 M for all 963 chunks of terrain.
+
+**1,210 triangles is the right number for a tree you are standing under and an
+absurd one for a tree thirteen pixels tall.** Trees stream to 400 m and a disc
+is mostly its rim, so 86% of them are past 150 m, where a 5.6 m tree subtends
+about forty pixels. Three levels now, chosen per tree from distance over the
+tree's own scale — the trees vary 0.6 to 1.15 and it is *apparent* size that
+decides how much geometry is worth spending, not range:
+
+| Level | Beyond | Bark | Leaves | Total | Drawn |
+| --- | --- | --- | --- | --- | --- |
+| 0 | — | 400 | 810 | 1,210 | 118 |
+| 1 | 45 m | 240 | 432 | 672 | 686 |
+| 2 | 150 m | 78 | 144 | 222 | 4,273 |
+
+Every one of those counts is a closed form the generator does not contain,
+which is how they were checked. Bark is `segments x sides x 2` and the segment
+count is the geometric series `(c^(d+1) - 1)/(c - 1)`: 40 at depth 3, 13 at
+depth 2. Leaves are `tips x rings x segments x 2` with `c^d` tips: 27 and 9.
+All six numbers matched.
+
+**Level 1 changes the tessellation and not the structure**, which is the whole
+reason the 45 m switch is invisible: same seed, same depth, same branching, five
+sides down to three and the leaf blobs coarsened. Level 2 does change it — a
+shallower tree has 9 tips where there were 27 — so its leaf clusters are grown
+by `(27/9)^(1/3)` to cover the crown the missing generation used to fill.
+
+**26.30 ms to 15.74.** Tree triangles fell 6.14 M to 1.55 M, a factor of 3.96,
+and the frame came in under the 16.67 ms budget for the first time. The
+captured frame differs from the old one in 1.52% of its pixels, all of them in
+the far treeline.
+
+**Tightening the bands further buys nothing.** At 35 m and 110 m — 69 trees at
+full detail instead of 118 — the frame is 15.45 ms. 0.29 ms for a visibly
+earlier switch says the remaining cost is no longer tree vertices, so the bands
+stayed where they look right. What is left is the terrain, and terrain LOD is
+already on the roadmap.
+
+The panel now shows the frame's draw calls and triangles, and the tree count
+split by level. `Renderer::ResetStats` had never been called here, so anything
+that had read those numbers would have been reading every frame since the demo
+started.
+
+Captures are byte-identical between runs and across all three configs.
+
+
+### 2026-08-25 (two small ones)
+
+**`--goto Sun` reported that the Sun matches no body.** One loop serves both
+`--goto` and `--land`, and it started at index one because the star is not
+somewhere you land — so the flag that only wants to *look* at it was refused
+along with the one that does not make sense. It starts at zero now; `Land`
+already declines the star on its own and says "nothing to land on out here",
+which is the better place for that to be decided.
+
+**And `DrawAtmosphere` took a `scale` it never used.** Its caller pre-multiplies
+the radius, so the parameter existed only to be silenced with a `(void)` cast —
+which is a comment that the signature is wrong, written in the wrong language.
+
+The landed capture is byte-identical across the change.
+
+
+### 2026-08-25 (a forest in six draw calls)
+
+**A landed frame was submitting about 23,000 draw calls.** 11,010 trees at two
+each -- bark and leaves are separate geometry with separate materials -- plus 963
+chunk meshes. That is the CPU cost measured in the previous entry, and it is why
+an integrated GPU sat at 60% without being the thing that was slow: the expense
+was submission, not shading.
+
+It is **1,001** now. Three tree shapes times two materials is six calls whatever
+the forest does, and the rest is the terrain.
+
+**The engine had no instancing, and one piece of it was broken in a way nothing
+had noticed.** `ShaderDataType::Mat4` was in the enum and could not be used as a
+vertex attribute: GL caps an attribute at four components, so declaring one with
+sixteen is an error rather than a matrix. A `mat4` is four consecutive locations
+sixteen bytes apart, which `AddVertexBuffer` now emits -- along with
+`glVertexAttribDivisor` where the layout asks for it.
+
+The rest is small: a `Divisor` on `BufferLayout` (a property of the buffer, since
+mixing per-vertex and per-instance attributes in one is legal in GL and has never
+been what anybody meant), `RendererAPI::DrawIndexedInstanced`,
+`Mesh::SetInstanceBuffer` and `Renderer::SubmitInstanced`.
+
+**What differs goes in the buffer; what is shared stays a uniform.** The planet's
+placement and spin is common to every tree on it, so it stays in `u_Transform`
+and only the per-tree translate-orient-scale goes down the instance buffer. That
+saves a matrix multiply per tree on the CPU and keeps the large translation out
+of every instance's matrix.
+
+Getting that wrong is how the first version drew **no trees at all**:
+`SubmitInstanced` forced `u_Transform` to the identity, on the reasoning that the
+transform is the thing that differs and therefore cannot be a uniform. It is
+half right -- what differs cannot be, but what is *shared* must be, and wiping it
+put the whole forest at the camera's own position. It takes a transform now.
+
+**One buffer, two vertex arrays.** A trunk and its leaves stand in the same place,
+so the shape's instance buffer belongs to both meshes -- a `VertexBuffer` can join
+any number of vertex arrays. It is allocated once at full size rather than grown,
+because attribute locations are handed out in the order buffers are added: a
+replacement would land at location 7 while the shader went on reading 3.
+
+**And then the trees that were never visible stopped being drawn.** There had
+been no culling of any kind -- every tree in every resident chunk went down the
+pipe, which while it was two draw calls each was not the thing worth fixing.
+Tested a chunk at a time, which is 963 tests instead of 11,010 for the same
+answer, because trees in a chunk are within 24 m of each other. A cone at 75
+degrees against a half-angle of about 50, widened by the chunk's reach and a
+canopy so nothing whose leaves are in view is dropped for having its trunk
+outside. **The capture is byte-identical with it on**, which is the whole
+argument: what it removes was not being seen.
+
+| | before | after |
+|---|---|---|
+| draw calls | ~23,000 | 1,001 |
+| triangles | 16.66 M | 9.49 M |
+| CPU, 1,800 frames | 33.81 s | 18.15 s |
+
+The wall clock did not move -- this machine was already vsync-bound at about 58
+FPS and still is. What changed is that it now spends half the CPU getting there,
+which is headroom on a machine that had none and the difference between 60 and
+40 on one that is slower.
+
+Against the pre-instancing capture, 265 pixels of 921,600 differ, all on tree
+silhouettes: `frame * local` used to be multiplied on the CPU and is now
+associated the other way on the GPU, which is the same arithmetic and not the
+same rounding. Byte-identical across all three configs and across repeated runs,
+and the other demos are untouched.
+
+**What is left is the 963 chunk meshes**, which are distinct geometry and so
+cannot be instanced -- they want merging into larger buffers, or a coarser mesh
+past a distance. That is the next lever and it is a smaller one: the trees were
+95% of the calls.
+
+
+### 2026-08-25 (the landing stopped freezing, and why it was never the GPU)
+
+**The tell was that the GPU went idle.** Landing froze the demo; the report was
+that the integrated GPU climbed to about 60% and then fell to ~1% as it locked
+up. A GPU at 1% is not a GPU that is struggling, it is a GPU with nothing to do
+-- the CPU had stopped submitting frames. Everything here is GLSL and has been:
+terrain, atmosphere, rings, ocean, the starfield. What stalls is chunk
+generation, on the main thread, inside the fixed step.
+
+**Measured before touching anything**: 150 ms a step in Debug and 21 ms in
+Release, against the 16.7 ms a 60 Hz frame has in total. And 7,200 chunks filled
+to produce 808 that had any surface in them.
+
+Four things were wrong, and only the last is interesting as a policy.
+
+**The shell test asked the wrong question.** `TouchesSurface` compared a chunk
+against the *mean* radius with the whole relief range as its band -- on a planet
+whose hills are 380 m, a shell 800 m thick, every chunk in it generated in full.
+The band is a property of the planet; the surface is a property of the direction.
+Sampling `Relief` over the chunk's own extent costs 27 evaluations against the
+53,000 a fill costs, so rejecting a chunk that way is hundreds of times cheaper
+than filling it and finding out. Verified one-sidedly, which is the only way that
+matters: over 2,197 chunks around a landing site, **169 held a surface and none
+of them were rejected**; the waste that remained went from 72.8% to 39.9% when
+the sampling went from 9 points to 27 and the margin came off.
+
+**A chunk with nothing in it was still written 4,096 times.** The rejects went
+through `FillChunk` with a constant generator, which allocates a 16 KB scratch
+buffer, writes 4,096 identical floats and then discovers they are all the same.
+`VoxelField3D::SetUniform` says it in one assignment.
+
+**The scan re-walked the whole neighbourhood every step.** 50,653 sorted offsets,
+hashed against the filled set, to rediscover that the first several thousand were
+already done. That was a **2.9 ms floor no budget could get under** -- the demo
+converged to a stable three milliseconds a step of finding nothing. The offsets
+are sorted by distance and filling goes outward, so the scan resumes where it
+left off while the focus chunk has not moved.
+
+**And the budget counted the wrong thing.** It counted chunks *filled*, so a step
+that rejected four hundred and meshed five called that one chunk of work. Now
+fills, rejects and meshes all spend one budget, weighted by what they cost --
+and meshing goes first, on half of it, because otherwise the two starve each
+other: fill-first means a budget of one is always spent on a fill, the dirty
+queue never drains, and terrain is generated and never drawn.
+
+**The budget is milliseconds now, and it is banked.** One chunk is the atom of
+this work and it costs about four milliseconds here, so an *integer* budget has a
+four-millisecond floor -- and seven times that in Debug, where no integer can
+hold the frame. Carrying the unspent fraction from step to step lets the answer
+be "a chunk every third step", which is what a machine that cannot afford one a
+step should do: fill in more slowly, at frame rate, rather than stop.
+
+**Except under lockstep, and that is not a detail.** The ground collider is
+`MakeSdf` over the *field*, so how much has streamed is part of the simulation
+and not only of the picture -- a chunk that has not arrived reads as air and the
+player falls through it. A budget that depends on the wall clock would therefore
+make a replay depend on the machine. `Application::IsLockstep()` exists now for
+exactly this, and every capture and recording runs under it.
+
+**Where it landed.** Streaming holds **5.5 ms against a 5 ms target** while the
+ground fills in, and the steady state on the surface is **16.65 ms a frame --
+60.1 FPS** in Release, measured over frames 1200 to 1800 with streaming
+converged. Lockstep captures are byte-identical across all three configs and
+across repeated runs, and the Voxel, Map Building and Open World demos are
+unchanged.
+
+**What is left is draw calls, and the number is 8,300.** A landed frame submits
+about 1,174 chunk meshes and 3,556 trees at *two calls each* -- bark and leaves
+-- which is the 16.65 ms and is why an integrated GPU sits at 60% without being
+the thing that is slow. Instancing the trees takes 7,112 of those to six. That is
+the next lever and it is on the roadmap.
+
+Debug is about seven times slower than Release on this path, and `./egss.py run`
+builds Debug: 40 FPS against 60 for the same scene. Worth knowing before
+concluding anything about a frame rate from it.
+
 
 ### 2026-08-24 (a planet the size of a planet)
 
