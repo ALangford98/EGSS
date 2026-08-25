@@ -776,6 +776,246 @@ public:
 	// *one* still cost six milliseconds.
 	static constexpr float s_RejectCost = 0.02f;
 
+	// --- Level of detail ---------------------------------------------------
+	//
+	// The same idea OpenWorld uses on a flat field, and it transfers without a
+	// change of shape because the *lattice* is not curved -- a planet is a
+	// sphere in the density, not in the grid. Marching a chunk on every second
+	// or fourth voxel is a quarter or a sixteenth of the triangles for
+	// geometry that is a few hundred metres away and shrinking.
+
+	int BandFor(float distance) const
+	{
+		if (!m_Lod)
+			return 1;
+		if (distance > m_LodFar)
+			return 4;
+		if (distance > m_LodNear)
+			return 2;
+
+		return 1;
+	}
+
+	// The band, with a margin that has to be crossed before a chunk actually
+	// moves. Without it a chunk sitting on a boundary remeshes every step,
+	// which is the whole budget spent on a mesh nobody can tell from the one
+	// it replaced.
+	int DesiredStride(float distance, int current) const
+	{
+		if (!m_Lod)
+			return 1;
+
+		int band = BandFor(distance);
+
+		if (band == current)
+			return current;
+
+		// Coarsening is judged against the edge the chunk is leaving;
+		// refining against the edge it is coming back inside.
+		float edge = (band > current)
+			? ((current == 1) ? m_LodNear : m_LodFar)
+			: ((band == 1) ? m_LodNear : m_LodFar);
+
+		if (band > current && distance < edge + m_LodHysteresis)
+			return current;
+		if (band < current && distance > edge - m_LodHysteresis)
+			return current;
+
+		return band;
+	}
+
+	// Meshes one chunk on a lattice `stride` voxels wide.
+	//
+	// **The seam is closed on the coarse side only.** A fine chunk already
+	// agrees with its coarse neighbour, because both evaluate the same
+	// tetrahedral decomposition of the same field at the same fine lattice
+	// positions; it is the coarse one that has to subdivide its boundary layer
+	// to meet it, and `VoxelTransition` is what does that. All of this is
+	// engine machinery that already existed and had been measured on a flat
+	// field -- the only thing a planet adds is that the chunks form a shell
+	// rather than a slab, which the code cannot tell apart.
+	//
+	// A chunk needing the transition on two faces at once is out of scope here
+	// exactly as it is in OpenWorld, and meshes plainly.
+	void MeshChunk(const glm::ivec3& chunk, int stride)
+	{
+		Egss::MeshData data;
+		BuildChunkMesh(chunk, stride, data);
+
+		size_t key = Key(chunk);
+
+		if (data.Indices.empty())
+		{
+			m_Chunks.erase(key);
+			return;
+		}
+
+		if (data.Submeshes.empty())
+		{
+			Egss::Submesh all;
+			all.IndexCount = (unsigned int)data.Indices.size();
+			data.Submeshes.push_back(all);
+		}
+
+		data.RecalculateBounds();
+
+		Chunk entry;
+		entry.MeshPtr = std::make_shared<Egss::Mesh>(data, "PlanetChunk");
+		entry.Centre = ChunkCentre(chunk);
+		entry.Triangles = data.Indices.size() / 3;
+		entry.Stride = stride;
+		entry.Coord = chunk;
+
+		// **Plants outlive the mesh they arrived with.** They are a function
+		// of the chunk index and reproduce identically, so recomputing them on
+		// every level-of-detail change would be a hash and a bisection per
+		// tree to arrive back where it started. They are also deliberately not
+		// thinned with the lattice: a stride-4 chunk is 400 m away, the trees
+		// in it are already three levels down, and dropping them would end the
+		// forest at a visible circle.
+		auto existing = m_Chunks.find(key);
+
+		if (existing != m_Chunks.end())
+			entry.Plants = std::move(existing->second.Plants);
+		else
+			PlantChunk(chunk, entry.Plants);
+
+		m_Chunks[key] = std::move(entry);
+	}
+
+	// `MeshChunk`, plus the neighbours that meshing it just invalidated.
+	//
+	// **A transition is decided at mesh time from the neighbours that exist
+	// then.** During streaming they mostly do not: chunks arrive in distance
+	// order, so a coarse one is regularly meshed while the finer chunk beside
+	// it is still an empty cell, sees no neighbour, and meshes plainly. When
+	// the fine one shows up, nothing goes back to tell the coarse one it now
+	// has a seam to close -- and the hole stays until that chunk's own band
+	// happens to change, which on a planet you are standing still on is never.
+	// The same thing happens the other way when a chunk refines: its coarser
+	// neighbours were right until it moved.
+	//
+	// Restitching is one level deep and never changes a neighbour's stride, so
+	// it cannot cascade -- a neighbour remeshed at the stride it already had
+	// stales nobody in turn.
+	void MeshChunkStitched(const glm::ivec3& chunk, int stride)
+	{
+		MeshChunk(chunk, stride);
+
+		static const glm::ivec3 s_FaceDir[6] =
+		{
+			{  1,  0,  0 }, { -1,  0,  0 },
+			{  0,  1,  0 }, {  0, -1,  0 },
+			{  0,  0,  1 }, {  0,  0, -1 },
+		};
+
+		for (int f = 0; f < 6; f++)
+		{
+			auto it = m_Chunks.find(Key(chunk + s_FaceDir[f]));
+
+			if (it != m_Chunks.end() && it->second.Stride > stride)
+				MeshChunk(it->second.Coord, it->second.Stride);
+		}
+	}
+
+	// The geometry alone, with nothing stored. Separate from `MeshChunk`
+	// because a seam is a property of the triangles and can be counted without
+	// uploading anything.
+	void BuildChunkMesh(const glm::ivec3& chunk, int stride, Egss::MeshData& data) const
+	{
+		glm::ivec3 min, max;
+		m_Field->ChunkRange(chunk, min, max);
+
+		static const glm::ivec3 s_FaceDir[6] =
+		{
+			{  1,  0,  0 }, { -1,  0,  0 },
+			{  0,  1,  0 }, {  0, -1,  0 },
+			{  0,  0,  1 }, {  0,  0, -1 },
+		};
+
+		unsigned int boundaryMask = 0;
+		int ratio = 1;
+		int markedFaces = 0;
+
+		for (int f = 0; f < 6; f++)
+		{
+			auto it = m_Chunks.find(Key(chunk + s_FaceDir[f]));
+
+			if (it == m_Chunks.end())
+				continue;
+
+			int neighbourStride = it->second.Stride;
+
+			if (neighbourStride < stride && stride % neighbourStride == 0)
+			{
+				boundaryMask |= (1u << f);
+				ratio = stride / neighbourStride;
+				markedFaces++;
+			}
+		}
+
+		if (markedFaces == 1)
+		{
+			int face = 0;
+			while (!(boundaryMask & (1u << face)))
+				face++;
+
+			glm::ivec3 interiorMin = min, interiorMax = max;
+			glm::ivec3 layerMin = min, layerMax = max;
+
+			switch (face)
+			{
+				case Egss::VoxelTransition::PosX: interiorMax.x -= stride; layerMin.x = interiorMax.x; break;
+				case Egss::VoxelTransition::NegX: interiorMin.x += stride; layerMax.x = interiorMin.x; break;
+				case Egss::VoxelTransition::PosY: interiorMax.y -= stride; layerMin.y = interiorMax.y; break;
+				case Egss::VoxelTransition::NegY: interiorMin.y += stride; layerMax.y = interiorMin.y; break;
+				case Egss::VoxelTransition::PosZ: interiorMax.z -= stride; layerMin.z = interiorMax.z; break;
+				case Egss::VoxelTransition::NegZ: interiorMin.z += stride; layerMax.z = interiorMin.z; break;
+			}
+
+			data = Egss::MarchingTetrahedra::Mesh(*m_Field, interiorMin, interiorMax, stride);
+			Egss::VoxelTransition::MeshBoundaryLayer(*m_Field, layerMin, layerMax,
+				stride, boundaryMask, ratio, data);
+		}
+		else
+		{
+			data = Egss::MarchingTetrahedra::Mesh(*m_Field, min, max, stride);
+		}
+	}
+
+	// Remeshes up to `budget` chunks whose band no longer matches their mesh.
+	// Budgeted for the same reason streaming is: marching a chunk is the cost,
+	// and doing every stale one in a single step is the spike the budget
+	// exists to prevent.
+	int UpdateLod(const glm::vec3& focus, int budget)
+	{
+		if (!m_Lod || budget <= 0)
+			return 0;
+
+		// Collected before anything is remeshed: `MeshChunk` can erase its own
+		// entry when a coarser lattice finds no surface at all, and that
+		// invalidates an iterator standing on it.
+		std::vector<std::pair<glm::ivec3, int>> work;
+
+		for (const auto& [key, chunk] : m_Chunks)
+		{
+			if ((int)work.size() >= budget)
+				break;
+
+			int want = DesiredStride(glm::length(chunk.Centre - focus), chunk.Stride);
+
+			if (want != chunk.Stride)
+				work.push_back({ chunk.Coord, want });
+		}
+
+		for (const auto& [coord, stride] : work)
+			MeshChunkStitched(coord, stride);
+
+		m_LodRemeshes = (int)work.size();
+
+		return m_LodRemeshes;
+	}
+
 	int StreamAround(const glm::vec3& focus, float radius, float budget)
 	{
 		float spent = 0.0f;
@@ -831,29 +1071,21 @@ public:
 
 			it = m_Dirty.erase(it);
 
-			glm::ivec3 min, max;
-			m_Field->ChunkRange(chunk, min, max);
+			// An edit or a late neighbour does not move a chunk between bands,
+			// so a chunk that already has a mesh is remade on the lattice it
+			// already had. One being meshed for the first time takes the band
+			// outright -- there is no previous stride for the hysteresis to
+			// hold it against, and being born at the right detail is what
+			// keeps the level-of-detail pass down to a trickle.
+			auto existing = m_Chunks.find(key);
 
-			Egss::MeshData data = Egss::MarchingTetrahedra::Mesh(*m_Field, min, max, 1);
+			int stride = (existing != m_Chunks.end())
+				? existing->second.Stride
+				: BandFor(glm::length(ChunkCentre(chunk) - focus));
+
+			MeshChunkStitched(chunk, stride);
 
 			spent += 1.0f;
-
-			if (data.Indices.empty())
-			{
-				m_Chunks.erase(key);
-				continue;
-			}
-
-			data.RecalculateBounds();
-
-			Chunk entry;
-			entry.MeshPtr = std::make_shared<Egss::Mesh>(data, "PlanetChunk");
-			entry.Centre = ChunkCentre(chunk);
-
-			PlantChunk(chunk, entry.Plants);
-			entry.Triangles = data.Indices.size() / 3;
-
-			m_Chunks[key] = entry;
 			meshed++;
 		}
 
@@ -969,12 +1201,13 @@ public:
 			// world like a mesher bug rather than an ordering one.
 			m_Dirty.insert(key);
 
-			for (int axis = 0; axis < 3; axis++)
-			{
-				glm::ivec3 lower = chunk;
-				lower[axis] -= 1;
+			const glm::ivec3* offsets = HighNeighbourOffsets();
 
-				if (lower[axis] < 0)
+			for (int i = 0; i < 7; i++)
+			{
+				glm::ivec3 lower = chunk - offsets[i];
+
+				if (lower.x < 0 || lower.y < 0 || lower.z < 0)
 					continue;
 
 				size_t lowerKey = Key(lower);
@@ -988,6 +1221,13 @@ public:
 			spent += 1.0f;
 		}
 
+		// **Last, and on whatever is left.** New chunks are born in the right
+		// band, so this pass only ever handles chunks the *player* moved past
+		// -- a trickle, not a backlog. Starving it while a planet streams in is
+		// the right priority anyway: terrain that is on screen at the wrong
+		// detail beats terrain that is not on screen yet.
+		UpdateLod(focus, (int)glm::max(budget - spent, 0.0f));
+
 		return meshed;
 	}
 
@@ -999,16 +1239,40 @@ public:
 	// those three have to exist before a mesh means anything. A neighbour
 	// outside the field is not a neighbour -- the accessors clamp there, and
 	// waiting for it would leave the lattice's outer shell unmeshed forever.
+	// The seven chunks a mesh reads into: not three.
+	//
+	// **`ChunkRange` adds a plane in every axis at once**, so the lattice a
+	// chunk is marched on includes the point at (+16, +16, +16) -- which
+	// belongs to the *diagonal* neighbour, not to any of the three the code
+	// used to name. Waiting for three and staling three is right along the
+	// faces and wrong along the edges and at the corner, and the corner is
+	// shared by four chunks nobody was telling.
+	//
+	// Measured, on a landed Earth: 422 of 963 stored meshes did not match what
+	// the mesher would produce from the field as it finally stood. With all
+	// seven it is zero.
+	static const glm::ivec3* HighNeighbourOffsets()
+	{
+		static const glm::ivec3 offsets[7] =
+		{
+			{ 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 },
+			{ 1, 1, 0 }, { 1, 0, 1 }, { 0, 1, 1 },
+			{ 1, 1, 1 },
+		};
+
+		return offsets;
+	}
+
 	bool HighNeighboursFilled(const glm::ivec3& chunk) const
 	{
 		glm::ivec3 count = m_Field->ChunkCount();
+		const glm::ivec3* offsets = HighNeighbourOffsets();
 
-		for (int axis = 0; axis < 3; axis++)
+		for (int i = 0; i < 7; i++)
 		{
-			glm::ivec3 higher = chunk;
-			higher[axis] += 1;
+			glm::ivec3 higher = chunk + offsets[i];
 
-			if (higher[axis] >= count[axis])
+			if (higher.x >= count.x || higher.y >= count.y || higher.z >= count.z)
 				continue;
 
 			if (!m_Filled.count(Key(higher)))
@@ -1061,12 +1325,32 @@ public:
 		glm::vec3 Centre = glm::vec3(0.0f);
 		size_t Triangles = 0;
 
+		// The lattice this mesh was marched on, and the chunk index it came
+		// from. The stride is here rather than derived from the distance
+		// because the distance moves every step and the mesh does not: what a
+		// neighbour needs to know is what this chunk *is*, not what it ought
+		// to be.
+		int Stride = 1;
+		glm::ivec3 Coord = glm::ivec3(0);
+
 		// Placed with the mesh and thrown away with it, because they are a
 		// function of the same chunk index and cost nothing to reproduce.
 		std::vector<Plant> Plants;
 	};
 
 	const std::unordered_map<size_t, Chunk>& Chunks() const { return m_Chunks; }
+
+	bool HasChunkMesh(const glm::ivec3& chunk) const
+	{
+		return m_Chunks.count(Key(chunk)) != 0;
+	}
+
+	const Chunk* ChunkMesh(const glm::ivec3& chunk) const
+	{
+		auto it = m_Chunks.find(Key(chunk));
+
+		return it == m_Chunks.end() ? nullptr : &it->second;
+	}
 
 	size_t TriangleCount() const
 	{
@@ -1079,6 +1363,39 @@ public:
 
 	size_t FilledChunks() const { return m_Filled.size(); }
 	size_t MeshedChunks() const { return m_Chunks.size(); }
+
+	// Chunks and triangles per band, for the panel. Index 0 is stride 1, 1 is
+	// stride 2, 2 is stride 4.
+	void LodCounts(int outChunks[3], size_t outTriangles[3]) const
+	{
+		for (int i = 0; i < 3; i++)
+		{
+			outChunks[i] = 0;
+			outTriangles[i] = 0;
+		}
+
+		for (const auto& [key, chunk] : m_Chunks)
+		{
+			int slot = chunk.Stride == 1 ? 0 : (chunk.Stride == 2 ? 1 : 2);
+
+			outChunks[slot]++;
+			outTriangles[slot] += chunk.Triangles;
+		}
+	}
+
+	// **Level of detail, in metres from the focus.** Off by default: a planet
+	// that has never been landed on draws its terrain from orbit through the
+	// colour map, and the bands would only ever be measuring a distance
+	// nothing is standing at.
+	void SetLod(bool enabled, float near, float far, float hysteresis)
+	{
+		m_Lod = enabled;
+		m_LodNear = near;
+		m_LodFar = far;
+		m_LodHysteresis = hysteresis;
+	}
+
+	int LodRemeshes() const { return m_LodRemeshes; }
 
 	// Where the ground is in a direction, by bisection on the density -- used
 	// to put a camera or a lander on the surface rather than inside it.
@@ -1261,6 +1578,13 @@ private:
 	std::shared_ptr<Egss::VoxelField3D> m_Field;
 
 	std::unordered_map<size_t, Chunk> m_Chunks;
+
+	// Off until something lands: see SetLod.
+	bool m_Lod = false;
+	float m_LodNear = 120.0f;
+	float m_LodFar = 240.0f;
+	float m_LodHysteresis = 16.0f;
+	int m_LodRemeshes = 0;
 	// How far the outward scan got while the focus chunk stayed put.
 	glm::ivec3 m_ScanCentre = glm::ivec3(0x7fffffff);
 	size_t m_ScanFrom = 0;

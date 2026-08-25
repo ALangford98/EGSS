@@ -140,13 +140,23 @@ namespace Egss {
 		//
 		// Marks nothing dirty, the same as Fill does not -- a demo that calls
 		// Fill still has to call MarkAllDirty itself before the first mesh.
-		// One thing Fill does not have to account for: this chunk's low-x/
-		// low-y/low-z neighbours, if they are already meshed, each read one
-		// plane of *this* chunk for their own seam overlap (see ChunkRange).
-		// Filling a chunk that was previously unallocated changes that whole
-		// plane, so a caller streaming chunks in has to mark this chunk *and*
-		// those three neighbours dirty, not just this one, or the seam keeps
-		// the old (empty) surface until something else disturbs it.
+		// One thing Fill does not have to account for: the neighbours below
+		// this chunk, if they are already meshed, read into *this* one for
+		// their own seam overlap (see ChunkRange). Filling a chunk that was
+		// previously unallocated changes what they read, so a caller streaming
+		// chunks in has to mark this chunk *and* those neighbours dirty, or
+		// the seam keeps the old (empty) surface until something else
+		// disturbs it.
+		//
+		// **There are seven of them, not three.** ChunkRange adds a plane in
+		// every axis at once, so a mesh samples the point at (+N, +N, +N) --
+		// which belongs to the diagonal neighbour. This comment said three
+		// until a planet's terrain was measured against it: 422 of 963 stored
+		// meshes did not match what the mesher would produce from the field as
+		// it finally stood, and naming all seven took that to zero. The three
+		// face neighbours are right along the faces and wrong along the edges
+		// and at the corner, and the corner is shared by four chunks nobody
+		// was telling.
 		void FillChunk(const glm::ivec3& chunk,
 			const std::function<float(const glm::vec3&)>& sdf,
 			unsigned char material = 1);

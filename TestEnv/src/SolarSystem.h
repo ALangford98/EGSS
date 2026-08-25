@@ -206,6 +206,13 @@ public:
 			if (arguments[i] == "--years-per-second")
 				m_OrbitalYearsPerSecond = (float)std::atof(arguments[i + 1].c_str());
 
+		// Terrain level of detail off, for measuring what it is worth. A
+		// checkbox does the same thing, but a checkbox cannot be A/B'd from a
+		// shell and this number is the whole reason the feature exists.
+		for (size_t i = 1; i < arguments.size(); i++)
+			if (arguments[i] == "--no-terrain-lod")
+				m_Lod = false;
+
 		// **Finer than a body needs, because three spheres have to agree.**
 		// The planet's stand-in sphere, the sea and the atmosphere shell are
 		// all drawn from this one mesh at radii within a few metres of each
@@ -1621,6 +1628,13 @@ public:
 		// in one step is exactly the spike a budget exists to prevent.
 		float scale = planet.Get().VoxelSize / 1.5f;
 		glm::vec3 focus = glm::vec3(ToFixed(index, m_Local));
+
+		// **The bands scale with the voxel, like the load radius does.** They
+		// are quoted for Earth's 1.5 m voxels; Jupiter's are 17.5 m, and a
+		// stride-2 lattice there is 35 m of ground -- the same fraction of the
+		// same shell, which is what makes one pair of sliders serve sixteen
+		// bodies.
+		planet.SetLod(m_Lod, m_LodNear * scale, m_LodFar * scale, 16.0f * scale);
 
 		// **A budget in milliseconds, except where a millisecond is not
 		// allowed to matter.**
@@ -4189,6 +4203,14 @@ private:
 			ImGui::Text("%zu chunks meshed, %zu triangles",
 				planet.MeshedChunks(), planet.TriangleCount());
 
+			int perStride[3];
+			size_t trianglesPerStride[3];
+			planet.LodCounts(perStride, trianglesPerStride);
+
+			ImGui::Text("  stride 1: %d chunks, %zu tris", perStride[0], trianglesPerStride[0]);
+			ImGui::Text("  stride 2: %d chunks, %zu tris", perStride[1], trianglesPerStride[1]);
+			ImGui::Text("  stride 4: %d chunks, %zu tris", perStride[2], trianglesPerStride[2]);
+
 			double gm = LocalGm((size_t)m_Ground);
 			double here = glm::length(m_Local);
 			double radius = DrawnRadius((size_t)m_Ground);
@@ -4259,6 +4281,10 @@ private:
 		ImGui::SliderFloat("Air depth", &m_AirScale, 0.2f, 6.0f, "%.1fx");
 		ImGui::SliderFloat("Air density", &m_AirDensity, 1.0f, 120.0f, "%.0f");
 		ImGui::SliderFloat("Load radius", &m_LoadRadius, 80.0f, 900.0f, "%.0f m");
+
+		ImGui::Checkbox("Terrain LOD", &m_Lod);
+		ImGui::SliderFloat("Stride 2 beyond", &m_LodNear, 24.0f, 400.0f, "%.0f m");
+		ImGui::SliderFloat("Stride 4 beyond", &m_LodFar, 48.0f, 600.0f, "%.0f m");
 		ImGui::SliderInt("Chunks per step", &m_ChunksPerStep, 1, 48);
 		ImGui::SliderFloat("Stream budget", &m_StreamTargetMs, 0.5f, 12.0f, "%.1f ms");
 
@@ -4482,6 +4508,12 @@ private:
 	float m_StreamTargetMs = 5.0f;
 
 	float m_LoadRadius = 400.0f;
+
+	// Terrain level of detail, in metres from the camera at Earth's voxel
+	// size. See the note where they are handed to the planet.
+	bool m_Lod = true;
+	float m_LodNear = 100.0f;
+	float m_LodFar = 200.0f;
 	int m_ChunksPerStep = 12;
 
 	// --- The clocks ---------------------------------------------------------

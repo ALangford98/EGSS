@@ -944,13 +944,19 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       are terrain chunks. They are distinct geometry so instancing does not
       apply — they want merging into larger buffers, or a coarser mesh past a
       distance, which is the same machinery terrain LOD needs anyway
-- [ ] **Terrain LOD on a sphere.** Streamed ground reaches 400 m and the horizon
-      is 949, so the outer half of the view is the stand-in sphere with its
-      colour map. OpenWorld has stride-based LOD for a flat field; a planet wants
-      the same idea with the shell's curvature in it. **This is now the largest
-      thing in a landed frame** — 2.86 M triangles over 963 chunks, about 6 ms
-      of a 15.74 ms GPU frame, and the trees that used to dwarf it are down to
-      1.55 M
+- [x] **Terrain LOD on a sphere** — stride 1/2/4 with hysteresis, scaled by the
+      body's voxel size, which took a landed Earth's terrain from 2,774,250
+      triangles to 500,825 and the frame from about 16.2 ms of GPU to about
+      12.2. Almost no new code: the lattice is Cartesian whatever shape the
+      density is, so `VoxelTransition` transferred unchanged. Verified by
+      welding the whole resident shell into an edge table and counting the open
+      edges *interior* to it — 125 without LOD, 2,943 with, of which 2,642 are
+      the documented two-faces-at-once case. Found and fixed a much older bug
+      on the way: a mesh reads into seven neighbours, not three
+- [ ] **Fix the two-faces-at-once transition**, or stop needing it. It is 90% of
+      the LOD seam residual and a sphere hits it three times harder than a flat
+      field — 25 of 82 transition chunks on a landed Earth. Invisible today only
+      because the horizon sphere is behind the holes
 - [ ] **Swimming, or a coast that stops you.** The sea is a shell drawn over the
       terrain and the player walks under it. Landing avoids that now and the
       panel warns before you press `L` over water, but walking into the sea from
@@ -1176,6 +1182,80 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-25 (terrain LOD, and the 422 meshes that were quietly wrong)
+
+**Stride-based level of detail for a planet's terrain, which needed almost no
+new code.** A planet is a sphere in the *density*, not in the grid — the
+lattice is as Cartesian as OpenWorld's flat field — so `VoxelTransition`,
+`DesiredStride` and the hysteresis band all transferred unchanged. Three bands,
+quoted at Earth's 1.5 m voxel and scaled by voxel size so one pair of sliders
+serves sixteen bodies: stride 2 beyond 100 m, stride 4 beyond 200 m.
+
+Landed on Earth, terrain went from 2,774,250 triangles to **500,825** — 55
+chunks at stride 1, 179 at stride 2, 636 at stride 4. The frame went from about
+16.2 ms of GPU to about 12.2 (both ±0.5 between runs; the triangle counts are
+exact and deterministic). Mars, which has no forest to share the cost, runs at
+8.03 ms.
+
+**Then the seams had to be counted, because a picture cannot prove a hole is
+absent.** Every resident chunk welded into one edge table, in the planet's own
+frame, on exact float bits: a closed surface uses every edge twice. The
+streamed region has a genuinely open outer boundary so the count is never zero,
+which makes the raw number useless — what matters is *where*. An open edge on a
+chunk face with resident chunks on both sides is a hole in the middle of the
+terrain, and that is the only kind LOD can make.
+
+| | interior open edges |
+| --- | --- |
+| LOD off | 125 |
+| LOD on | 2,943 |
+
+**90% of the difference is one documented limitation.** 2,642 of those 2,943
+touch a chunk that needs the transition on two or more faces at once, which
+`VoxelTransition` says up front it does not handle and meshes plainly. A planet
+hits it far harder than a flat field does: the bands are curved shells cutting
+diagonally through a cubic lattice, so 25 of the 82 chunks needing a transition
+need it twice. Accepted rather than fixed, and invisible in practice because
+the horizon sphere sits *below* the terrain floor — a hole shows ground, not
+sky, which is why the whole change moves 0.23% of pixels and all of them within
+64 rows of the horizon.
+
+**And the seam test found something much worse that had nothing to do with LOD.**
+422 of 963 stored meshes did not match what the mesher would produce from the
+field as it finally stood — **and the number was identical with LOD off**.
+
+`VoxelField3D::ChunkRange` adds a plane in *every axis at once*, so a chunk is
+marched on a lattice that includes the point at (+16, +16, +16) — which belongs
+to the **diagonal** neighbour. `HighNeighboursFilled` waited for three
+neighbours and filling staled three, which is right along the faces and wrong
+along the edges and at the corner, and the corner is shared by four chunks
+nobody was telling. The engine's own comment on `FillChunk` said "those three
+neighbours", so the mistake was inherited rather than invented; it now says
+seven and says why.
+
+With all seven, **422 stale meshes becomes 0**. The visible payoff was on Mars:
+a row of black dashes along the horizon, present in *both* the LOD and the
+no-LOD captures and therefore easy to blame on nothing, is simply gone. A
+chunk's mesh now also waits one neighbour longer before it appears, so the
+streamed region at a given step is a chunk thinner — 870 rather than 963. That
+is the correct region; the old one was drawing geometry meshed against data
+that had since changed.
+
+**A note on the measurement, which was wrong first.** The seam test rebuilds
+every chunk to count its edges, so it measures the *mesher* and cannot see a
+stale *mesh*. That is why adding neighbour restitching changed the seam counts
+by exactly nothing — identical to the byte, which is the tell that a test is
+answering a different question than the one being asked. Comparing each
+rebuild's triangle count against the one actually on the GPU is what caught it.
+The restitching is still there and still right, for the case where a coarse
+chunk is meshed before the finer chunk beside it exists.
+
+`--no-terrain-lod` turns it off from a shell, which is how the A/B above was
+run. The panel shows chunks and triangles per band.
+
+Captures are byte-identical between runs and across all three configs.
+
 
 ### 2026-08-25 (the forest was two thirds of the frame)
 

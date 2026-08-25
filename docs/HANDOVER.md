@@ -219,6 +219,22 @@ Check the measurement first. Real examples from this project:
   the point) and time the CPU side separately with `std::chrono`. The landed
   Solar frame was 5.26 ms of CPU against 26.30 of GPU.
 
+- A seam test that rebuilds every chunk to count its edges measures the
+  *mesher*, not the *meshes*. Adding neighbour restitching changed its answer
+  by exactly nothing — identical to the byte, which is the tell. What a stale
+  stored mesh needs is a comparison against a fresh rebuild of the same chunk:
+  422 of 963 on a landed Earth, and the same 422 with LOD off, which is how a
+  bug older than the feature being tested got found.
+
+**A chunk's mesh reads into seven neighbours, not three.** `ChunkRange` adds a
+plane in every axis *at once*, so the lattice includes the point at
+(+N, +N, +N) — the diagonal neighbour. Anything that waits for neighbours
+before meshing, or marks neighbours stale after filling, has to name all seven:
+the three face neighbours are right along the faces and wrong along the edges
+and at the corner, and the corner is shared by four chunks. `VoxelField3D`'s
+own comment on `FillChunk` said three until 2026-08-25 and is what led
+`VoxelPlanet` into it.
+
 **Ablation is the fastest way to find where a frame goes**, and its numbers do
 not add up on purpose. Dropping one category at a time out of the landed Solar
 frame gave: trees 9.59 ms, terrain 6.35, atmosphere 0.53, stars 0.12 — against
@@ -1373,6 +1389,61 @@ before, and "a component with no system" was the phrase used to decline it.
 ---
 
 ## Where things stand, and what is next
+
+### The agreed plan for the Solar demo (2026-08-25)
+
+The demo is a prototype for a game that spends 90% of its time on the surface
+of Earth and then earns its way off it. The owner set the direction and the
+order was agreed in conversation; it is here because none of it is derivable
+from the code.
+
+1. ~~**Terrain LOD on a sphere.**~~ **Done 2026-08-25** — stride 1/2/4, and the
+   landed frame is now about 12.2 ms of GPU against a 16.67 budget. The
+   residual is the two-faces-at-once transition, which a sphere hits three
+   times harder than a flat field; see the roadmap.
+2. **A local origin for the surface.** Not needed at the current 250 km — 3 cm
+   of float spacing against a 1.5 m voxel is fifty positions per voxel — but
+   needed for real Earth radius (0.76 m against 1.59 m is two), and needed
+   *before* the ship, because a rigid body integrating 250 km from the origin
+   in floats is the case this item exists for.
+3. **Biomes — with the drainage pass inside them, not after.** What makes a
+   biome map read as a world is moisture, and moisture comes from drainage. One
+   erosion / flow-accumulation pass over the continent-scale height field gives
+   river valleys, a drainage network, closed basins that do not reach the sea,
+   and an accumulated-flow moisture field to assign biomes from. Temperature is
+   free from latitude. Build biomes from independent humidity noise instead and
+   you get rainforest on ridges and desert in valleys, and you do it twice. The
+   home for all of it is the equirectangular map `BuildColourMap` already
+   makes, probably at 2048x1024 rather than 1024x512.
+4. **Editing and chunk persistence.** `VoxelField3D::EditSphere` exists and
+   VoxelTerrain uses it; `ChunkCache` exists and OpenWorld uses it; `VoxelPlanet`
+   uses neither, so nothing on a planet can be dug and nothing that were dug
+   would survive eviction — eviction *is* regeneration here. This has to land
+   before the water, because both digging and live water need world state that
+   is saved rather than recomputed.
+5. **Water by connectivity, not by Navier-Stokes.** The requirement is "water
+   exists where it can get to": a sealed cavern below sea level is dry, and
+   digging a tunnel to it fills it. That is connectivity. Two tiers — a global
+   precomputed answer on the hydrology map for which regions drain to the
+   ocean, which is what keeps a hole in the middle of a continent dry; and a
+   local volume-conserving cellular automaton inside the streamed radius for
+   the transient, the levelling and the flowing. Full fluid dynamics buys
+   waves, pressure and turbulence, which were not asked for and cannot run at
+   planet scale. Note the sea today is a *shell* drawn at `u_SeaRadius` with no
+   relationship to the terrain, which is why you can walk under it: this work
+   replaces it rather than extends it.
+6. **A player who walks, and a ship that is a physical object to get into.**
+   The player is already a real rigid body (a 78 kg capsule against an SDF
+   ground), so the ship is an extension of what is there rather than a new
+   mechanism.
+
+**The determinism cost, stated once.** A live local fluid makes world state
+depend on where the player has been. That is fine for a game, but it means
+captures stop being free regression tests unless the path is fixed — and the
+whole verification method here leans on step-determinism. Decide it
+deliberately rather than discovering it.
+
+### The rest
 
 `README.md` has the full roadmap (18 items). The clusters:
 
