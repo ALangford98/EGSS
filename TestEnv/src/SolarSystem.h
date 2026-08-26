@@ -76,6 +76,7 @@
 #include "VoxelPlanet.h"
 #include "SurfaceWater.h"
 #include "HorizonMesh.h"
+#include "PocketDimension.h"
 
 class SolarSystem : public DemoLayer
 {
@@ -89,6 +90,10 @@ public:
 		// Reaches the simulation -- it decides how much ground a press
 		// removes -- so a replay has to see it move.
 		RegisterParam("DigRadius", &m_DigRadius);
+
+		// Both reach the physics step, same reason.
+		RegisterParam("BuoyancyStrength", &m_BuoyancyStrength);
+		RegisterParam("WaterDrag", &m_WaterDrag);
 	}
 
 	// --- The system ---------------------------------------------------------
@@ -100,7 +105,19 @@ public:
 		double SemiMajorAu;     // from its parent
 		double RadiusKm;
 		double MassSuns;        // in solar masses, so GM = GM_sun * this
-		double RotationHours;   // sidereal day; negative for a retrograde spin
+		double RotationHours;   // sidereal day, always positive -- see AxialTiltDegrees
+
+		// Real obliquity, in degrees, measured the IAU way: past 90 is a
+		// retrograde spin rather than a negative period. Venus at 177.4 and
+		// Uranus at 97.77 are the two that cross that line, and doing it this
+		// way means SpinRate never needs a sign -- see the note on SpinAxis.
+		// Zero for bodies with no meaningful pole to speak of (the Sun, whose
+		// surface is never drawn) or whose real tilt is negligible (Mercury's
+		// 0.034 rounds to it) or not yet modelled: every moon here is tidally
+		// locked to an orbit that is still in the ecliptic rather than its
+		// planet's equator, so a moon's own obliquity has nowhere correct to
+		// point until that changes -- see the roadmap.
+		float AxialTiltDegrees;
 		glm::vec3 Colour;
 
 		// Atmosphere: its depth as a fraction of the body's radius, a density
@@ -140,32 +157,20 @@ public:
 		float AtmosphereGlow;
 		glm::vec3 Scatter;
 
-		// Rings: inner and outer edge in units of the body's own radius, the
-		// tilt of their plane out of the ecliptic, and the colour of the
-		// material. Zero inner means no rings. Saturn's 1.24 to 2.27 is the C
-		// ring's inner edge to the A ring's outer one, which is the span you
-		// can actually see; Uranus's are narrow, dark and were not found until
-		// 1977 for that reason.
+		// Rings: inner and outer edge in units of the body's own radius, and
+		// the colour of the material. Zero inner means no rings. Saturn's
+		// 1.24 to 2.27 is the C ring's inner edge to the A ring's outer one,
+		// which is the span you can actually see; Uranus's are narrow, dark
+		// and were not found until 1977 for that reason.
 		//
-		// **The tilt is the body's real obliquity, and it is on the ring
-		// rather than on the planet.** Every body here spins about +Y -- see
-		// the note on `SpinAngle` -- so an untilted ring lies in the ecliptic
-		// with the star in its plane, edge-on to the light. Drawn that way
-		// Saturn's rings came out **dark grey**, which is not a shading bug:
-		// a flat annulus lit from within its own plane receives nothing.
-		//
-		// Tilting the whole body is the accurate fix and a much larger change:
-		// the spin drives the terrain's frame, the walking player and the
-		// co-rotating air. It is also, on these two bodies, a change nobody
-		// could see. Their atmospheres are opaque, so the surface whose
-		// rotation the tilt would matter to is not visible from anywhere --
-		// there is no observation in this demo that distinguishes a tilted
-		// Saturn from a Saturn with a tilted ring. Stated here so that if a
-		// body with a *visible* surface ever gets rings, this is the line that
-		// has to change first.
+		// **The plane is the body's own equator, from `AxialTiltDegrees`, not
+		// a tilt of their own.** That used to be two numbers agreeing by
+		// hand -- Saturn's ring tilt and Saturn's (absent) axial tilt were
+		// both 26.73 but only one of them did anything -- which is exactly
+		// the state the old comment here said would have to change once a
+		// body got both rings and a real tilt.
 		float RingInner;
 		float RingOuter;
-		float RingTiltDegrees;
 		glm::vec3 RingColour;
 	};
 
@@ -181,24 +186,24 @@ public:
 	{
 		static const std::vector<BodyDescription> table =
 		{
-			{ "Sun",      -1, 0.0,       696000.0, 1.0, 609.0,         { 1.00f, 0.86f, 0.42f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Sun",      -1, 0.0,       696000.0, 1.0, 609.0,     0.0f,     { 1.00f, 0.86f, 0.42f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
 
-			{ "Mercury",   0, 0.387,       2440.0, 1.660e-7, 1407.6,    { 0.62f, 0.58f, 0.54f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Venus",     0, 0.723,       6052.0, 2.448e-6, -5832.5,    { 0.92f, 0.80f, 0.55f }, 0.0410f, 22.5f, 1.0f, { 0.85f, 0.62f, 0.25f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Earth",     0, 1.000,       6371.0, 3.003e-6, 23.934,    { 0.28f, 0.48f, 0.85f }, 0.0157f, 3.0f, 0.0f, { 0.22f, 0.45f, 1.00f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Mars",      0, 1.524,       3390.0, 3.227e-7, 24.623,    { 0.80f, 0.38f, 0.24f }, 0.0150f, 0.5f, 0.0f, { 0.80f, 0.45f, 0.30f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Jupiter",   0, 5.203,      69911.0, 9.545e-4, 9.925,    { 0.80f, 0.68f, 0.52f }, 0.0700f, 11.0f, 1.0f, { 0.75f, 0.62f, 0.45f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Saturn",    0, 9.537,      58232.0, 2.858e-4, 10.656,    { 0.88f, 0.80f, 0.60f }, 0.0800f, 9.6f, 1.0f, { 0.80f, 0.72f, 0.50f }, 1.24f, 2.27f, 26.73f, { 0.94f, 0.88f, 0.76f } },
-			{ "Uranus",    0, 19.191,     25362.0, 4.366e-5, -17.24,    { 0.60f, 0.85f, 0.88f }, 0.0700f, 11.0f, 1.0f, { 0.40f, 0.80f, 0.85f }, 1.60f, 2.01f, 97.77f, { 0.34f, 0.34f, 0.36f } },
-			{ "Neptune",   0, 30.070,     24622.0, 5.151e-5, 16.11,    { 0.30f, 0.44f, 0.86f }, 0.0700f, 11.0f, 1.0f, { 0.25f, 0.42f, 0.95f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Mercury",   0, 0.387,       2440.0, 1.660e-7, 1407.6, 0.034f,   { 0.62f, 0.58f, 0.54f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Venus",     0, 0.723,       6052.0, 2.448e-6, 5832.5, 177.4f,   { 0.92f, 0.80f, 0.55f }, 0.0410f, 22.5f, 1.0f, { 0.85f, 0.62f, 0.25f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Earth",     0, 1.000,       6371.0, 3.003e-6, 23.934, 23.4392911f, { 0.28f, 0.48f, 0.85f }, 0.0157f, 3.0f, 0.0f, { 0.22f, 0.45f, 1.00f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Mars",      0, 1.524,       3390.0, 3.227e-7, 24.623, 25.19f,   { 0.80f, 0.38f, 0.24f }, 0.0150f, 0.5f, 0.0f, { 0.80f, 0.45f, 0.30f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Jupiter",   0, 5.203,      69911.0, 9.545e-4, 9.925,  3.13f,    { 0.80f, 0.68f, 0.52f }, 0.0700f, 11.0f, 1.0f, { 0.75f, 0.62f, 0.45f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Saturn",    0, 9.537,      58232.0, 2.858e-4, 10.656, 26.73f,   { 0.88f, 0.80f, 0.60f }, 0.0800f, 9.6f, 1.0f, { 0.80f, 0.72f, 0.50f }, 1.24f, 2.27f, { 0.94f, 0.88f, 0.76f } },
+			{ "Uranus",    0, 19.191,     25362.0, 4.366e-5, 17.24,  97.77f,   { 0.60f, 0.85f, 0.88f }, 0.0700f, 11.0f, 1.0f, { 0.40f, 0.80f, 0.85f }, 1.60f, 2.01f, { 0.34f, 0.34f, 0.36f } },
+			{ "Neptune",   0, 30.070,     24622.0, 5.151e-5, 16.11,  28.32f,   { 0.30f, 0.44f, 0.86f }, 0.0700f, 11.0f, 1.0f, { 0.25f, 0.42f, 0.95f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
 
-			{ "Moon",      3, 0.002570,    1737.0, 3.694e-8, 655.7,    { 0.72f, 0.71f, 0.68f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Phobos",    4, 0.0000627,     11.3, 5.0e-15, 7.65,     { 0.55f, 0.50f, 0.46f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Io",        5, 0.002819,    1822.0, 4.490e-8, 42.46,    { 0.88f, 0.82f, 0.45f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Europa",    5, 0.004486,    1561.0, 2.413e-8, 85.2,    { 0.80f, 0.78f, 0.72f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Ganymede",  5, 0.007155,    2634.0, 7.450e-8, 171.7,    { 0.66f, 0.62f, 0.58f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Callisto",  5, 0.012585,    2410.0, 5.410e-8, 400.5,    { 0.48f, 0.45f, 0.44f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Titan",     6, 0.008168,    2575.0, 6.766e-8, 382.7,    { 0.85f, 0.65f, 0.30f }, 0.2300f, 2.7f, 0.8f, { 0.90f, 0.60f, 0.25f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Moon",      3, 0.002570,    1737.0, 3.694e-8, 655.7, 0.0f,     { 0.72f, 0.71f, 0.68f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Phobos",    4, 0.0000627,     11.3, 5.0e-15, 7.65,  0.0f,     { 0.55f, 0.50f, 0.46f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Io",        5, 0.002819,    1822.0, 4.490e-8, 42.46, 0.0f,     { 0.88f, 0.82f, 0.45f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Europa",    5, 0.004486,    1561.0, 2.413e-8, 85.2,  0.0f,     { 0.80f, 0.78f, 0.72f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Ganymede",  5, 0.007155,    2634.0, 7.450e-8, 171.7, 0.0f,     { 0.66f, 0.62f, 0.58f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Callisto",  5, 0.012585,    2410.0, 5.410e-8, 400.5, 0.0f,     { 0.48f, 0.45f, 0.44f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Titan",     6, 0.008168,    2575.0, 6.766e-8, 382.7, 0.0f,     { 0.85f, 0.65f, 0.30f }, 0.2300f, 2.7f, 0.8f, { 0.90f, 0.60f, 0.25f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
 		};
 
 		return table;
@@ -238,6 +243,7 @@ public:
 		BuildStars();
 		BuildTrees();
 		BuildLander();
+		m_Pocket.Build(m_Material);
 		Reset();
 
 		// **Placed here rather than in `OnDemoActivated`.** Activation is an
@@ -388,7 +394,7 @@ public:
 
 			// The spin takes planet-fixed to scene, so the sun in the
 			// planet's own frame is the scene sun taken the other way.
-			glm::dvec3 sun = RotateY(sunward, -angle);
+			glm::dvec3 sun = RotateAboutAxis(sunward, SpinAxis(index), -angle);
 
 			double elevation = glm::dot(sun, up);
 
@@ -433,7 +439,7 @@ public:
 		glm::dvec3 direction = glm::normalize(ToScene(index, glm::dvec3(site)));
 
 		m_Frame = index;
-		m_Local = direction * (surface + 20.0);
+		m_Local = direction * (surface + 0.5);
 
 		glm::vec3 vertical = glm::vec3(direction);
 
@@ -729,6 +735,31 @@ public:
 		return std::max(12.0, DrawnLength(m_Bodies[index].RadiusKm, (double)m_BodyScale));
 	}
 
+	// **Whether a body's own disc reaches a pixel, anywhere reasonable.**
+	//
+	// Every body gets the same 128x64 sphere for its stand-in mesh, sixteen
+	// moons and planets included, whether it fills the horizon or is a point
+	// the star field would have drawn just as well -- nothing before this
+	// asked how big a body actually is on screen before paying for it.
+	//
+	// `radius / distance` is the tangent of the angular radius, which is the
+	// angular radius itself for anything this small: real scale puts every
+	// non-local body here below a hundredth of a degree. 4e-4 is under half a
+	// pixel at 1080p and this demo's narrower field of view (55 degrees), so
+	// nothing culled by it could have shown as more than a single aliased
+	// dot -- which the procedural star field behind it already draws.
+	static constexpr double s_MinAngularSize = 4.0e-4;
+
+	bool WorthDrawing(size_t index, const glm::dvec3& centre, float scale) const
+	{
+		double distance = glm::length(centre);
+
+		if (distance < 1.0)
+			return true;
+
+		return DrawnRadius(index) * (double)scale / distance > s_MinAngularSize;
+	}
+
 	// Which exponent an orbit is drawn with: a planet's is a distance across
 	// the solar system, a moon's is a distance across its planet's.
 	double OrbitExponent(size_t index) const
@@ -869,9 +900,9 @@ public:
 	// A standing player is planet-fixed, so the conversion carries them round
 	// once a day and the Sun crosses their sky without being moved at all.
 	//
-	// Axis is +Y: no axial tilt, so no seasons. Venus and Uranus have negative
-	// rotation periods in the table and turn the other way for free.
-	// Radians of spin per year. The year is 8,766 hours.
+	// Radians of spin per year. The year is 8,766 hours. RotationHours is
+	// always positive now -- see the note on AxialTiltDegrees for what used
+	// to be a sign here.
 	double SpinRate(size_t index) const
 	{
 		double hours = m_Bodies[index].RotationHours;
@@ -887,22 +918,46 @@ public:
 		return m_Time * SpinRate(index);
 	}
 
-	// Prograde is +x toward +z, the same sense the orbits start in.
-	static glm::dvec3 RotateY(const glm::dvec3& v, double angle)
+	// **A body's own north, tilted out of the ecliptic pole by its real
+	// obliquity.** Every body here tilts about the same reference axis --
+	// global +X, tipping +Y toward +Z -- rather than each having its own
+	// right ascension of pole. That is a real simplification (Jupiter's pole
+	// and Earth's do not actually point the same way relative to their own
+	// orbits), but it is the one direction this demo already checks against
+	// real data: `SkyDirection` rotates the star catalogue from equatorial
+	// into ecliptic coordinates about this exact axis, by Earth's exact
+	// obliquity, verified to 0.003 degrees against published declinations.
+	// Reusing it means Earth's ground agrees with Earth's own sky.
+	//
+	// A tilt past 90 degrees points the axis through the equator and out the
+	// other side, in +Z as well as -Y -- which is what turns a positive spin
+	// into an apparent retrograde for Uranus (97.77) and Venus (177.4)
+	// without `SpinRate` ever carrying a sign.
+	glm::dvec3 SpinAxis(size_t index) const
+	{
+		double tilt = glm::radians((double)m_Bodies[index].AxialTiltDegrees);
+
+		return glm::dvec3(0.0, std::cos(tilt), std::sin(tilt));
+	}
+
+	// Prograde is +x toward +z, the same sense the orbits start in, about
+	// whichever axis is passed in. Reduces exactly to the old Y-only rotation
+	// when axis is +Y, which is what every untilted body still uses.
+	static glm::dvec3 RotateAboutAxis(const glm::dvec3& v, const glm::dvec3& axis, double angle)
 	{
 		double c = std::cos(angle), s = std::sin(angle);
 
-		return glm::dvec3(v.x * c - v.z * s, v.y, v.x * s + v.z * c);
+		return v * c - glm::cross(axis, v) * s + axis * (glm::dot(axis, v) * (1.0 - c));
 	}
 
 	glm::dvec3 ToScene(size_t index, const glm::dvec3& fixed) const
 	{
-		return RotateY(fixed, SpinAngle(index));
+		return RotateAboutAxis(fixed, SpinAxis(index), SpinAngle(index));
 	}
 
 	glm::dvec3 ToFixed(size_t index, const glm::dvec3& scene) const
 	{
-		return RotateY(scene, -SpinAngle(index));
+		return RotateAboutAxis(scene, SpinAxis(index), -SpinAngle(index));
 	}
 
 	// Where the camera is in the planet's own frame: what streaming centres
@@ -914,30 +969,56 @@ public:
 
 	// **The same rotation as a matrix, built by hand.**
 	//
-	// `glm::rotate(m, angle, +Y)` is not `RotateY(v, angle)`: glm's matrix
-	// takes +x toward *-z*, and this one takes it toward +z. Both are
-	// perfectly ordinary right-handed rotations about +Y; they just differ in
-	// which way the angle counts. Mixing them meant the terrain was drawn
-	// through the inverse of the spin the camera was placed by, so the ground
-	// under your feet slid round the planet at *twice* the rate of the day --
-	// invisible at t = 0, where both are the identity, and 62 degrees out
-	// after seven seconds.
+	// `glm::rotate(m, angle, axis)` is not `RotateAboutAxis(v, axis, angle)`:
+	// glm's matrix takes +x toward *-z* about +Y, and this one takes it
+	// toward +z. Both are perfectly ordinary rotations; they just differ in
+	// which way the angle counts, and mixing them once meant the terrain was
+	// drawn through the inverse of the spin the camera was placed by -- the
+	// ground under your feet slid round the planet at *twice* the rate of the
+	// day, invisible at t = 0 and 62 degrees out after seven seconds. Nothing
+	// catches that by looking: the horizon sphere is smooth and symmetric.
 	//
-	// Nothing catches that by looking: the horizon sphere is smooth and
-	// symmetric, so what you see is a planet with no visible terrain on it and
-	// no reason given. It came out of asking why a tree was 421 m away on a
-	// world 360 m across.
+	// This is Rodrigues' rotation formula as a matrix, in the same sign
+	// convention as `RotateAboutAxis` above -- the self-test checks the two
+	// against each other over a spread of axes and angles rather than just
+	// deriving one from the other on paper. At axis = +Y it is the original
+	// hand-built matrix, term for term.
 	glm::mat4 SpinMatrix(size_t index) const
 	{
-		double angle = SpinAngle(index);
+		return RotationMatrix(glm::vec3(SpinAxis(index)), SpinAngle(index));
+	}
 
+	// The same rotation, about the same axis, at whatever angle is asked
+	// for -- factored out of SpinMatrix so the cloud layer can drift at its
+	// own rate around the body's real spin axis without a second copy of
+	// Rodrigues' formula. See SpinMatrix's own note for the sign convention.
+	static glm::mat4 RotationMatrix(const glm::vec3& n, double angle)
+	{
 		float c = (float)std::cos(angle), s = (float)std::sin(angle);
 
+		glm::vec3 col0(c + (1.0f - c) * n.x * n.x,
+			-s * n.z + (1.0f - c) * n.x * n.y,
+			 s * n.y + (1.0f - c) * n.x * n.z);
+		glm::vec3 col1(s * n.z + (1.0f - c) * n.x * n.y,
+			c + (1.0f - c) * n.y * n.y,
+			-s * n.x + (1.0f - c) * n.y * n.z);
+		glm::vec3 col2(-s * n.y + (1.0f - c) * n.x * n.z,
+			 s * n.x + (1.0f - c) * n.y * n.z,
+			 c + (1.0f - c) * n.z * n.z);
+
 		return glm::mat4(
-			   c, 0.0f,    s, 0.0f,
-			0.0f, 1.0f, 0.0f, 0.0f,
-			  -s, 0.0f,    c, 0.0f,
-			0.0f, 0.0f, 0.0f, 1.0f);
+			glm::vec4(col0, 0.0f),
+			glm::vec4(col1, 0.0f),
+			glm::vec4(col2, 0.0f),
+			glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+	}
+
+	// The cloud shell's own rotation: the same axis the body itself spins
+	// about, but at its own drift rate, so a cloud band does not stay glued
+	// to the coastline under it.
+	glm::mat4 CloudMatrix(size_t index) const
+	{
+		return RotationMatrix(glm::vec3(SpinAxis(index)), SpinAngle(index) + m_CloudDrift);
 	}
 
 	// --- Planets ------------------------------------------------------------
@@ -1692,6 +1773,19 @@ public:
 
 	void ApplyGravity()
 	{
+		// A pocket dimension is not on any planet, so it does not get a
+		// radial pull toward one -- a fixed "down", applied to the player
+		// only. Everything else in the room is a static collider and does
+		// not want gravity at all.
+		if (m_Pocket.InPocket())
+		{
+			Egss::RigidBody3D& player = m_World.GetBody(m_Player);
+			float mass = 1.0f / player.InverseMass;
+
+			m_World.ApplyForce(m_Player, -m_Pocket.Up() * 9.81f * mass);
+			return;
+		}
+
 		double gm = LocalGm((size_t)m_Ground);
 
 		for (Egss::RigidBody3D& body : m_World.GetBodies())
@@ -1716,6 +1810,51 @@ public:
 
 			m_World.ApplyForce(BodyHandleOf(body), toCentre * acceleration * mass);
 		}
+	}
+
+	// **The one place water pushes back.** Until now the local water sheet
+	// was purely a picture: the player's collider reads the terrain's SDF,
+	// which knows nothing about the sheet drawn over it, so walking into the
+	// sea did nothing but hide your feet. This is what makes it water rather
+	// than a tinted pane of glass -- a spring toward the surface, and drag
+	// that opposes whichever way you are already moving through it.
+	void ApplyBuoyancy()
+	{
+		m_Submersion = 0.0f;
+		m_EyeUnderwater = false;
+
+		if (m_Ground < 0 || !m_Water.Valid())
+			return;
+
+		Egss::RigidBody3D& player = m_World.GetBody(m_Player);
+
+		float level;
+		if (!m_Water.LevelNear(player.Position, level))
+			return;
+
+		glm::dvec3 fixed = SiteFixed(player.Position);
+		double distance = glm::length(fixed);
+
+		if (distance < 1e-3)
+			return;
+
+		glm::vec3 up = glm::vec3(fixed / distance);
+
+		// How far the water stands above the capsule's own feet, as a
+		// fraction of its full height -- 0 dry, 1 covered to the top.
+		float depth = (float)((double)level - (distance - (double)m_PlayerHalfHeight));
+
+		m_Submersion = glm::clamp(depth / (2.0f * m_PlayerHalfHeight), 0.0f, 1.0f);
+		m_EyeUnderwater = (double)level > distance + (double)m_EyeHeight;
+
+		if (m_Submersion <= 0.0f)
+			return;
+
+		float mass = 1.0f / player.InverseMass;
+
+		m_World.ApplyForce(BodyHandleOf(player),
+			up * (m_Submersion * mass * 9.81f * m_BuoyancyStrength)
+			- player.Velocity * (mass * m_WaterDrag * m_Submersion));
 	}
 
 	Egss::PhysicsWorld3D::BodyHandle BodyHandleOf(const Egss::RigidBody3D& body) const
@@ -1819,6 +1958,19 @@ public:
 
 		m_Player = m_World.AddBody(player);
 
+		// **The portal, ahead and off to one side of the walk-out line.** A
+		// pure lateral offset (tried first) put the doorway ~68 degrees off
+		// the player's default forward -- outside even a 65-97 degree
+		// frustum, so "visible on arrival" was never true. The player faces
+		// back toward the ship (+along), so the offset needs an `along`
+		// component too, biased enough that the doorway lands inside that
+		// cone while the `lateral` component still keeps it visibly off the
+		// direct line to the hull and clear of the 11-27 m rock annulus.
+		glm::vec3 lateral = glm::length(along) > 1e-3f
+			? glm::normalize(glm::cross(along, up)) : glm::vec3(1.0f, 0.0f, 0.0f);
+
+		m_Pocket.Place(m_World, SiteLocal(at) + lateral * 6.0f + along * 4.0f, lateral, up);
+
 		// A handful of rocks to watch fall, dropped around the landing site --
 		// gravity you cannot see acting on anything is gravity you cannot check.
 		unsigned int random = 90210u;
@@ -1919,8 +2071,10 @@ public:
 
 		// All of this is in the planet's own frame, which is the frame the
 		// terrain and the physics are in. It reaches scene coordinates once,
-		// at the bottom, through the spin.
-		glm::vec3 up = glm::vec3(glm::normalize(
+		// at the bottom, through the spin. Inside the pocket dimension there
+		// is no planet to be radial toward, so "up" is whatever fixed
+		// direction the room was placed with instead.
+		glm::vec3 up = m_Pocket.InPocket() ? m_Pocket.Up() : glm::vec3(glm::normalize(
 			SiteFixed(m_World.GetBody(m_Player).Position)));
 		glm::vec3 east, north;
 		TangentFrame(up, east, north);
@@ -2016,33 +2170,59 @@ public:
 		// the count moved in large steps; now that the site is prefilled, the
 		// only thing that moves it is walking off the edge of it, and half
 		// again is the point at which the answer has genuinely changed.
-		if (m_Water.Valid()
-			&& planet.MeshedChunks() > m_WaterChunks + m_WaterChunks / 2 + 64)
-			RebuildWater(planet);
+		// Both of these follow the player's distance from where they were
+		// last built -- which the pocket dimension's own 2000 m offset would
+		// otherwise read as "walked off the edge" every single step. The room
+		// has neither water nor a horizon of its own to rebuild.
+		if (!m_Pocket.InPocket())
+		{
+			if (m_Water.Valid()
+				&& planet.MeshedChunks() > m_WaterChunks + m_WaterChunks / 2 + 64)
+				RebuildWater(planet);
 
-		// **And the horizon follows you.** It is a disc about the place it was
-		// built, with a hole in the middle sized to sit just inside the
-		// streamed region -- so walking off it opens a gap on one side and
-		// puts the mesh over the chunks on the other. A hundred metres is
-		// under a third of the hole's radius and costs 18,432 evaluations of
-		// the relief, which is 8 ms here and is not in a frame's way often.
-		if (m_Horizon.Valid()
-			&& glm::length(TerrainFocus((size_t)m_Ground) - m_HorizonSite) > 100.0)
-			BuildHorizon(planet);
+			// **And the horizon follows you.** It is a disc about the place it was
+			// built, with a hole in the middle sized to sit just inside the
+			// streamed region -- so walking off it opens a gap on one side and
+			// puts the mesh over the chunks on the other. A hundred metres is
+			// under a third of the hole's radius and costs 18,432 evaluations of
+			// the relief, which is 8 ms here and is not in a frame's way often.
+			if (m_Horizon.Valid()
+				&& glm::length(TerrainFocus((size_t)m_Ground) - m_HorizonSite) > 100.0)
+				BuildHorizon(planet);
+		}
 
 		ApplyGravity();
+		ApplyBuoyancy();
 		m_World.Step(dt);
+
+		m_Pocket.UpdateCrossing(m_World.GetBody(m_Player));
 
 		glm::dvec3 feet = SiteFixed(m_World.GetBody(m_Player).Position);
 
 		// Grounded is measured against the terrain the physics is using, not a
 		// contact flag, so it means the same thing as the ground query the
-		// camera and the spawner use.
-		glm::vec3 direction = glm::vec3(glm::normalize(feet));
-		float ground = planet.SurfaceRadius(direction);
+		// camera and the spawner use. Inside the pocket dimension "the
+		// terrain" is a flat floor at a fixed height, not a radius the voxel
+		// field can answer -- and "direction" is the room's own fixed up
+		// rather than a fresh radial direction, for the same reason the
+		// movement basis above used `m_Pocket.Up()` instead of recomputing
+		// one: there is nothing here for a direction to be radial *toward*.
+		glm::vec3 direction;
 
-		m_Grounded = (glm::length(feet) - (double)ground)
-			< (double)(m_PlayerHalfHeight + 0.35f);
+		if (m_Pocket.InPocket())
+		{
+			direction = m_Pocket.Up();
+			m_Grounded = m_Pocket.HeightAboveFloor(m_World.GetBody(m_Player).Position)
+				< m_PlayerHalfHeight + 0.35f;
+		}
+		else
+		{
+			direction = glm::vec3(glm::normalize(feet));
+			float ground = planet.SurfaceRadius(direction);
+
+			m_Grounded = (glm::length(feet) - (double)ground)
+				< (double)(m_PlayerHalfHeight + 0.35f);
+		}
 
 		glm::vec3 forward = glm::normalize(
 			heading * std::cos(glm::radians(m_SurfacePitch))
@@ -2123,6 +2303,11 @@ public:
 			m_Time += h;
 			TrackPeriods(h);
 		}
+
+		// Once a call, not once a substep: this is a slow visual drift, not
+		// an orbit, so it carries none of the aliasing risk TrackPeriods is
+		// guarding against above.
+		m_CloudDrift += dt * m_CloudDriftRate;
 
 		CarryWithTheAir(dt);
 
@@ -2217,13 +2402,14 @@ public:
 		// increment is a millionth of one, which is a subtraction worth not
 		// doing.
 		double turned = SpinRate(m_Frame) * years * share;
+		glm::dvec3 axis = SpinAxis(m_Frame);
 
-		m_Local = RotateY(m_Local, turned);
+		m_Local = RotateAboutAxis(m_Local, axis, turned);
 
 		// The view goes with it, or the ground slides sideways under a ship
 		// that is holding station over it -- which is the bug, moved.
-		m_Forward = glm::vec3(RotateY(glm::dvec3(m_Forward), turned));
-		m_Up = glm::vec3(RotateY(glm::dvec3(m_Up), turned));
+		m_Forward = glm::vec3(RotateAboutAxis(glm::dvec3(m_Forward), axis, turned));
+		m_Up = glm::vec3(RotateAboutAxis(glm::dvec3(m_Up), axis, turned));
 	}
 
 	// Close to a body the clock comes from `SecondsPerDay`; far from one it is
@@ -2388,7 +2574,6 @@ public:
 
 	void OnDemoUpdate(Egss::Timestep) override
 	{
-
 		// Reset is the caller's job here, and the panel reads the total back
 		// at the end of the frame -- without this it counts every frame since
 		// the demo started, which is exactly the shape of a plausible-looking
@@ -2424,6 +2609,13 @@ public:
 		m_Camera.SetPosition(glm::vec3(0.0f));
 		m_Camera.SetOrientation(m_Forward, m_Up);
 
+		// Its own Framebuffer, so it has to be a separate pass -- one cannot
+		// bind inside another. Before the main scene's own BeginScene, not
+		// after, since this one has to finish and hand the window's viewport
+		// back before that scene starts drawing into it.
+		if (m_Walking)
+			m_Pocket.RenderRoomToTexture();
+
 		Egss::Renderer::BeginScene(m_Camera);
 
 		// Before anything that writes depth, so everything else is in front of
@@ -2437,11 +2629,42 @@ public:
 			glm::dvec3 centre;
 			float scale = BodyPlacement(i, origin, centre);
 
+			if (i != terrain && i != 0 && !WorthDrawing(i, centre, scale))
+				continue;
+
 			DrawBody(i, centre, i == terrain, scale);
 		}
 
 		DrawRocks(origin);
 		DrawShip(origin);
+
+		if (m_Walking && m_Ground >= 0)
+		{
+			size_t index = (size_t)m_Ground;
+
+			glm::dvec3 groundCentre;
+			BodyPlacement(index, origin, groundCentre);
+
+			glm::mat4 spin = SpinMatrix(index);
+			glm::vec3 right = glm::vec3(spin * glm::vec4(m_Pocket.Right(), 0.0f));
+			glm::vec3 up2 = glm::vec3(spin * glm::vec4(m_Pocket.Up(), 0.0f));
+			glm::vec3 forward = glm::vec3(spin * glm::vec4(m_Pocket.Forward(), 0.0f));
+
+			if (m_Pocket.InPocket())
+			{
+				glm::vec3 at = glm::vec3(groundCentre
+					+ ToScene(index, SiteFixed(m_Pocket.RoomLocal())));
+
+				m_Pocket.DrawInterior(at, right, up2, forward);
+			}
+			else
+			{
+				glm::vec3 at = glm::vec3(groundCentre
+					+ ToScene(index, SiteFixed(m_Pocket.PortalLocal())));
+
+				m_Pocket.DrawWindow(at, right, up2, forward);
+			}
+		}
 
 		// After the bodies, so the far half of a ring is occluded by the planet
 		// it goes round; before the air, so a ring seen through an atmosphere
@@ -2450,6 +2673,9 @@ public:
 		{
 			glm::dvec3 centre;
 			float scale = BodyPlacement(i, origin, centre);
+
+			if (i != terrain && !WorthDrawing(i, centre, scale))
+				continue;
 
 			DrawRings(i, glm::vec3(centre), scale);
 		}
@@ -2462,6 +2688,9 @@ public:
 			glm::dvec3 centre;
 			float scale = BodyPlacement(i, origin, centre);
 
+			if (i != terrain && !WorthDrawing(i, centre, scale))
+				continue;
+
 			DrawOcean(i, glm::vec3(centre), scale);
 		}
 
@@ -2472,10 +2701,49 @@ public:
 			glm::dvec3 centre;
 			float scale = BodyPlacement(i, origin, centre);
 
+			if (i != terrain && !WorthDrawing(i, centre, scale))
+				continue;
+
 			DrawAtmosphere(i, glm::vec3(centre), (float)DrawnRadius(i) * scale);
 		}
 
+		// After the air, for the same reason the air goes after the ground:
+		// a thin shell nearer the surface than the scattering atmosphere is,
+		// and blended, so it wants whatever is behind it already drawn.
+		for (size_t i = 1; i < m_Bodies.size(); i++)
+		{
+			glm::dvec3 centre;
+			float scale = BodyPlacement(i, origin, centre);
+
+			if (i != terrain && !WorthDrawing(i, centre, scale))
+				continue;
+
+			DrawClouds(i, glm::vec3(centre), (float)DrawnRadius(i) * scale);
+		}
+
 		Egss::Renderer::EndScene();
+
+		// **The tint, which is the other half of "no buoyancy and no tint".**
+		// A flat colour over the whole screen, the same blit-quad trick
+		// Cube3D uses to show its own framebuffer -- there is no post-process
+		// pass to hook this into, and a screen-space effect does not need
+		// one. Drawn after the 3D scene rather than mixed into its shaders,
+		// so it survives `--hide-ui` (which this is not part of; it is the
+		// picture, not a panel) and shows up in a capture the same way
+		// standing at the surface does.
+		if (m_EyeUnderwater)
+		{
+			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
+			Egss::RenderCommand::SetDepthWrite(false);
+
+			Egss::Renderer2D::BeginScene(m_TintCamera);
+			Egss::Renderer2D::DrawQuad(glm::vec2(0.0f), glm::vec2(2.0f),
+				glm::vec4(0.04f, 0.20f, 0.34f, 0.55f));
+			Egss::Renderer2D::EndScene();
+
+			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
+			Egss::RenderCommand::SetDepthWrite(true);
+		}
 
 		m_Stats = Egss::Renderer::GetStats();
 	}
@@ -2548,7 +2816,8 @@ public:
 		material->Set("u_Radius", radius);
 		material->Set("u_Relief", relief);
 		material->Set("u_Origin", glm::vec3(centre));
-		material->Set("u_Spin", MapSpin(index));
+		material->Set("u_Unspin", glm::transpose(SpinMatrix(index)));
+		material->Set("u_HazeDensity", m_Bodies[index].AtmosphereDensity * m_HazeScale);
 
 		// A planet with no sea gets a waterline below its deepest valley, so
 		// every point on it is "land" and the altitude ramp is all that runs.
@@ -3087,15 +3356,6 @@ public:
 		}
 
 		m_PlantsDrawn = drawn;
-	}
-
-	// Turns of the planet, wrapped, which is what the equirectangular lookup
-	// wants: `u` is the azimuth over two pi, so the spin is a shift along it.
-	float MapSpin(size_t index) const
-	{
-		double turns = SpinAngle(index) / (2.0 * 3.14159265358979323846);
-
-		return (float)(turns - std::floor(turns));
 	}
 
 	// The sea. Drawn after every opaque thing in the frame, because it is
@@ -3732,14 +3992,13 @@ public:
 	// units of planet radii, which is the only coordinate the band structure
 	// is naturally described in.
 	//
-	// **The plane is the equator, which here is `y = 0` for everything.** The
-	// demo gives no body an axial tilt, so Saturn's rings sit in the ecliptic
-	// rather than 26.7 degrees out of it -- edge-on from another planet, where
-	// really they are what you see first through a small telescope. Tilting
-	// one body would mean the terrain generator, the surface gravity, the
-	// walking frame and the spin all stopped agreeing about which way is up,
-	// which is a bigger change than a ring is worth. Flying above the plane
-	// shows them exactly as they should be.
+	// **The plane is the body's own equator, from `SpinAxis`.** This used to
+	// be `y = 0` for every body -- nothing had an axial tilt, so Saturn's
+	// rings sat in the ecliptic rather than 26.7 degrees out of it, edge-on
+	// from another planet where really they are what a small telescope shows
+	// first. It waited on the terrain generator, the surface gravity, the
+	// walking frame and the spin all agreeing about which way is up -- which
+	// is what real axial tilt is, below.
 	void BuildRings()
 	{
 		Egss::MeshData data;
@@ -3913,12 +4172,14 @@ public:
 		float radius = (float)DrawnRadius(index) * scale;
 
 		auto material = Egss::Material::CreateInstance(m_RingMaterial);
-		// The ring's own basis: +Y taken to the tilted normal, the other two
-		// axes anywhere consistent, since an annulus has no preferred azimuth.
-		float tilt = glm::radians(body.RingTiltDegrees);
-
-		glm::vec3 normal(std::sin(tilt), std::cos(tilt), 0.0f);
-		glm::vec3 across = glm::normalize(glm::cross(normal, glm::vec3(0.0f, 0.0f, 1.0f)));
+		// The ring's own basis: +Y taken to the spin axis itself -- a ring is
+		// the body's equatorial plane, not a tilt of its own -- and the other
+		// two axes anywhere consistent, since an annulus has no preferred
+		// azimuth. Crossed with +X rather than +Z to build `across`: the axis
+		// never has an x-component (see `SpinAxis`), so +X is never close to
+		// parallel to it, which +Z is at Uranus's 97.77-degree tilt.
+		glm::vec3 normal = glm::vec3(SpinAxis(index));
+		glm::vec3 across = glm::normalize(glm::cross(glm::vec3(1.0f, 0.0f, 0.0f), normal));
 
 		// Passed as the mesh's own transform rather than as a uniform of its
 		// own -- it is exactly what a model matrix is for, and `Renderer` sets
@@ -3968,7 +4229,7 @@ public:
 		auto dress = [&](const std::shared_ptr<Egss::Material>& water)
 		{
 			water->SetTexture("u_Map", it->second.Map(), 0);
-			water->Set("u_Spin", MapSpin(index));
+			water->Set("u_Unspin", glm::transpose(SpinMatrix(index)));
 			water->Set("u_Radius", settings.Radius * scale);
 			water->Set("u_Relief", settings.Amplitude * scale);
 			water->Set("u_SeaRadius", settings.OceanRadius * scale);
@@ -4183,13 +4444,13 @@ private:
 		int Parent = -1;
 		double Gm = 0.0;          // GM of *this* body, for whatever orbits it
 		double RotationHours = 24.0;
+		float AxialTiltDegrees = 0.0f;
 		float AtmosphereFraction = 0.0f;
 		float AtmosphereDensity = 1.0f;
 		float AtmosphereGlow = 0.0f;
 		glm::vec3 Scatter = glm::vec3(0.0f);
 		float RingInner = 0.0f;
 		float RingOuter = 0.0f;
-		float RingTiltDegrees = 0.0f;
 		glm::vec3 RingColour = glm::vec3(1.0f);
 		double RadiusKm = 0.0;
 		glm::vec3 Colour = glm::vec3(1.0f);
@@ -4231,12 +4492,12 @@ private:
 			body.Gm = s_GmSun * description.MassSuns;
 			body.RadiusKm = description.RadiusKm;
 			body.RotationHours = description.RotationHours;
+			body.AxialTiltDegrees = description.AxialTiltDegrees;
 			body.AtmosphereFraction = description.AtmosphereFraction;
 			body.AtmosphereDensity = description.AtmosphereDensity;
 			body.AtmosphereGlow = description.AtmosphereGlow;
 			body.RingInner = description.RingInner;
 			body.RingOuter = description.RingOuter;
-			body.RingTiltDegrees = description.RingTiltDegrees;
 			body.RingColour = description.RingColour;
 			body.Scatter = description.Scatter;
 			body.Colour = description.Colour;
@@ -4571,6 +4832,7 @@ private:
 		BuildTerrainShader();
 		BuildWaterShader();
 		BuildAtmosphereShader();
+		BuildCloudShader();
 	}
 
 	// Terrain is coloured by **altitude and slope against the local up**, and on
@@ -4629,15 +4891,27 @@ private:
 			uniform float u_Relief;
 			uniform float u_SeaRadius;
 
+			// Camera distance, for the haze mix below -- v_Position is already
+			// planet-centred, and u_Origin (also bound in the vertex stage) is
+			// the planet's own centre relative to the camera, so their sum is
+			// camera-relative again, which is what a distance wants.
+			uniform vec3 u_Origin;
+			uniform float u_HazeDensity;
+
 			uniform sampler2D u_Map;
 			uniform float u_HasMap;
 			uniform float u_Vegetated;
 
-			// Turns of the planet, so the map can be looked up in the frame it
-			// was baked in. Everything else here is in scene axes, and the
-			// only thing the spin changes about an equirectangular map is the
-			// azimuth -- so it is one subtraction rather than a matrix.
-			uniform float u_Spin;
+			// Undoes the spin -- axis tilt included -- so the map can be
+			// looked up in the frame it was baked in, and so latitude means
+			// the same thing at every hour of the body's day. This used to
+			// be one float, a shift along the map's azimuth, which was
+			// exactly right while every body spun about +Y: rotating about
+			// +Y is the one rotation an equirectangular longitude shift can
+			// undo on its own, and it happens to leave latitude alone too.
+			// A tilted axis needs the real inverse rotation, which is this
+			// matrix's transpose.
+			uniform mat4 u_Unspin;
 
 			uniform vec3 u_Shallow;
 			uniform vec3 u_Deep;
@@ -4660,9 +4934,9 @@ private:
 			// **Two axes and an altitude, evaluated per pixel.**
 			//
 			// This used to be height and latitude, which is as much as there
-			// was to know: with no axial tilt, latitude is the only thing that
-			// varies across the surface. It gave banded stripes, because
-			// stripes are what a function of latitude *is*.
+			// was to know: with nothing but the map to read, latitude was the
+			// only thing that varied across the surface. It gave banded
+			// stripes, because stripes are what a function of latitude *is*.
 			//
 			// `moisture` and `warmth` come out of the drainage pass -- see
 			// `VoxelPlanet::BuildHydrology`. Warmth is latitude with a lapse
@@ -4736,14 +5010,20 @@ private:
 				// the planet's own coordinates, so the centre is the origin.
 				vec3 up = normalize(v_Position);
 
+				// The body-fixed direction, undoing the spin -- the frame the
+				// map was baked in, and the frame a point's own latitude is
+				// measured in. `up` itself still carries the day: it is what
+				// lights a slope and reads a cliff as a cliff below.
+				vec3 fixedUp = normalize(mat3(u_Unspin) * up);
+
 				// **Meshed ground knows its own height exactly; the sphere has
 				// to be told.** Reading the map for both would blur the coast
 				// under your feet to the map's two metres a texel for no
 				// reason -- the geometry in front of you is the answer.
 				const float pi = 3.14159265;
 
-				vec2 uv = vec2(atan(up.z, up.x) / (2.0 * pi) + 0.5 - u_Spin,
-					acos(clamp(up.y, -1.0, 1.0)) / pi);
+				vec2 uv = vec2(atan(fixedUp.z, fixedUp.x) / (2.0 * pi) + 0.5,
+					acos(clamp(fixedUp.y, -1.0, 1.0)) / pi);
 
 				// **The climate is read from the map even when the height is
 				// not.** Meshed ground knows its own height exactly and the
@@ -4760,7 +5040,7 @@ private:
 				else
 					height = length(v_Position) - u_SeaRadius;
 
-				vec3 base = Biome(height, abs(up.y), mapped.g, mapped.b);
+				vec3 base = Biome(height, abs(fixedUp.y), mapped.g, mapped.b);
 
 				// Steep ground shows rock rather than the surface colour, which
 				// is what makes a cliff read as a cliff.
@@ -4793,6 +5073,20 @@ private:
 				float dome = 0.5 + 0.5 * dot(normal, up);
 
 				vec3 lit = base * (u_Sky * dome + u_LightColor * diffuse);
+
+				// **Haze, after lighting rather than before it.** This is air
+				// between the eye and the ground, not a property of the
+				// ground -- so it has to sit outside the `base * (...)`
+				// lighting term above, or a shaded slope and a lit one would
+				// haze by different amounts for no physical reason. Same
+				// exp(-x) extinction shape the atmosphere shell already
+				// raymarches, applied here as one term instead of a raymarch
+				// because this is a single surface, not a volume. Zero
+				// density -- an airless body -- leaves this the identity mix,
+				// the same place u_Sky itself already goes to zero.
+				float camDist = length(v_Position + u_Origin);
+				float haze = 1.0 - exp(-camDist * u_HazeDensity);
+				lit = mix(lit, u_Sky, haze);
 
 				color = vec4(lit, 1.0);
 			}
@@ -4860,7 +5154,7 @@ private:
 			uniform float u_HasDepth;
 
 			uniform sampler2D u_Map;
-			uniform float u_Spin;
+			uniform mat4 u_Unspin;
 			uniform float u_Radius;
 			uniform float u_Relief;
 			uniform float u_SeaRadius;
@@ -4885,9 +5179,13 @@ private:
 				if (dot(up, u_NearCentre) > u_NearCos)
 					discard;
 
+				// See the terrain shader's u_Unspin for why this is a matrix
+				// rather than a shift along the map's azimuth.
+				vec3 fixedUp = normalize(mat3(u_Unspin) * up);
+
 				const float pi = 3.14159265;
-				vec2 uv = vec2(atan(up.z, up.x) / (2.0 * pi) + 0.5 - u_Spin,
-					acos(clamp(up.y, -1.0, 1.0)) / pi);
+				vec2 uv = vec2(atan(fixedUp.z, fixedUp.x) / (2.0 * pi) + 0.5,
+					acos(clamp(fixedUp.y, -1.0, 1.0)) / pi);
 
 				// **Where the map says there is no water, there is no water.**
 				//
@@ -5311,6 +5609,122 @@ private:
 		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
 	}
 
+	// **A coverage map on a shell, not a second scattering integral.** The
+	// atmosphere above already answers "how does the air itself look"; this
+	// only answers "is there a cloud between the eye and whatever is behind
+	// it", which is one texture sample and a lighting term, not a raymarch.
+	void BuildCloudShader()
+	{
+		std::string vertexSrc = R"(
+			#version 330 core
+
+			layout(location = 0) in vec3 a_Position;
+
+			uniform mat4 u_ViewProjection;
+			uniform mat4 u_Transform;
+
+			out vec3 v_World;
+
+			void main()
+			{
+				vec4 world = u_Transform * vec4(a_Position, 1.0);
+				v_World = world.xyz;
+
+				gl_Position = u_ViewProjection * world;
+			}
+		)";
+
+		std::string fragmentSrc = R"(
+			#version 330 core
+
+			layout(location = 0) out vec4 color;
+
+			in vec3 v_World;
+
+			uniform vec3 u_Centre;
+			uniform sampler2D u_CloudMap;
+			uniform vec3 u_LightDirection;
+			uniform vec3 u_LightColor;
+			uniform vec3 u_Sky;
+
+			void main()
+			{
+				// The mesh itself was rotated by the cloud layer's own drift
+				// matrix before this fragment was produced, so reading the
+				// map straight from the rotated position -- no unspin, unlike
+				// the terrain -- is exactly what makes the pattern drift: a
+				// fixed point on the map corresponds to a moving point on the
+				// sphere as the drift angle grows.
+				vec3 up = normalize(v_World - u_Centre);
+
+				const float pi = 3.14159265;
+				vec2 uv = vec2(atan(up.z, up.x) / (2.0 * pi) + 0.5,
+					acos(clamp(up.y, -1.0, 1.0)) / pi);
+
+				float coverage = texture(u_CloudMap, uv).a;
+
+				if (coverage < 0.02)
+					discard;
+
+				float lit = max(dot(up, u_LightDirection), 0.0);
+
+				// Sky-lit rather than pure black on the night side, the same
+				// reason the terrain carries u_Sky.
+				vec3 shade = u_LightColor * lit + u_Sky * 0.3;
+
+				// Premultiplied: this is a surface that both reflects light
+				// and hides what is behind it, same as the atmosphere shell.
+				color = vec4(shade * coverage, coverage);
+			}
+		)";
+
+		m_CloudShader.reset(Egss::Shader::Create("Clouds", vertexSrc, fragmentSrc));
+		m_CloudMaterial = Egss::Material::Create(m_CloudShader);
+	}
+
+	void DrawClouds(size_t index, const glm::vec3& centre, float radius)
+	{
+		const Body& body = m_Bodies[index];
+
+		if (body.AtmosphereFraction <= 0.0f)
+			return;
+
+		auto it = m_Planets.find(index);
+
+		if (it == m_Planets.end() || !it->second.CloudMap())
+			return;
+
+		float outer = radius * (1.0f + body.AtmosphereFraction * m_AirScale);
+
+		// A third of the way up the shell: real clouds sit low in a real
+		// atmosphere, and this is meant to read as a cloud deck rather than
+		// a second, redundant atmosphere boundary.
+		float shell = radius + (outer - radius) * 0.35f;
+
+		// Same distance cull as the atmosphere shell it sits inside.
+		if (glm::length(centre) > shell * 800.0f)
+			return;
+
+		auto material = Egss::Material::CreateInstance(m_CloudMaterial);
+		material->Set("u_Centre", centre);
+		material->SetTexture("u_CloudMap", it->second.CloudMap(), 0);
+		material->Set("u_LightDirection", SunDirection(index));
+		material->Set("u_LightColor", m_SunLight * m_StarBrightness);
+		material->Set("u_Sky", SkyLight(index));
+
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Premultiplied);
+		Egss::RenderCommand::SetDepthWrite(false);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+
+		Egss::Renderer::Submit(material, m_Sphere,
+			glm::translate(glm::mat4(1.0f), centre) * CloudMatrix(index)
+			* glm::scale(glm::mat4(1.0f), glm::vec3(shell)));
+
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
+		Egss::RenderCommand::SetDepthWrite(true);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+	}
+
 	// **Labels, because a 302 km void has no landmarks.** Flying to Mars means
 	// knowing which speck is Mars, and at 350 m across from 30 km away every
 	// planet is one pixel. Projected through the same view-projection the
@@ -5396,7 +5810,16 @@ private:
 			ImGui::Text("escape velocity %.1f m/s, orbit %.1f m/s",
 				std::sqrt(2.0 * gm / here), std::sqrt(gm / here));
 
-			ImGui::Text("%s", m_Grounded ? "on the ground" : "falling");
+			ImGui::Text("%s", m_Submersion > 0.0f
+				? (m_EyeUnderwater ? "underwater" : "wading")
+				: m_Grounded ? "on the ground" : "falling");
+
+			if (m_Submersion > 0.0f)
+			{
+				ImGui::SliderFloat("Buoyancy", &m_BuoyancyStrength, 0.5f, 4.0f,
+					"%.2fx body weight");
+				ImGui::SliderFloat("Water drag", &m_WaterDrag, 0.0f, 20.0f, "%.1f");
+			}
 
 			ImGui::SliderFloat("Dig radius", &m_DigRadius, 0.5f, 12.0f, "%.1f m");
 
@@ -5487,6 +5910,7 @@ private:
 		ImGui::SliderFloat("Star brightness", &m_StarBrightness, 0.2f, 3.0f);
 		ImGui::SliderFloat("Air depth", &m_AirScale, 0.2f, 6.0f, "%.1fx");
 		ImGui::SliderFloat("Air density", &m_AirDensity, 1.0f, 120.0f, "%.0f");
+		ImGui::SliderFloat("Haze", &m_HazeScale, 0.0f, 1.5e-3f, "%.6f");
 		ImGui::SliderFloat("Load radius", &m_LoadRadius, 80.0f, 900.0f, "%.0f m");
 
 		ImGui::Checkbox("Terrain LOD", &m_Lod);
@@ -5602,6 +6026,9 @@ private:
 	std::shared_ptr<Egss::Shader> m_AtmosphereShader;
 	std::shared_ptr<Egss::Material> m_AtmosphereMaterial;
 
+	std::shared_ptr<Egss::Shader> m_CloudShader;
+	std::shared_ptr<Egss::Material> m_CloudMaterial;
+
 	// **The light the Sun emits, which is not the colour the Sun looks.**
 	//
 	// The star is drawn warm because that is how it appears from inside an
@@ -5615,6 +6042,16 @@ private:
 
 	float m_AirScale = 1.0f;
 	float m_AirDensity = 26.0f;
+
+	// Scales body.AtmosphereDensity into the terrain shader's per-metre haze
+	// extinction. The half-hazed distance this puts Earth's own density
+	// (3.0) at is under 100 m, well short of the real 949 m horizon at this
+	// scale -- a formula sized to the horizon measured all but flat over the
+	// few hundred metres a landed view actually shows, so it was retuned
+	// against a capture instead: this is the value at which the foreground
+	// stays clean and the treeline a few hundred metres out visibly greys
+	// toward the sky.
+	float m_HazeScale = 3.3e-3f;
 
 	std::shared_ptr<Egss::Shader> m_TerrainShader;
 	std::shared_ptr<Egss::Material> m_TerrainMaterial;
@@ -5696,6 +6133,22 @@ private:
 	float m_PlayerHalfHeight = 1.3f;   // capsule half height plus its radius
 	bool m_Grounded = false;
 
+	// How much of the capsule the local water covers, feet to head: 0 dry,
+	// 1 submerged past the top. Kept between fixed steps because the render
+	// frame that reads it may not coincide with the step that set it.
+	float m_Submersion = 0.0f;
+	bool m_EyeUnderwater = false;
+
+	// Real buoyancy is Archimedes' constant -- weight of the water displaced
+	// -- but a human floats near the surface either way, so a spring that
+	// settles there stands in for it. At equilibrium (weight = buoyancy)
+	// submersion sits at 1 / Strength, so 1.5 floats with roughly a third of
+	// the capsule showing.
+	float m_BuoyancyStrength = 1.5f;
+	float m_WaterDrag = 4.0f;
+
+	Egss::OrthographicCamera m_TintCamera{ -1.0f, 1.0f, -1.0f, 1.0f };
+
 	Egss::PhysicsWorld3D m_World;
 	Egss::PhysicsWorld3D::BodyHandle m_Player = 0;
 
@@ -5715,6 +6168,8 @@ private:
 	std::shared_ptr<Egss::Mesh> m_Lander;
 	Egss::PhysicsWorld3D::BodyHandle m_Ship = 0;
 	bool m_HasShip = false;
+
+	PocketDimension m_Pocket;
 	// The walking camera, in the planet's own frame. See UpdateSurface.
 	glm::dvec3 m_EyeFixed = glm::dvec3(0.0);
 	glm::vec3 m_UpFixed = glm::vec3(0.0f, 1.0f, 0.0f);
@@ -5780,6 +6235,15 @@ private:
 	std::vector<Body> m_Bodies;
 
 	double m_Time = 0.0;
+
+	// Radians of drift a year, about the body's own spin axis -- independent
+	// of the body's real rotation rate, so cloud bands slide over the
+	// terrain instead of staying glued to whatever coastline is under them.
+	// Arbitrary and purely visual; picked for one full drift in about nine
+	// days of simulated time.
+	double m_CloudDrift = 0.0;
+	double m_CloudDriftRate = 2.0 * 3.14159265358979323846 * (365.25 / 9.0);
+
 	double m_ShortestPeriod = 1.0;
 	double m_MaxStep = 1.0 / 64.0;
 

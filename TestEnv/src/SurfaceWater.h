@@ -48,6 +48,12 @@ public:
 	float Reach() const { return m_Reach; }
 	const glm::dvec3& Site() const { return m_Site; }
 
+	// The water's own radius above a point given in the landing site's local
+	// frame -- the same frame `Touch` and `Dig` already work in. False if the
+	// point is over dry ground or outside the grid, in which case `outLevel`
+	// is untouched.
+	bool LevelNear(const glm::vec3& localPosition, float& outLevel) const;
+
 	// The four numbers worth having out loud: how much of the region is under
 	// water, how flat the water is, whether any of it is under the ground, and
 	// how much there is of it.
@@ -117,6 +123,27 @@ private:
 	static constexpr int s_SeedMargin = 6;
 
 	int Index(int u, int v) const { return v * Side + u; }
+
+	// The column a point in the site's local frame falls in, *not* clamped to
+	// the grid -- `Touch` wants the raw value to centre a span on, `LevelNear`
+	// wants to reject it. Shared because both are the reverse of the
+	// direction-to-offset mapping `Build` uses to lay the grid out.
+	glm::ivec2 ColumnAt(const glm::vec3& localPosition) const
+	{
+		glm::vec3 up = glm::vec3(glm::normalize(m_Site));
+		glm::vec3 reference = std::abs(up.y) < 0.9f
+			? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+
+		glm::vec3 east = glm::normalize(glm::cross(reference, up));
+		glm::vec3 north = glm::cross(up, east);
+
+		int u = (int)std::round((glm::dot(localPosition, east) / (2.0f * m_Reach) + 0.5f)
+			* (float)(Side - 1));
+		int v = (int)std::round((glm::dot(localPosition, north) / (2.0f * m_Reach) + 0.5f)
+			* (float)(Side - 1));
+
+		return glm::ivec2(u, v);
+	}
 
 	// Priority-Flood again, and for the same reason: every column is raised
 	// until it has a path to somewhere water can leave by that never goes
@@ -249,9 +276,30 @@ inline void SurfaceWater::Build(const VoxelPlanet& planet,
 		m_Ground[at] = GroundFrom(planet, lattice, direction, guess,
 			3.0f * planet.Get().VoxelSize);
 
-		outside[at] = planet.WetnessAt(direction) > 0.25f
+		// **The map only gets to seed a rim cell within a plausible reach of
+		// what the fine terrain there actually is.** `WetnessAt`/
+		// `WaterHeightAt` are a 1.5 km texel's answer, already documented to
+		// disagree with the terrain the mesher cuts by up to 116 m -- and a
+		// 1.5 km texel is wider than this whole grid (2x380 m), so one
+		// texel's classification can cover every direction around the rim at
+		// once, not just the side a real shore is actually on. Nothing
+		// stopped that disagreement from being seeded here and flooding
+		// inward through the interior, well past `s_SeedMargin`, which only
+		// hides the seam this leaves in the *drawn* mesh, not what the flood
+		// itself believes. Measured at the default landing site: a rim
+		// direction the map called a lake 39.5 m above sea level seeded a
+		// flood that reached the lander's own column, whose fine, sampled
+		// ground is 21 m above sea level and has nothing to do with that
+		// basin. A real shoreline's water sits close to the ground beside
+		// it; a coarse texel guessing at a point it cannot resolve does not.
+		float mapLevel = planet.WetnessAt(direction) > 0.25f
 			? (float)planet.Get().OceanRadius + planet.WaterHeightAt(direction)
 			: -1.0f;
+
+		float shoreSlack = 3.0f * planet.Get().VoxelSize;
+
+		outside[at] = (mapLevel > 0.0f && mapLevel <= m_Ground[at] + shoreSlack)
+			? mapLevel : -1.0f;
 	}
 
 	Flood(outside);
@@ -542,19 +590,9 @@ inline bool SurfaceWater::Touch(const VoxelPlanet& planet,
 	// metres to grid steps.
 	int span = (int)std::ceil((radius + 2.0f * voxel) / cell) + 1;
 
-	// Which column the edit is under: its offset from the site, resolved in
-	// the same tangent frame the grid was built in.
-	glm::vec3 up = glm::vec3(glm::normalize(m_Site));
-	glm::vec3 reference = std::abs(up.y) < 0.9f
-		? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
-
-	glm::vec3 east = glm::normalize(glm::cross(reference, up));
-	glm::vec3 north = glm::cross(up, east);
-
-	int cu = (int)std::round((glm::dot(centre, east) / (2.0f * m_Reach) + 0.5f)
-		* (float)(Side - 1));
-	int cv = (int)std::round((glm::dot(centre, north) / (2.0f * m_Reach) + 0.5f)
-		* (float)(Side - 1));
+	// Which column the edit is under.
+	glm::ivec2 column = ColumnAt(centre);
+	int cu = column.x, cv = column.y;
 
 	bool moved = false;
 
@@ -578,5 +616,24 @@ inline bool SurfaceWater::Touch(const VoxelPlanet& planet,
 
 	Flood(m_Outside);
 
+	return true;
+}
+
+inline bool SurfaceWater::LevelNear(const glm::vec3& localPosition, float& outLevel) const
+{
+	if (!m_Valid)
+		return false;
+
+	glm::ivec2 column = ColumnAt(localPosition);
+
+	if (column.x < 0 || column.y < 0 || column.x >= Side || column.y >= Side)
+		return false;
+
+	int at = Index(column.x, column.y);
+
+	if (!WetAt(at))
+		return false;
+
+	outLevel = m_Level[at];
 	return true;
 }

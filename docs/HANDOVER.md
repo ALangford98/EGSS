@@ -1516,6 +1516,31 @@ look caught immediately.
   `m_StandClearance` still takes it. Latent only because the generator puts
   heights in [0, Amplitude]; the first map with ground below zero gets a wrong
   standing clearance, and it will look exactly like feet hovering.
+- **No texture in this engine had a mip chain until 2026-08-26** —
+  `OpenGLTexture2D` always sized `glTexStorage2D` for one level and minified
+  with plain `GL_LINEAR`, which is exactly as aliased as `GL_NEAREST` once
+  neighbouring screen pixels sample unrelated texels. It read as fine,
+  correlated-looking speckle on a biome map viewed from orbit, and looked
+  exactly like noisy *source data* — a first attempt at fixing it blurred the
+  moisture/warmth arrays feeding the map and produced **zero** visible change,
+  because the sampling, not the data, was the problem. Fixed in the texture
+  class now (`GL_LINEAR_MIPMAP_LINEAR` plus `glGenerateMipmap` after every
+  upload), so this should not recur, but the lesson generalises: **speckle
+  that looks like noisy data and doesn't respond to smoothing the data is
+  worth checking the sampling of, not just the source.**
+- **An object with correct geometry, a correct transform, and a working
+  shader can still render as nothing, for a reason that isn't in the draw
+  call.** A portal window stayed invisible through a correct-transform check,
+  a debug-magenta shader, and disabled backface culling, because the camera's
+  default heading was 68 degrees off the object — well outside the frustum.
+  One level in, the same shape recurred as lighting: a room read as near-black
+  from one viewing angle until forcing the material's `u_Emissive` to 1
+  proved the geometry was always there, just correctly and dimly lit. Before
+  trusting "the renderer is broken": trace the angle between the camera's
+  forward vector and the direction to the object in the same frame, and force
+  full emissive to separate "not drawn" from "drawn but unlit." Both took
+  seconds to check and would have saved most of a session's worth of guessing
+  at the transform math instead.
 
 ---
 
@@ -1657,6 +1682,64 @@ captures stop being free regression tests unless the path is fixed — and the
 whole verification method here leans on step-determinism. Decide it
 deliberately rather than discovering it.
 
+### Clouds, haze, a toolshed, and the missing mip chain (2026-08-26)
+
+Three requests, done in one pass: the planet reading wrong from orbit, clouds
+and haze, and a first gameplay mechanic — a static portal to an empty pocket
+dimension, standing in for a toolshed. See the changelog entry for the full
+account; what's worth carrying forward:
+
+- **The orbital speckle was never the biome logic.** `OpenGLTexture2D` had
+  never generated a mip chain — `glTexStorage2D` always sized storage for one
+  level, `GL_LINEAR` minification everywhere. Blurring the moisture/warmth
+  source data (tried first) changed nothing, because the *sampling*, not the
+  *data*, was aliased. Fixed engine-wide, in the texture class, not the
+  planet — anything sampling a texture at a shallow angle or from far away
+  gets this for free now. If a texture ever needs to look intentionally
+  blocky up close (a UI icon, a voxel-style asset), `SetSmooth(false)` still
+  keeps its own mip chain, just without blending across levels.
+- **A quad that submits and transforms correctly can still be completely
+  invisible, and the fix is not in the renderer.** The portal window was
+  invisible for long enough to suspect the transform math — it wasn't wrong;
+  the *camera* wasn't looking at it. A trace of the angle between the default
+  view heading and the direction to the portal (68 degrees, outside a 65-97
+  degree frustum) found it in one step. **Before concluding a draw call is
+  broken, trace the angle between the camera's forward vector and the
+  direction to the object, in the same coordinate frame — most "invisible
+  object" reports here are framing, not geometry.**
+- **The same shape of bug repeats one level in, for lighting instead of
+  framing.** Standing in the room and looking sideways read as near-black.
+  Forcing the material's `u_Emissive` to 1 (bypasses all lighting, shows raw
+  `u_Color`) filled the frame — the geometry was always there. The "black"
+  pixel value matched the *hand-computed* ambient-only shade for that wall
+  color and `u_Sky`, not the scene's clear color it happened to resemble.
+  **Before concluding nothing is being drawn, force full emissive and
+  re-check — a wrongly-lit surface and an absent one look identical in a
+  screenshot but are opposite bugs.**
+- `PocketDimension` (`TestEnv/src/PocketDimension.h`) owns the room: five
+  static box colliders, an offscreen `Framebuffer` rendered from a fixed
+  interior camera each step and shown through the doorway as a live window,
+  and `UpdateCrossing` for two-way teleport with a carried lateral/height
+  offset. It branches on `InPocket()` in four places in `SolarSystem.h`:
+  `ApplyGravity` (fixed "down" instead of radial), the `up` assignment in
+  `UpdateSurface`, the water/horizon follow-rebuild guards (**required**, not
+  optional — the room sits 2,000 m from the landing site, which every step
+  would otherwise read as "walked off the streamed terrain's edge"), and
+  grounding/height-above-floor.
+- The portal's placement (`BuildSurfaceWorld`) is `lateral*6 + along*4` from
+  the ship, not a pure lateral offset — the pure-lateral version measured 68
+  degrees off the default view. If the landing heading logic ever changes,
+  re-measure this angle rather than assuming it still lands inside the
+  frustum.
+- **Deliberately not built**: the portal placeable on an arbitrary surface,
+  and anything inside the room. `Place()` already takes position and facing
+  as parameters rather than hardcoding them, so a placeable portal only
+  changes the caller. Stocking the room is additive `RigidBody3D::MakeBox`
+  pickups at `RoomLocal()` plus OpenWorld's existing `Tool`/`m_HeldTool`
+  carry pattern (`TestEnv/src/OpenWorld.h`) — sound and directly adaptable,
+  swapping its fixed-up assumption for the tangent frame this pass already
+  threads through movement.
+
 ### The rest
 
 `README.md` has the full roadmap (18 items). The clusters:
@@ -1697,12 +1780,33 @@ the surface, which is what 1:1 needs, and terrain LOD. The landing approach pick
 dry ground; the gas giants have air deep enough to have no ground under
 it, which needed a premultiplied blend in the engine and a multiple-scattering
 term in the shader; Saturn and Uranus have rings; a day is an hour and a year is
-365 of them; and a ship hovering in an atmosphere is carried round with it. What
-is left in this cluster is real axial tilt (the ring tilt is currently on
-the ring), moon orbits in their planet's equator, and something for a player who
-walks into the water off a beach — all on the roadmap with what they need. The
-sky is done: 44 real stars, a procedural field behind them and the Milky Way on
-the real galactic pole.
+365 of them; and a ship hovering in an atmosphere is carried round with it.
+**Axial tilt is real now too** — one spin axis for every body, tilted about
+the same reference `SkyDirection` already anchors the star catalogue to, so
+Earth's tilt agrees with its own sky. Retrograde (Uranus, Venus) falls out of
+a tilt past 90 degrees rather than a sign on the rotation period, and the
+rings sit in the body's own equator instead of carrying a second, separately
+tuned tilt. **Swimming is in too** — buoyancy and a screen tint under the
+local water's surface — and building it surfaced a real, pre-existing bug:
+the local flood's rim seed trusted the planet-wide hydrology map even where
+the map's 1.5 km texel disagreed with the fine terrain by tens of metres, so
+the default landing site read 63.3% underwater with an 18 m phantom lake
+under the lander before anything had ever asked. Fixed by rejecting a rim
+seed unless the terrain at that exact cell agrees it is close enough to hold
+it; local wet coverage there is 4.9% now, and the real shore 150 m away is
+unchanged. What is left in this cluster is moon orbits in their planet's
+equator, once there is a real equator per body to put one in — on the roadmap
+with what it needs. The sky is done: 44 real stars, a procedural field behind
+them and the Milky Way on the real galactic pole.
+
+**Sixteen bodies, and nothing culled which ones were worth drawing.** Every
+body got the same stand-in sphere every frame regardless of how many pixels
+it covered — moons true-scale distant from wherever you stand included.
+`WorthDrawing` skips the sphere, rings, ocean and atmosphere for any body
+that is not underfoot and would show as less than half a pixel; ~230,000
+triangles a frame at the default site, though the jitter that prompted
+looking was a build-config question (Debug vs Release), not a triangle one —
+see the changelog for both.
 
 **2D** — per-pixel lighting is done and verified (light map, then
 `BlendMode::Multiply` for surfaces; 27 checks through `ReadPixelRGBA`). Nothing

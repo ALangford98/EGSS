@@ -242,6 +242,7 @@ public:
 
 		BuildHydrology();
 		BuildColourMap();
+		BuildCloudMap();
 	}
 
 	// --- Where the water goes -----------------------------------------------
@@ -1746,6 +1747,17 @@ public:
 
 		int useful = UsefulOctaves(width);
 
+		// Blurred copies for the map only -- BuildHydrology and DeriveWater
+		// already ran against the raw arrays, so nothing that reads m_Water
+		// directly is affected by softening what gets baked in here.
+		std::vector<float> moisture, warmth;
+
+		if (m_Water.Valid())
+		{
+			BoxBlurEquirect(m_Water.Moisture, width, height, 1, moisture);
+			BoxBlurEquirect(m_Water.Warmth, width, height, 1, warmth);
+		}
+
 		for (int y = 0; y < height; y++)
 		{
 			float phi = ((float)y + 0.5f) / (float)height * pi;
@@ -1778,9 +1790,9 @@ public:
 				// computed on this exact grid, so a texel means one thing.
 				pixels[at + 0] = (unsigned char)(unit * 255.0f);
 				pixels[at + 1] = m_Water.Valid()
-					? (unsigned char)(m_Water.Moisture[cell] * 255.0f) : 0;
+					? (unsigned char)(moisture[cell] * 255.0f) : 0;
 				pixels[at + 2] = m_Water.Valid()
-					? (unsigned char)(m_Water.Warmth[cell] * 255.0f) : 255;
+					? (unsigned char)(warmth[cell] * 255.0f) : 255;
 				// **Alpha is where water is, not how transparent anything is.**
 				// The sea shader used to decide by re-deriving the coastline
 				// from the height channel, which can only ever say "below sea
@@ -1803,6 +1815,73 @@ public:
 	}
 
 	const std::shared_ptr<Egss::Texture2D>& Map() const { return m_Map; }
+
+	// **Coverage only, baked once.** Four octaves of the same value noise
+	// `Relief` uses, but with its own seed and its own frequency, so cloud
+	// shapes have nothing to do with the coastline under them -- real
+	// weather does not know where the continents are either. Low resolution
+	// on purpose: clouds are the lowest-frequency thing this planet draws,
+	// and the shell this paints onto is read from orbit and from the ground
+	// alike, where per-texel detail would cost more than it would be seen.
+	void BuildCloudMap()
+	{
+		const int width = 512, height = 256;
+
+		std::vector<unsigned char> pixels((size_t)width * height * 4);
+
+		const float pi = 3.14159265358979323846f;
+
+		// A seed and a frequency both offset from the terrain's own, so nothing
+		// here can end up looking like a shadow of the ground.
+		unsigned int seed = m_Settings.Seed + 90210u;
+		float frequency = 6.0f;
+
+		for (int y = 0; y < height; y++)
+		{
+			float phi = ((float)y + 0.5f) / (float)height * pi;
+			float sinPhi = std::sin(phi), cosPhi = std::cos(phi);
+
+			for (int x = 0; x < width; x++)
+			{
+				float theta = (((float)x + 0.5f) / (float)width - 0.5f) * 2.0f * pi;
+
+				glm::vec3 direction(std::cos(theta) * sinPhi, cosPhi,
+					std::sin(theta) * sinPhi);
+
+				float sum = 0.0f, amplitude = 1.0f, total = 0.0f, freq = frequency;
+
+				for (int o = 0; o < 4; o++)
+				{
+					sum += Noise3D(direction * freq, seed + (unsigned int)o) * amplitude;
+					total += amplitude;
+
+					amplitude *= 0.5f;
+					freq *= 2.0f;
+				}
+
+				float unit = total > 0.0f ? sum / total : 0.0f;
+
+				// Patchy rather than an even haze: pushed so roughly a third
+				// of the range reads as open sky and the rest ramps up to
+				// full cover, instead of every point on the sphere carrying
+				// some cloud.
+				float coverage = glm::clamp(unit * 1.6f + 0.15f, 0.0f, 1.0f);
+
+				size_t at = ((size_t)y * width + x) * 4;
+
+				pixels[at + 0] = 255;
+				pixels[at + 1] = 255;
+				pixels[at + 2] = 255;
+				pixels[at + 3] = (unsigned char)(coverage * 255.0f);
+			}
+		}
+
+		m_CloudMap.reset(Egss::Texture2D::Create(width, height));
+		m_CloudMap->SetData(pixels.data(), (unsigned int)pixels.size());
+		m_CloudMap->SetSmooth(true);
+	}
+
+	const std::shared_ptr<Egss::Texture2D>& CloudMap() const { return m_CloudMap; }
 
 	// --- Vegetation ---------------------------------------------------------
 	//
@@ -3193,6 +3272,46 @@ private:
 	}
 
 
+	// A box blur over the equirectangular grid, wrapping in x (longitude) --
+	// there is no seam there -- and clamping in y, where there is a real edge
+	// at each pole. Used to soften moisture and warmth before `BuildColourMap`
+	// thresholds them into biome colour: both come out of a flow-accumulation
+	// pass whose defining property is being noisy at the texel it is measured
+	// on -- a real drainage network is a network of thin channels, which is
+	// exactly a high-frequency signal -- and reading that noise straight
+	// through a handful of sharp `smoothstep` bands turns it into visible
+	// salt-and-pepper speckle from orbit, where there is no geometry to hide
+	// it behind. Blurring a copy here, rather than smoothing the source
+	// arrays, leaves `DeriveWater`'s basin logic and the conservation check
+	// untouched -- both already ran and read the raw data before this.
+	static void BoxBlurEquirect(const std::vector<float>& in, int width, int height,
+		int radius, std::vector<float>& out)
+	{
+		out.assign(in.size(), 0.0f);
+
+		for (int y = 0; y < height; y++)
+		for (int x = 0; x < width; x++)
+		{
+			float sum = 0.0f;
+			int count = 0;
+
+			for (int dy = -radius; dy <= radius; dy++)
+			{
+				int sy = glm::clamp(y + dy, 0, height - 1);
+
+				for (int dx = -radius; dx <= radius; dx++)
+				{
+					int sx = ((x + dx) % width + width) % width;
+
+					sum += in[(size_t)sy * width + sx];
+					count++;
+				}
+			}
+
+			out[(size_t)y * width + x] = sum / (float)count;
+		}
+	}
+
 	// 3D value noise. **The cast is inside the multiply on purpose** -- see the
 	// 2026-08-17 changelog entry for what `(uint32_t)(x * 374761393)` does to a
 	// release build when x overflows an int.
@@ -3238,6 +3357,7 @@ private:
 
 	Settings m_Settings;
 	std::shared_ptr<Egss::Texture2D> m_Map;
+	std::shared_ptr<Egss::Texture2D> m_CloudMap;
 	std::shared_ptr<Egss::VoxelField3D> m_Field;
 
 	// One grid for the height map and the hydrology both, so a texel means the

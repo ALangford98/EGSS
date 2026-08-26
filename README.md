@@ -886,9 +886,9 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [x] **Rings for Saturn and Uranus** — one annulus mesh with the radii as
       uniforms, banded by 1D noise of the radius alone, with the Cassini
       division, the planet's shadow, the opposition surge, and the negative
-      seen from the shadowed side. The tilt is on the ring rather than on the
-      body, which on two planets with opaque atmospheres is a difference
-      nothing can observe — see the changelog for when that stops being true
+      seen from the shadowed side. The tilt is on the body now, not the ring —
+      see the axial-tilt changelog entry — though on two planets with opaque
+      atmospheres it was always a difference nothing could observe
 - [x] **Body scale, and gas giants with no ground under the air** — a second
       exponent for everything local to a body (`q = 3/4`, against `p = 1/2` for
       heliocentric distance) puts Jupiter at 6.03 Earths instead of 3.3 and
@@ -899,11 +899,14 @@ Groups 1-5 from the original plan are done. What follows is what remains.
 - [x] **An hour to the day, 365 hours to the year**, and a craft that turns with
       the air it is hovering in — the second only became reasonable once the
       first made the frame turn a tenth of a degree a step instead of six
-- [ ] **Axial tilt, and therefore seasons.** The ring tilt is currently carried
-      by the ring. Doing it properly means a general spin axis through
-      `ToScene`/`ToFixed`, `SpinMatrix` and the co-rotating air, at which point
-      retrograde rotation stops being a negative period and becomes an
-      obliquity past 90 degrees, which is what it actually is
+- [x] **Axial tilt, and therefore seasons.** A general spin axis through
+      `ToScene`/`ToFixed`, `SpinMatrix`, the co-rotating air and the rings,
+      tilted about the same reference `SkyDirection` already anchors the star
+      catalogue to. Retrograde is no longer a negative period: Uranus (97.77°)
+      and Venus (177.4°) turn backward, as seen from the ecliptic pole, purely
+      because their tilt passes 90° — verified against `cos(tilt)`, a formula
+      the rotation code does not otherwise compute, sign included. See the
+      changelog for the map-lookup and ring-basis fixes tilt required
 - [ ] **A moon's orbit in its planet's equator**, once there is an equator to
       speak of. Moon orbits are in the ecliptic here, so Titan does not go round
       Saturn the way the rings do
@@ -1006,10 +1009,23 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       texel a "river cell" is a 1.5 km swath. Rivers need either a much finer
       local pass or a channel network carried as geometry rather than as a
       raster
-- [ ] **Swimming, or a coast that stops you.** The sea is a shell drawn over the
-      terrain and the player walks under it. Landing avoids that now and the
-      panel warns before you press `L` over water, but walking into the sea from
-      a beach still puts the eye underwater with no buoyancy and no tint
+- [x] **Swimming.** A spring toward the surface plus drag while submerged, and
+      a screen tint when the eye goes under the local water level. Finding the
+      water level under the player surfaced a pre-existing bug in how the
+      local flood was seeded — see the changelog
+- [x] **Clouds and atmospheric haze**, and the orbital biome speckle that
+      turned out to be a missing mip chain rather than a biome-logic bug — see
+      the changelog for both
+- [x] **A static portal to an empty pocket dimension**, standing in for a
+      toolshed — five static colliders, a live offscreen-rendered window, and
+      two-way crossing with a carried lateral/height offset. See the changelog
+      and `docs/HANDOVER.md`
+- [ ] **Place the portal on an arbitrary surface**, as a carried tool rather
+      than a fixed landing-site offset. `PocketDimension::Place()` already
+      takes position and facing as parameters, so this only changes the caller
+- [ ] **Stock the room.** OpenWorld's `Tool`/`m_HeldTool` pickup pattern,
+      adapted for a non-radial "up" the same way this pass adapted movement,
+      with physics bodies dropped at `RoomLocal()`
 
 - [ ] **Acoustics: a surface is a mesh's bounds, not its triangles.** Fine for
       rooms, which are made of walls, but a sphere currently sounds like the cube
@@ -1231,6 +1247,241 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-26 (clouds, haze, a mip chain that never existed, and a static portal)
+
+Three requests landed together: the planet "looks pretty good on the ground
+but no longer looks like a natural planet from space," clouds and fog to
+soften that, and a first gameplay mechanic — a portal to a small pocket
+dimension, standing in for a toolshed. Sequenced smallest and most isolated
+first.
+
+**The orbital speckle wasn't the biome logic — it was that no texture in the
+engine had ever had a mip chain.** `BuildColourMap`'s moisture/warmth channels
+come from a flow-accumulation log ratio, inherently noisy texel-to-texel, and
+a first attempt blurred a copy of those arrays before writing them into the
+map (`BoxBlurEquirect`, radius 1, leaving `BuildHydrology`'s and
+`DeriveWater`'s own conservation checks reading the untouched originals). That
+produced **zero visible change** — before/after captures of Earth from orbit
+were identical. The real cause was upstream of any blur: `OpenGLTexture2D`
+called `glTexStorage2D` with a hardcoded level count of 1 and `GL_LINEAR`
+minification everywhere a texture is created, so a 1024×512 equirect map
+viewed from four planet-radii out — where many texels land on one pixel, worst
+at the poles — was sampled with a single bilinear tap per pixel: exactly as
+aliased as `GL_NEAREST`, which reads as fine uncorrelated speckle no amount of
+smoothing the *source data* can fix, because the *sampling* was the problem.
+Fixed engine-wide in `OpenGLTexture.cpp`: a `MipLevelCount` helper sizes
+`glTexStorage2D`'s immutable storage for a full chain, `GL_LINEAR_MIPMAP_LINEAR`
+replaces plain `GL_LINEAR` on the minifying side (both in the constructors and
+in `SetSmooth`), and `glGenerateMipmap` runs after every upload
+(`UploadDecoded` and `SetData`). The blur stayed — it's still the right fix for
+noise baked into adjacent texels *within* one mip level — but the mip chain is
+what made the difference visible at all. Verified with a before/after capture
+of Earth from orbit (smooth coastline gradients, no pixel-scale noise) and a
+ground-level regression capture that reads identically to before, since the
+ground shader never samples the map.
+
+**Clouds and haze, additive.** `VoxelPlanet::BuildCloudMap` bakes a 512×256
+equirect coverage texture from four octaves of the existing `Noise3D` at a
+cloud-specific seed offset — low frequency, so it doesn't need the biome map's
+resolution. `SolarSystem::DrawClouds` draws it as a translucent shell partway
+between the surface and the atmosphere's outer radius, rotated by its own
+accumulated `m_CloudDrift` about the body's spin axis rather than following
+`SpinAngle` directly, so the cloud deck visibly drifts relative to the ground.
+**Verifying the drift found a scale mismatch, not a bug**: captures thirty and
+three hundred steps apart were pixel-identical even with `--years-per-second`
+turned up, because a nearby view (`--goto`, within six radii) drives the clock
+from the slow real-time day cycle, not the orbital rate that flag controls —
+`dt` came out to `1.26e-8` years/step, far too slow to show anything in a few
+hundred steps. Confirmed the mechanism was correct all along with
+`--capture-step 200000` (terrain rotated ~332°, clouds ~37° relative,
+matching the hand-computed rates exactly), which is the number that mattered,
+not the earlier captures. Haze mixes terrain colour toward `u_Sky` by
+`1 - exp(-camDist * u_HazeDensity)`, the same extinction shape
+`DrawAtmosphere` already uses, scaled from `AtmosphereDensity` so an airless
+body (the Moon) gets `haze ≈ 0` for free. The first calibration
+(`3.0e-5`) cited a stale "12.6 km horizon" figure left over from before the
+system was rescaled to 1:1 — the real horizon at this scale is 949 m,
+confirmed against `docs/HANDOVER.md`. Pixel-value comparisons (not
+eyeballing) walked the constant through 100x, too strong and visibly tinting
+nearby terrain, before settling on 10x (`3.3e-3`) as the shipped default,
+verified as a clean monotonic gradient toward `u_Sky` with distance. The
+"Haze" ImGui slider's range predates this number and tops out at `1.5e-3` —
+narrower than the default it's meant to expose — and hasn't been widened yet.
+
+**A static portal to an empty pocket dimension**, standing in for a toolshed
+until there's something to put in it. `PocketDimension` (new,
+`TestEnv/src/PocketDimension.h`) owns five static box colliders for a 6x6x3 m
+room with one open doorway, a small offscreen `Framebuffer` rendered from a
+fixed interior camera each frame and shown through the doorway as a live
+"window" (`Egss::Renderer::Submit` with a small unlit textured shader — not
+`Renderer2D::DrawRotatedQuad`, which only rotates about one axis and can't
+orient a window tangent to a sphere), and plane-crossing detection
+(`UpdateCrossing`) that teleports the player between the portal and the room
+in either direction, carrying the lateral/height offset they crossed at so
+walking through slightly left of centre comes out slightly left of centre on
+the other side. Gravity, grounding and the water/horizon follow-rebuilds all
+branch on `Egss::PhysicsWorld3D::InPocket()` — the room has its own fixed
+"down" rather than a radial one, and the water/horizon rebuilds are the
+required half of that branch, not an optional one: the room sits 2,000 m from
+the landing site along the portal's own facing, which every step would
+otherwise read as "walked off the edge of the streamed terrain."
+
+**Debugging this cost more than building it, and the actual bug was never
+where it looked.** The window was invisible — not even a debug-magenta,
+non-culled quad showed up — for long enough to suspect the transform math
+first. It wasn't: a trace of the submitted quad's basis vectors, hand-checked
+against the landing site's own `up`/`along`/`lateral` triad, confirmed the
+geometry was exactly where it should be. The actual cause was the *view*: a
+trace of the angle between the camera's default heading (which faces back
+toward the ship) and the direction to the portal measured 68 degrees, well
+outside even a 65-97 degree frustum — the portal was being drawn correctly,
+off-screen. Confirmed by forcibly orienting the camera at it for one capture,
+which showed the window exactly as designed. Fixed at the source rather than
+patched at the symptom: the portal's placement in `BuildSurfaceWorld` moved
+from a pure lateral offset to a blend of `lateral*6 + along*4`, landing it
+inside the default view (measured ~27 degrees off-axis on arrival) instead of
+outside it. The same pattern repeated one level in: standing inside the room
+and looking sideways read as almost pure black, which forcing the material's
+`u_Emissive` to 1 (bypassing all lighting) immediately proved was full,
+correctly-transformed wall geometry, not a missing draw call — the sampled
+pixel value `(8, 8, 12)` matched the *hand-computed* ambient-only shade for
+that exact wall color and sky term to within rounding, not the scene's clear
+color it happened to resemble. The room is genuinely dim from some angles by
+design (`u_Sky = (0.12, 0.12, 0.16)`, one fixed light, no windows) and reads
+clearly enough facing into it, which is what a player who just walked through
+the doorway actually does. Both crossing directions were verified with a
+scripted position override (no recorded input exists for this landing site)
+and an `EGSS_TRACE` on every `InPocket` transition, confirmed firing exactly
+once each way for a clean approach-and-return.
+
+**Deliberately not built**: placing the portal on an arbitrary surface, and
+stocking the room with anything. `Place()` already takes the portal's position
+and facing as parameters rather than hardcoding them, so a placeable portal
+later only changes the caller; stocking the room is additive physics bodies
+dropped at `RoomLocal()` plus OpenWorld's existing `Tool`/`m_HeldTool` carry
+pattern, adapted the same way this pass adapted movement for a non-radial
+"up." See `docs/HANDOVER.md` for both.
+
+### 2026-08-26 (a phantom lake under the lander)
+
+**Swimming exists now**: `ApplyBuoyancy` gives the player a spring toward the
+local water's surface plus drag while submerged, and the eye going under it
+draws a translucent full-screen quad the same way `Cube3D` blits its own
+framebuffer — after the 3D scene, not through it, so it survives `--hide-ui`
+and shows up in a capture. `SurfaceWater` gained `LevelNear`, a query at an
+arbitrary point rather than only at an edit, sharing the direction-to-column
+math `Touch` already had (now `ColumnAt`, factored out rather than duplicated
+a third time).
+
+**Testing it at the actual default landing site found something the feature
+itself didn't cause.** `SurfaceWater::Report()` said 63.3% of the local grid
+was wet before any of this landed — nothing had ever asked, because nothing
+before this physically responded to the answer. The lander's own column read
+18 m "underwater": a rim seed pulled from the planet-wide hydrology map,
+sampled at a texel wide enough to cover the *entire* 380 m grid several times
+over, said there was a lake 39.5 m above sea level there. The lander's real,
+field-sampled ground is 21 m above sea level and has no connection to that
+basin — the map's 1.5 km resolution simply cannot see the difference, and
+nothing was checking whether the fine terrain agreed before letting that
+number seed a flood.
+
+**Fixed by making the map's seed prove itself against the ground it is
+seeding.** A rim cell now only accepts the map's wet claim when the claimed
+level is within a few voxels of that cell's own sampled ground — a real
+shoreline's water sits close to the ground beside it, and a coarse texel
+guessing at a point past its own resolution does not. `s_SeedMargin` already
+existed for this class of problem but only hid the seam in the *drawn* mesh;
+it never stopped the flood from believing a bad seed and propagating it
+inward as far as the real terrain permitted. Local wet coverage at the
+default site: 63.3% to 4.9%, and the real shore 150 m away (verified with the
+camera turned to face it) is unchanged — the fix removes the seed that
+disagreed with its own ground, not the ones that agree with it.
+
+### 2026-08-26 (far bodies stopped paying for triangles nobody could see)
+
+Landed while chasing a jitter report: every one of the sixteen bodies in the
+table got the same 128x64 stand-in sphere every frame, whether it was the
+planet underfoot or Phobos, 11.3 km across and true-scale distant, worth
+nowhere near a pixel. Ablating all fifteen non-current bodies cut roughly
+230,000 triangles a frame and changed measured frame time by nothing —
+confirming the actual cost is draw-call submission (each one a fresh
+`Material` instance), not triangle throughput, which is also why the fix here
+is about not calling `Submit` at all rather than a coarser mesh.
+
+`WorthDrawing` compares a body's angular radius (`DrawnRadius * scale /
+distance`, the small-angle tangent) against 4e-4, under half a pixel at
+1080p and this demo's field of view — nothing culled by it could have shown
+as more than the single aliased dot the star field already draws behind it.
+Gates `DrawBody`, `DrawRings`, `DrawOcean` and `DrawAtmosphere` for every body
+except whichever one is currently underfoot or being orbited, and the Sun.
+Verified the Moon still draws as a full disc when it is the body being
+approached — the cull only drops bodies nothing was going to see anyway.
+
+### 2026-08-26 (axial tilt, and retrograde for free)
+
+**Every body here spun about +Y**, an axis chosen once with no data behind
+it, so Venus and Uranus's backward spins had to be faked with a negative
+`RotationHours`, and Saturn and Uranus's rings carried their own separate
+tilt that agreed with nothing else about the body. The real fix — a general
+spin axis — was named and declined twice already, once for the rings and
+once for the terrain, both times as "a bigger change than [it] is worth."
+
+**One axis serves every body**, tilted out of the ecliptic pole about the
+same reference `SkyDirection` already anchors the star catalogue to: global
++X, tipping +Y toward +Z by each body's real obliquity. That is a real
+simplification — no two planets' poles actually point the same way relative
+to their own orbits — but it is the one direction this demo already checks
+against real data, and Earth's tilt (23.4392911°) now matches the constant
+`SkyDirection` was independently verified against to 0.003 degrees, so the
+ground agrees with the sky.
+
+`RotateY` generalised to `RotateAboutAxis`, a Rodrigues rotation restated in
+the project's own sign convention (`+x` toward `+z`, not glm's `+x` toward
+`-z`); `SpinMatrix` rebuilt as the matrix form of the same formula, checked
+against the vector form rather than derived from it on paper. `ToScene`,
+`ToFixed`, the two places that called `RotateY` directly (`SetTimeOfDay`'s
+daylight search, `CarryWithTheAir`'s co-rotating hover) and the ring basis
+all moved onto it.
+
+**Retrograde stops being a sign.** `RotationHours` is positive for every body
+now (Uranus 17.24, Venus 5832.5), and Uranus (97.77°) and Venus (177.4°) turn
+backward, as seen from the ecliptic pole, purely because their tilt passes
+90°. Checked against a formula the rotation code does not otherwise compute:
+`RotateAboutAxis((1,0,0), axis, angle)` at small angle drops its third term
+(the axis never has an x-component, so `axis · (1,0,0) = 0`), leaving
+`(cos angle, -sin(tilt) sin angle, cos(tilt) sin angle)` — an azimuth that
+grows at rate `cos(tilt)` as `angle → 0`. Measured: Earth 0.917482, Saturn
+0.893136, Uranus -0.135197, Venus -0.998971, each matching `cos(tilt)`
+computed independently, sign included.
+
+**The rings moved onto the same axis as the body**, closing exactly the gap
+the old comment named: Saturn's ring tilt and Saturn's own axial tilt used to
+be the same number, 26.73, entered twice by hand. Building the ring's
+azimuthal basis by crossing the normal against +Z — fine at Saturn's 26.73 —
+is within three degrees of parallel to Uranus's axis at 97.77, a
+near-degenerate basis caught before it shipped rather than after. Crossed
+against +X instead, which the axis never has a component along, for any
+tilt.
+
+**The equirectangular map lookup needed the real inverse rotation, not a
+shift along its azimuth.** The old `u_Spin` uniform subtracted a fraction of
+a turn from `atan(up.z, up.x)`, exactly right when the only thing spin ever
+does is rotate about +Y — and that rotation happens to leave `up.y` alone
+too, which is what let `latitude = up.y` pass as correct while actually
+being scene-frame rather than body-fixed. Both the terrain and water
+fragment shaders now take a `u_Unspin` matrix (the spin matrix's transpose,
+which is its inverse for a rotation) and unrotate `up` fully before reading
+the map or computing latitude — otherwise a walked, tilted Earth would read
+part of another point's climate off the map as its own for part of the day.
+
+Verified: 7 checks — reduction to the old formula at zero tilt, length
+preservation, the axis as a fixed point of its own rotation, `SpinMatrix`
+against `RotateAboutAxis`, and the retrograde-from-tilt formula above —
+passing identically in Debug, Release and Dist. Saturn's rings render
+unchanged; Uranus's render nearly edge-on, matching the real planet's
+appearance from its near-90-degree tilt, which is the strongest confirmation
+available without a second, independent renderer to check against.
 
 ### 2026-08-26 (one microphone, two pumps, and which one is broken)
 

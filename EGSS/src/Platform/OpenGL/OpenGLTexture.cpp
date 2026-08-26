@@ -8,6 +8,23 @@
 
 namespace Egss {
 
+	namespace {
+
+		// How many levels `glTexStorage2D` needs for a full mip chain down to
+		// 1x1. Immutable storage takes the level count up front, so this has
+		// to be known before the first texel is uploaded.
+		int MipLevelCount(int width, int height)
+		{
+			int levels = 1;
+
+			for (int size = std::max(width, height); size > 1; size /= 2)
+				levels++;
+
+			return levels;
+		}
+
+	}
+
 	Texture2D* Texture2D::Create(const std::string& path)
 	{
 		return new OpenGLTexture2D(path);
@@ -36,9 +53,20 @@ namespace Egss {
 
 		glGenTextures(1, &m_RendererID);
 		glBindTexture(GL_TEXTURE_2D, m_RendererID);
-		glTexStorage2D(GL_TEXTURE_2D, 1, m_InternalFormat, m_Width, m_Height);
+		glTexStorage2D(GL_TEXTURE_2D, MipLevelCount((int)m_Width, (int)m_Height),
+			m_InternalFormat, m_Width, m_Height);
 
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		// Mip-mapped on the minifying side: a texture viewed from far enough
+		// away that many texels land on one pixel -- an equirectangular map
+		// wrapped around a distant sphere, worst at the poles where texels
+		// bunch up -- needs the area average a mip chain gives, not a 2x2
+		// bilinear sample of whichever few texels the UV happened to land on.
+		// Plain `GL_LINEAR` only interpolates within one level and is exactly
+		// as aliased as `GL_NEAREST` once the minification ratio is high
+		// enough that neighbouring pixels sample unrelated texels -- which
+		// read as fine, uncorrelated speckle. See `SetSmooth` for the other
+		// half of this.
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
@@ -103,9 +131,12 @@ namespace Egss {
 
 		glGenTextures(1, &m_RendererID);
 		glBindTexture(GL_TEXTURE_2D, m_RendererID);
-		glTexStorage2D(GL_TEXTURE_2D, 1, m_InternalFormat, m_Width, m_Height);
+		glTexStorage2D(GL_TEXTURE_2D, MipLevelCount((int)m_Width, (int)m_Height),
+			m_InternalFormat, m_Width, m_Height);
 
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		// See the note in the (width, height) constructor on why minifying
+		// needs the mip chain, not just a smoother sample within one level.
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
@@ -116,6 +147,7 @@ namespace Egss {
 		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_Width, m_Height, m_DataFormat, GL_UNSIGNED_BYTE, pixels);
 		glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+		glGenerateMipmap(GL_TEXTURE_2D);
 
 		stbi_image_free(pixels);
 	}
@@ -140,6 +172,11 @@ namespace Egss {
 		glBindTexture(GL_TEXTURE_2D, m_RendererID);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
 			smooth ? GL_LINEAR : GL_NEAREST);
+		// The minifying side keeps its mip chain either way -- a texture
+		// asking for the blocky look up close still wants the correct sample
+		// frequency far away, just without blending across mip levels.
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+			smooth ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST);
 	}
 
 	void OpenGLTexture2D::SetData(void* data, unsigned int size)
@@ -149,6 +186,7 @@ namespace Egss {
 
 		glBindTexture(GL_TEXTURE_2D, m_RendererID);
 		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_Width, m_Height, m_DataFormat, GL_UNSIGNED_BYTE, data);
+		glGenerateMipmap(GL_TEXTURE_2D);
 	}
 
 	void OpenGLTexture2D::Bind(unsigned int slot) const
