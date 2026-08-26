@@ -122,17 +122,29 @@ namespace Egss {
 
 	float VoxelField3D::SampleDistance(const glm::vec3& world) const
 	{
+		return SampleDistanceFrom(world - m_Origin, glm::ivec3(0));
+	}
+
+	float VoxelField3D::SampleDistanceFrom(const glm::vec3& offset,
+		const glm::ivec3& about) const
+	{
 		if (Empty())
 			return Far;
 
-		glm::vec3 local = (world - m_Origin) / m_VoxelSize;
+		glm::vec3 local = offset / m_VoxelSize;
 
 		// floor, not truncation: a negative coordinate truncates towards zero
 		// and would read the cell on the wrong side of the origin.
 		glm::vec3 base = glm::floor(local);
 		glm::vec3 t = local - base;
 
-		int x = (int)base.x, y = (int)base.y, z = (int)base.z;
+		// **The lattice point is put back as an integer**, never as a float
+		// added to a float -- that addition is exactly what this exists to
+		// avoid, and doing it here would throw away everything the caller
+		// gained by measuring from `about` in the first place.
+		int x = about.x + (int)base.x;
+		int y = about.y + (int)base.y;
+		int z = about.z + (int)base.z;
 
 		float d000 = DistanceAt(x, y, z);
 		float d100 = DistanceAt(x + 1, y, z);
@@ -151,17 +163,40 @@ namespace Egss {
 		return glm::mix(glm::mix(d00, d10, t.y), glm::mix(d01, d11, t.y), t.z);
 	}
 
+	glm::vec3 VoxelField3D::SampleNormalFrom(const glm::vec3& offset,
+		const glm::ivec3& about) const
+	{
+		const float h = m_VoxelSize;
+
+		glm::vec3 gradient(
+			SampleDistanceFrom(offset + glm::vec3(h, 0.0f, 0.0f), about)
+				- SampleDistanceFrom(offset - glm::vec3(h, 0.0f, 0.0f), about),
+			SampleDistanceFrom(offset + glm::vec3(0.0f, h, 0.0f), about)
+				- SampleDistanceFrom(offset - glm::vec3(0.0f, h, 0.0f), about),
+			SampleDistanceFrom(offset + glm::vec3(0.0f, 0.0f, h), about)
+				- SampleDistanceFrom(offset - glm::vec3(0.0f, 0.0f, h), about));
+
+		float length = glm::length(gradient);
+
+		return length > 1e-12f ? gradient / length : glm::vec3(0.0f, 1.0f, 0.0f);
+	}
+
+	// A central difference one voxel apart, on the interpolated field.
+	//
+	// Differencing the *lattice* first and interpolating the eight corner
+	// gradients was tried, on the theory that a trilinear field has a
+	// piecewise-constant gradient and would shade in flat cell-sized
+	// terraces. It costs eight times the reads and the picture did not
+	// change by a pixel -- the terracing that prompted it was a bug in the
+	// caller's density function, not in the normals. Reverted rather than
+	// kept: a change that measures as nothing is a cost with no benefit.
+	// **Not written as `SampleNormalFrom(world - m_Origin, 0)`**, which is the
+	// same value and not the same arithmetic: that groups the subtraction as
+	// `(world - origin) + h` where this has `(world + h) - origin`, and float
+	// addition does not associate. The two differ in the last bit, which was
+	// enough to move 197 of OpenWorld's pixels.
 	glm::vec3 VoxelField3D::SampleNormal(const glm::vec3& world) const
 	{
-		// A central difference one voxel apart, on the interpolated field.
-		//
-		// Differencing the *lattice* first and interpolating the eight corner
-		// gradients was tried, on the theory that a trilinear field has a
-		// piecewise-constant gradient and would shade in flat cell-sized
-		// terraces. It costs eight times the reads and the picture did not
-		// change by a pixel -- the terracing that prompted it was a bug in the
-		// caller's density function, not in the normals. Reverted rather than
-		// kept: a change that measures as nothing is a cost with no benefit.
 		const float h = m_VoxelSize;
 
 		glm::vec3 gradient(
@@ -400,7 +435,27 @@ namespace Egss {
 					m_Dirty.push_back({ x, y, z });
 	}
 
+	// **Two frames, one loop, and the same expression in each.**
+	//
+	// `shift` is added back to every lattice position before the sphere is
+	// measured. For the world-space form it is the field's origin, which makes
+	// the distance `PositionOf(x, y, z) - centre` term for term -- not an
+	// equivalent grouping, the same one, because float addition does not
+	// associate and a re-grouped edit is an edit that lands somewhere else.
+	// For the lattice-relative form it is zero and the magnitude never appears.
 	int VoxelField3D::EditSphere(const glm::vec3& centre, float radius, bool add)
+	{
+		return EditSphereShifted(centre, glm::ivec3(0), m_Origin, radius, add);
+	}
+
+	int VoxelField3D::EditSphereFrom(const glm::vec3& centre,
+		const glm::ivec3& about, float radius, bool add)
+	{
+		return EditSphereShifted(centre, about, glm::vec3(0.0f), radius, add);
+	}
+
+	int VoxelField3D::EditSphereShifted(const glm::vec3& centre,
+		const glm::ivec3& about, const glm::vec3& shift, float radius, bool add)
 	{
 		if (m_Chunks.x <= 0 || radius <= 0.0f)
 			return 0;
@@ -409,11 +464,12 @@ namespace Egss {
 		// band of near-surface values either side stays correct.
 		const float margin = SparseBandVoxels * m_VoxelSize + m_VoxelSize;
 
-		glm::vec3 low = (centre - glm::vec3(radius + margin) - m_Origin) / m_VoxelSize;
-		glm::vec3 high = (centre + glm::vec3(radius + margin) - m_Origin) / m_VoxelSize;
+		glm::vec3 low = (centre - glm::vec3(radius + margin) - shift) / m_VoxelSize;
+		glm::vec3 high = (centre + glm::vec3(radius + margin) - shift) / m_VoxelSize;
 
-		glm::ivec3 from = glm::max(glm::ivec3(glm::floor(low)), glm::ivec3(0));
-		glm::ivec3 to = glm::min(glm::ivec3(glm::ceil(high)), m_Size - glm::ivec3(1));
+		glm::ivec3 from = glm::max(about + glm::ivec3(glm::floor(low)), glm::ivec3(0));
+		glm::ivec3 to = glm::min(about + glm::ivec3(glm::ceil(high)),
+			m_Size - glm::ivec3(1));
 
 		int changed = 0;
 
@@ -424,7 +480,8 @@ namespace Egss {
 				for (int x = from.x; x <= to.x; x++)
 				{
 					float before = DistanceAt(x, y, z);
-					float sphere = glm::length(PositionOf(x, y, z) - centre) - radius;
+					float sphere = glm::length(
+						shift + PositionFrom(x, y, z, about) - centre) - radius;
 
 					// Union to add, subtraction to carve. Both are exact at the
 					// surface, which is the only place the mesher and the

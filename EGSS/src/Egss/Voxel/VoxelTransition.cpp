@@ -27,11 +27,14 @@ namespace Egss {
 			(1u << 0) | (1u << 1) | (1u << 4) | (1u << 5),   // NegZ
 		};
 
-		VoxelTransition::LatticePoint SampleAt(const VoxelField3D& field, const glm::ivec3& lattice)
+		VoxelTransition::LatticePoint SampleAt(const VoxelField3D& field,
+			const glm::ivec3& lattice, const glm::ivec3* about)
 		{
 			VoxelTransition::LatticePoint p;
 			p.Lattice = lattice;
-			p.Position = field.PositionOf(lattice.x, lattice.y, lattice.z);
+			p.Position = about
+				? field.PositionFrom(lattice.x, lattice.y, lattice.z, *about)
+				: field.PositionOf(lattice.x, lattice.y, lattice.z);
 			p.Value = field.DistanceAt(lattice.x, lattice.y, lattice.z);
 			return p;
 		}
@@ -40,7 +43,7 @@ namespace Egss {
 
 	void VoxelTransition::SubdivideEdge(const VoxelField3D& field,
 		const glm::ivec3& a, const glm::ivec3& b, int depth,
-		std::vector<LatticePoint>& out)
+		std::vector<LatticePoint>& out, const glm::ivec3* about)
 	{
 		int n = 1 << depth;
 		out.resize(n + 1);
@@ -51,12 +54,12 @@ namespace Egss {
 		glm::ivec3 step = (b - a) / n;
 
 		for (int i = 0; i <= n; i++)
-			out[i] = SampleAt(field, a + step * i);
+			out[i] = SampleAt(field, a + step * i, about);
 	}
 
 	void VoxelTransition::SubdivideFace(const VoxelField3D& field,
 		const glm::ivec3& a, const glm::ivec3& b, const glm::ivec3& c,
-		int depth, std::vector<LatticePoint>& out)
+		int depth, std::vector<LatticePoint>& out, const glm::ivec3* about)
 	{
 		int n = 1 << depth;
 		out.resize((n + 1) * (n + 2) / 2);
@@ -67,9 +70,9 @@ namespace Egss {
 		// face -- reads bit-identical points, not merely arithmetically
 		// equivalent ones.
 		std::vector<LatticePoint> edgeAB, edgeAC, edgeBC;
-		SubdivideEdge(field, a, b, depth, edgeAB);   // v = 0
-		SubdivideEdge(field, a, c, depth, edgeAC);   // u = 0
-		SubdivideEdge(field, b, c, depth, edgeBC);   // u + v = n, indexed by v
+		SubdivideEdge(field, a, b, depth, edgeAB, about);   // v = 0
+		SubdivideEdge(field, a, c, depth, edgeAC, about);   // u = 0
+		SubdivideEdge(field, b, c, depth, edgeBC, about);   // u + v = n, by v
 
 		glm::ivec3 stepU = (b - a) / n;
 		glm::ivec3 stepV = (c - a) / n;
@@ -87,7 +90,7 @@ namespace Egss {
 				else if (u + v == n)
 					p = edgeBC[v];
 				else
-					p = SampleAt(field, a + stepU * u + stepV * v);
+					p = SampleAt(field, a + stepU * u + stepV * v, about);
 
 				out[FaceIndex(u, v, n)] = p;
 			}
@@ -95,7 +98,8 @@ namespace Egss {
 	}
 
 	void VoxelTransition::Cell(const VoxelField3D& field, const glm::ivec3& origin,
-		int stride, unsigned int boundaryMask, int ratio, MeshData& data)
+		int stride, unsigned int boundaryMask, int ratio, MeshData& data,
+		const glm::ivec3* about)
 	{
 		glm::ivec3 lattice[8];
 		glm::vec3 pos[8];
@@ -104,7 +108,9 @@ namespace Egss {
 		for (int c = 0; c < 8; c++)
 		{
 			lattice[c] = origin + s_Corners[c] * stride;
-			pos[c] = field.PositionOf(lattice[c].x, lattice[c].y, lattice[c].z);
+			pos[c] = about
+				? field.PositionFrom(lattice[c].x, lattice[c].y, lattice[c].z, *about)
+				: field.PositionOf(lattice[c].x, lattice[c].y, lattice[c].z);
 			val[c] = field.DistanceAt(lattice[c].x, lattice[c].y, lattice[c].z);
 		}
 
@@ -168,7 +174,8 @@ namespace Egss {
 				int apex = other[0];
 
 				std::vector<LatticePoint> facePoints;
-				SubdivideFace(field, lattice[shared[0]], lattice[shared[1]], lattice[shared[2]], depth, facePoints);
+				SubdivideFace(field, lattice[shared[0]], lattice[shared[1]],
+					lattice[shared[2]], depth, facePoints, about);
 
 				for (int v = 0; v < n; v++)
 				{
@@ -198,7 +205,8 @@ namespace Egss {
 				// Collar tet: `shared` is the one edge lying on the
 				// boundary, `other` its two off-edge corners.
 				std::vector<LatticePoint> edgePoints;
-				SubdivideEdge(field, lattice[shared[0]], lattice[shared[1]], depth, edgePoints);
+				SubdivideEdge(field, lattice[shared[0]], lattice[shared[1]],
+					depth, edgePoints, about);
 
 				for (size_t i = 0; i + 1 < edgePoints.size(); i++)
 				{
@@ -219,7 +227,8 @@ namespace Egss {
 
 	void VoxelTransition::MeshBoundaryLayer(const VoxelField3D& field,
 		const glm::ivec3& min, const glm::ivec3& max,
-		int stride, unsigned int boundaryMask, int ratio, MeshData& data)
+		int stride, unsigned int boundaryMask, int ratio, MeshData& data,
+		const glm::ivec3* about)
 	{
 		glm::ivec3 from = glm::max(min, glm::ivec3(0));
 		glm::ivec3 to = glm::min(max, field.Size() - glm::ivec3(1));
@@ -227,7 +236,7 @@ namespace Egss {
 		for (int z = from.z; z < to.z; z += stride)
 			for (int y = from.y; y < to.y; y += stride)
 				for (int x = from.x; x < to.x; x += stride)
-					Cell(field, { x, y, z }, stride, boundaryMask, ratio, data);
+					Cell(field, { x, y, z }, stride, boundaryMask, ratio, data, about);
 	}
 
 }

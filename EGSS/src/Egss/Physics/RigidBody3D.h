@@ -160,6 +160,14 @@ namespace Egss {
 		// is holding -- Shape already says.
 		std::shared_ptr<const VoxelField3D> Voxels;
 
+		// **A point `d` from this body's position is at lattice coordinate
+		// `VoxelOrigin + (d - VoxelBias) / voxelSize`.** The lattice part is an
+		// integer and stays exact however large the field is; the bias is under
+		// a voxel by construction. See MakeSdf for the two ways of setting
+		// them, and why the bias cannot just be rounded off.
+		glm::ivec3 VoxelOrigin = glm::ivec3(0);
+		glm::vec3 VoxelBias = glm::vec3(0.0f);
+
 		// The boxes a Compound collider is made of. Shared for the same reason
 		// the fields are: a decomposed rock can be a few hundred of them, and a
 		// body is copied every time the world's vector grows.
@@ -479,8 +487,42 @@ namespace Egss {
 		// the field's origin, and a rotated distance field would need every
 		// query transformed into its frame. Not hard, and not needed until
 		// something wants a spinning cave.
+		//
+		// **Two frames, and which one a body is in.**
+		//
+		// This form says "my positions are the field's own world coordinates",
+		// which is where every caller was before there was a choice. Lattice
+		// zero with the field's origin as the bias is that statement written
+		// in the new terms, and it reduces to the *same expression* the old
+		// code evaluated -- not an equivalent one, the same one, so no demo
+		// that was already working moves by a pixel.
+		//
+		// An earlier attempt rounded the origin to the nearest lattice point
+		// and carried the remainder. OpenWorld's lattice is deliberately
+		// centred *between* points, so the rounding moved its ground by a
+		// quarter of a metre and 13.5% of its pixels with it.
 		static RigidBody3D MakeSdf(const glm::vec3& position,
 			const std::shared_ptr<const VoxelField3D>& voxels)
+		{
+			RigidBody3D body = MakeSdf(position, voxels, glm::ivec3(0));
+			body.VoxelBias = voxels->Origin();
+
+			return body;
+		}
+
+		// **`about` is the lattice point this body's frame is centred on.**
+		// Another body's position, minus this one's, is read as an offset from
+		// there -- so the pair never has to form a coordinate the size of the
+		// field.
+		//
+		// A planet passes the lattice point nearest whatever is standing on
+		// it, and its bodies' positions are measured from there. At 6,371 km a
+		// float carries half a metre, so a body's position in the field's own
+		// frame has no centimetres left in it before the field is even asked
+		// -- see `VoxelField3D::SampleDistanceFrom`.
+		static RigidBody3D MakeSdf(const glm::vec3& position,
+			const std::shared_ptr<const VoxelField3D>& voxels,
+			const glm::ivec3& about)
 		{
 			RigidBody3D body;
 			body.Shape = ColliderShape3D::Sdf;
@@ -488,6 +530,7 @@ namespace Egss {
 			body.Position = position;
 			body.PreviousPosition = position;
 			body.Voxels = voxels;
+			body.VoxelOrigin = about;
 			body.SetMass(0.0f);
 			body.RecalculateInertia();
 			return body;

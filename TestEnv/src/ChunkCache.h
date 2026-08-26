@@ -121,11 +121,27 @@ public:
 		m_Out.write(reinterpret_cast<const char*>(bytes.data()), (std::streamsize)bytes.size());
 		m_Out.flush();
 
+		entry.Chunk = chunk;
+
 		m_Index[Key(chunk)] = entry;
 		m_Written++;
 	}
 
 	size_t Entries() const { return m_Index.size(); }
+
+	// Which chunks the file holds. A procedural world's cache is a set of
+	// exceptions to the generator, and a caller that stores only what was
+	// edited needs the list back to know what to *not* generate.
+	std::vector<glm::ivec3> Chunks() const
+	{
+		std::vector<glm::ivec3> out;
+		out.reserve(m_Index.size());
+
+		for (const auto& [key, entry] : m_Index)
+			out.push_back(entry.Chunk);
+
+		return out;
+	}
 	unsigned int Hits() const { return m_Hits; }
 	unsigned int Misses() const { return m_Misses; }
 	unsigned int Written() const { return m_Written; }
@@ -143,11 +159,27 @@ private:
 	{
 		unsigned long long Offset = 0;
 		unsigned int Length = 0;
+		glm::ivec3 Chunk = glm::ivec3(0);
 	};
+
+	// **Twenty-one bits an axis, not ten.**
+	//
+	// This used to bias by 512 and pack into a thousand per axis, which is
+	// four times what OpenWorld's 800-voxel field needs and a two-hundredth of
+	// what a planet does: at 250 km a chunk index reaches 20,900, and every
+	// one past 511 aliased onto another chunk -- a cache that silently hands
+	// back the wrong ground. The same wrap the planet's own chunk key hit and
+	// was widened for, in a second place.
+	//
+	// The file is unaffected: a record carries its own coordinates, so this is
+	// only how the index is held in memory.
+	static constexpr int KeyBias = 1 << 20;
 
 	static size_t Key(const glm::ivec3& c)
 	{
-		return ((size_t)(c.z + 512) * 1024 + (size_t)(c.y + 512)) * 1024 + (size_t)(c.x + 512);
+		return ((size_t)(c.z + KeyBias) << 42)
+			| ((size_t)(c.y + KeyBias) << 21)
+			| (size_t)(c.x + KeyBias);
 	}
 
 	// Walks the records reading only their headers, skipping each payload with
@@ -191,7 +223,9 @@ private:
 			if (!f)
 				break;   // truncated final record -- everything before it stands
 
-			m_Index[Key({ coord[0], coord[1], coord[2] })] = entry;
+			entry.Chunk = { coord[0], coord[1], coord[2] };
+
+			m_Index[Key(entry.Chunk)] = entry;
 		}
 
 		f.close();

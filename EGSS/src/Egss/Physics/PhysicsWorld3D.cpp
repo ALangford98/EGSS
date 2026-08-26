@@ -160,7 +160,12 @@ namespace Egss {
 			glm::vec3 span = glm::vec3(body.Voxels->Size() - glm::ivec3(1))
 				* body.Voxels->VoxelSize();
 
-			outMin = body.Position + body.Voxels->Origin();
+			// Measured from the lattice point the body addresses the field
+			// from, which is the frame its own position is in.
+			// The field's low corner in this body's frame: lattice zero is
+			// `VoxelOrigin` steps below the point the frame is centred on.
+			outMin = body.Position + body.VoxelBias
+				- glm::vec3(body.VoxelOrigin) * body.Voxels->VoxelSize();
 			outMax = outMin + span;
 			return;
 		}
@@ -1008,17 +1013,52 @@ namespace Egss {
 	// re-measured along it -- is identical.
 
 	// A sphere of `radius` about `centre`, both in the field's frame.
-	static bool SphereOnSdf(const VoxelField3D& field, const glm::vec3& centre,
-		float radius, FieldHit& out)
+	// **The gradient, grouped the way `SampleNormal` groups it.**
+	//
+	// `SampleNormalFrom(centre - bias, about)` is the same value and not the
+	// same arithmetic -- it computes `(centre - bias) + h` where the original
+	// has `(centre + h) - bias`, and float addition does not associate. Those
+	// last bits reach the contact normal and then the solver: writing it the
+	// other way moved 34 of OpenWorld's pixels, which is small and is still a
+	// simulation that no longer reproduces itself.
+	static glm::vec3 NormalOnSdf(const VoxelField3D& field, const glm::vec3& centre,
+		const glm::ivec3& about, const glm::vec3& bias)
 	{
-		float distance = field.SampleDistance(centre);
+		const float h = field.VoxelSize();
+
+		auto at = [&](const glm::vec3& offset)
+		{
+			return field.SampleDistanceFrom(centre + offset - bias, about);
+		};
+
+		glm::vec3 gradient(
+			at({ h, 0.0f, 0.0f }) - at({ -h, 0.0f, 0.0f }),
+			at({ 0.0f, h, 0.0f }) - at({ 0.0f, -h, 0.0f }),
+			at({ 0.0f, 0.0f, h }) - at({ 0.0f, 0.0f, -h }));
+
+		float length = glm::length(gradient);
+
+		return length > 1e-12f ? gradient / length : glm::vec3(0.0f, 1.0f, 0.0f);
+	}
+
+	static bool SphereOnSdf(const VoxelField3D& field, const glm::vec3& centre,
+		float radius, FieldHit& out, const glm::ivec3& about,
+		const glm::vec3& bias)
+	{
+		// `centre` is already relative to the body, and the body's frame is
+		// centred on the lattice point `about` -- so the two of them never
+		// have to form a coordinate the size of the field. With `about` zero
+		// and the bias at the field's origin -- what `MakeSdf` gives a body
+		// that was not told otherwise -- this is the old `SampleDistance`
+		// expression to the bit, which is what keeps existing callers put.
+		float distance = field.SampleDistanceFrom(centre - bias, about);
 
 		// Negative once the centre is inside, so this is the same one-line test
 		// the heightfield version makes and needs no second case for "under".
 		if (distance >= radius)
 			return false;
 
-		glm::vec3 normal = field.SampleNormal(centre);
+		glm::vec3 normal = NormalOnSdf(field, centre, about, bias);
 
 		out.Surface = centre - normal * distance;
 		out.Centre = centre;
@@ -1035,7 +1075,7 @@ namespace Egss {
 			return false;
 
 		FieldHit hit;
-		if (!SphereOnSdf(*b.Voxels, a.Position - b.Position, a.Radius, hit))
+		if (!SphereOnSdf(*b.Voxels, a.Position - b.Position, a.Radius, hit, b.VoxelOrigin, b.VoxelBias))
 			return false;
 
 		return ContactFromField(ia, ib, b.Position, &hit, 1, out);
@@ -1071,7 +1111,7 @@ namespace Egss {
 			float t = samples > 1 ? (float)i / (float)(samples - 1) : 0.0f;
 
 			FieldHit hit;
-			if (SphereOnSdf(*b.Voxels, p + (q - p) * t, a.Radius, hit))
+			if (SphereOnSdf(*b.Voxels, p + (q - p) * t, a.Radius, hit, b.VoxelOrigin, b.VoxelBias))
 				hits[count++] = hit;
 		}
 
@@ -1108,7 +1148,7 @@ namespace Egss {
 			// Radius zero, so `SphereOnSdf` reduces to "is this point inside",
 			// which is what a corner is asking.
 			FieldHit hit;
-			if (SphereOnSdf(*b.Voxels, local, 0.0f, hit))
+			if (SphereOnSdf(*b.Voxels, local, 0.0f, hit, b.VoxelOrigin, b.VoxelBias))
 				hits[count++] = hit;
 		}
 
@@ -1889,7 +1929,8 @@ namespace Egss {
 				// what makes this terminate rather than creep down by a fixed
 				// increment chosen by guesswork.
 				const float voxel = body.Voxels->VoxelSize();
-				const float floorLocal = body.Voxels->Origin().y;
+				const float floorLocal = body.VoxelBias.y
+					- (float)body.VoxelOrigin.y * voxel;
 
 				// Capped for the same reason the raycast's step is: an
 				// unallocated chunk reads `Far`, which is a sentinel and not a
@@ -1897,7 +1938,8 @@ namespace Egss {
 				const float maximumStep = (float)VoxelField3D::ChunkSize * voxel;
 
 				float y = local.y;
-				float distance = body.Voxels->SampleDistance({ local.x, y, local.z });
+				float distance = body.Voxels->SampleDistanceFrom(
+					glm::vec3(local.x, y, local.z) - body.VoxelBias, body.VoxelOrigin);
 
 				// Already underground: the surface is at the point itself.
 				float crossing = y;
@@ -1909,7 +1951,8 @@ namespace Egss {
 					// parallel to a wall inches down forever.
 					y -= glm::clamp(distance, voxel * 0.25f, maximumStep);
 
-					float next = body.Voxels->SampleDistance({ local.x, y, local.z });
+					float next = body.Voxels->SampleDistanceFrom(
+						glm::vec3(local.x, y, local.z) - body.VoxelBias, body.VoxelOrigin);
 					if (next <= 0.0f)
 					{
 						// Bisect the last interval. Ten halvings of a voxel is
@@ -1922,7 +1965,9 @@ namespace Egss {
 						for (int i = 0; i < 10; i++)
 						{
 							float middle = (above + below) * 0.5f;
-							if (body.Voxels->SampleDistance({ local.x, middle, local.z }) <= 0.0f)
+							if (body.Voxels->SampleDistanceFrom(
+								glm::vec3(local.x, middle, local.z) - body.VoxelBias,
+								body.VoxelOrigin) <= 0.0f)
 								below = middle;
 							else
 								above = middle;

@@ -920,13 +920,23 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       sparse chunk store in the engine (the dense one wanted 1.1e10 GB at true
       scale), a 21-bit chunk key, a relief spectrum with a local layer on top,
       and distance proxies so one depth buffer covers 0.15 m to 4.5e12 m
-- [ ] **A local origin for the surface, which is what 1:1 needs.** Chunk meshes,
-      plant positions and physics bodies are planet-fixed floats, so the spacing
-      of representable positions at the surface is `R / 2^23` — 30 mm at 250 km
-      and 0.76 m at Earth's own radius, which is half a voxel and turns the
-      meshes to rubble. Carrying them about an origin that follows the player
-      lifts the ceiling; it touches `VoxelField3D`, the mesher, the SDF collider
-      and the plant placement
+- [x] **A local origin for the surface** — `PositionFrom` and
+      `SampleDistanceFrom` subtract on the integers, chunk meshes carry their
+      own origin, plants carry their chunk's, and the surface physics world is
+      centred on the landing site's lattice point. Placing a mesh vertex at 1:1
+      went from 0.571 m of error — 36% of a voxel — to a micrometre, and
+      `--earth-radius 6371000` now streams, renders and can be stood on, with
+      escape velocity within 0.014% of the real 11,186 m/s. Cost two false
+      starts, both caught by OpenWorld: rounding a field origin that is
+      deliberately half a voxel off (13.5% of its pixels) and re-associating a
+      float addition (34 of them)
+- [ ] **Sample the density in double, which is the other half of 1:1.**
+      `FillChunk` evaluates the generator at `PositionOf`, so at Earth's own
+      radius the sample lattice jitters by up to half a voxel. It displaces the
+      terrain rather than breaking it — neighbouring chunks read the same cell
+      values and still agree — but it is the next thing in the way of the scale
+      actually being used. The same applies to the terrain shader's height,
+      which is `world - u_Origin` in float on the GPU
 - [x] **Instance the trees** — a landed frame went from about 23,000 draw calls
       to 1,001, and from 16.66 M triangles to 9.49 M once trees behind the camera
       stopped being submitted. Needed instancing in the engine: a divisor on
@@ -957,6 +967,45 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       the LOD seam residual and a sphere hits it three times harder than a flat
       field — 25 of 82 transition chunks on a landed Earth. Invisible today only
       because the horizon sphere is behind the holes
+- [x] **Biomes, out of the drainage rather than out of noise** — Priority-Flood
+      from the sea, steepest descent, flow accumulation, and moisture and
+      warmth derived from the result. Verified by conservation: the water
+      arriving in the sea is the land's own area, 0.000% out, with no cell left
+      undrained. The colour rule and the tree placement both read the two
+      fields where they used to read latitude
+- [x] **Editing and edit persistence on a planet** — left mouse digs, right
+      fills, and only the chunks somebody changed are stored, so the world
+      stays procedural. Verified by carving a hole, discarding all 16,039
+      resident chunks of voxels, regenerating from scratch and finding the same
+      hole to the centimetre. Found a latent streaming bug on the way
+      (`ReleaseBeyond` left the scan watermark past the chunks it released) and
+      a `ChunkCache` key that aliased above 512 chunks an axis
+- [x] **Water where water can get to** — the sea is drawn from the drainage
+      pass's wet mask rather than from an altitude, so 9,978 km² of ground
+      below sea level is correctly dry, lakes sit at their own spill heights
+      (level to 0.00000 m), and 185 basins too arid to hold one are salt flats
+- [x] **Near-field water, at the resolution of the ground** — `SurfaceWater`,
+      a 128×128 grid of columns over the streamed region, flooded from its rim
+      against the terrain the mesher actually cut. Verified as the requirement
+      was stated: a pit 0.75 m below the waterline and 76 m from water stays
+      dry, and fills after 74.2 m of channel is cut to it. Every sheet level to
+      0.00000 m
+- [x] **A ship that is a physical object to get into** — a lander body that
+      comes down with you, stands where it landed, and has to be walked back to
+      before `L` will lift off. Found a camera that had been one step of
+      planetary rotation — 7.3 m — away from the player for as long as walking
+      has existed
+- [ ] **Water that takes time to arrive.** The fill is a re-flood, so it is the
+      right end state and shows nothing moving. A volume-conserving relaxation
+      over the same columns — move a bounded amount toward equalising levels
+      each step — would turn it into flow without changing what it converges to
+- [ ] **Water in a tunnel.** A column has one water surface, so digging *under*
+      a ridge does not carry water through it. Wants either a small number of
+      surfaces per column or a genuinely volumetric store near the player
+- [ ] **Rivers, drawn.** Flow accumulation names every channel, but at 1.5 km a
+      texel a "river cell" is a 1.5 km swath. Rivers need either a much finer
+      local pass or a channel network carried as geometry rather than as a
+      raster
 - [ ] **Swimming, or a coast that stops you.** The sea is a shell drawn over the
       terrain and the player walks under it. Landing avoids that now and the
       panel warns before you press `L` over water, but walking into the sea from
@@ -1182,6 +1231,764 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-26 (one microphone, two pumps, and which one is broken)
+
+**A single channel carrying two sources is underdetermined, so the whole
+question is what breaks the symmetry between the machines.** No inter-aural
+delay, no level difference, nothing to beamform with. The premise for this one
+was the hard version: two nominally identical fixed-speed pumps on a shared
+grid, one microphone, and a fault to place on one of them. Fixed speed removes
+the textbook answer -- separating the two harmonic combs -- because the combs
+land on top of each other.
+
+What is left is that the two machines stand in different places in the same
+room, and a room is a filter. Pump A reaches the mic through H_A and pump B
+through H_B, so anything a pump emits arrives wearing its own channel's
+colouration. With a healthy baseline recorded for each machine alone, that
+becomes a regression: subtract both baselines from the mixture and fit what is
+left as a non-negative combination of the two, and the coefficients are the
+fractional rise in each machine's own band energy. The unknown fault spectrum
+cancels in the ratio.
+
+**The failure mode is in the algebra rather than hidden in the code**, which is
+the reason this method was worth building over the alternatives. If the two
+baselines become parallel -- two pumps equidistant in a symmetric room -- the
+design matrix is rank deficient and no attribution exists at any signal to
+noise ratio. The condition number of that 2x2 system is therefore a *site
+survey* number: it says whether a microphone position is any use before anyone
+installs one. Measured in the demo's own room, 2.4 asymmetric against 12.4 with
+the pumps mirrored about the mic, and the second refuses to attribute a fault
+it can plainly detect.
+
+Four things were wrong on the way, and all four were found by a number
+disagreeing with arithmetic rather than by anything looking wrong.
+
+**The PSD summed to N times what it should.** A sine of amplitude A has mean
+square A^2/2, and the Welch estimate came out 4095.96 times that -- a
+suspiciously round number, and exactly the FFT size, which said the fault was a
+missing constant rather than a broken transform. The normalisation now divides
+by the transform length and the check is part of the file's contract.
+
+**Every tolerance in the solver was dimensional.** `fabs(det) > 1e-20` compared
+a determinant carrying the units of the basis to the fourth power against a
+fixed epsilon; the baselines are PSD bins around 1e-8, so the determinant sits
+near 1e-27 and the guard failed on every call. The two-variable NNLS silently
+returned its one-variable fallback for ever, which looks exactly like a real
+answer because one of the two pumps genuinely does come out at zero. The basis
+is now normalised to unit norm before solving, so every epsilon is a pure
+number. **The tell was the error bars: all of them exactly zero.**
+
+**Smoothing the spectrum destroys the method, which is the opposite of the
+usual advice.** The first version used a coarse FFT and a moving average, on
+the reasoning that room colouration is broad and resolution could be traded for
+variance. Measured at a 512-point transform, the correlation between the two
+baselines rose from 0.930 to 0.987 as smoothing went from none to +/-4 bins --
+and transform length pulls the same lever the other way, the unsmoothed
+correlation running 0.964 at 256 points, 0.930 at 512 and 0.754 at 2048 --
+because what actually separates two room paths is the fine comb structure their
+reflections cut into the spectrum, and a moving average is precisely the
+operation that removes it.
+Finer transforms, no smoothing.
+
+**The fit has to be done in sub-bands.** Its model needs the fault's own
+spectrum to be flat across whatever is fitted, and a bearing resonance is not
+flat across two kilohertz. Fitted as one band the misfit ran 60x the estimator
+noise, the error bars had to be widened to compensate, and a *larger* fault
+became harder to place than a small one. Split into eight, each fit is honest
+and they are combined by inverse covariance: fit quality went 0.20 -> 0.91,
+reduced chi-square 59.5 -> 6.6, and attribution started working in both
+directions instead of always naming pump A.
+
+**Detection and attribution turned out to be different questions**, and
+conflating them was the last bug. Testing each coefficient against zero asks
+"is A worse than its baseline" and "is B worse than its baseline" separately,
+and on a single-machine fault both answer yes -- so every fault was reported as
+"both", while the correct pump always had the larger coefficient. The ranking
+was never wrong; the test was asking the wrong thing. Now the sum answers "is
+anything wrong" and the difference answers "which machine", the latter needing
+the covariance term because the two coefficients are strongly anti-correlated.
+A related subtlety: those statistics use the *unclamped* estimates. Clamping at
+zero is right for a health score and wrong for a test statistic -- it makes the
+sum one-sided, and a 3 sigma threshold that should fire on 0.1% of clean
+windows was firing on one window in five.
+
+Three other methods are in the demo because their limits are the finding. A
+broadband level meter detects and cannot attribute, by construction. The
+spectral residual isolates what broke and still not which machine. Envelope
+demodulation -- the standard bearing method -- works exactly as well as the two
+shaft speeds differ, and the demo reports the Fourier limit directly: two
+defect lines 0.7625 Hz apart need a window of at least 1/0.7625 = 1.31 s, and
+measured, a 0.8 s window reports them unresolvable and a 16 s window separates
+them by 10.1 dB against 4.5 dB. Worth stating that a shared grid locks the
+*line* frequency and not the shaft: slip tracks load, so two unequally loaded
+4-pole motors sit at 24.75 and 24.50 Hz and that 0.25 Hz gap resolves in four
+seconds. Whether it exists on a given site is a measurement, not an assumption.
+
+The cepstral method is the one with a hand-check the code cannot fake. An echo
+at delay d becomes an additive ripple in the log spectrum, so it appears as a
+cepstral peak at quefrency d -- and d is predictable from the traced geometry as
+(reflected path - direct distance)/343, arithmetic the cepstrum is never told.
+Predicted 0.004665 s and 0.015160 s for the two pumps in the test room;
+measured 0.005000 and 0.015000, which is one analysis bin. On a synthetic echo
+at 137 samples the peak lands on sample 137 exactly.
+
+Scored against its own ground truth over a scripted run covering all four
+cases -- neither faulty, A only, B only, both -- the channel method is correct
+on every settled window and never names the wrong machine; the only
+disagreements are the one analysis window of lag at each transition, which an
+8 s window cannot avoid. Frame cost 0.08 ms in `OnFixedUpdate`.
+
+`TestEnv/src/PumpSignal.h` holds the arithmetic and includes no engine headers,
+so it is checkable in a second rather than in a build.
+`TestEnv/src/PumpDiagnostics.h` builds the room, traces it with `Acoustics3D`,
+and draws the answer. **What you hear and what is measured are deliberately not
+the same signal**: the mixer is stereo and pans each voice by direction, which
+would hand the analysis a left/right cue a real mono microphone does not have,
+so the speakers get `PlayAt` with the traced reflections and the numbers get a
+mono sparse convolution built from the same trace.
+
+### 2026-08-26 (a landscape you can see, and the ten seconds that were water)
+
+Three complaints, all of them right: the planet had no landscapes, the water
+did not work, and landing was unusable. Each one measured before anything was
+changed, and each measurement said something different from what the symptom
+suggested.
+
+**The relief existed and none of it was at a size you could see.** The
+planetary spectrum is a 1/f fractal anchored at `FeatureSize`, and 1/f is the
+problem: Earth's 625 m of relief spread from a 28.75 km wavelength downward
+puts `625 * 400/28750 = 8.7 m` of ground inside the four hundred metres you can
+see from head height. Measured over two dozen sites on the sphere: **8.5 m**.
+That is a lawn, and it is *correct* for a fractal of that shape -- which is why
+adding octaves could never have fixed it. An octave fine enough to be seen is
+an octave whose amplitude is a centimetre.
+
+So `Settings::Landscape` is its own layer with its own anchor: ridged, six
+octaves from 4.2 km down, 700 m of amplitude, masked by a slow uplift field so
+that mountain country is sixty kilometres apart and the plains between keep 18%
+of it. A real landscape is not self-similar; it has a scale, and that scale
+comes from erosion and uplift rather than from the shape of the planet. The
+same two dozen sites now measure **49 m of relief inside 400 m** on average,
+133 m in the ranges and 18 m out on the flats, and 340 m inside 1.6 km where
+the mountains are.
+
+**And past four hundred metres there was no geometry at all.** Streamed chunks
+stop at the load radius; beyond it the planet is drawn as its stand-in sphere,
+inset below the deepest valley so real terrain always wins the depth test. With
+the landscape layer in, that inset is **879 m** -- so the ground ran out at four
+hundred metres and the horizon was a smooth ball most of a kilometre below your
+feet. A 300 m mountain clears the horizon from `sqrt(2 R h) = 12.2 km` away
+here, forty times further than anything was being drawn.
+
+`HorizonMesh` is a polar grid about the landing site, 340 m to 23 km, displaced
+by the same `Relief` the voxels come from. Rings spaced geometrically, so a
+quad subtends the same angle at both ends: 16 m between samples at the near
+edge and 665 m at the far one, 18,432 vertices for the other twenty-two
+kilometres of the world. Where it overlaps the chunks it is sunk by four
+millimetres per metre out, which is 1.2 m at the seam and invisible at 0.17
+degrees, and guarantees the real geometry is in front. It agrees with the
+generator to **26 mm** on the inner ring, where the sink is zero.
+
+**Landing cost 32 s in Debug and 24.6 s of it was water.** The attribution was
+not close to the guess. Filling chunks was 8.5 s, meshing was inside that, the
+sixteen-body orbital integration was **4 ms**, and the rest was the surface
+water being rebuilt fifteen times while the ground streamed in -- correctly,
+since water here is a consequence of the shape of the ground and the ground
+kept arriving.
+
+The fix is to stop the ground arriving in pieces. `PrefillSite` streams the
+whole load radius with a budget nothing can exhaust, before the first frame is
+drawn, and the water is built once on ground that is already finished.
+Repeatedly, until a pass changes nothing: a chunk is only meshed once its seven
+high neighbours are filled, so the outermost shell's meshes always lag their
+fills by a pass.
+
+**Then the fill itself, which was 93% of what was left.** `Density(p)` is
+`|p| - Radius - Relief(p/|p|)`, and the third term is thirteen octaves of value
+noise -- measured at 1.74 ms for a chunk's 4,096 voxels against 0.146 ms to
+march the same chunk into triangles. It is a function of *two* variables being
+sampled over three: every voxel in a radial column has the same direction and
+therefore the same relief, and the cube holds sixteen of them.
+
+So the relief over a chunk is sampled onto a small grid in the tangent plane
+and read back bilinearly, in gnomonic coordinates -- `u = (p.t)/(p.n)` --
+which is scale-invariant, so a voxel's `(u, v)` costs three dot products and no
+normalise at all, and which inverts exactly, so the grid is built at precisely
+the directions it is later read at. Nothing can crack: `FillOneChunk` writes a
+chunk's own cells and no others, so every lattice point takes its value from
+exactly one grid. **1,610 chunks in 2,795 ms became 286 ms.**
+
+The spacing is solved for rather than picked, and the first attempt got the
+criterion wrong. Sixteen samples across the shortest wavelength is right only
+while every term has the same amplitude, and the landscape layer's finest
+octave is 22 m at 131 m against the planetary spectrum's 0.6 m at 56 m --
+**six times the curvature at twice the wavelength**. The wavelength rule gave
+3.51 m spacing and 0.26 m of error, a sixth of a voxel. Solving
+`h = (1/pi) sqrt(2 tol / max(A/L^2))` for two per cent of a voxel gives 1.55 m
+and **98 mm worst, 3.2 mm mean** -- reported in the log on every landing,
+because it is an approximation and the number should not have to be taken on
+trust. It is not the quadratic bound, and the reason is that `1 - |n|` has a
+corner where the noise crosses zero: a kink is not a sinusoid, and error across
+one falls off linearly.
+
+**The default landing site is a constant, and that is the load-bearing part.**
+The demo opened four Earth radii out looking at a blue marble; it now opens
+standing beside the lander, which is where the game this is a prototype for
+spends ninety per cent of its time. The direction was chosen by scoring forty
+thousand points on the Fibonacci spiral for dry ground, standable slope, relief
+close enough to see, high ground within six kilometres and water within walking
+distance. It measures 21 m above sea level, slope 0.103 where the lander
+stands, 233 m of relief inside 400 m, 187 m of high ground within 6 km and the
+shore 150 m away -- a beach at the foot of a mountain. `--orbit` gets the old
+opening back.
+
+Fixed means it can be kept. `OpenSiteCache` stores the prefilled chunks beside
+the edits, keyed by the same density fingerprint so changing the terrain throws
+them away rather than loading a landscape that no longer exists. Only the
+chunks that hold something, and only while prefilling -- caching sky and rock
+would multiply the file by twelve to save nothing, and caching everything a
+walk touches is how a site cache becomes unbounded. Verified bit-exact: a cold
+run and a warm one produce identical frames.
+
+    landing, Debug      before          after
+    to the first frame  8.4 s           12.9 s   (10.4 s of prefill -> 3.1 s)
+    then                400 frames at   no landing phase; 27 ms a frame
+                        94-133 ms
+
+**The clock is wound, and the sun goes behind you.** At `m_Time = 0` the spin
+is the identity, so whether the default site opens in daylight was decided by
+an epoch chosen for the orbits. It opened at dawn. Winding the clock is the
+physical answer -- the sun is where the sun is, and this is what time it is
+when you arrive -- and it costs a fraction of a day of orbital motion. The
+first version wound it to two hours before local noon and produced a black
+mountain against a blue sky, because facing the high ground with the sun beyond
+it means facing the one face of it the sun does not reach.
+
+**Which is also why the sky is now a light.** Terrain was `0.05 + 0.95 *
+diffuse` and everything else `0.06 + 0.94 * diffuse`, where the floor existed
+to stop pure black and produced exactly that: five per cent of a dark green is
+four units out of 255. On a body with air a slope facing away from the sun is
+lit by the whole dome above it, which is why a shaded hillside on Earth is
+blue-grey and the same hillside on the Moon is black -- `SkyLight` is zero
+without an atmosphere, so both come out of one expression. `0.5 + 0.5 *
+dot(normal, up)` is the share of the dome a surface can see; it is geometry,
+not a tuning constant. Two things had to be got right: `Scatter` is an
+extinction ratio and not the colour of the sky, so using it directly turned
+every hillside teal, and the strength is a third of the direct beam rather than
+the physical fifth, because the frame is written to an 8-bit buffer with no
+exposure curve on it.
+
+**A tree through the hull, twice.** The forest vanished at the default site --
+zero plants in 1,467 chunks -- and the reason was a line whose comment claimed
+it put clearings in a wood. It sampled noise at `Radius / (FeatureSize * 1.5)`,
+which on Earth is 5.8 cycles around the whole planet: a 43 km wavelength, which
+over the four hundred metres you can see is not a field but a constant. Either
+the whole landing site was forest or none of it was, and thirty-five per cent
+of the planet drew the short straw. Measured there: 20,538 candidates, 4,188
+reaching that line, **every one rejected**. Six hundred metres is a clearing
+you can walk across.
+
+Then a tree came up through the lander, and a twenty-metre clearing did not
+stop it. `m_SiteFixed` is the lattice point nearest where the ship *arrived*,
+which is twenty metres up, so a straight-line distance put a tree standing on
+the pad at exactly the clearing radius. A clearing is a radius on the ground;
+the radial component comes out.
+
+**Water was tinted by the view angle and nothing else.** `mix(u_Deep,
+u_Shallow, facing)` says how much sky is being reflected and says nothing about
+what is underneath, so a puddle two centimetres deep and a lake forty metres
+deep were the same colour and the surface read as a blue sheet laid over the
+ground. The flood already knows the depth -- the level it settled at, less the
+ground it settled on -- and it travels in a texture coordinate the mesh was not
+using. Beer's law on twice that depth, since light goes down, off the bottom
+and back up, and the same number floors the alpha so shallow water is
+see-through and an opaque sheet no longer runs up the beach. The view angle
+keeps its real job as Fresnel.
+
+Verified: Solar byte-identical across Debug, Release and Dist and between runs,
+and identical whether the site cache was cold or warm. `VoxelPlanet.h`,
+`SurfaceWater.h` and `HorizonMesh.h` are included by `SolarSystem.h` and
+nothing else, and no engine file was touched, so no other demo can have moved.
+
+### 2026-08-26 (a ship to get back to, and a camera seven metres from the player)
+
+**The vehicle did not exist.** `L` toggled between a physics capsule and a
+camera, and the ship was only the fact that you could leave. Making it an
+object is what turns a landing into a place you have to get back to -- and it
+cost almost nothing, because the player was already a rigid body and gravity
+here is applied per body rather than as a world vector.
+
+A lander built from three primitives and no asset file: a tapered hexagonal
+hull, three splayed legs and a nozzle, 66 triangles. It comes down with you,
+stands where it landed, and `L` now refuses to lift off unless you are within
+six metres of it -- which is the whole loop the demo was missing. Walk, dig,
+and then find your way back to the one object that can take you off.
+
+Underneath it is a capsule rather than a box: the narrowphase only tests a
+box's corners against a distance field, so one resting on rough ground sinks a
+corner or jitters, while a capsule is sampled along its segment. It is held
+upright the same way the player is -- set, not solved -- because a capsule left
+to the solver tips over on a slope and then rolls to the equator, there being
+always a downhill on a sphere. The first one did exactly that and ended up on
+its side with its legs out sideways. It is still a dynamic body, so digging the
+ground out from under it drops it; it just does not lie down.
+
+**Then it was in the wrong place, and the ship was not the thing that was
+wrong.** The physics said the hull was 5.12 m away and 0.2 degrees off the
+view; it drew at the edge of the screen. Measuring the *player* the same way
+gave the answer: **1.20 m expected, 7.37 m measured**.
+
+At 250 km with an hour to the day the surface moves 436.3 m/s, and a sixtieth
+of that is 7.3 m. The walking camera was converted from the planet's frame into
+scene coordinates inside the movement code, using the spin angle as it stood
+*before* the clock advanced -- and everything else in that frame is drawn with
+the angle as it stands after. The camera sat one step of rotation away from the
+body it belongs to, and the ground sat seven metres from where the player was
+standing on it.
+
+**Invisible for as long as it has existed**, because everything in that frame
+moved together and the player is not drawn. The lander is the first object
+whose position on screen could be predicted from the physics, and it came out
+wrong by exactly one step of spin. The surface camera is kept in the planet's
+own frame now and converted once, at the end of the step, after the clock. The
+player measures 1.20 m from the camera, which is the eye height, to the
+centimetre.
+
+Two smaller things fell out of it. The rocks were scattered over a forty-metre
+square centred on the touchdown point -- which is also where the ship stands and
+where the player steps out -- so the moment the player stopped starting *at* the
+landing point, a 1.12 m boulder sat 2.43 m from the eye and filled 27 degrees
+of the view. Nothing was wrong with it; it was simply in the way. They scatter
+in an annulus from 11 m out now. And the player steps out of the *back* of the
+hull along the heading it came in on, so the thing it has to walk back to is in
+front of it when it arrives, rather than off the edge of the screen.
+
+Landed captures move, because the camera did. They are byte-identical across
+all three configs and between runs; every other demo is unchanged.
+
+
+### 2026-08-26 (water at the resolution of the ground)
+
+**The global drainage grid is right and cannot be drawn.** A texel is 1.5 km;
+a lake is smaller than one. Yesterday's attempt to draw a surface from it put
+8.14% of the frame in the sky. So the same algorithm now runs again, locally,
+over the terrain that is actually there.
+
+`SurfaceWater` is a grid of **columns** over the streamed region -- 128 by 128,
+about six metres apart -- each holding the radius of the rock and the radius of
+the water above it. Two things follow from columns rather than voxels. A lake
+at rest is one number a column instead of a stack of full cells, which is what
+makes it affordable to re-run live. And "level" means *radius from the planet's
+centre*: over 800 m of a 250 km sphere a tangent plane is out by 0.32 m, which
+would be a fifth of a voxel of slope across every lake.
+
+Priority-Flood again, and seeded by the **rim** of the region rather than by
+the sea -- water can leave across the edge, at whatever height the planet-wide
+answer says it stands at out there, which is how the local answer and the
+global one agree at the join. Interior columns are never seeded: whether they
+hold water is exactly what is being asked.
+
+**The requirement, tested as stated.** Digging down to the level of the sea in
+the middle of a continent must not produce water; cutting a channel to it must:
+
+```
+before: 10654 wet columns, 30292.7 m of standing water; digging into
+        ground 0.94 m above a waterline 76.64 m away
+after a 1.1 m pit, floor 0.75 m below the waterline: 10654 wet columns
+  [ok ] a hole below the waterline with no path to water stays dry
+the channel reached water after 74.2 m of digging (88 bites of 0.8 m)
+  [ok ] and fills once a channel is cut from it to something wet
+```
+
+Two holes at the same depth; the only difference is whether anything connects
+them. That is the whole model.
+
+**The test was wrong five times before the code was once.** Worth listing,
+because they were five different ways of being wrong: a pit dug at a fixed
+distance landed in a lake, and the volume going up was read as a failure when
+what it had done was deepen a lake; a rim of 0.55 m was removed by the same 8 m
+sphere that made the hole, so the pit connected on the stroke that dug it; a
+demand for a four-metre rim two dozen metres from water found nothing on a
+gentle shore; a neighbour search ran off the end of its rows and reported water
+682 m away from a scan that only looks 84 m; and a channel of sixteen bites at
+0.8 m gave up eleven metres into a seventy-six metre walk. The scenario is
+derived from the terrain now -- find the dry column furthest from any water and
+size the pit to it -- rather than prescribed.
+
+**Two real defects came out of it.** The ground was read from the *generator*
+at build time and from the *field* after a dig, and those disagree by a few
+centimetres -- enough, at a waterline, to put twenty-four columns under water
+for a pit narrower than one of them. The ground had not moved; the question
+had. One source now, the field, with the generator as the fallback where
+nothing has streamed yet and a rebuild each time materially more ground
+arrives. And the wet threshold was an epsilon, which is enough to stop float
+equality calling dry land wet and not enough once the ground is a sampled,
+interpolated surface that dips a few centimetres everywhere: a quarter of a
+voxel is the shallowest puddle the terrain can represent.
+
+**Every sheet is level to 0.00000 m** -- once the measurement stopped comparing
+across the seeded rim. It reported 0.36 m at two columns in and nothing at six,
+which is how far the planet-wide map's disagreement (up to 2.45 m) reaches
+before the local flood overrides it. The drawn mesh leaves the same six columns
+out, so what is on screen is exactly what the local terrain decided.
+
+**What this does not do**, stated so it is not mistaken for done. The fill is
+instantaneous: a dig re-runs the flood, which gives the correct *end state* and
+does not show water moving. And a column has one water surface, so digging
+*under* a ridge does not carry water through it -- digging *across* one does,
+which is the case that was asked for.
+
+Captures byte-identical across all three configs and between runs; every other
+demo is unchanged.
+
+
+### 2026-08-26 (water where water can get to, and a lake that is smaller than a texel)
+
+**The sea was a shell at a radius, which says one thing: that water is
+everywhere below a given altitude.** That is the thing this was always meant to
+stop saying. The drainage pass already knew better; it just was not being
+asked.
+
+Three corrections to the model, each of which the report now measures:
+
+**The flood was seeded from every cell below sea level.** Connected to the
+ocean or not -- so a basin ringed by land and floored below sea level was
+seeded *as* ocean and came out full, with no path by which a drop could have
+reached it. Flood-filling from the actual sea instead leaves it as what it is.
+Lakes went from 6.17% of the land to 13.74% as enclosed basins stopped being
+counted as sea.
+
+**Every hollow filled, which assumes it rains everywhere and never
+evaporates.** Death Valley is below sea level and bone dry. Each basin is taken
+as a whole now -- its own connected component -- and kept or dropped on the
+moisture over it, as a whole because deciding cell by cell leaves a lake with
+holes in it. **185 basins** are too arid to hold one.
+
+Which gives the number the whole design exists for:
+
+```
+water: 11.95% of land under a lake, every lake level to within 0.00000 m of
+       itself, no ground stands above its own surface by more than 0.00000 m
+and 9978 km^2 of land sits below sea level and dry, across 185 basins too arid
+       to hold a lake
+```
+
+The sea shader now discards on that mask rather than re-deriving a coastline
+from the height channel, which could only ever express "below sea level".
+
+**Three of my own measurements were wrong before any of the code was.** Worth
+listing, because each was a different way of being wrong:
+
+- The levelness check compared any two adjacent wet cells -- which includes two
+  *different* basins meeting at a saddle, and those are supposed to differ by
+  exactly the height between their spill points. It reported 25 mm of slope on
+  lakes that were flat all along. Checked per connected basin now.
+- With that fixed it reported 40 mm, and **that one was real**: the priority
+  queue was ordered by the epsilon-filled surface while the *level* was being
+  propagated. Priority-Flood is correct because a cell is first reached along
+  its lowest path, and "lowest" has to mean the same thing as the value being
+  carried. Ordering on the level took it to exactly zero.
+- The dry-below-sea-level count skipped every cell below sea level on its way
+  in, so it could only ever report zero, which it duly did for two rounds.
+
+**And a near-field water surface was built, measured, and thrown away.** The
+ocean sphere is one radius, which is no use for a lake two hundred metres up a
+valley, so lakes got a grid on the water surface over the landing site -- each
+vertex at the height the drainage pass says water stands at there.
+
+It drew **8.14% of the frame as water standing in the sky**. Not a bug in the
+mesh: a texel of the drainage grid is 1.5 km of ground, and the terrain you
+stand in is 1.5 m voxels of a rougher surface with more octaves in it. Asking
+the real generator whether each vertex had water above the actual ground did
+not help -- 48.5% of them did, and the quad count did not change by one --
+because what is wrong is not the *height* of the surface but its **extent**:
+the map's basin does not exist in this terrain at this resolution, so its
+surface cuts through hillsides that the map cannot see.
+
+So the grid can say where lakes *are* and cannot say where their shores are.
+Near-field water needs its own pass at voxel resolution, which is the local
+cellular automaton that was always the second tier of this item -- and which
+now has a measured reason to exist rather than an assumed one. The tile is
+gone; the model it was drawing is not.
+
+Captures byte-identical across all three configs and between runs.
+
+
+### 2026-08-26 (a spade, and a hole that stays dug)
+
+**On a planet, eviction is regeneration.** Chunks are streamed from a density
+function and thrown away behind you, so a hole dug and walked away from healed
+itself the moment the chunk was released. That is the thing standing between
+the demo and water you can dig down to, so it went first.
+
+The pieces existed and none of them were wired up: `EditSphere` in the field,
+`ChunkCache` next door in OpenWorld, `SaveChunk`/`LoadChunk` in between. What
+had to be worked out is *what to store*. OpenWorld caches everything, because
+there a cache buys time and the world fits in a file. Here it buys **data**, and
+a planet does not fit in anything -- so only the chunks somebody changed are
+written, the fill checks that set before it generates, and everything else stays
+procedural.
+
+Left mouse digs, right fills, on the fixed step rather than in an event handler
+-- the mouse is in the replay stream and events are not, so a session spent
+digging records and replays as itself. `DigRadius` is registered for the same
+reason.
+
+**The test is the only one worth running here.** Carve a sphere, throw away
+*every voxel the planet has resident* -- not the meshes, the voxels, so the next
+stream is a regeneration and not a re-mesh -- then stream it back and look:
+
+```
+1.71 m of rock at the spot before digging
+69 voxels changed sign, distance now +3.10 m, 2 chunks in the edit file
+dropped 16039 chunks of voxels (0 left), regenerating
+after regenerating from scratch: +3.10 m
+```
+
+Six checks, and the last one is the one that matters: not merely *a* hole, the
+same hole, to the centimetre.
+
+**It failed the first time, and the reason was better than the fix.** The
+regenerated sample read exactly +1000 m -- `Far`, the sentinel an unallocated
+chunk returns, so the chunk had never been refilled at all. `ReleaseBeyond`
+takes chunks out of `m_Filled` without resetting `m_ScanFrom`, the watermark
+that says how far along the distance-sorted scan everything is known to be
+filled. The scan started past the released chunk and never went back. Normal
+play hides it completely: release happens at three times the load radius, which
+you only reach by moving, and moving resets the watermark anyway. It took a
+test that released *without* moving to find that the ground had quietly stopped
+existing.
+
+**And the edit file was 75 times too big.** A dig marks two sets of chunks --
+the ones the sphere reached, which changed, and the ones below them, whose
+meshes now read stale data through the plane they share. The first belongs in
+the file; the second belongs in the remesh queue and nowhere near it. Writing
+both stored the generator's own output as though somebody had dug it: **150
+chunks a hole instead of 2**.
+
+Two more things needed widening or moving:
+
+**`ChunkCache`'s key packed +/-512 into a thousand per axis.** Ample for
+OpenWorld's fifty chunks and a two-hundredth of what a planet needs -- at
+250 km a chunk index reaches 20,900, and every one past 511 aliased onto
+another chunk, which is a cache that hands back the wrong ground. Twenty-one
+bits an axis now, the same as the planet's own chunk key, which hit the same
+wrap and was widened for it a day earlier. The file is untouched: a record
+carries its own coordinates.
+
+**`EditSphere` had `PositionOf` in it**, so at 1:1 a spade would move in
+half-metre jumps and take a bite the shape of the lattice. There is a
+lattice-relative form now, and the two share one loop with the frame spelled
+out as an explicit shift -- so the world-space form evaluates the *same
+expression* it always did rather than an equivalent grouping. That care is not
+theoretical: it is what kept all six demos byte-identical through this.
+
+The dig ray is sphere-traced in the landing site's frame rather than going
+through `VoxelField3D::Raycast`, which works in the field's own coordinates --
+the ones everything here has just been moved off.
+
+Captures byte-identical across all three configs and between runs, and every
+other demo is byte-identical to its hash from before any of this.
+
+
+### 2026-08-26 (biomes, and the drainage they come out of)
+
+**The obvious way to place biomes produces coloured noise.** Two more noise
+fields, one called temperature and one called humidity, a Whittaker lookup
+between them -- and rainforest on a ridge, desert in a valley, and no
+relationship at all between where the green is and where the water would go.
+What makes a biome map read as a world is that the wet places are the places
+water collects, and knowing those means solving the problem a river network
+solves. So the drainage came first and the biomes came out of it.
+
+One grid -- the same 1024x512 the height map already used, so a texel means one
+thing in both -- and four passes. Sample the relief. **Priority-Flood** seeded
+from the sea, raising every land cell until it has a strictly downhill path to
+the ocean. Steepest descent on the filled surface. Then one sweep from high to
+low accumulating catchment area, which needs no recursion and no visited set
+because after the fill every cell's downstream neighbour is strictly lower.
+
+A sphere has no boundary to seed the flood from, which is the one thing that
+differs from the textbook version on a rectangle: **the sea is the boundary**,
+and a planet without one has no outlet, which is why this only runs on Earth.
+
+**The check is a conservation law the code knows nothing about.** Sea cells
+start at zero and only ever receive, so the water arriving in them is the total
+catchment of the land -- which is the land's area. The accumulation adds a
+number to a neighbour, repeatedly, and has no idea what the planet's land area
+is:
+
+```
+drainage: 2.201e+05 km^2 of land (28.0% of the sphere),
+          2.201e+05 delivered to the sea (0.000% out), 0 stranded, 126 ms
+```
+
+Exact, and no cell left without a downhill neighbour. It is also the check that
+catches a depression the fill missed -- an unfilled basin keeps its catchment
+and the sea comes up short by exactly that basin.
+
+Two things the report says out loud rather than smoothing over. The grid's land
+is **28.0%** where the Fibonacci sampler measured 29.1%: the hydrology sees the
+relief capped at the octaves a texel can carry, so its coastline is smoother
+than the one the mesher cuts. And **standing water covers 7.39%** of the land
+-- filled depressions, which is where lakes will go when there is water to put
+in them.
+
+Moisture is three parts: the flow through a cell as **decades above its own
+catchment** (a log, because drainage areas span the planet and a linear scale
+gives one bright river and a dry world), distance to the sea, and a latitude
+band from one cosine with a sixty-degree period -- rising air at the equator
+and at sixty, sinking at thirty and at the poles, which is a great deal less
+arbitrary than a noise field called humidity. Warmth is the cosine of latitude
+with a lapse rate quoted against the relief, so a planet with bigger mountains
+has its snow line in the same place relative to them.
+
+Over land: **1.6% steppe, 17.3% temperate, 33.6% desert, 47.5% tropical**, mean
+moisture 0.57. (The quadrant split is as much about where the 0.5 thresholds
+sit as about the climate -- what it is really checking is that the field is a
+field and not a constant, which a map that still conserved and still drained
+could easily have been.)
+
+The colour rule takes moisture and warmth where it took latitude, and the two
+new corners of the square are named: desert and steppe. Warmth drives the
+tundra and ice lines instead of latitude, so a treeline **bends up a valley and
+down over a plateau** rather than running dead straight round the planet. The
+map's green and blue channels carry the two -- they used to be the same height
+byte written three times, which was a greyscale image stored in colour.
+
+Trees read the same two numbers: none below 0.22 warmth or 0.42 moisture, and
+the canopy thins across the wet edge instead of stopping at a map texel. The
+old rule was a latitude cut at `|y| > 0.58`, which had exactly the stripe
+problem the colouring did.
+
+**And a beach turned out to be 14 m tall.** The sand ramp was a *percentage of
+the relief*, so on a planet with 625 m of it the shore ran fourteen metres up
+the hill -- which is why a landing site reading moisture 0.83, warmth 0.99 and
+"tropical" on the panel had pale coastal-plain ground under a dense rainforest.
+At 1:1 it would have run 400 m up. It is a tide line now, three voxels of it,
+quoted in metres.
+
+The panel says what climate you are standing in, because otherwise it is only
+inferable from the colour of the ground.
+
+Captures byte-identical between runs and across all three configs.
+
+
+### 2026-08-26 (the hover was losing its grip 70 m up)
+
+**Reported as "the ground is moving below us at over 30 m/s", and the model
+said 30.6.** Co-rotation had been added a few days ago and was working; what
+was wrong was how much of it a craft kept. The share was the *same exponential
+the scattering uses* -- full at the surface, a fiftieth at the top of the shell
+-- on the theory that thin air grips less.
+
+That is not what an atmosphere does. The whole of it turns with the planet,
+near enough rigidly: a balloon at 10 km is over the same city as one at 100 m.
+Weighting by density meant a hover at 70 m kept only 93% of the turn, and 7% of
+436.3 m/s is exactly the number that got reported.
+
+Carried completely through the bulk of the shell now, and released over the top
+quarter of it with a smoothstep, which is the only part a taper was ever needed
+for -- so that leaving the air is not a step.
+
+| hover | ground slides | was |
+| --- | --- | --- |
+| 10 m | 0.0 m/s | 4.5 |
+| 70 m | 0.0 m/s | 30.6 |
+| 200 m | 0.0 m/s | 82.0 |
+| 1,000 m | 0.0 m/s | 284.1 |
+| 3,000 m | 4.1 m/s | 423.6 |
+| 3,925 m (top) | 436.3 m/s | 436.3 |
+
+The equatorial figure the percentages are of is `2*pi*R/T` = 436.3 m/s, which
+the demo computes nowhere -- the test brought its own. The coupling is a named
+function now (`AirCoupling`) rather than eight lines inside the thing that
+applies it, because "how fast does the ground slide" is a question worth being
+able to ask.
+
+The landed capture is byte-identical: none of this runs while walking.
+
+
+### 2026-08-25 (a local origin, and a planet that is actually planet-sized)
+
+**A float carries 24 bits, so at Earth's own radius it carries half a metre.**
+Everything at the surface -- chunk vertices, plant positions, physics bodies --
+was in the planet's frame, where the magnitude is the radius. At the 250 km the
+demo runs at that costs 6.7 mm and does not matter. At 6,371 km it costs
+**0.571 m placing a mesh vertex, 36% of a voxel**, which is the "turns the
+meshes to rubble" the roadmap had been promising for two days.
+
+The fix is one subtraction moved from after a cast to before it, in about six
+places. Measured by asking the same field for the same points both ways:
+
+| | one voxel step | placing a vertex between two lattice points |
+| --- | --- | --- |
+| 250 km, `PositionOf` | 0.0000 m | 0.0067 m (0.4% of a voxel) |
+| 250 km, `PositionFrom` | 0.000000 m | 0.000001 m |
+| 1:1, `PositionOf` | 0.5927 m (37.2%) | 0.5710 m (35.9%) |
+| 1:1, `PositionFrom` | 0.000001 m | 0.000001 m |
+
+571,000 times better, and `PositionOf`'s error is exactly the float spacing at
+that magnitude (0.5 m at 6.37e6), which is the check that it is the arithmetic
+and not something else. **The first version of that test measured a clean zero
+at 250 km** and had proved nothing: it sampled crossings at `step / 8`, and
+eighths of a voxel are exactly representable. Non-dyadic fractions gave the
+6.7 mm above.
+
+**Nothing large is ever cast; the small half is.** `PositionFrom(x, y, z,
+about)` subtracts on the *integers*, where it is exact, so a chunk's vertices
+come out measured from its own lattice origin and never exceed a chunk
+diagonal. `SampleDistanceFrom` does the same in reverse -- the caller hands in
+a small offset and a lattice point, and the integer part is put back as an
+integer rather than added as a float. Chunk origins, plant positions and body
+centres are composed in double and cast only once the answer is small.
+
+Three frames now exist where there was one: chunk meshes carry their own
+origin (so a level-of-detail change never has to rebase them), the forest
+shares one origin that follows the player (they are one instance buffer, so
+they have to), and the surface physics world is centred on the lattice point
+nearest wherever the ship came down.
+
+**A 1:1 Earth stands up.** `--earth-radius 6371000` streams, meshes, renders a
+forest with no cracks, and lets you walk on it -- and the panel reports surface
+gravity 9.82 m/s² and **escape velocity 11,184.4 m/s against the real 11,186**,
+0.014% out, from a number the code does not contain. The default stays at
+250 km: a planet is only worth the radius you can stream across, and at 1:1 the
+streamed 400 m is a flat disc under a horizon 71 km away. What changed is that
+the *representation* now goes all the way.
+
+**Two false starts, both caught by demos that were not being worked on.**
+
+The first: a body's field coordinates needed a lattice point to be measured
+from, and I derived it by rounding the field's origin to the nearest one. That
+is right for every field whose origin is a whole number of voxels and wrong for
+OpenWorld, whose lattice is deliberately centred *between* points -- it moved
+that demo's ground by a quarter of a metre and **13.5% of its pixels** with it.
+The remainder is carried explicitly now, and the default body reduces to the
+same expression the old code evaluated rather than an equivalent one.
+
+The second was subtler and is worth stating on its own: **float addition does
+not associate**. Writing the contact gradient as `SampleNormalFrom(centre -
+bias)` groups it `(centre - bias) + h`, where the original has `(centre + h) -
+bias`. Same value, different last bit, **34 of OpenWorld's pixels** -- and a
+simulation that no longer reproduces itself. `SampleNormal` keeps its own
+arithmetic and the narrowphase groups the gradient the original way.
+
+With both fixed, OpenWorld's landed capture is byte-identical to its hash from
+before any of this. All six demos reproduce themselves, and the Solar capture
+is byte-identical across all three configs.
+
+**What is still planet-space, and stated so it is not mistaken for done.** The
+density is *sampled* at `PositionOf` inside `FillChunk`, so at 1:1 the sample
+lattice jitters by up to half a voxel -- the terrain is displaced slightly, not
+broken, because neighbouring chunks read the same cell values and still agree.
+The terrain shader computes height as `world - u_Origin` in float on the GPU,
+which at 1:1 quantises the colour ramp to about half a metre. And
+`SurfaceRadius` returns a float, so the altitude readout and the grounded test
+are half-metre answers at 1:1. All three are shading or reporting, not
+geometry.
+
 
 ### 2026-08-25 (terrain LOD, and the 422 meshes that were quietly wrong)
 

@@ -77,6 +77,31 @@ namespace Egss {
 			return m_Origin + glm::vec3((float)x, (float)y, (float)z) * m_VoxelSize;
 		}
 
+		// **The same point, measured from a lattice point instead of from the
+		// field's origin.**
+		//
+		// `PositionOf` is fine while a field is a few hundred metres across
+		// and useless once it is a planet. Both of its terms are then about
+		// 6.4e6 and their difference is small, which is catastrophic
+		// cancellation: a float carries 24 bits, so the answer near the
+		// surface lands on a 0.76 m lattice however close to the origin the
+		// point actually is. That is half a voxel, and it is what turns a
+		// chunk mesh into rubble -- vertices collapsing onto each other and
+		// onto their neighbours' at a spacing coarser than the cells they
+		// came from.
+		//
+		// Subtracting first fixes it, because the subtraction is on the
+		// *integers*, where it is exact. `(x - about.x)` is small, and a small
+		// integer times the voxel size is a float that still has millimetres
+		// in it. There is no `m_Origin` term at all: the caller asked for a
+		// position relative to a lattice point, and adding the field's origin
+		// back would put the magnitude straight back in.
+		glm::vec3 PositionFrom(int x, int y, int z, const glm::ivec3& about) const
+		{
+			return glm::vec3((float)(x - about.x), (float)(y - about.y),
+				(float)(z - about.z)) * m_VoxelSize;
+		}
+
 		bool Contains(int x, int y, int z) const
 		{
 			return x >= 0 && y >= 0 && z >= 0
@@ -99,6 +124,20 @@ namespace Egss {
 		// not, and a contact normal that jumps at every cell face is a body that
 		// buzzes.
 		float SampleDistance(const glm::vec3& world) const;
+
+		// **The same sample, addressed from a lattice point.**
+		//
+		// `SampleDistance` turns a world position into a lattice coordinate by
+		// `(world - origin) / voxel`, which is fine until the field is a
+		// planet: at 6,371 km a float carries half a metre, so the *fraction*
+		// -- the whole of what trilinear interpolation reads -- is gone, and a
+		// body walking a centimetre samples the same point it did before.
+		// Passing the offset from a nearby lattice point instead keeps the
+		// large part an exact integer and the small part a float with
+		// millimetres left in it. See `PositionFrom`, which is the same trick
+		// the other way round.
+		float SampleDistanceFrom(const glm::vec3& offset, const glm::ivec3& about) const;
+		glm::vec3 SampleNormalFrom(const glm::vec3& offset, const glm::ivec3& about) const;
 
 		// The field's gradient, normalised: the surface normal, from central
 		// differences one voxel apart. For a true distance field the gradient
@@ -182,6 +221,15 @@ namespace Egss {
 		}
 		// Chunks the map is actually holding, uniform ones included.
 		size_t StoredChunks() const { return m_Storage.size(); }
+
+		// Whether this chunk has voxels of its own, as opposed to reading the
+		// absent chunk's `Far`. What a caller storing edits needs, so it does
+		// not write out a neighbour it only marked stale.
+		bool HasChunk(const glm::ivec3& chunk) const
+		{
+			return m_Storage.find(ChunkIndexOf(chunk.x, chunk.y, chunk.z))
+				!= m_Storage.end();
+		}
 		size_t AllocatedBytes() const;
 
 		// **Forget one chunk entirely**, so it goes back to reading as `Far`.
@@ -231,6 +279,15 @@ namespace Egss {
 		// anything" means.
 		int EditSphere(const glm::vec3& centre, float radius, bool add);
 
+		// The same edit, with the centre given as an offset from a lattice
+		// point rather than as a position in the field's own frame. A planet
+		// needs it for the reason everything else here does: at 6,371 km the
+		// centre of the dig would be quantised to half a metre before the
+		// sphere was ever evaluated, so a spade would move in half-metre jumps
+		// and take a bite the shape of the lattice. See `PositionFrom`.
+		int EditSphereFrom(const glm::vec3& centre, const glm::ivec3& about,
+			float radius, bool add);
+
 		// Chunks whose contents changed since the last call, as chunk
 		// coordinates. Taking them clears the list -- a mesher asks once per
 		// frame and rebuilds exactly those.
@@ -260,6 +317,12 @@ namespace Egss {
 			outMin = chunk * ChunkSize;
 			outMax = glm::min(outMin + glm::ivec3(ChunkSize), m_Size - glm::ivec3(1));
 		}
+		// The one both of the above are, with the frame spelled out. Private
+		// because "shift and about together" is an implementation detail of
+		// having two frames, not a thing a caller should have to reason about.
+		int EditSphereShifted(const glm::vec3& centre, const glm::ivec3& about,
+			const glm::vec3& shift, float radius, bool add);
+
 	private:
 		// **Sparse, keyed by the packed chunk index.**
 		//

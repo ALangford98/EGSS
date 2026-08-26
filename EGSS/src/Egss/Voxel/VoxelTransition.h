@@ -85,7 +85,7 @@ namespace Egss {
 		// values, because there is only one field to read.
 		static void SubdivideEdge(const VoxelField3D& field,
 			const glm::ivec3& a, const glm::ivec3& b, int depth,
-			std::vector<LatticePoint>& out);
+			std::vector<LatticePoint>& out, const glm::ivec3* about = nullptr);
 
 		// The barycentric lattice points of triangle `a, b, c`, where `b` and
 		// `c` are each `2^depth` fine steps from `a` along the triangle's two
@@ -100,7 +100,8 @@ namespace Egss {
 		// equivalent to it.
 		static void SubdivideFace(const VoxelField3D& field,
 			const glm::ivec3& a, const glm::ivec3& b, const glm::ivec3& c,
-			int depth, std::vector<LatticePoint>& out);
+			int depth, std::vector<LatticePoint>& out,
+			const glm::ivec3* about = nullptr);
 
 		// Index into `SubdivideFace`'s output for grid coordinate `(u, v)`,
 		// `n = 2^depth`. Row `v` starts after `v * (n + 1) - v * (v - 1) / 2`
@@ -117,13 +118,18 @@ namespace Egss {
 		// If `boundaryMask` has zero or more than one bit set, meshes all six
 		// tets plainly instead -- see the class comment's "out of scope" note.
 		static void Cell(const VoxelField3D& field, const glm::ivec3& origin,
-			int stride, unsigned int boundaryMask, int ratio, MeshData& data);
+			int stride, unsigned int boundaryMask, int ratio, MeshData& data,
+			const glm::ivec3* about = nullptr);
 
 		// A rectangular range of cells, stepping by `stride`, all sharing the
 		// one boundary face named in `boundaryMask`.
+		// `about` is the lattice point emitted positions are measured from,
+		// and must match whatever the interior of the same chunk was meshed
+		// with -- the boundary layer's triangles share vertices with it.
 		static void MeshBoundaryLayer(const VoxelField3D& field,
 			const glm::ivec3& min, const glm::ivec3& max,
-			int stride, unsigned int boundaryMask, int ratio, MeshData& data);
+			int stride, unsigned int boundaryMask, int ratio, MeshData& data,
+			const glm::ivec3* about = nullptr);
 	};
 
 }

@@ -74,6 +74,8 @@
 #include "Demo.h"
 #include "Vegetation.h"
 #include "VoxelPlanet.h"
+#include "SurfaceWater.h"
+#include "HorizonMesh.h"
 
 class SolarSystem : public DemoLayer
 {
@@ -83,6 +85,10 @@ public:
 	{
 		RegisterParam("OrbitalYearsPerSecond", &m_OrbitalYearsPerSecond);
 		RegisterParam("SecondsPerDay", &m_SecondsPerDay);
+
+		// Reaches the simulation -- it decides how much ground a press
+		// removes -- so a replay has to see it move.
+		RegisterParam("DigRadius", &m_DigRadius);
 	}
 
 	// --- The system ---------------------------------------------------------
@@ -213,6 +219,11 @@ public:
 			if (arguments[i] == "--no-terrain-lod")
 				m_Lod = false;
 
+		for (size_t i = 1; i + 1 < arguments.size(); i++)
+			if (arguments[i] == "--earth-radius")
+				m_EarthDrawn = glm::max(1000.0f,
+					(float)std::atof(arguments[i + 1].c_str()));
+
 		// **Finer than a body needs, because three spheres have to agree.**
 		// The planet's stand-in sphere, the sea and the atmosphere shell are
 		// all drawn from this one mesh at radii within a few metres of each
@@ -226,6 +237,7 @@ public:
 		BuildRings();
 		BuildStars();
 		BuildTrees();
+		BuildLander();
 		Reset();
 
 		// **Placed here rather than in `OnDemoActivated`.** Activation is an
@@ -241,7 +253,204 @@ public:
 		// every time the Moon came round.
 		GoTo(3, 4.0);
 
-		PlaceFromCommandLine();
+		if (!PlaceFromCommandLine())
+			LandAtDefaultSite();
+	}
+
+	// **The default landing site, and why it is a constant.**
+	//
+	// The demo used to open four Earth radii out, looking at a blue marble,
+	// and getting to the ground meant flying there -- which is the point of
+	// the demo but not of opening it. It now opens standing beside the lander,
+	// because that is where the game this is a prototype for spends ninety per
+	// cent of its time.
+	//
+	// The direction is hard-coded rather than searched for, and that is the
+	// load-bearing part: a *default* site has to be the same site every run,
+	// or its terrain cannot be precomputed and the first four hundred frames
+	// go back to being a slideshow. It was chosen by `SurveyLandingSites`,
+	// which scored forty thousand directions on the Fibonacci spiral for dry
+	// ground, standable slope, relief close enough to see, high ground within
+	// six kilometres, and water within walking distance. This one measured:
+	//
+	//     21 m above sea level, slope 0.103 where the lander stands,
+	//     233 m of relief inside 400 m, 187 m of high ground within 6 km,
+	//     and the shore 150 m away.
+	//
+	// A shore at the foot of a mountain, which is about as much as one place
+	// can be asked to show.
+	static glm::vec3 DefaultSite()
+	{
+		return glm::vec3(-0.660266340f, -0.232047454f, 0.714284480f);
+	}
+
+	// The planet-fixed heading from a site toward the highest ground within a
+	// couple of kilometres. Sixteen probes, which is sixteen evaluations of
+	// the relief -- and it is asked twice, once to point the camera and once
+	// to decide what time of day puts the sun behind it.
+	glm::vec3 BestOutlook(const VoxelPlanet& planet, const glm::vec3& site) const
+	{
+		glm::vec3 east, north;
+		TangentFrame(site, east, north);
+
+		float best = -1e30f;
+		glm::vec3 heading = north;
+
+		for (int i = 0; i < 16; i++)
+		{
+			float angle = (float)i * 0.39269908f;
+
+			glm::vec3 out = east * std::cos(angle) + north * std::sin(angle);
+
+			glm::vec3 probe = glm::normalize(site
+				+ out * (2000.0f / glm::max(planet.Get().Radius, 1.0f)));
+
+			float height = planet.Relief(probe);
+
+			if (height > best)
+			{
+				best = height;
+				heading = out;
+			}
+		}
+
+		return heading;
+	}
+
+	void LandAtDefaultSite()
+	{
+		// By name, not by index: the table is edited more often than this is.
+		size_t index = 0;
+
+		for (size_t i = 1; i < m_Bodies.size(); i++)
+			if (m_Bodies[i].Name == "Earth")
+				index = i;
+
+		if (index == 0)
+			return;
+
+		SetTimeOfDay(index, DefaultSite(),
+			BestOutlook(PlanetFor(index), DefaultSite()));
+
+		GoToSite(index, DefaultSite());
+		Land();
+	}
+
+	// **Winds the clock to a time of day that shows the place.**
+	//
+	// The site is a fixed direction in the planet's own frame, and at
+	// `m_Time = 0` the spin is the identity -- so whether the default site
+	// opens in daylight is decided by an epoch chosen for the orbits, which is
+	// to say by accident. It opened at dawn.
+	//
+	// Winding the clock is the physical answer rather than a graphical one:
+	// the sun is where the sun is, and this is what time it is when you
+	// arrive. The cost is a fraction of a day of orbital motion, and a day
+	// here is 1/365 of a year.
+	//
+	// **And the sun goes behind you, not in front.** Facing the high ground
+	// with the sun beyond it means facing the one face of it the sun does not
+	// reach: correctly shaded, and at five per cent of a dark green -- there
+	// is no exposure curve between the framebuffer and the screen -- a
+	// **silhouette**. The first version of this wound the clock to two hours
+	// before local noon and produced a black mountain against a blue sky. The
+	// mountain was right. Nobody could see it.
+	//
+	// Scanned rather than solved. The elevation alone has a closed form, but
+	// "high, and behind that heading" does not, and a hundred and twenty
+	// samples of a cheap expression is not worth being clever about.
+	void SetTimeOfDay(size_t index, const glm::vec3& site, const glm::vec3& heading)
+	{
+		double rate = SpinRate(index);
+
+		if (std::abs(rate) < 1e-12)
+			return;
+
+		glm::dvec3 toStar = BodyScene(0) - BodyScene(index);
+		double length = glm::length(toStar);
+
+		if (length < 1e-6)
+			return;
+
+		glm::dvec3 sunward = toStar / length;
+
+		glm::dvec3 up = glm::dvec3(glm::normalize(site));
+		glm::dvec3 look = glm::dvec3(glm::normalize(heading));
+
+		double turn = 2.0 * 3.14159265358979323846;
+
+		double bestScore = -1e30;
+		double bestAngle = 0.0;
+
+		for (int i = 0; i < 120; i++)
+		{
+			double angle = turn * (double)i / 120.0;
+
+			// The spin takes planet-fixed to scene, so the sun in the
+			// planet's own frame is the scene sun taken the other way.
+			glm::dvec3 sun = RotateY(sunward, -angle);
+
+			double elevation = glm::dot(sun, up);
+
+			if (elevation < 0.25)
+				continue;
+
+			// Behind the shoulder: the sun's own azimuth against the heading,
+			// with the vertical component taken out of both.
+			glm::dvec3 flat = sun - up * elevation;
+			double size = glm::length(flat);
+
+			double behind = size > 1e-6 ? -glm::dot(flat / size, look) : 0.0;
+
+			// A sun straight overhead lights every slope equally, which is the
+			// one lighting that hides the shape of the ground; 0.62 is about
+			// 38 degrees up, where a hillside still has a lit and a shaded
+			// side but nothing is in the dark.
+			double height = 1.0 - std::abs(elevation - 0.62) * 1.6;
+
+			double score = behind * 1.0 + height;
+
+			if (score > bestScore)
+			{
+				bestScore = score;
+				bestAngle = angle;
+			}
+		}
+
+		m_Time = bestAngle / rate;
+	}
+
+	// Puts the ship twenty metres over one exact direction in the planet's own
+	// frame, facing whatever is most worth looking at.
+	void GoToSite(size_t index, const glm::vec3& fixed)
+	{
+		VoxelPlanet& planet = PlanetFor(index);
+
+		glm::vec3 site = glm::normalize(fixed);
+
+		double surface = (double)planet.Get().Radius + (double)planet.Relief(site);
+
+		glm::dvec3 direction = glm::normalize(ToScene(index, glm::dvec3(site)));
+
+		m_Frame = index;
+		m_Local = direction * (surface + 20.0);
+
+		glm::vec3 vertical = glm::vec3(direction);
+
+		glm::vec3 east, north;
+		TangentFrame(vertical, east, north);
+
+		// **Facing the high ground**, which is the difference between opening
+		// with a mountain in front of you and opening with one behind you.
+		glm::vec3 heading = glm::vec3(ToScene(index,
+			glm::dvec3(BestOutlook(planet, site))));
+
+		m_Up = vertical;
+		m_Forward = glm::normalize(heading - vertical * glm::dot(heading, vertical));
+
+		Reorthogonalise();
+
+		m_YearsPerSecond = TargetYearsPerSecond();
 	}
 
 	// **Does everything still fit?**
@@ -278,9 +487,21 @@ public:
 	// `--land Earth` (or `--goto Earth`) puts the ship somewhere specific at
 	// startup, which is how a capture reaches one -- an unattended run has
 	// nobody to fly it.
-	void PlaceFromCommandLine()
+	bool PlaceFromCommandLine()
 	{
 		const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
+
+		// A replay places itself: the recording drives the ship from wherever
+		// the run it came from started, and landing first would put it
+		// somewhere the recorded input was never taken at.
+		if (Egss::Input::IsPlayingBack())
+			return true;
+
+		// `--orbit` is how you get the old opening back: four radii out,
+		// looking at the planet.
+		for (const std::string& argument : arguments)
+			if (argument == "--orbit")
+				return true;
 
 		for (size_t i = 1; i + 1 < arguments.size(); i++)
 		{
@@ -308,11 +529,13 @@ public:
 				if (land)
 					Land();
 
-				return;
+				return true;
 			}
 
 			EGSS_WARN("{0} {1} matches no body", arguments[i], wanted);
 		}
+
+		return false;
 	}
 
 	// Put the ship `radii` of the body's own drawn radius out from its centre,
@@ -494,7 +717,7 @@ public:
 		if (km <= 0.0)
 			return 0.0;
 
-		return (double)s_EarthDrawn * std::pow(km / s_EarthRadiusKm, exponent);
+		return (double)m_EarthDrawn * std::pow(km / s_EarthRadiusKm, exponent);
 	}
 
 	// Radii are local geometry, whoever the body orbits.
@@ -596,7 +819,15 @@ public:
 	// Where to draw a body and what to multiply its own lengths by. One is
 	// useless without the other: scaling the offset without the radius moves a
 	// planet, and scaling both keeps it exactly where it looked.
-	float BodyPlacement(size_t index, const glm::dvec3& origin, glm::vec3& outCentre) const
+	// **The centre comes back in double.** Standing on a planet, the body's
+	// centre is a radius away -- 250 km today and 6,371 km at 1:1 -- so a
+	// float centre is quantised to metres before anything is added to it. The
+	// terrain's chunks are placed by adding their own offset to this, and that
+	// sum has to be done at full precision before it is cast; a float here
+	// would put the whole shell back on a 0.76 m grid however carefully the
+	// chunk offsets were computed. Callers that only want to place a sphere
+	// cast it themselves.
+	float BodyPlacement(size_t index, const glm::dvec3& origin, glm::dvec3& outCentre) const
 	{
 		glm::dvec3 offset = BodyScene(index) - origin;
 
@@ -604,13 +835,13 @@ public:
 
 		if (NearField(index) || distance <= s_NearRange || distance <= 0.0)
 		{
-			outCentre = glm::vec3(offset);
+			outCentre = offset;
 			return 1.0f;
 		}
 
 		double scale = CompressedDistance(distance) / distance;
 
-		outCentre = glm::vec3(offset * scale);
+		outCentre = offset * scale;
 
 		return (float)scale;
 	}
@@ -672,6 +903,13 @@ public:
 	glm::dvec3 ToFixed(size_t index, const glm::dvec3& scene) const
 	{
 		return RotateY(scene, -SpinAngle(index));
+	}
+
+	// Where the camera is in the planet's own frame: what streaming centres
+	// on, and what the forest measures its instance offsets from.
+	glm::dvec3 TerrainFocus(size_t index) const
+	{
+		return ToFixed(index, m_Local);
 	}
 
 	// **The same rotation as a matrix, built by hand.**
@@ -779,6 +1017,25 @@ public:
 			settings.Octaves = glm::clamp(
 				(int)std::ceil(std::log2(glm::max(settings.FeatureSize / 50.0f, 2.0f))),
 				4, 16);
+
+			// **The landscape you stand in, which the planetary spectrum
+			// cannot provide.** See `Settings::Landscape`. Four kilometres
+			// between ridgelines, 700 m of rise where the uplift is full,
+			// sixty kilometres between one range and the next, and 18% of the
+			// amplitude kept out on the plains so they roll rather than lie
+			// flat. Measured over two dozen sites: 49 m of relief inside 400 m
+			// on average against the 8.5 m this had before, 133 m in the
+			// ranges, 18 m on the flats.
+			settings.Landscape = 700.0f;
+			settings.LandscapeSize = 4200.0f;
+			settings.LandscapeOctaves = 6;
+			settings.UpliftSize = 60000.0f;
+			settings.LandscapeFloor = 0.18f;
+
+			// The finest landscape octave is 131 m; without this there is a
+			// gap between it and the 80 m the roughness layer reaches.
+			settings.Roughness = 22.0f;
+			settings.RoughnessSize = 300.0f;
 		}
 
 		EGSS_TRACE("{0}: voxel planet, radius {1:.0f} m, relief {2:.0f} m, voxel {3:.2f} m",
@@ -786,6 +1043,18 @@ public:
 
 		VoxelPlanet& planet = m_Planets[index];
 		planet.Create(settings);
+
+		// **One file of edits a body, and only edits go in it.** The world is
+		// procedural, so nothing is lost by regenerating it -- what would be
+		// lost is the hole somebody dug, and that is the only thing stored.
+		// The name is the body's, so digging on Mars does not overwrite what
+		// was dug on Earth.
+		planet.OpenEdits("planet-" + m_Bodies[index].Name + ".edits");
+
+		// And the landing-site cache, which is the *terrain* rather than the
+		// changes to it -- see `VoxelPlanet::OpenSiteCache`. Per body, like the
+		// edits, so preparing a site on Mars does not evict the one on Earth.
+		planet.OpenSiteCache("planet-" + m_Bodies[index].Name + ".site");
 
 		return planet;
 	}
@@ -1132,15 +1401,38 @@ public:
 		// Everything below the takeoff line is in the planet's own turning
 		// frame, so the ship's inertial position and heading come across once
 		// here and go back once in `TakeOff`.
-		glm::vec3 fixed = glm::vec3(ToFixed(m_Frame, m_Local));
+		glm::dvec3 fixed = ToFixed(m_Frame, m_Local);
 		glm::vec3 forward = glm::vec3(ToFixed(m_Frame, glm::dvec3(m_Forward)));
 
-		BuildSurfaceWorld(m_Frame, planet, fixed);
+		BuildSurfaceWorld(m_Frame, planet, fixed, forward);
+
+		// **The ground arrives before the first frame, not during the first
+		// four hundred.**
+		PrefillSite(planet);
+
+		// **And the rest of the world.** The chunks stop at the load radius;
+		// this carries the same relief from there to the horizon. Built with
+		// the site, because it is a disc around the site -- walking off it is
+		// what rebuilds it, the same way the water works.
+		BuildHorizon(planet);
+
+		// The local water is built from the site, like the physics world, and
+		// spans the streamed region -- past that there is no ground for it to
+		// stand on and the planet-wide sea takes over.
+		//
+		// After the prefill, and that ordering is worth a quarter of a minute.
+		// Water here is a consequence of the shape of the ground, so every
+		// time materially more ground arrives the answer changes and it is
+		// rebuilt -- which while the region was streaming in meant fifteen
+		// full rebuilds, measured at **24.6 s of a 32 s landing in Debug**,
+		// against 8.5 s for all the streaming that provoked them. Built once,
+		// on ground that is already finished, it is built once.
+		RebuildWater(planet);
 
 		// The basis is already right -- flight was levelled to the local
 		// vertical on the way in. All that is needed is to say it in the
 		// tangent frame the walk uses, so the first step does not swing.
-		glm::vec3 up = glm::normalize(fixed);
+		glm::vec3 up = glm::vec3(glm::normalize(fixed));
 		glm::vec3 east, north;
 		TangentFrame(up, east, north);
 
@@ -1156,17 +1448,45 @@ public:
 		m_Grounded = false;
 	}
 
+	// How far from the hull you can be and still climb in.
+	static constexpr float s_BoardingReach = 6.0f;
+
+	float DistanceToShip() const
+	{
+		if (!m_HasShip)
+			return 1e30f;
+
+		return glm::length(m_World.GetBody(m_Ship).Position
+			- m_World.GetBody(m_Player).Position);
+	}
+
 	void TakeOff()
 	{
+		// **You leave in the ship, so you have to be at the ship.** This is
+		// the whole of the loop the demo was missing: land, get out, walk,
+		// dig, and then find your way back to the one object that can take you
+		// off again.
+		if (m_HasShip && DistanceToShip() > s_BoardingReach)
+		{
+			EGSS_WARN("the ship is {0:.0f} m away -- walk back to it",
+				DistanceToShip());
+			return;
+		}
+
 		m_Walking = false;
 
-		// Where the feet were is where the ship is, which is the whole point.
-		glm::vec3 feet = m_World.GetBody(m_Player).Position;
-		glm::dvec3 eye = glm::dvec3(feet + glm::normalize(feet) * m_EyeHeight);
+		// Where the *ship* is, not where the feet are: you are in it now.
+		glm::dvec3 hull = SiteFixed(m_HasShip
+			? m_World.GetBody(m_Ship).Position
+			: m_World.GetBody(m_Player).Position);
+
+		glm::dvec3 eye = hull + glm::normalize(hull) * (double)m_EyeHeight;
 
 		m_Local = ToScene((size_t)m_Ground, eye);
 
 		m_World.Clear();
+		m_WaterMesh.reset();
+		m_HasShip = false;
 		m_Ground = -1;
 	}
 
@@ -1199,6 +1519,177 @@ public:
 	// gravity, and 100 m up on a 360 m planet it is 40% weaker. That is what
 	// makes a thrown rock arc the way it does here rather than the way it would
 	// on a flat world with the same g.
+	// **Rebuilt as the ground arrives.** A landing happens before the region
+	// has streamed, so the first water is built over a field that is mostly
+	// empty and falls back to the generator for it. Every time materially more
+	// terrain exists, the question is worth asking again -- and once the
+	// region is full this stops firing by itself.
+	void RebuildWater(VoxelPlanet& planet)
+	{
+
+		m_Water.Build(planet, m_SiteLattice, m_SiteFixed,
+			m_LoadRadius * 0.95f * (planet.Get().VoxelSize / 1.5f));
+
+		m_WaterChunks = planet.MeshedChunks();
+
+		m_Water.Report();
+
+		RebuildWaterMesh();
+	}
+
+	// **Everything inside the load radius, before anything is drawn.**
+	//
+	// `StreamAround` is budgeted because a frame has 16.7 ms in it and
+	// generating a chunk costs a fraction of that; arriving is the one moment
+	// where there is no frame to protect, because nothing has been shown yet.
+	// So it is called with a budget nothing can exhaust, repeatedly, until a
+	// pass changes nothing.
+	//
+	// **Repeatedly, because one pass cannot finish.** A chunk is only meshed
+	// once its seven high neighbours are filled -- the mesher reads one plane
+	// into each of them, and meshing against a chunk that does not exist yet
+	// closes the surface against empty space and stands a wall up out of the
+	// ground. So the meshes of the outermost filled shell always lag their
+	// fills by a pass, and the loop is what lets them catch up.
+	void PrefillSite(VoxelPlanet& planet)
+	{
+		if (m_Ground < 0)
+			return;
+
+		float scale = planet.Get().VoxelSize / 1.5f;
+
+		planet.SetLod(m_Lod, m_LodNear * scale, m_LodFar * scale, 16.0f * scale);
+
+		glm::dvec3 focus = TerrainFocus((size_t)m_Ground);
+
+		auto before = std::chrono::high_resolution_clock::now();
+
+		// Reading and writing the cache is only on while this runs: see the
+		// note on `OpenSiteCache` for why a walk is not cached.
+		planet.SetPrefilling(true);
+
+		int passes = 0;
+
+		for (; passes < 64; passes++)
+		{
+			size_t filled = planet.FilledChunks();
+			size_t meshed = planet.MeshedChunks();
+
+			planet.StreamAround(focus, m_LoadRadius * scale, 1.0e9f);
+
+			if (planet.FilledChunks() == filled && planet.MeshedChunks() == meshed)
+				break;
+		}
+
+		// **And what the height-field fill costs, measured rather than
+		// assumed.** `FillChunkFast` interpolates the relief over a chunk
+		// instead of evaluating it per voxel, which is worth a factor of ten
+		// on the whole landing -- and is an approximation, so the error goes
+		// in the log beside the timing every time a site is prepared.
+		planet.ReportReliefError(focus);
+
+		planet.SetPrefilling(false);
+
+		EGSS_TRACE("  site cache: {0} chunks read, {1} written",
+			planet.CacheHits(), planet.CacheWrites());
+
+		EGSS_TRACE("Landing site: {0} chunks filled, {1} meshed, {2} passes, {3:.0f} ms",
+			planet.FilledChunks(), planet.MeshedChunks(), passes + 1,
+			std::chrono::duration<double, std::milli>(
+				std::chrono::high_resolution_clock::now() - before).count());
+	}
+
+	void BuildHorizon(const VoxelPlanet& planet)
+	{
+		if (m_Ground < 0)
+			return;
+
+		float scale = planet.Get().VoxelSize / 1.5f;
+
+		// Inside the streamed edge, so there is no gap between the two: the
+		// overlap is where the droop keeps the chunks in front.
+		float inner = m_LoadRadius * scale * 0.85f;
+
+		// **Fourteen kilometres, and the number is a horizon.** Ground at
+		// height `h` clears the horizon from `sqrt(2 R h)` away, so the 316 m
+		// the relief reaches on this planet is visible from 12.6 km. Past that
+		// there is nothing left to draw that is not below the curve.
+		float outer = glm::min(
+			std::sqrt(2.0f * planet.Get().Radius * glm::max(planet.ReliefReach(), 1.0f))
+				* 1.1f,
+			planet.Get().Radius * 0.25f);
+
+		m_Horizon.Build(planet, m_HorizonSite = TerrainFocus((size_t)m_Ground),
+			inner, glm::max(outer, inner * 4.0f));
+
+		// Said once a landing, not once every hundred metres of walking: the
+		// numbers are a property of the planet and the load radius, and
+		// repeating them down the log buries everything else.
+		if (!m_HorizonReported)
+		{
+			m_Horizon.Report();
+			m_HorizonReported = true;
+		}
+	}
+
+	void RebuildWaterMesh()
+	{
+		Egss::MeshData surface;
+		m_Water.BuildMesh(surface);
+
+		m_WaterMesh = surface.Indices.empty()
+			? nullptr
+			: std::make_shared<Egss::Mesh>(surface, "SurfaceWater");
+	}
+
+	// A spade, reaching from the eye along the view.
+	//
+	// Everything is in the landing site's frame -- the same one the physics is
+	// in -- so the ray, the hit and the edit are all small numbers about a
+	// lattice point, and none of it depends on how large the planet is.
+	void Dig(VoxelPlanet& planet, bool add)
+	{
+		const Egss::RigidBody3D& player = m_World.GetBody(m_Player);
+
+		glm::vec3 eye = player.Position
+			+ glm::vec3(glm::normalize(SiteFixed(player.Position))) * m_EyeHeight;
+
+		glm::vec3 forward = glm::vec3(ToFixed((size_t)m_Ground, glm::dvec3(m_Forward)));
+
+		glm::vec3 point, normal;
+
+		if (!planet.RayToSurface(eye, forward, m_SiteLattice, m_DigReach, point, normal))
+			return;
+
+		// Stepped out along the normal when adding, so a new blob sits *on*
+		// the surface rather than half inside it.
+		glm::vec3 at = add ? point + normal * (m_DigRadius * 0.5f) : point;
+
+		if (planet.Dig(at, m_SiteLattice, m_DigRadius, add) == 0)
+			return;
+
+		m_Edits++;
+
+		// **And then ask the water what that changed.** Everything about where
+		// water can be is a consequence of the shape of the ground, so the
+		// only thing a dig has to do is say the ground moved.
+		if (m_Water.Touch(planet, m_SiteLattice, at, m_DigRadius))
+			RebuildWaterMesh();
+	}
+
+	// The landing-site frame, both ways. `SiteLocal` takes a place in the
+	// planet's own frame into the physics world's; `SiteFixed` brings one
+	// back. Both do the arithmetic in double and hand back the small half.
+	glm::vec3 SiteLocal(const glm::dvec3& fixed) const
+	{
+		return glm::vec3(fixed - m_SiteFixed);
+	}
+
+	glm::dvec3 SiteFixed(const glm::vec3& local) const
+	{
+		return m_SiteFixed + glm::dvec3(local);
+	}
+
 	void ApplyGravity()
 	{
 		double gm = LocalGm((size_t)m_Ground);
@@ -1208,16 +1699,22 @@ public:
 			if (body.Type != Egss::BodyType::Dynamic || body.InverseMass <= 0.0f)
 				continue;
 
-			glm::vec3 toCentre = -body.Position;
-			float distance = glm::length(toCentre);
+			// **Down is toward the planet's centre, which is not the origin of
+			// the frame this body is in.** The site's own offset has to come
+			// back before the direction means anything -- and in double,
+			// because it is a planet radius long.
+			glm::dvec3 fixed = SiteFixed(body.Position);
+			double distance = glm::length(fixed);
 
-			if (distance < 1e-3f)
+			if (distance < 1e-3)
 				continue;
 
-			float acceleration = (float)(gm / ((double)distance * (double)distance));
+			glm::vec3 toCentre = glm::vec3(-fixed / distance);
+
+			float acceleration = (float)(gm / (distance * distance));
 			float mass = 1.0f / body.InverseMass;
 
-			m_World.ApplyForce(BodyHandleOf(body), (toCentre / distance) * acceleration * mass);
+			m_World.ApplyForce(BodyHandleOf(body), toCentre * acceleration * mass);
 		}
 	}
 
@@ -1240,9 +1737,26 @@ public:
 		north = glm::cross(up, east);
 	}
 
-	void BuildSurfaceWorld(size_t index, VoxelPlanet& planet, const glm::vec3& at)
+	// **The surface world is not in the planet's frame; it is in the landing
+	// site's.**
+	//
+	// A body's position is a float, and on a planet drawn at its own radius a
+	// float carries half a metre -- so a player standing in the planet's frame
+	// would move in half-metre jumps and the field it is standing on would be
+	// sampled at the same point for a metre's walking. Everything here is
+	// therefore measured from the lattice point nearest where the ship came
+	// down, which is what `RigidBody3D::VoxelOrigin` exists to say. Positions
+	// stay in the hundreds of metres, which is a millimetre of precision.
+	//
+	// A lattice *point*, not just any point, because the collider's field
+	// lookup adds it back as an integer.
+	void BuildSurfaceWorld(size_t index, VoxelPlanet& planet, const glm::dvec3& at,
+		const glm::vec3& facing)
 	{
 		m_World.Clear();
+
+		m_SiteLattice = planet.LatticeNear(at);
+		m_SiteFixed = planet.LatticePosition(m_SiteLattice);
 
 		// No world gravity at all: every pull here is radial and applied per
 		// body. Leaving the default -9.81 Y in place would add a second,
@@ -1250,18 +1764,54 @@ public:
 		m_World.Gravity = glm::vec3(0.0f);
 
 		Egss::RigidBody3D ground =
-			Egss::RigidBody3D::MakeSdf(glm::vec3(0.0f), planet.Field());
+			Egss::RigidBody3D::MakeSdf(glm::vec3(0.0f), planet.Field(), m_SiteLattice);
 		ground.Friction = 0.8f;
 		ground.Restitution = 0.0f;
 
 		m_World.AddBody(ground);
 
-		glm::vec3 up = glm::normalize(at);
+		glm::vec3 up = glm::vec3(glm::normalize(at));
 
-		// The player starts exactly where the ship was, feet first. Above the
-		// ground it falls; on it, it stands.
+		// **The ship is a body, and it stays where it came down.**
+		//
+		// It used to be nothing at all: `L` toggled between a physics capsule
+		// and a camera, and the vehicle existed only as the fact that you
+		// could leave. Making it an object is what turns landing into a place
+		// you have to get back to -- and it costs almost nothing, because the
+		// player was already a rigid body and gravity here is applied per body
+		// rather than as a world vector.
+		//
+		// A capsule with the hull drawn round it. A box would be the honest
+		// shape and the narrowphase only tests a box's corners against a
+		// distance field, so one resting on rough ground sinks a corner or
+		// jitters; a capsule is sampled along its segment. Angular damping
+		// near one keeps it from slowly toppling on a slope, which is a
+		// lander with legs behaving like a lander with legs rather than a
+		// physical claim about its inertia.
+		Egss::RigidBody3D ship = Egss::RigidBody3D::MakeCapsule(
+			SiteLocal(at) + up * 1.4f, 1.3f, 1.1f, 4200.0f);
+
+		ship.Friction = 0.9f;
+		ship.Restitution = 0.0f;
+		ship.LinearDamping = 0.0f;
+		ship.AngularDamping = 0.9f;
+		ship.Orientation = UprightAt(up);
+
+		m_Ship = m_World.AddBody(ship);
+		m_HasShip = true;
+
+		// **Out of the back of it, facing it.** Beside it works and puts the
+		// thing you have to walk back to off the edge of the screen the moment
+		// you arrive, which is a poor way to introduce it. The heading is the
+		// one the ship came in on, flattened into the tangent plane, so
+		// stepping out backward along it leaves the hull dead ahead.
+		glm::vec3 along = facing - up * glm::dot(facing, up);
+
+		along = glm::length(along) > 1e-3f
+			? glm::normalize(along) : glm::vec3(0.0f);
+
 		Egss::RigidBody3D player = Egss::RigidBody3D::MakeCapsule(
-			at - up * m_EyeHeight, 0.4f, 0.9f, 78.0f);
+			SiteLocal(at) - up * m_EyeHeight - along * 8.0f, 0.4f, 0.9f, 78.0f);
 
 		player.Friction = 0.6f;
 		player.Restitution = 0.0f;
@@ -1285,14 +1835,30 @@ public:
 
 		for (int i = 0; i < 12; i++)
 		{
-			glm::vec3 offset = east * (next() * 40.0f - 20.0f)
-				+ north * (next() * 40.0f - 20.0f);
+			// **An annulus, not a square.** They used to be scattered over
+			// forty metres centred on the touchdown point, which is also
+			// where the ship stands and where the player steps out -- so once
+			// the player stopped starting *at* the landing point, one of them
+			// was 2.4 m from the eye and filled a quarter of the screen with
+			// boulder. Nothing was wrong with it; it was simply in the way.
+			float turn = next() * 6.2831853f;
+			float away = 11.0f + next() * 16.0f;
 
-			glm::vec3 at = glm::normalize(up * surface + offset);
-			float ground2 = planet.SurfaceRadius(at);
+			glm::vec3 offset = (east * std::cos(turn) + north * std::sin(turn))
+				* away;
+
+			// The direction is a unit vector and survives anything; the radius
+			// it is multiplied by is the planet's, and does not. Composed in
+			// double and handed to the body in the site's frame.
+			glm::vec3 where = glm::vec3(glm::normalize(
+				glm::dvec3(up) * (double)surface + glm::dvec3(offset)));
+
+			double ground2 = (double)planet.SurfaceRadius(where);
 
 			Egss::RigidBody3D rock = Egss::RigidBody3D::MakeSphere(
-				at * (ground2 + 18.0f + next() * 25.0f), 0.6f + next() * 0.7f, 40.0f);
+				SiteLocal(glm::dvec3(where)
+					* (ground2 + 18.0 + (double)next() * 25.0)),
+				0.6f + next() * 0.7f, 40.0f);
 
 			rock.Friction = 0.7f;
 			rock.Restitution = 0.12f;
@@ -1354,7 +1920,8 @@ public:
 		// All of this is in the planet's own frame, which is the frame the
 		// terrain and the physics are in. It reaches scene coordinates once,
 		// at the bottom, through the spin.
-		glm::vec3 up = glm::normalize(m_World.GetBody(m_Player).Position);
+		glm::vec3 up = glm::vec3(glm::normalize(
+			SiteFixed(m_World.GetBody(m_Player).Position)));
 		glm::vec3 east, north;
 		TangentFrame(up, east, north);
 
@@ -1409,18 +1976,73 @@ public:
 		body.Orientation = UprightAt(up);
 		body.AngularVelocity = glm::vec3(0.0f);
 
+		// **And the ship, for the same reason and with more justification.**
+		// A capsule left to the solver tips over on a slope and then rolls to
+		// the equator, because on a sphere there is always a downhill -- which
+		// is what the lander did, ending up on its side with its legs out
+		// sideways. A vehicle that stands on legs stays on its legs. It is
+		// still a dynamic body, so digging the ground out from under it drops
+		// it; it just does not lie down.
+		if (m_HasShip)
+		{
+			Egss::RigidBody3D& hull = m_World.GetBody(m_Ship);
+
+			hull.Orientation = UprightAt(
+				glm::vec3(glm::normalize(SiteFixed(hull.Position))));
+			hull.AngularVelocity = glm::vec3(0.0f);
+		}
+
+		// **Digging happens on the fixed step, not in an event handler.** The
+		// mouse is in the replay stream and events are not, so a session spent
+		// digging records and replays as itself.
+		bool cut = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
+		bool fill = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_RIGHT);
+
+		// One edit a press rather than one a step, or holding the button
+		// hollows out the hillside in a second.
+		if (cut && !m_WasCutting)
+			Dig(planet, false);
+		else if (fill && !m_WasFilling)
+			Dig(planet, true);
+
+		m_WasCutting = cut;
+		m_WasFilling = fill;
+
+		// **Half as much ground again, not an eighth more.**
+		//
+		// A rebuild is a Priority-Flood over sixteen thousand columns and
+		// costs about 1.6 s in Debug, so the threshold is what decides whether
+		// walking hitches. An eighth was right when arriving was the only time
+		// the count moved in large steps; now that the site is prefilled, the
+		// only thing that moves it is walking off the edge of it, and half
+		// again is the point at which the answer has genuinely changed.
+		if (m_Water.Valid()
+			&& planet.MeshedChunks() > m_WaterChunks + m_WaterChunks / 2 + 64)
+			RebuildWater(planet);
+
+		// **And the horizon follows you.** It is a disc about the place it was
+		// built, with a hole in the middle sized to sit just inside the
+		// streamed region -- so walking off it opens a gap on one side and
+		// puts the mesh over the chunks on the other. A hundred metres is
+		// under a third of the hole's radius and costs 18,432 evaluations of
+		// the relief, which is 8 ms here and is not in a frame's way often.
+		if (m_Horizon.Valid()
+			&& glm::length(TerrainFocus((size_t)m_Ground) - m_HorizonSite) > 100.0)
+			BuildHorizon(planet);
+
 		ApplyGravity();
 		m_World.Step(dt);
 
-		glm::vec3 feet = m_World.GetBody(m_Player).Position;
+		glm::dvec3 feet = SiteFixed(m_World.GetBody(m_Player).Position);
 
 		// Grounded is measured against the terrain the physics is using, not a
 		// contact flag, so it means the same thing as the ground query the
 		// camera and the spawner use.
-		glm::vec3 direction = glm::normalize(feet);
+		glm::vec3 direction = glm::vec3(glm::normalize(feet));
 		float ground = planet.SurfaceRadius(direction);
 
-		m_Grounded = (glm::length(feet) - ground) < m_PlayerHalfHeight + 0.35f;
+		m_Grounded = (glm::length(feet) - (double)ground)
+			< (double)(m_PlayerHalfHeight + 0.35f);
 
 		glm::vec3 forward = glm::normalize(
 			heading * std::cos(glm::radians(m_SurfacePitch))
@@ -1431,9 +2053,22 @@ public:
 		// without the light direction ever being touched.
 		size_t index = (size_t)m_Ground;
 
-		m_Local = ToScene(index, glm::dvec3(feet + direction * m_EyeHeight));
-		m_Up = glm::vec3(ToScene(index, glm::dvec3(direction)));
-		m_Forward = glm::vec3(ToScene(index, glm::dvec3(forward)));
+		// **Kept in the planet's frame, and converted once, at the end of the
+		// step.** Converting here used the spin angle as it stood *before* the
+		// clock advanced, and everything else in the planet's frame is drawn
+		// with the angle as it stands after -- so the camera sat one step of
+		// rotation away from the body it belongs to. At 250 km with an hour to
+		// the day the surface moves 436 m/s, and a sixtieth of that is 7.3 m:
+		// the camera was seven metres from the player, and the ground was
+		// seven metres from where the player was standing on it.
+		//
+		// Invisible until now, because *everything* in that frame moved
+		// together and the player is not drawn. The lander is the first object
+		// whose position on screen could be predicted from the physics, and it
+		// came out in the wrong place by exactly one step of spin.
+		m_EyeFixed = feet + glm::dvec3(direction) * (double)m_EyeHeight;
+		m_UpFixed = direction;
+		m_ForwardFixed = forward;
 	}
 
 	// --- The step -----------------------------------------------------------
@@ -1447,6 +2082,7 @@ public:
 
 		UpdateFrame();
 		EnsurePlanets();
+
 		StreamTerrain();
 
 		// **The clock has to follow the camera, not the other way round.**
@@ -1489,6 +2125,17 @@ public:
 		}
 
 		CarryWithTheAir(dt);
+
+		// The clock has moved; the surface camera is quoted in the planet's
+		// own frame, so it reaches scene coordinates now rather than before.
+		if (m_Walking && m_Ground >= 0)
+		{
+			size_t ground = (size_t)m_Ground;
+
+			m_Local = ToScene(ground, m_EyeFixed);
+			m_Up = glm::vec3(ToScene(ground, glm::dvec3(m_UpFixed)));
+			m_Forward = glm::vec3(ToScene(ground, glm::dvec3(m_ForwardFixed)));
+		}
 	}
 
 	// **A craft inside an atmosphere turns with the atmosphere.**
@@ -1513,36 +2160,57 @@ public:
 	// inertial frame without a boundary to cross. That weighting also disposes
 	// of the old objection about the clock: the rate only speeds up outside six
 	// radii, and there is no air out there to hold on to.
+	// **How much of the planet's turn a craft at this radius is carried by.**
+	//
+	// Named and separate because it is the whole model, and because the number
+	// that matters -- how fast the ground slides under a hover -- is
+	// `(1 - AirCoupling) * spin rate * radius`, which is a thing to measure
+	// rather than a thing to hope about.
+	double AirCoupling(size_t index, double height) const
+	{
+		const Body& body = m_Bodies[index];
+
+		if (body.AtmosphereFraction <= 0.0f)
+			return 0.0;
+
+		double radius = DrawnRadius(index);
+		double top = radius * (1.0 + (double)body.AtmosphereFraction * (double)m_AirScale);
+		double thickness = std::max(top - radius, 1e-6);
+
+		double t = (height - radius) / thickness;
+
+		if (t >= 1.0)
+			return 0.0;
+		if (t <= s_AirGripTop)
+			return 1.0;
+
+		// **Air does not co-rotate a little; it co-rotates.** This used to be
+		// the same exponential the scattering uses -- full at the surface and
+		// a fiftieth at the top of the shell -- on the theory that thin air
+		// grips less. That is not what an atmosphere does: the whole of it
+		// turns with the planet, near enough rigidly, and a balloon at 10 km
+		// is over the same city as one at 100 m. The exponential meant a
+		// *seventy metre* hover kept only 93% of the turn, which at 250 km and
+		// an hour to the day is 30 m/s of ground sliding past -- the thing
+		// that prompted this, reported twice.
+		//
+		// So: carried completely through the bulk of the shell, and released
+		// over the top quarter of it, where a craft is leaving the air anyway.
+		// The taper is only there so that crossing out is not a step.
+		double u = (t - s_AirGripTop) / (1.0 - s_AirGripTop);
+
+		return 1.0 - u * u * (3.0 - 2.0 * u);
+	}
+
 	void CarryWithTheAir(double years)
 	{
 		if (m_Walking || m_Frame == 0 || years <= 0.0)
 			return;
 
-		const Body& body = m_Bodies[m_Frame];
+		double share = AirCoupling(m_Frame, glm::length(m_Local));
 
-		if (body.AtmosphereFraction <= 0.0f)
+		if (share <= 0.0)
 			return;
-
-		double radius = DrawnRadius(m_Frame);
-		double top = radius * (1.0 + (double)body.AtmosphereFraction * (double)m_AirScale);
-		double height = glm::length(m_Local);
-
-		if (height >= top)
-			return;
-
-		// **Normalised so it reaches exactly zero at the top**, not merely
-		// nearly. A bare `exp(-h/H)` is still 0.018 at the top of the shell,
-		// where the early-out above drops it to nothing -- a 1.8% step in how
-		// fast the ground moves, at the one altitude a ship crosses on its way
-		// in. Small, and a step is a step; the test that found it was looking
-		// for a value strictly between the two ends and got exactly one end.
-		double thickness = std::max(top - radius, 1e-6);
-		double scale = thickness * 0.25;
-
-		double floor = std::exp(-thickness / scale);
-
-		double share = (std::exp(-std::max(height - radius, 0.0) / scale) - floor)
-			/ (1.0 - floor);
 
 		// Straight from the rate rather than by differencing two angles: the
 		// absolute spin angle runs to tens of radians over a session and the
@@ -1627,7 +2295,7 @@ public:
 		// tetrahedra over 4,096 cells, and doing every newly qualifying chunk
 		// in one step is exactly the spike a budget exists to prevent.
 		float scale = planet.Get().VoxelSize / 1.5f;
-		glm::vec3 focus = glm::vec3(ToFixed(index, m_Local));
+		glm::dvec3 focus = TerrainFocus(index);
 
 		// **The bands scale with the voxel, like the load radius does.** They
 		// are quoted for Earth's 1.5 m voxels; Jupiter's are 17.5 m, and a
@@ -1720,6 +2388,7 @@ public:
 
 	void OnDemoUpdate(Egss::Timestep) override
 	{
+
 		// Reset is the caller's job here, and the panel reads the total back
 		// at the end of the frame -- without this it counts every frame since
 		// the demo started, which is exactly the shape of a plausible-looking
@@ -1765,23 +2434,24 @@ public:
 
 		for (size_t i = 0; i < m_Bodies.size(); i++)
 		{
-			glm::vec3 centre;
+			glm::dvec3 centre;
 			float scale = BodyPlacement(i, origin, centre);
 
 			DrawBody(i, centre, i == terrain, scale);
 		}
 
 		DrawRocks(origin);
+		DrawShip(origin);
 
 		// After the bodies, so the far half of a ring is occluded by the planet
 		// it goes round; before the air, so a ring seen through an atmosphere
 		// is veiled by it.
 		for (size_t i = 1; i < m_Bodies.size(); i++)
 		{
-			glm::vec3 centre;
+			glm::dvec3 centre;
 			float scale = BodyPlacement(i, origin, centre);
 
-			DrawRings(i, centre, scale);
+			DrawRings(i, glm::vec3(centre), scale);
 		}
 
 		// Then the water, then the air. Both are blended and neither writes
@@ -1789,20 +2459,20 @@ public:
 		// and sea has to be under sky.
 		for (size_t i = 1; i < m_Bodies.size(); i++)
 		{
-			glm::vec3 centre;
+			glm::dvec3 centre;
 			float scale = BodyPlacement(i, origin, centre);
 
-			DrawOcean(i, centre, scale);
+			DrawOcean(i, glm::vec3(centre), scale);
 		}
 
 		// After the solid bodies, so the depth buffer already holds them and a
 		// planet occludes the air behind it.
 		for (size_t i = 1; i < m_Bodies.size(); i++)
 		{
-			glm::vec3 centre;
+			glm::dvec3 centre;
 			float scale = BodyPlacement(i, origin, centre);
 
-			DrawAtmosphere(i, centre, (float)DrawnRadius(i) * scale);
+			DrawAtmosphere(i, glm::vec3(centre), (float)DrawnRadius(i) * scale);
 		}
 
 		Egss::Renderer::EndScene();
@@ -1823,7 +2493,7 @@ public:
 	//
 	// A skirt or a fog would hide the edge; this shows what is actually there,
 	// which is a planet.
-	void DrawBody(size_t index, const glm::vec3& centre, bool isNear, float scale)
+	void DrawBody(size_t index, const glm::dvec3& centre, bool isNear, float scale)
 	{
 		float radius = (float)DrawnRadius(index) * scale;
 
@@ -1835,11 +2505,14 @@ public:
 			auto material = Egss::Material::CreateInstance(m_Material);
 			material->Set("u_Color", glm::vec4(m_Bodies[0].Colour, 1.0f));
 			material->Set("u_Emissive", 1.0f);
-			material->Set("u_LightPosition", centre);
+			material->Set("u_Sky", glm::vec3(0.0f));
+			material->Set("u_Up", glm::vec3(0.0f, 1.0f, 0.0f));
+			material->Set("u_LightPosition", glm::vec3(centre));
 			material->Set("u_LightColor", m_SunLight * m_StarBrightness);
 
 			Egss::Renderer::Submit(material, m_Sphere,
-				glm::scale(glm::translate(glm::mat4(1.0f), centre), glm::vec3(radius)));
+				glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(centre)),
+					glm::vec3(radius)));
 
 			return;
 		}
@@ -1868,12 +2541,13 @@ public:
 		auto material = Egss::Material::CreateInstance(m_TerrainMaterial);
 		material->Set("u_LightDirection", SunDirection(index));
 		material->Set("u_LightColor", m_SunLight * m_StarBrightness);
+		material->Set("u_Sky", SkyLight(index));
 		material->Set("u_LowColour", glm::vec4(m_Bodies[index].Colour * 0.55f, 1.0f));
 		material->Set("u_HighColour",
 			glm::vec4(glm::mix(m_Bodies[index].Colour, glm::vec3(1.0f), 0.35f), 1.0f));
 		material->Set("u_Radius", radius);
 		material->Set("u_Relief", relief);
-		material->Set("u_Origin", centre);
+		material->Set("u_Origin", glm::vec3(centre));
 		material->Set("u_Spin", MapSpin(index));
 
 		// A planet with no sea gets a waterline below its deepest valley, so
@@ -1890,21 +2564,100 @@ public:
 			material->SetTexture("u_Map", it->second.Map(), 0);
 
 		Egss::Renderer::Submit(material, m_Sphere,
-			glm::scale(glm::translate(glm::mat4(1.0f), centre), glm::vec3(drawn)));
+			glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(centre)),
+				glm::vec3(drawn)));
 
 		if (!meshed)
 			return;
 
 		material->Set("u_HasMap", 0.0f);
 
-		// The chunks are planet-fixed; the spin is what puts them in the sky
-		// where the Sun says they should be.
-		glm::mat4 transform = glm::translate(glm::mat4(1.0f), centre) * SpinMatrix(index);
+		// **A transform per chunk, and the sum inside it done in double.**
+		//
+		// A chunk's mesh is measured from the chunk's own lattice origin, so
+		// placing it is `centre + spin * origin` -- and both of those are a
+		// planet radius long while the answer is a few hundred metres. That
+		// subtraction is the entire reason the terrain is not on a 0.76 m
+		// grid at 1:1, and it has to happen before the cast, not after.
+		//
+		// The rotation stays a float matrix because a rotation's entries are
+		// all in [-1, 1] and lose nothing.
+		glm::mat4 spin = SpinMatrix(index);
 
 		for (const auto& [key, chunk] : it->second.Chunks())
-			Egss::Renderer::Submit(material, chunk.MeshPtr, transform);
+		{
+			glm::vec3 placed = glm::vec3(centre + ToScene(index, chunk.Origin));
 
-		DrawPlants(index, it->second, transform);
+			Egss::Renderer::Submit(material, chunk.MeshPtr,
+				glm::translate(glm::mat4(1.0f), placed) * spin);
+		}
+
+		// **And the world past the chunks.** The same material with the same
+		// flag: it is ground, coloured by the same rule, and the only thing
+		// that makes it different is that it was displaced on the CPU instead
+		// of marched. Drawn after the chunks so the depth buffer already holds
+		// them where they overlap -- the droop makes that decision, but there
+		// is no reason to make the driver work for it.
+		if (m_Horizon.Valid() && m_Walking && (size_t)m_Ground == index)
+		{
+			Egss::Renderer::Submit(material, m_Horizon.Mesh(),
+				glm::translate(glm::mat4(1.0f),
+					glm::vec3(centre + ToScene(index, m_Horizon.Site()))) * spin);
+		}
+
+		DrawPlants(index, it->second, centre, spin);
+	}
+
+	// **What the sky over this body is worth as a light.**
+	//
+	// The air shader already knows how much atmosphere there is and what
+	// colour it scatters; this is the same two numbers read as an ambient
+	// term. A quarter of the sunlight is what a clear sky returns on Earth at
+	// a moderate sun angle -- the real figure runs about 15% of the horizontal
+	// illuminance and rises toward the horizon -- and it is multiplied by the
+	// sun's own elevation, because a sky at night is not a light.
+	//
+	// Zero atmosphere gives zero, which is the Moon, and is correct: shadows
+	// there really are black.
+	glm::vec3 SkyLight(size_t index) const
+	{
+		if (index >= m_Bodies.size())
+			return glm::vec3(0.0f);
+
+		const Body& body = m_Bodies[index];
+
+		float air = glm::clamp(body.AtmosphereDensity * m_AirDensity / 60.0f,
+			0.0f, 1.0f);
+
+		if (air <= 0.0f)
+			return glm::vec3(0.0f);
+
+		// How high the sun is over the site, which is what decides whether the
+		// dome is lit. `m_Up` is the local vertical wherever the camera is; off
+		// the surface it is the flight frame's, which is the same direction.
+		float elevation = glm::clamp(
+			glm::dot(SunDirection(index), m_Up), 0.0f, 1.0f);
+
+		// **`Scatter` is an extinction ratio, not the colour of the sky.**
+		// (0.22, 0.45, 1.00) is how much more strongly blue is scattered than
+		// red, which is why the sky is blue and the sun is yellow at noon; it
+		// is not what the dome *looks* like, which is a pale blue with plenty
+		// of red in it. Using the ratio directly gave a shaded slope 20% of
+		// the red it should have and turned every hillside teal.
+		glm::vec3 spectrum = body.Scatter
+			/ glm::max(glm::max(body.Scatter.x,
+				glm::max(body.Scatter.y, body.Scatter.z)), 1e-4f);
+
+		glm::vec3 tint = glm::mix(glm::vec3(1.0f), spectrum, 0.6f);
+
+		// **A shaded slope at about a third of a sunlit one.** The physical
+		// figure for a clear sky is nearer a fifth of the direct beam on a
+		// horizontal surface, and a fifth is what this started at -- but the
+		// frame is written to an 8-bit buffer with no exposure curve on it, so
+		// a fifth of a dark green is four units out of 255 and reads as black
+		// whatever the arithmetic says. A third is what makes the shape of a
+		// hillside legible on the screen it is actually shown on.
+		return m_SunLight * m_StarBrightness * tint * (0.55f * air * elevation);
 	}
 
 	// The palette and the waterline, which the terrain and the sea both need
@@ -1926,6 +2679,15 @@ public:
 		material->Set("u_Tundra", settings.Tundra);
 		material->Set("u_Rock", settings.Rock);
 		material->Set("u_Snow", settings.Snow);
+		material->Set("u_Desert", settings.Desert);
+		material->Set("u_Steppe", settings.Steppe);
+
+		// Only a body with a sea has a drainage pass, and therefore a climate.
+		material->Set("u_HasClimate", settings.HasOcean ? 1.0f : 0.0f);
+
+		// Three voxels of shore: enough to read as a beach from a distance and
+		// not so much that it becomes the landscape.
+		material->Set("u_Beach", scale * 3.0f * glm::max(settings.VoxelSize, 0.1f));
 	}
 
 	static float ReliefOf(const VoxelPlanet::Settings& settings, float radius)
@@ -1969,6 +2731,133 @@ public:
 			params.LeafRadius *= 1.44f;
 
 		return params;
+	}
+
+	// **A lander, from three primitives and no asset file.**
+	//
+	// A tapered hexagonal hull, three legs and a nozzle: about two hundred
+	// triangles, which is all a shape needs to be recognisable as the thing
+	// you arrived in and have to get back to. Built here rather than loaded
+	// because the demo's whole point is that nothing is a black box, and a
+	// hull described by eight numbers can be argued with.
+	void BuildLander()
+	{
+		Egss::MeshData data;
+
+		const int sides = 6;
+		const float pi = 3.14159265358979323846f;
+
+		auto ring = [&](float radius, float height)
+		{
+			int first = (int)data.Vertices.size();
+
+			for (int i = 0; i < sides; i++)
+			{
+				float a = (float)i / (float)sides * 2.0f * pi;
+
+				Egss::MeshVertex point;
+				point.Position = glm::vec3(std::cos(a) * radius, height,
+					std::sin(a) * radius);
+				point.Normal = glm::normalize(
+					glm::vec3(std::cos(a), 0.35f, std::sin(a)));
+				point.TexCoord = glm::vec2(0.0f);
+
+				data.Vertices.push_back(point);
+			}
+
+			return first;
+		};
+
+		auto skirt = [&](int lower, int upper)
+		{
+			for (int i = 0; i < sides; i++)
+			{
+				unsigned int a = (unsigned int)(lower + i);
+				unsigned int b = (unsigned int)(lower + (i + 1) % sides);
+				unsigned int c = (unsigned int)(upper + i);
+				unsigned int d = (unsigned int)(upper + (i + 1) % sides);
+
+				data.Indices.insert(data.Indices.end(), { a, c, b, b, c, d });
+			}
+		};
+
+		// Waist, shoulder, crown -- the hull swells and then tapers, which is
+		// what makes it read as a capsule rather than a bin.
+		int base = ring(1.15f, 0.35f);
+		int waist = ring(1.55f, 1.30f);
+		int shoulder = ring(1.30f, 2.45f);
+		int crown = ring(0.55f, 3.15f);
+
+		skirt(base, waist);
+		skirt(waist, shoulder);
+		skirt(shoulder, crown);
+
+		// A cap, fanned from a centre vertex.
+		{
+			Egss::MeshVertex top;
+			top.Position = glm::vec3(0.0f, 3.35f, 0.0f);
+			top.Normal = glm::vec3(0.0f, 1.0f, 0.0f);
+			top.TexCoord = glm::vec2(0.0f);
+
+			unsigned int centre = (unsigned int)data.Vertices.size();
+			data.Vertices.push_back(top);
+
+			for (int i = 0; i < sides; i++)
+				data.Indices.insert(data.Indices.end(), {
+					centre, (unsigned int)(crown + i),
+					(unsigned int)(crown + (i + 1) % sides) });
+		}
+
+		// The nozzle, a short cone under the base.
+		{
+			int mouth = ring(0.75f, -0.55f);
+
+			skirt(mouth, base);
+		}
+
+		// Three legs, splayed. A box each, built as a skewed prism from two
+		// quads -- enough to hold the hull off the ground and to say which way
+		// up it is.
+		for (int leg = 0; leg < 3; leg++)
+		{
+			float a = (float)leg / 3.0f * 2.0f * pi + 0.5f;
+			glm::vec3 out(std::cos(a), 0.0f, std::sin(a));
+			glm::vec3 side = glm::normalize(glm::cross(out, glm::vec3(0, 1, 0)));
+
+			glm::vec3 hip = out * 1.05f + glm::vec3(0.0f, 1.05f, 0.0f);
+			glm::vec3 foot = out * 2.15f + glm::vec3(0.0f, -0.55f, 0.0f);
+
+			int first = (int)data.Vertices.size();
+
+			for (int i = 0; i < 4; i++)
+			{
+				glm::vec3 where = (i < 2 ? hip : foot)
+					+ side * ((i % 2) ? 0.16f : -0.16f);
+
+				Egss::MeshVertex point;
+				point.Position = where;
+				point.Normal = glm::normalize(out + glm::vec3(0.0f, 0.5f, 0.0f));
+				point.TexCoord = glm::vec2(0.0f);
+
+				data.Vertices.push_back(point);
+			}
+
+			unsigned int f = (unsigned int)first;
+
+			data.Indices.insert(data.Indices.end(), {
+				f, f + 2, f + 1, f + 1, f + 2, f + 3,
+				f, f + 1, f + 2, f + 1, f + 3, f + 2 });
+		}
+
+		Egss::Submesh all;
+		all.IndexCount = (unsigned int)data.Indices.size();
+		data.Submeshes.push_back(all);
+		data.RecalculateBounds();
+
+		m_Lander.reset(new Egss::Mesh(data, "Lander"));
+
+		EGSS_TRACE("Lander: {0} vertices, {1} triangles",
+			data.Vertices.size(), data.Indices.size() / 3);
 	}
 
 	void BuildTrees()
@@ -2019,19 +2908,37 @@ public:
 	}
 
 	// One planet's trees, in the frame the chunks are already drawn in.
-	void DrawPlants(size_t index, const VoxelPlanet& planet, const glm::mat4& frame)
+	void DrawPlants(size_t index, const VoxelPlanet& planet,
+		const glm::dvec3& centre, const glm::mat4& spin)
 	{
 		if (planet.Get().PlantsPerChunk <= 0)
 			return;
 
+		// **One origin for the whole forest, and it follows the player.**
+		//
+		// Chunk meshes each carry their own origin because they are separate
+		// draws; the trees are one buffer per shape and level, so they share
+		// a uniform and therefore have to share an origin. The camera's own
+		// planet-fixed position is the obvious one -- every tree that is drawn
+		// is within the load radius of it, so every instance translation is a
+		// few hundred metres at most, whatever the planet's radius.
+		glm::dvec3 localOrigin = TerrainFocus(index);
+
+		glm::mat4 frame = glm::translate(glm::mat4(1.0f),
+			glm::vec3(centre + ToScene(index, localOrigin))) * spin;
+
 		auto bark = Egss::Material::CreateInstance(m_TreeMaterial);
 		bark->Set("u_Color", glm::vec4(0.30f, 0.22f, 0.15f, 1.0f));
 		bark->Set("u_Emissive", 0.0f);
+		bark->Set("u_Sky", SkyLight(index));
+		bark->Set("u_Up", m_Up);
 		bark->Set("u_LightColor", m_SunLight * m_StarBrightness);
 
 		auto leaves = Egss::Material::CreateInstance(m_TreeMaterial);
 		leaves->Set("u_Color", glm::vec4(0.16f, 0.34f, 0.13f, 1.0f));
 		leaves->Set("u_Emissive", 0.0f);
+		leaves->Set("u_Sky", SkyLight(index));
+		leaves->Set("u_Up", m_Up);
 		leaves->Set("u_LightColor", m_SunLight * m_StarBrightness);
 
 		// **A directional light faked as a very distant point.** The shader
@@ -2077,7 +2984,7 @@ public:
 
 		for (const auto& [key, chunk] : planet.Chunks())
 		{
-			glm::vec3 towards = glm::vec3(frame * glm::vec4(chunk.Centre, 1.0f));
+			glm::vec3 towards = glm::vec3(centre + ToScene(index, chunk.Centre));
 
 			float away = glm::length(towards);
 
@@ -2098,11 +3005,46 @@ public:
 				// much geometry a tree is worth is how large it is on screen,
 				// and these range 0.6 to 1.15 -- distance alone would give the
 				// smallest tree in a stand more triangles than the largest.
-				float apart = glm::length(
-					glm::vec3(frame * glm::vec4(plant.Position, 1.0f)))
-					/ plant.Scale;
+				// The plant's offset from the forest's origin, in double
+				// because both terms are a planet radius long and the answer
+				// is metres. Everything after this is small.
+				glm::vec3 local = glm::vec3(
+					chunk.Origin + glm::dvec3(plant.Position) - localOrigin);
+
+				// `localOrigin` *is* the camera, so this offset is already the
+				// distance to it -- and the spin is a rotation, which does not
+				// change a length.
+				float apart = glm::length(local) / plant.Scale;
 
 				int lod = apart < s_TreeLodNear ? 0 : (apart < s_TreeLodFar ? 1 : 2);
+
+				// **Nothing grows on the landing pad.** A tree through the
+				// hull is the first thing you see on opening the demo, and
+				// the trees are scattered from the chunk's own hash, which
+				// knows nothing about where a lander came down.
+				//
+				// **Across the ground, not through the air.** `m_SiteFixed` is
+				// the lattice point nearest where the ship *arrived*, which is
+				// twenty metres up -- so a straight distance to it put a tree
+				// standing on the pad at exactly the clearing radius and let
+				// it through. The first version of this had a twenty-metre
+				// clearing and a tree through the hull, which looks like the
+				// test not running rather than the test measuring the wrong
+				// triangle. A clearing is a radius on the ground; the radial
+				// component comes out.
+				if (m_Walking && (size_t)m_Ground == index)
+				{
+					glm::dvec3 offset = chunk.Origin + glm::dvec3(plant.Position)
+						- m_SiteFixed;
+
+					glm::dvec3 vertical = glm::normalize(m_SiteFixed);
+
+					double across = glm::length(
+						offset - vertical * glm::dot(offset, vertical));
+
+					if (across < (double)s_LandingClearing)
+						continue;
+				}
 
 				std::vector<glm::mat4>& batch = m_TreeBatch[plant.Shape][lod];
 
@@ -2114,7 +3056,7 @@ public:
 				// applied once on the GPU instead of being multiplied into
 				// every tree's matrix on the CPU.
 				batch.push_back(
-					glm::translate(glm::mat4(1.0f), plant.Position)
+					glm::translate(glm::mat4(1.0f), local)
 					* glm::mat4_cast(UprightAt(plant.Up))
 					* glm::rotate(glm::mat4(1.0f), plant.Yaw, glm::vec3(0.0f, 1.0f, 0.0f))
 					* glm::scale(glm::mat4(1.0f), glm::vec3(plant.Scale)));
@@ -3019,20 +3961,37 @@ public:
 
 		const VoxelPlanet::Settings& settings = it->second.Get();
 
+		// The same water, twice: once as a sphere for everything out to the
+		// horizon and beyond, and once as a sheet at the local level over the
+		// ground you are standing on. Only the geometry and the cut-out
+		// differ, so the uniforms are written once.
+		auto dress = [&](const std::shared_ptr<Egss::Material>& water)
+		{
+			water->SetTexture("u_Map", it->second.Map(), 0);
+			water->Set("u_Spin", MapSpin(index));
+			water->Set("u_Radius", settings.Radius * scale);
+			water->Set("u_Relief", settings.Amplitude * scale);
+			water->Set("u_SeaRadius", settings.OceanRadius * scale);
+			water->Set("u_LightDirection", SunDirection(index));
+			water->Set("u_LightColor", m_SunLight * m_StarBrightness);
+			water->Set("u_Origin", centre);
+			water->Set("u_Eye", -centre);
+			water->Set("u_Shallow", settings.Shallow);
+			water->Set("u_Deep", settings.Deep);
+			water->Set("u_Time", (float)m_Time * 8766.0f);
+			water->Set("u_WaveScale", 1.6f);
+
+			// Metres of water that attenuate the return path by 1/e. Clear
+			// lake water is a few; the open sea is more, but the sea here is
+			// deep enough everywhere that it saturates either way.
+			water->Set("u_Clarity", 3.5f);
+			water->Set("u_HasDepth", 0.0f);
+			water->Set("u_NearCentre", glm::vec3(0.0f, 1.0f, 0.0f));
+			water->Set("u_NearCos", 2.0f);
+		};
+
 		auto material = Egss::Material::CreateInstance(m_WaterMaterial);
-		material->SetTexture("u_Map", it->second.Map(), 0);
-		material->Set("u_Spin", MapSpin(index));
-		material->Set("u_Radius", settings.Radius * scale);
-		material->Set("u_Relief", settings.Amplitude * scale);
-		material->Set("u_SeaRadius", settings.OceanRadius * scale);
-		material->Set("u_LightDirection", SunDirection(index));
-		material->Set("u_LightColor", m_SunLight * m_StarBrightness);
-		material->Set("u_Origin", centre);
-		material->Set("u_Eye", -centre);
-		material->Set("u_Shallow", settings.Shallow);
-		material->Set("u_Deep", settings.Deep);
-		material->Set("u_Time", (float)m_Time * 8766.0f);
-		material->Set("u_WaveScale", 1.6f);
+		dress(material);
 
 		// No depth write, so two bits of sea do not occlude each other, and no
 		// culling because the camera can be under it.
@@ -3040,13 +3999,77 @@ public:
 		Egss::RenderCommand::SetDepthWrite(false);
 		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
 
+		bool local = m_WaterMesh && m_Walking && (size_t)m_Ground == index;
+
+		// **The sphere stands back where the local surface is standing.** Both
+		// are blended and neither writes depth, so two surfaces over the same
+		// water blend twice and read as a darker disc round the player.
+		if (local)
+		{
+			material->Set("u_NearCentre",
+				glm::vec3(glm::normalize(m_Water.Site())));
+			material->Set("u_NearCos", std::cos(std::atan(
+				m_Water.Reach() / glm::max(settings.Radius, 1.0f))));
+		}
+
 		Egss::Renderer::Submit(material, m_Sphere,
 			glm::scale(glm::translate(glm::mat4(1.0f), centre),
 				glm::vec3(settings.OceanRadius * scale)));
 
+		if (local)
+		{
+			auto nearby = Egss::Material::CreateInstance(m_WaterMaterial);
+			dress(nearby);
+
+			glm::dvec3 exact = BodyScene(index) - ShipScene();
+
+			nearby->Set("u_HasDepth", 1.0f);
+
+			Egss::Renderer::Submit(nearby, m_WaterMesh,
+				glm::translate(glm::mat4(1.0f),
+					glm::vec3(exact + ToScene(index, m_Water.Site())))
+				* SpinMatrix(index));
+		}
+
 		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
 		Egss::RenderCommand::SetDepthWrite(true);
 		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+	}
+
+	// The lander, where the physics has it. Drawn from the site's frame like
+	// the rocks, and turned by the body's own orientation -- so a ship that
+	// came down on a slope leans, and one that has been dug out from under
+	// leans further.
+	void DrawShip(const glm::dvec3& origin)
+	{
+		if (!m_HasShip || m_Ground < 0 || !m_Lander)
+			return;
+
+		size_t index = (size_t)m_Ground;
+
+		const Egss::RigidBody3D& body = m_World.GetBody(m_Ship);
+
+		auto hull = Egss::Material::CreateInstance(m_Material);
+		hull->Set("u_Color", glm::vec4(0.72f, 0.74f, 0.78f, 1.0f));
+		hull->Set("u_Emissive", 0.0f);
+		hull->Set("u_LightPosition", SunDirection(index) * 40000.0f);
+		hull->Set("u_LightColor", m_SunLight * m_StarBrightness);
+		hull->Set("u_Sky", SkyLight(index));
+		hull->Set("u_Up", m_Up);
+
+		glm::dvec3 centre = BodyScene(index) - origin;
+
+		glm::vec3 at = glm::vec3(centre
+			+ ToScene(index, SiteFixed(body.Position)));
+
+		// The hull's own origin is its base, and the capsule's is its middle,
+		// so it is dropped by the half height it was given.
+		glm::mat4 transform = glm::translate(glm::mat4(1.0f), at)
+			* SpinMatrix(index)
+			* glm::mat4_cast(body.Orientation)
+			* glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.4f, 0.0f));
+
+		Egss::Renderer::Submit(hull, m_Lander, transform);
 	}
 
 	// The loose bodies. Gravity acting on nothing you can see is gravity you
@@ -3058,7 +4081,12 @@ public:
 			return;
 
 		size_t index = (size_t)m_Ground;
-		glm::vec3 offset = glm::vec3(BodyScene(index) - origin);
+
+		// **The bodies are in the landing site's frame, not the planet's.**
+		// `SiteFixed` puts them back before the spin does, and the sum with
+		// the body's centre stays in double until the last step -- the same
+		// reason the chunk transforms do.
+		glm::dvec3 centre = BodyScene(index) - origin;
 		const std::vector<Egss::RigidBody3D>& bodies = m_World.GetBodies();
 
 		for (const Egss::RigidBody3D& body : bodies)
@@ -3071,8 +4099,11 @@ public:
 			rock->Set("u_Emissive", 0.0f);
 			rock->Set("u_LightPosition", SunDirection(index) * 4000.0f);
 			rock->Set("u_LightColor", m_SunLight * m_StarBrightness);
+			rock->Set("u_Sky", SkyLight(index));
+			rock->Set("u_Up", m_Up);
 
-			glm::vec3 at = offset + glm::vec3(ToScene(index, glm::dvec3(body.Position)));
+			glm::vec3 at = glm::vec3(centre
+				+ ToScene(index, SiteFixed(body.Position)));
 
 			glm::mat4 transform = glm::scale(
 				glm::translate(glm::mat4(1.0f), at), glm::vec3(body.Radius));
@@ -3134,7 +4165,17 @@ private:
 	// that follows the player -- through `VoxelField3D`, the mesher, the SDF
 	// collider and the plant placement. That is the next thing this wants, and
 	// it is on the roadmap with these numbers.
-	static constexpr float s_EarthDrawn = 250000.0f;
+	// **How large Earth is drawn, and therefore everything else.** Every other
+	// body is a ratio off this, so it is the one number that sets the scale of
+	// the system.
+	//
+	// 250 km by default rather than 6,371: a planet is only worth the radius
+	// you can afford to stream across, and at 1:1 the streamed 400 m is a flat
+	// disc under a horizon 71 km away. The *representation* now goes all the
+	// way -- see the 2026-08-25 changelog entry on the local origin, and
+	// `--earth-radius 6371000`, which stands up, streams, and reports escape
+	// velocity within 0.02% of the real 11,186 m/s.
+	float m_EarthDrawn = 250000.0f;
 
 	struct Body
 	{
@@ -3444,6 +4485,8 @@ private:
 			uniform vec4 u_Color;
 			uniform vec3 u_LightPosition;
 			uniform vec3 u_LightColor;
+			uniform vec3 u_Sky;
+			uniform vec3 u_Up;
 			uniform float u_Emissive;
 
 			void main()
@@ -3460,9 +4503,21 @@ private:
 				// so the direction is used and the distance is not.
 				float diffuse = max(dot(normal, normalize(toLight)), 0.0);
 
-				// A little light on the night side, so a planet reads as a
-				// sphere rather than as a lit crescent floating in nothing.
-				vec3 lit = u_Color.rgb * (0.06 + 0.94 * diffuse) * u_LightColor;
+				// **The same skylight the ground gets.** See the note in the
+				// terrain shader: this was `0.06 + 0.94 * diffuse`, and six
+				// per cent of a leaf colour is black. A forest on a slope
+				// turned away from the sun came out as a single dark mass with
+				// the trees indistinguishable from the hill they stood on --
+				// which is what a wood looks like at night and not what one
+				// looks like at ten in the morning.
+				//
+				// `u_Up` is one direction for everything drawn through this
+				// shader, which is exact enough: the whole forest is inside
+				// the load radius, and four hundred metres of a 250 km planet
+				// is a tenth of a degree of vertical.
+				float dome = 0.5 + 0.5 * dot(normal, u_Up);
+
+				vec3 lit = u_Color.rgb * (u_Sky * dome + u_LightColor * diffuse);
 
 				color = vec4(mix(lit, u_Color.rgb, u_Emissive), u_Color.a);
 			}
@@ -3567,6 +4622,7 @@ private:
 
 			uniform vec3 u_LightDirection;
 			uniform vec3 u_LightColor;
+			uniform vec3 u_Sky;
 			uniform vec4 u_LowColour;
 			uniform vec4 u_HighColour;
 			uniform float u_Radius;
@@ -3591,17 +4647,35 @@ private:
 			uniform vec3 u_Tundra;
 			uniform vec3 u_Rock;
 			uniform vec3 u_Snow;
+			uniform vec3 u_Desert;
+			uniform vec3 u_Steppe;
 
-			// **One rule, evaluated per pixel.** `height` is metres above sea
-			// level and `latitude` is zero at the equator and one at a pole --
-			// nothing else decides what grows where, because with no axial
-			// tilt there is nothing else to decide it.
+			// How far up the shore the sand reaches, in metres.
+			uniform float u_Beach;
+
+			// Whether this body has a climate to read out of the map's green
+			// and blue. Only the one with a sea does.
+			uniform float u_HasClimate;
+
+			// **Two axes and an altitude, evaluated per pixel.**
 			//
-			// The order of the mixes is the model. Sand loses to grass a metre
-			// inland, grass loses to rock on a mountain, rock loses to snow
-			// higher still, and latitude comes last because an ice cap is an
-			// ice cap whatever the altitude under it.
-			vec3 Biome(float height, float latitude)
+			// This used to be height and latitude, which is as much as there
+			// was to know: with no axial tilt, latitude is the only thing that
+			// varies across the surface. It gave banded stripes, because
+			// stripes are what a function of latitude *is*.
+			//
+			// `moisture` and `warmth` come out of the drainage pass -- see
+			// `VoxelPlanet::BuildHydrology`. Warmth is latitude with a lapse
+			// rate on it, so it still bands, but moisture does not: it is
+			// where the water in this particular landscape collects, which is
+			// a function of the shape of the ground and of nothing else. That
+			// is what stops a biome map looking like a filter over a globe.
+			//
+			// The order of the mixes is still the model. Sand loses to
+			// whatever grows a metre inland, that loses to rock on a mountain,
+			// rock loses to snow higher still, and cold comes last because an
+			// ice cap is an ice cap whatever is under it.
+			vec3 Biome(float height, float latitude, float moisture, float warmth)
 			{
 				float sea = u_SeaRadius - u_Radius;
 
@@ -3619,14 +4693,37 @@ private:
 				float top = max(u_Relief * 0.5 - sea, 1.0);
 				float f = clamp(height / top, 0.0, 1.0);
 
-				vec3 green = mix(u_Tropical, u_Temperate, smoothstep(0.10, 0.55, latitude));
+				// Without a climate map, fall back to the old latitude band --
+				// which is exactly what a body with no water has to do.
+				float wet = u_HasClimate > 0.5 ? moisture : 0.6;
+				float warm = u_HasClimate > 0.5 ? warmth : 1.0 - latitude;
 
-				vec3 colour = mix(u_Sand, green, smoothstep(0.0, 0.05, f));
+				// A Whittaker square, with the corners named. Dry and warm is
+				// desert; wet and warm is forest; dry and cool is steppe; wet
+				// and cool is the temperate green this planet used to be
+				// everywhere between the tropics and the tundra.
+				vec3 hot  = mix(u_Desert, u_Tropical,  smoothstep(0.30, 0.62, wet));
+				vec3 mild = mix(u_Steppe, u_Temperate, smoothstep(0.34, 0.66, wet));
+
+				vec3 green = mix(mild, hot, smoothstep(0.48, 0.78, warm));
+
+				// **A beach is a few metres, not a percentage of the relief.**
+				// This was `smoothstep(0.0, 0.05, height / top)`, which on a
+				// planet with 625 m of relief put the sand 14 m up the hill --
+				// so a tropical landing site read as pale coastal plain -- and
+				// at 1:1, where the relief is 16 km, would have run it 400 m
+				// up. It is a tide line: quoted in metres, from the size of
+				// the voxels the ground is actually made of.
+				vec3 colour = mix(u_Sand, green, smoothstep(0.0, u_Beach, height));
 
 				colour = mix(colour, u_Rock, smoothstep(0.45, 0.75, f));
 				colour = mix(colour, u_Snow, smoothstep(0.74, 0.93, f));
-				colour = mix(colour, u_Tundra, smoothstep(0.58, 0.76, latitude));
-				colour = mix(colour, u_Snow, smoothstep(0.82, 0.93, latitude));
+
+				// Cold last, and driven by warmth rather than by latitude, so
+				// the tundra line bends round a highland instead of running
+				// straight through it.
+				colour = mix(colour, u_Tundra, smoothstep(0.30, 0.16, warm));
+				colour = mix(colour, u_Snow, smoothstep(0.14, 0.05, warm));
 
 				return colour;
 			}
@@ -3643,25 +4740,27 @@ private:
 				// to be told.** Reading the map for both would blur the coast
 				// under your feet to the map's two metres a texel for no
 				// reason -- the geometry in front of you is the answer.
+				const float pi = 3.14159265;
+
+				vec2 uv = vec2(atan(up.z, up.x) / (2.0 * pi) + 0.5 - u_Spin,
+					acos(clamp(up.y, -1.0, 1.0)) / pi);
+
+				// **The climate is read from the map even when the height is
+				// not.** Meshed ground knows its own height exactly and the
+				// map's two metres a texel would only blur the coast under
+				// your feet -- but moisture has no geometry to be read off,
+				// so it comes from the map wherever you are standing. One
+				// sample serves both.
+				vec4 mapped = texture(u_Map, uv);
+
 				float height;
 
 				if (u_HasMap > 0.5)
-				{
-					const float pi = 3.14159265;
-
-					vec2 uv = vec2(atan(up.z, up.x) / (2.0 * pi) + 0.5 - u_Spin,
-						acos(clamp(up.y, -1.0, 1.0)) / pi);
-
-					float relief = (texture(u_Map, uv).r * 2.0 - 1.0) * u_Relief;
-
-					height = u_Radius + relief - u_SeaRadius;
-				}
+					height = u_Radius + (mapped.r * 2.0 - 1.0) * u_Relief - u_SeaRadius;
 				else
-				{
 					height = length(v_Position) - u_SeaRadius;
-				}
 
-				vec3 base = Biome(height, abs(up.y));
+				vec3 base = Biome(height, abs(up.y), mapped.g, mapped.b);
 
 				// Steep ground shows rock rather than the surface colour, which
 				// is what makes a cliff read as a cliff.
@@ -3670,7 +4769,30 @@ private:
 
 				float diffuse = max(dot(normal, u_LightDirection), 0.0);
 
-				vec3 lit = base * (0.05 + 0.95 * diffuse) * u_LightColor;
+				// **The sky is a light source, and it was worth 5%.**
+				//
+				// This was `0.05 + 0.95 * diffuse`, where the 0.05 was a floor
+				// to stop unlit ground reaching pure black. It produced
+				// exactly what it was there to prevent: with the landscape
+				// layer in, the demo opens facing a hillside that leans away
+				// from the sun, and at five per cent of a dark green that is a
+				// **silhouette**. The mountains were being drawn correctly and
+				// could not be seen.
+				//
+				// On a body with air, a slope facing away from the sun is lit
+				// by the whole dome above it -- which is why a shaded hillside
+				// on Earth is blue-grey rather than black, and why the same
+				// hillside on the Moon really is black. `u_Sky` carries the
+				// atmosphere's own scattering colour and is zero for a body
+				// with no atmosphere, so both come out of one expression.
+				//
+				// `0.5 + 0.5 * dot(normal, up)` is the share of the dome a
+				// surface can see: one for flat ground, a half for a vertical
+				// face, zero for an overhang. It is the geometric term, not a
+				// tuning constant.
+				float dome = 0.5 + 0.5 * dot(normal, up);
+
+				vec3 lit = base * (u_Sky * dome + u_LightColor * diffuse);
 
 				color = vec4(lit, 1.0);
 			}
@@ -3703,18 +4825,26 @@ private:
 
 			layout(location = 0) in vec3 a_Position;
 			layout(location = 1) in vec3 a_Normal;
+			layout(location = 2) in vec2 a_TexCoord;
 
 			uniform mat4 u_ViewProjection;
 			uniform mat4 u_Transform;
 			uniform vec3 u_Origin;
 
 			out vec3 v_Position;
+			out float v_Depth;
 
 			void main()
 			{
 				vec4 world = u_Transform * vec4(a_Position, 1.0);
 
 				v_Position = world.xyz - u_Origin;
+
+				// Metres of water under this vertex, put there by
+				// `SurfaceWater::BuildMesh`. The sphere carries none, and says
+				// so with `u_HasDepth`.
+				v_Depth = a_TexCoord.x;
+
 				gl_Position = u_ViewProjection * world;
 			}
 		)";
@@ -3725,6 +4855,9 @@ private:
 			layout(location = 0) out vec4 color;
 
 			in vec3 v_Position;
+			in float v_Depth;
+
+			uniform float u_HasDepth;
 
 			uniform sampler2D u_Map;
 			uniform float u_Spin;
@@ -3738,28 +4871,40 @@ private:
 			uniform vec3 u_Deep;
 			uniform float u_Time;
 			uniform float u_WaveScale;
+			uniform float u_Clarity;
+
+			// The cone the local water surface covers. The sphere skips it, so
+			// the two never blend over each other. Two means never.
+			uniform vec3 u_NearCentre;
+			uniform float u_NearCos;
 
 			void main()
 			{
 				vec3 up = normalize(v_Position);
 
+				if (dot(up, u_NearCentre) > u_NearCos)
+					discard;
+
 				const float pi = 3.14159265;
 				vec2 uv = vec2(atan(up.z, up.x) / (2.0 * pi) + 0.5 - u_Spin,
 					acos(clamp(up.y, -1.0, 1.0)) / pi);
 
-				// **Where the map says there is ground above the waterline,
-				// there is no sea.** Without this the sphere would drown every
-				// continent past the streaming radius, where there is no
-				// terrain in the depth buffer to hide behind.
+				// **Where the map says there is no water, there is no water.**
 				//
-				// Biased half a metre *inland* on purpose: close up it is the
-				// real geometry that occludes the water, and the map is a
-				// two-metre-a-texel approximation of it. Erring toward too
-				// much sea puts the disagreement under the ground rather than
-				// leaving a fringe of missing sea along every shore.
-				float relief = (texture(u_Map, uv).r * 2.0 - 1.0) * u_Relief;
-
-				if (u_Radius + relief > u_SeaRadius + 0.5)
+				// This used to re-derive the coastline from the height
+				// channel -- discard wherever the ground is above sea level --
+				// which can only express one idea: that water is everywhere
+				// below a given radius. The drainage pass answers the question
+				// the shader actually wants, which is whether water can *get*
+				// here, and a basin ringed by land and floored below sea level
+				// now correctly gets none.
+				//
+				// Half-open rather than half a metre inland: the mask is
+				// bilinear across a texel, and taking anything above a
+				// quarter as wet errs toward too much sea, which puts the
+				// disagreement with the real geometry under the ground rather
+				// than leaving a fringe of missing sea along every shore.
+				if (texture(u_Map, uv).a < 0.25)
 					discard;
 
 				vec3 view = normalize(u_Eye - v_Position);
@@ -3783,11 +4928,30 @@ private:
 				// Schlick, with water's 0.02 at normal incidence.
 				float fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
 
-				// Straight down is deep water seen into; grazing is sky seen
-				// off it. The depth tint uses the same two colours the map's
-				// sea is painted with, so the surface and what is under it are
-				// not two different oceans.
-				vec3 body = mix(u_Deep, u_Shallow, facing);
+				// **Water is coloured by how much of it there is.**
+				//
+				// This was `mix(u_Deep, u_Shallow, facing)` -- the view angle,
+				// and only the view angle. That is a statement about how much
+				// sky is being reflected and says nothing about what is
+				// underneath, so a puddle two centimetres deep and a lake
+				// forty metres deep came out the same colour and the whole
+				// surface read as a blue sheet laid over the ground. It is the
+				// single thing that makes water look painted on.
+				//
+				// Beer's law on the depth instead: light goes down through the
+				// water, off the bottom, and back up, so the path is twice the
+				// depth and what survives falls off exponentially. `u_Clarity`
+				// is the depth at which that path has attenuated by `1/e`,
+				// which for the clear water of a lake is a few metres.
+				//
+				// The view angle still has a job -- it is why a lake is a
+				// mirror at a grazing angle -- but it is applied as Fresnel
+				// below, where it belongs, rather than as a colour.
+				float sunk = u_HasDepth > 0.5
+					? 1.0 - exp(-2.0 * max(v_Depth, 0.0) / max(u_Clarity, 0.01))
+					: 1.0;
+
+				vec3 body = mix(u_Shallow, u_Deep, sunk);
 
 				float diffuse = max(dot(normal, u_LightDirection), 0.0);
 
@@ -3801,7 +4965,17 @@ private:
 				vec3 lit = body * (0.05 + 0.95 * diffuse) * u_LightColor
 					+ u_LightColor * glint * fresnel * 12.0;
 
-				color = vec4(lit, clamp(0.55 + 0.45 * fresnel, 0.0, 1.0));
+				// **And shallow water is see-through.** The same number
+				// again: where the bottom is a hand's breadth down you are
+				// looking at wet sand, not at water, and an opaque sheet
+				// running right up the beach is the other half of why this
+				// read as a texture. Fresnel still floors it, because even a
+				// film is a mirror edge-on.
+				float alpha = u_HasDepth > 0.5
+					? clamp(mix(0.10, 0.92, sunk) + 0.55 * fresnel, 0.0, 1.0)
+					: clamp(0.55 + 0.45 * fresnel, 0.0, 1.0);
+
+				color = vec4(lit, alpha);
 			}
 		)";
 
@@ -4224,6 +5398,27 @@ private:
 
 			ImGui::Text("%s", m_Grounded ? "on the ground" : "falling");
 
+			ImGui::SliderFloat("Dig radius", &m_DigRadius, 0.5f, 12.0f, "%.1f m");
+
+			ImGui::Text("%d edits, %zu chunks changed  (mouse: left digs, "
+				"right fills)", m_Edits, planet.EditedChunks());
+
+			// What the climate says about where you are standing, which is
+			// otherwise only inferable from the colour of the ground.
+			if (planet.Water().Valid())
+			{
+				glm::vec3 here = glm::vec3(glm::normalize(
+					SiteFixed(m_World.GetBody(m_Player).Position)));
+
+				float wet = planet.SampleHydrology(planet.Water().Moisture, here);
+				float warm = planet.SampleHydrology(planet.Water().Warmth, here);
+
+				ImGui::Text("moisture %.2f, warmth %.2f  (%s)", wet, warm,
+					warm < 0.22f ? "ice"
+					: wet < 0.42f ? (warm > 0.5f ? "desert" : "steppe")
+					: (warm > 0.5f ? "tropical" : "temperate"));
+			}
+
 			ImGui::Text("%d trees in view (%d / %d / %d by detail)",
 				m_PlantsDrawn, (int)(m_TreeBatch[0][0].size() + m_TreeBatch[1][0].size()
 					+ m_TreeBatch[2][0].size()),
@@ -4234,6 +5429,18 @@ private:
 
 			ImGui::Text("%u draws, %.2f M triangles", m_Stats.DrawCalls,
 				m_Stats.TriangleCount / 1.0e6f);
+
+			if (m_HasShip)
+			{
+				float away = DistanceToShip();
+
+				if (away <= s_BoardingReach)
+					ImGui::TextColored(ImVec4(0.6f, 0.9f, 0.6f, 1.0f),
+						"at the ship -- press L to board and lift off");
+				else
+					ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.5f, 1.0f),
+						"the ship is %.0f m away", away);
+			}
 
 			if (ImGui::Button("Take off  (L)"))
 				TakeOff();
@@ -4491,6 +5698,34 @@ private:
 
 	Egss::PhysicsWorld3D m_World;
 	Egss::PhysicsWorld3D::BodyHandle m_Player = 0;
+
+	// The lattice point the surface physics world is centred on, and where it
+	// is in the planet's own frame. Set when a landing builds the world.
+	glm::ivec3 m_SiteLattice = glm::ivec3(0);
+	glm::dvec3 m_SiteFixed = glm::dvec3(0.0);
+
+	static constexpr float s_LandingClearing = 20.0f;
+
+	SurfaceWater m_Water;
+	HorizonMesh m_Horizon;
+	glm::dvec3 m_HorizonSite { 0.0 };
+	bool m_HorizonReported = false;
+	std::shared_ptr<Egss::Mesh> m_WaterMesh;
+
+	std::shared_ptr<Egss::Mesh> m_Lander;
+	Egss::PhysicsWorld3D::BodyHandle m_Ship = 0;
+	bool m_HasShip = false;
+	// The walking camera, in the planet's own frame. See UpdateSurface.
+	glm::dvec3 m_EyeFixed = glm::dvec3(0.0);
+	glm::vec3 m_UpFixed = glm::vec3(0.0f, 1.0f, 0.0f);
+	glm::vec3 m_ForwardFixed = glm::vec3(0.0f, 0.0f, 1.0f);
+	size_t m_WaterChunks = 0;
+
+	float m_DigRadius = 2.5f;
+	float m_DigReach = 12.0f;
+	int m_Edits = 0;
+	bool m_WasCutting = false;
+	bool m_WasFilling = false;
 	float m_LookSpeed = 0.12f;
 
 	std::pair<float, float> m_LastMouse = { 0.0f, 0.0f };
@@ -4506,6 +5741,10 @@ private:
 
 	// Of a 16.7 ms frame. The rest of it has to draw the planet.
 	float m_StreamTargetMs = 5.0f;
+
+	// Where the air stops carrying a craft round with it, as a fraction of the
+	// atmosphere's thickness. Below this the coupling is total.
+	static constexpr double s_AirGripTop = 0.75;
 
 	float m_LoadRadius = 400.0f;
 

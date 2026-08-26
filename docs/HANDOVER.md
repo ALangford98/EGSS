@@ -87,6 +87,7 @@ as soon as one was applied.
 | Physics 3D | `RigidBody3D`, `PhysicsWorld3D`, `Sat3D`, `Physics3D` and `Ragdoll` demos | Quaternion orientation, real inertia tensor, oriented-box manifolds over fifteen axes, warm-started impulses with two-tangent friction. Boxes, spheres and **capsules**. **Joints**: ball, hinge, angle limits, cone-and-twist, motors. Uniform-grid broadphase above 200 bodies |
 | Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb behind a 4th-order Butterworth splitter |
 | Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
+| Machine diagnostics | `PumpSignal.h`, `PumpDiagnostics` demo | Single-microphone fault attribution: FFT/Welch/cepstrum/envelope, two-channel NNLS against per-machine baselines. `PumpSignal.h` is engine-free and checkable without a build |
 | Profiling | `Instrumentor` | `EGSS_PROFILE_SCOPE`, live panel, Chrome trace |
 
 ---
@@ -226,6 +227,52 @@ Check the measurement first. Real examples from this project:
   422 of 963 on a landed Earth, and the same 422 with LOD off, which is how a
   bug older than the feature being tested got found.
 
+**Float addition does not associate, and the captures will tell you.**
+`(a - b) + h` and `(a + h) - b` are the same value and different last bits.
+Rewriting `SampleNormal` as a call to the lattice-relative form moved 197 of
+OpenWorld's pixels; grouping the narrowphase's gradient the new way instead of
+the old moved 34 more. Neither is visible and both mean a simulation that no
+longer reproduces itself. When a refactor is meant to be behaviour-preserving,
+**preserve the expression, not the value** — and check a demo you were not
+working on.
+
+**A frame conversion done at the wrong moment in the step is invisible while
+everything shares it.** The walking camera was taken from the planet's frame
+into scene coordinates *before* the clock advanced, while the terrain, trees
+and rocks are drawn with the angle *after* — so the camera was one step of
+rotation from the player, 7.3 m at 250 km and an hour to the day. Nothing
+looked wrong because it all moved together and the player is not drawn. It took
+adding an object whose on-screen position could be predicted from the physics.
+Anything held in a rotating frame should be converted once, at the end of the
+step, after the clock.
+
+**When two parts of a system ask the same question of different sources, they
+will disagree at the boundary.** The water's ground came from the generator at
+build time and from the field after a dig — a few centimetres apart, which at a
+waterline flipped twenty-four columns wet for a pit narrower than one of them.
+Nothing had moved. Pick one source and make the other a documented fallback.
+
+**A raster that resolves a process does not necessarily resolve its
+boundaries.** The planet's hydrology grid is 1.5 km a texel, which is ample for
+drainage, moisture and where basins are, and hopeless for where a shoreline is
+— a lake is smaller than one texel. Drawing a water surface from it put 8.14%
+of the frame in the sky. Before rendering anything from that grid, ask whether
+the thing being drawn is bigger than a texel.
+
+**A watermark that only advances needs telling when something goes backwards.**
+`VoxelPlanet::StreamAround` remembers how far along its distance-sorted scan
+everything is filled, which is what stopped it walking 50,653 offsets a step.
+`ReleaseBeyond` un-fills chunks, and for a while did not reset it -- so a
+released chunk was never revisited and the ground simply stopped existing
+there. Invisible in play, because release only happens three load radii away
+and you get there by moving, which resets it anyway.
+
+**A field's origin is not necessarily a whole number of voxels.** OpenWorld's
+lattice is centred *between* points on purpose, so its origin is half a voxel
+off. Rounding it to the nearest lattice point moved that demo's ground by
+0.25 m and 13.5% of its pixels. Anything deriving a lattice point from an
+origin has to carry the remainder.
+
 **A chunk's mesh reads into seven neighbours, not three.** `ChunkRange` adds a
 plane in every axis *at once*, so the lattice includes the point at
 (+N, +N, +N) — the diagonal neighbour. Anything that waits for neighbours
@@ -288,6 +335,115 @@ look caught immediately.
 ---
 
 ## Traps that have bitten more than once
+
+- **`--land Mars` separates the player from the lander, and it is not the
+  lander.** Reproduce with
+  `./TestEnv --demo Solar --land Mars --lockstep --hide-ui --capture a.png
+  --capture-step 700`: they spawn 8.41 m apart, are 64.6 m apart by step 150
+  and stable after. `--land Earth`, `--land Moon` and the default site all hold
+  8.4 m to the centimetre. The tell is that both bodies have **identical**
+  velocity magnitudes the whole time -- so nothing is accelerating them apart;
+  they are being *moved*, about 0.36 m a step, which is the position-correction
+  pass pushing something out of a penetration. Both are 19-21 m above the
+  ground at the time, so it is not the terrain under them. Pre-existing:
+  reproduces with the site prefill disabled, so it is not the terrain arriving
+  earlier. Not chased further; the rocks spawned in the 11-27 m annulus and the
+  ground SDF's frame on a body of that radius are the two places to look.
+
+- **A 1/f fractal has no energy at the scale you can see, and that is not a
+  bug in the fractal.** The planetary relief is anchored at `FeatureSize`, so
+  what it contributes inside a radius `r` is `Amplitude * r / FeatureSize` --
+  8.7 m over the 400 m you can see on Earth here, measured at 8.5. Adding
+  octaves cannot help: an octave fine enough to be seen has an amplitude of a
+  centimetre. Terrain you stand in needs its own layer with its own anchor
+  (`Settings::Landscape`), and terrain you look at needs geometry past the
+  streaming radius (`HorizonMesh`) -- the stand-in sphere is inset **879 m**
+  below the mean radius so real chunks always win the depth test, so without
+  that mesh the world ends at 400 m and the horizon is a smooth ball.
+
+- **Sampling error scales with `A / L^2`, not with `L`.** Choosing an
+  interpolation spacing by "sixteen samples across the shortest wavelength" is
+  right only while every term in the sum has the same amplitude. In `Relief`
+  they do not: the landscape layer's finest octave is 22 m at 131 m against the
+  planetary spectrum's 0.6 m at 56 m. The wavelength rule gave a sixth of a
+  voxel of error; solving `h = (1/pi) sqrt(2 tol / max(A/L^2))` gave 98 mm.
+  And expect the measured error to beat the bound by less than the bound
+  suggests, because `1 - |n|` has a **corner** where the noise crosses zero and
+  interpolation across a kink falls off linearly, not quadratically.
+
+- **A noise field is only a field at the scale you sample it.** The plant
+  scatter's "clearings" test sampled at `Radius / (FeatureSize * 1.5)` -- 5.8
+  cycles around the whole planet, a 43 km wavelength. Over the region you can
+  see, that is a constant: it did not thin the forest, it switched it off over
+  thirty-five per cent of the planet, and the default landing site landed in
+  the off half with **zero trees in 1,467 chunks**. Whenever a noise lookup is
+  meant to vary *within view*, check its wavelength against the view, not
+  against the thing whose name it borrowed.
+
+- **A distance to the landing site is not a distance on the ground.**
+  `m_SiteFixed` is the lattice point nearest where the ship *arrived*, which is
+  twenty metres up. A straight-line clearing radius of twenty metres therefore
+  let a tree standing exactly on the pad through, and the symptom -- a tree
+  growing up through the hull with the test visibly present in the code --
+  reads as the test not running. Project the radial component out.
+
+- **An ambient floor put there to prevent black produces black.** `0.05 + 0.95
+  * diffuse` is five per cent of the surface colour on anything facing away
+  from the sun, and five per cent of a dark green is four units out of 255. The
+  terrain was shaded correctly and could not be seen. On a body with air the
+  sky is a source (`SkyLight`); `Scatter` is an extinction ratio and *not* the
+  colour of that sky, so feeding it in directly turns every shaded hillside
+  teal. And note the frames go to an 8-bit buffer with no exposure curve, so
+  the physically right fraction still reads as black -- a third of the direct
+  beam is what is legible, and it is set that way deliberately.
+
+- **Rebuilding a derived thing while its input streams in is quadratic.** The
+  surface water is a consequence of the shape of the ground, so it is rebuilt
+  whenever materially more ground exists -- which during a landing meant
+  fifteen full Priority-Floods, **24.6 s of a 32 s Debug landing** against 8.5 s
+  for all the streaming that provoked them. Arriving is the one moment with no
+  frame to protect: fill the whole region first (`PrefillSite`), then derive
+  once. The same shape will apply to anything else derived from the terrain.
+
+- **Attribute before optimising, every time.** The guesses for where a landing
+  spent its time were streaming and the sixteen-body orbital integration. The
+  integration was **4 ms**. Streaming was a quarter of it, and 93% of *that*
+  was one function -- `Relief`, evaluated per voxel over a chunk when it is a
+  function of the direction alone and every radial column shares one value.
+
+- **A tolerance compared against a dimensional quantity is not a tolerance.**
+  `fabs(det) > 1e-20` guarding a 2x2 solve looks scale-free and is not: the
+  determinant carries the units of the basis to the fourth power, and with PSD
+  bins around 1e-8 it sits near 1e-27, so the guard failed on *every* call and
+  the solver silently returned a degenerate fallback for ever. It looked like a
+  real answer. Normalise the basis to unit norm before solving and every
+  epsilon becomes a pure number. Found in `PumpSignal.h`; the tell was error
+  bars that were all exactly zero.
+
+- **Averaging a spectrum can destroy the information you are measuring.**
+  Smoothing PSD bins is the reflex for reducing variance, and in
+  `AttributeByChannel` it is actively wrong -- what distinguishes two acoustic
+  paths is the fine comb structure their reflections cut into the spectrum, and
+  a moving average is exactly the operation that removes it. Measured, baseline
+  correlation went 0.930 -> 0.987 as smoothing rose, and attribution went with
+  it. Resolution beat averaging, which is the opposite of the usual advice.
+
+- **A least-squares fit over a band assumes the thing being fitted is flat
+  across it.** Fitting a bearing resonance across 2 kHz in one band misfit at
+  60x the estimator noise, and because the error bars are widened by the
+  misfit, a *larger* fault became harder to attribute than a small one. Split
+  into sub-bands narrow enough for the assumption to hold and combine by
+  inverse covariance: fit quality 0.20 -> 0.91.
+
+- **Detection and attribution are different questions.** "Is A worse than its
+  baseline" and "is B worse than its baseline" both answer yes on a
+  single-machine fault, so every fault was reported as affecting both machines
+  while the correct one always had the larger coefficient. The sum answers "is
+  anything wrong"; the difference answers "which one", and needs the covariance
+  because the two coefficients are strongly anti-correlated. Related: form test
+  statistics from *unclamped* estimates. Clamping at zero is right for a score
+  and wrong for a statistic -- it makes the sum one-sided, and a 3 sigma
+  threshold fired on one clean window in five instead of one in a thousand.
 
 - **A `mat4` vertex attribute is four locations, not one.** GL caps an attribute
   at four components, so `glVertexAttribPointer` with sixteen is an error rather
@@ -1401,12 +1557,21 @@ from the code.
    landed frame is now about 12.2 ms of GPU against a 16.67 budget. The
    residual is the two-faces-at-once transition, which a sphere hits three
    times harder than a flat field; see the roadmap.
-2. **A local origin for the surface.** Not needed at the current 250 km — 3 cm
-   of float spacing against a 1.5 m voxel is fifty positions per voxel — but
-   needed for real Earth radius (0.76 m against 1.59 m is two), and needed
-   *before* the ship, because a rigid body integrating 250 km from the origin
-   in floats is the case this item exists for.
-3. **Biomes — with the drainage pass inside them, not after.** What makes a
+2. ~~**A local origin for the surface.**~~ **Done 2026-08-25.** Placing a mesh
+   vertex at 1:1 went from 0.571 m of error to a micrometre, and
+   `--earth-radius 6371000` streams, renders and can be walked on. The half
+   that remains is *sampling* the density in double — `FillChunk` still asks
+   the generator at `PositionOf` — which displaces the terrain at 1:1 rather
+   than breaking it. See the roadmap.
+3. ~~**Biomes — with the drainage pass inside them, not after.**~~ **Done
+   2026-08-26**, and the drainage was indeed inside them: `BuildHydrology` is
+   Priority-Flood plus flow accumulation on the height map's own grid, checked
+   by conservation (water into the sea = land area, exactly). Moisture and
+   warmth ride in the map's green and blue. What is left of this thread is
+   *drawing* the rivers and lakes it already locates — see the roadmap, and do
+   it with the fluid item.
+
+   The original note, for the reasoning: What makes a
    biome map read as a world is moisture, and moisture comes from drainage. One
    erosion / flow-accumulation pass over the continent-scale height field gives
    river valleys, a drainage network, closed basins that do not reach the sea,
@@ -1415,13 +1580,28 @@ from the code.
    you get rainforest on ridges and desert in valleys, and you do it twice. The
    home for all of it is the equirectangular map `BuildColourMap` already
    makes, probably at 2048x1024 rather than 1024x512.
-4. **Editing and chunk persistence.** `VoxelField3D::EditSphere` exists and
+4. ~~**Editing and chunk persistence.**~~ **Done 2026-08-26.** Only edited
+   chunks are stored (`planet-<Name>.edits`), fingerprinted from the density
+   function so a changed generator discards the file rather than handing back a
+   world that no longer exists. The original note: `VoxelField3D::EditSphere` exists and
    VoxelTerrain uses it; `ChunkCache` exists and OpenWorld uses it; `VoxelPlanet`
    uses neither, so nothing on a planet can be dug and nothing that were dug
    would survive eviction — eviction *is* regeneration here. This has to land
    before the water, because both digging and live water need world state that
    is saved rather than recomputed.
-5. **Water by connectivity, not by Navier-Stokes.** The requirement is "water
+5. **Water by connectivity, not by Navier-Stokes.** *(Both halves landed
+   2026-08-26. `SurfaceWater` floods a grid of columns over the streamed region
+   against the real terrain, so a pit below the waterline stays dry until a
+   channel reaches it. What is left is the *rate* — the fill is a re-flood, not
+   a flow — and water in tunnels, which a column model cannot hold. Earlier
+   note:)*
+   *(The global half landed
+   2026-08-26: the sea is drawn from the drainage pass's wet mask, so ground
+   below sea level that water cannot reach is dry. The local half is still
+   open, and now has a measured reason — a drainage texel is 1.5 km and a lake
+   is smaller than one, so a water surface drawn from the global grid stands in
+   the air where its basin does not exist in the real terrain. Near-field water
+   and the flowing CA are the same pass and should be built together.)* The requirement is "water
    exists where it can get to": a sealed cavern below sea level is dry, and
    digging a tunnel to it fills it. That is connectivity. Two tiers — a global
    precomputed answer on the hydrology map for which regions drain to the
@@ -1432,10 +1612,44 @@ from the code.
    planet scale. Note the sea today is a *shell* drawn at `u_SeaRadius` with no
    relationship to the terrain, which is why you can walk under it: this work
    replaces it rather than extends it.
-6. **A player who walks, and a ship that is a physical object to get into.**
+6. ~~**A player who walks, and a ship that is a physical object to get into.**~~
+   **Done 2026-08-26.** The loop closes: land, step out, walk and dig, and `L`
+   will not lift off unless you are back within six metres of the hull. The
+   original note:
    The player is already a real rigid body (a 78 kg capsule against an SDF
    ground), so the ship is an extension of what is there rather than a new
    mechanism.
+
+### The second pass over the same three complaints (2026-08-26)
+
+The plan above was finished and the owner reported that the planet still had no
+landscapes, the water did not work, and landing was unusable. All three were
+right, and the causes were not what the symptoms suggested -- the changelog
+entry *a landscape you can see, and the ten seconds that were water* has the
+numbers. What matters for the next session:
+
+- The demo now **opens standing beside the lander** at a fixed default site on
+  Earth, `DefaultSite()`. `--orbit` restores the old opening; `--land <body>`
+  and `--goto <body>` are unchanged; a replay places itself.
+- The site's terrain is **prefilled before the first frame** and cached to
+  `planet-<body>.site` beside the edits, keyed by the same density fingerprint.
+  Delete that file if a landscape ever looks stale and the fingerprint did not
+  catch it -- but the fingerprint samples `Density` directly, so it should.
+- `Relief` gained a `Landscape` layer and `ReliefReach` grew to 878 m with it.
+  Anything that sizes a shell or a band from the reach now covers twice what it
+  did; if streaming ever looks like it is filling too much, that is where to
+  look first.
+- **The map and the terrain now disagree by up to 116 m**, against 2.4 m
+  before. `UsefulOctaves` caps the map at what its 1.5 km texels can carry, and
+  the landscape layer keeps one octave of six there. That is correct for the
+  map -- an aliased height field routes water into pits that are not there --
+  but it means the planet-wide coastline and the local one are further apart
+  than they were. The local water's seeded rim already excludes six columns for
+  this reason; if the join between the local sheet and the sphere sea starts
+  showing, that is the number to revisit.
+- The remaining Debug load is **12.9 s**, of which the prefill is 3.1 s and most
+  of the rest is `BuildHydrology` plus the height map. Caching those the same
+  way is the obvious next win and was not done.
 
 **The determinism cost, stated once.** A live local fluid makes world state
 depend on where the player has been. That is fine for a game, but it means

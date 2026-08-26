@@ -60,8 +60,13 @@ namespace Egss {
 		// main diagonal), which is what makes neighbouring cells agree on their
 		// shared face: both see it divided by the same diagonal. A split chosen
 		// per cell would reintroduce exactly the cracks this exists to avoid.
+		// `about`, if given, is a lattice point the emitted vertex positions
+		// are measured from -- see `VoxelField3D::PositionFrom` for why a
+		// planet-sized field needs one and a field a few hundred metres
+		// across does not. Null means world space, exactly as before.
 		static MeshData Mesh(const VoxelField3D& field,
-			const glm::ivec3& min, const glm::ivec3& max, int stride = 1);
+			const glm::ivec3& min, const glm::ivec3& max, int stride = 1,
+			const glm::ivec3* about = nullptr);
 
 		// The six tetrahedra of a unit cell, as corner indices into the usual
 		// 0-7 cube numbering. Exposed so the decomposition can be checked --

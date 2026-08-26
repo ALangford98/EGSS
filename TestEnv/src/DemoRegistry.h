@@ -29,6 +29,7 @@
 #include "CelShading.h"
 #include "SlimeMold.h"
 #include "SolarSystem.h"
+#include "PumpDiagnostics.h"
 
 struct DemoEntry
 {
@@ -64,7 +65,9 @@ inline const DemoEntry s_Demos[] =
 
 	{ "Life",     "Slime mould (physarum agents)", "Slime",    []() -> DemoLayer* { return new SlimeMold(); } },
 
-	{ "Space",    "Solar system (fly between voxel planets)", "Solar",   []() -> DemoLayer* { return new SolarSystem(); } }
+	{ "Space",    "Solar system (fly between voxel planets)", "Solar",   []() -> DemoLayer* { return new SolarSystem(); } },
+
+	{ "Acoustics","Pump diagnostics (one mic, two machines)", "PumpDx",  []() -> DemoLayer* { return new PumpDiagnostics(); } }
 };
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));

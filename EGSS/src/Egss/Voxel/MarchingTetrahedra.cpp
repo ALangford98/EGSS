@@ -155,7 +155,8 @@ namespace Egss {
 	}
 
 	MeshData MarchingTetrahedra::Mesh(const VoxelField3D& field,
-		const glm::ivec3& min, const glm::ivec3& max, int stride)
+		const glm::ivec3& min, const glm::ivec3& max, int stride,
+		const glm::ivec3* about)
 	{
 		MeshData data;
 
@@ -180,7 +181,9 @@ namespace Egss {
 					{
 						glm::ivec3 at = glm::ivec3(x, y, z) + s_Corners[c] * stride;
 
-						corner[c] = field.PositionOf(at.x, at.y, at.z);
+						corner[c] = about
+							? field.PositionFrom(at.x, at.y, at.z, *about)
+							: field.PositionOf(at.x, at.y, at.z);
 						value[c] = field.DistanceAt(at.x, at.y, at.z);
 					}
 
