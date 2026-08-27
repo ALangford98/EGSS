@@ -209,7 +209,7 @@ namespace Egss {
 	}
 
 	void VoxelField3D::FillOneChunk(int cx, int cy, int cz,
-		const std::function<float(const glm::vec3&)>& sdf, unsigned char material)
+		const std::function<float(const glm::dvec3&)>& sdf, unsigned char material)
 	{
 		const float band = SparseBandVoxels * m_VoxelSize;
 
@@ -239,7 +239,13 @@ namespace Egss {
 					// chunk repeats the border rather than asking the
 					// generator about somewhere that is not part of the
 					// world.
-					glm::vec3 position = PositionOf(
+					// **In double, because the lattice is the definition.**
+					// `PositionOf` rounds to half a voxel at a planet's
+					// radius, and every reader of this field -- the mesher,
+					// the collider, a chunk mesh's origin -- assumes the
+					// sample stored here is the generator's answer at exactly
+					// this lattice point. See `PositionOfFixed`.
+					glm::dvec3 position = PositionOfFixed(
 						glm::min(x, m_Size.x - 1),
 						glm::min(y, m_Size.y - 1),
 						glm::min(z, m_Size.z - 1));
@@ -278,7 +284,7 @@ namespace Egss {
 			chunk.Material[i] = chunk.Distance[i] < 0.0f ? material : 0;
 	}
 
-	void VoxelField3D::Fill(const std::function<float(const glm::vec3&)>& sdf,
+	void VoxelField3D::Fill(const std::function<float(const glm::dvec3&)>& sdf,
 		unsigned char material)
 	{
 		if (m_Chunks.x <= 0 || !sdf)
@@ -291,7 +297,7 @@ namespace Egss {
 	}
 
 	void VoxelField3D::FillChunk(const glm::ivec3& chunk,
-		const std::function<float(const glm::vec3&)>& sdf, unsigned char material)
+		const std::function<float(const glm::dvec3&)>& sdf, unsigned char material)
 	{
 		if (m_Chunks.x <= 0 || !sdf)
 			return;

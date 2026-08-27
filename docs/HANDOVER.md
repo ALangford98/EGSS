@@ -1542,6 +1542,27 @@ look caught immediately.
   seconds to check and would have saved most of a session's worth of guessing
   at the transform math instead.
 
+- **A cache keyed by "what the generator does" has to sample the code path the
+  cache actually stores, not something next to it.** `VoxelPlanet::Fingerprint`
+  hashes 64 evaluations of the density so that changing the terrain function
+  throws away every stored chunk instead of handing back a world that no longer
+  exists -- and for two days it sampled `Density` at a float position while
+  `FillChunk` stored `DensityFixed` at a lattice point. The moment the fill
+  changed, every `.site` and `.edits` file on disk described a different planet
+  and the hash did not move by a bit. It samples the fill's own function at a
+  lattice point now. If you change *anything* about how a voxel's value is
+  produced, check that the fingerprint moves -- print it, do not assume it.
+
+- **`memcpy` of four bytes into an eight-byte variable hashes four bytes of the
+  stack, and neither ASan nor UBSan will tell you.** That was the same
+  fingerprint, since it was written: `unsigned long long bits;` (uninitialised),
+  `memcpy(&bits, &single, sizeof(float))`, then all sixty-four bits mixed. The
+  symptom was the site cache rebuilding on runs where nothing had changed --
+  which looks exactly like a cache doing its job, so it survived a long time.
+  The tell, once the hash was printed at both call sites three lines apart, was
+  **two different values agreeing exactly in the low thirty-two bits**. If a
+  hash disagrees only in one half, look at the width of what went into it.
+
 ---
 
 ## Conventions
@@ -1582,12 +1603,15 @@ from the code.
    landed frame is now about 12.2 ms of GPU against a 16.67 budget. The
    residual is the two-faces-at-once transition, which a sphere hits three
    times harder than a flat field; see the roadmap.
-2. ~~**A local origin for the surface.**~~ **Done 2026-08-25.** Placing a mesh
-   vertex at 1:1 went from 0.571 m of error to a micrometre, and
-   `--earth-radius 6371000` streams, renders and can be walked on. The half
-   that remains is *sampling* the density in double — `FillChunk` still asks
-   the generator at `PositionOf` — which displaces the terrain at 1:1 rather
-   than breaking it. See the roadmap.
+2. ~~**A local origin for the surface.**~~ **Done 2026-08-25**, and the
+   sampling half **done 2026-08-27**. Placing a mesh vertex at 1:1 went from
+   0.571 m of error to a micrometre, and `--earth-radius 6371000` streams,
+   renders and can be walked on. `FillChunk` now hands the generator a `dvec3`
+   from `PositionOfFixed`, and `VoxelPlanet::DensityFixed` takes `|p| - Radius`
+   in double: the surface error at 1:1 fell from 0.8509 m worst to 0.1247 m,
+   against a hand-computed 0.866 m bound. What is left is the *GPU* half —
+   the terrain shader's `length(v_Position) - u_SeaRadius` in float32 — which
+   is on the roadmap with its own measurement.
 3. ~~**Biomes — with the drainage pass inside them, not after.**~~ **Done
    2026-08-26**, and the drainage was indeed inside them: `BuildHydrology` is
    Priority-Flood plus flow accumulation on the height map's own grid, checked
@@ -1775,8 +1799,10 @@ whenever that is wanted.
 is 250 km with a 3.92 km atmosphere and 2,216 m/s of escape velocity, and the
 planets are points of light because that is what they are. Getting there needed a
 sparse chunk store in `VoxelField3D` (the dense one wanted 1.1e10 GB), a wider
-chunk key, and distance proxies for drawing. What is left is a local origin for
-the surface, which is what 1:1 needs, and terrain LOD. The landing approach picks
+chunk key, and distance proxies for drawing. A local origin for the surface,
+terrain LOD, and **sampling the density in double** have all landed since; see
+the 2026-08-27 changelog entry for the surface-error table and for the two
+cache-fingerprint bugs that fix turned up. The landing approach picks
 dry ground; the gas giants have air deep enough to have no ground under
 it, which needed a premultiplied blend in the engine and a multiple-scattering
 term in the shader; Saturn and Uranus have rings; a day is an hour and a year is

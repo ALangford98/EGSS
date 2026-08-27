@@ -1669,6 +1669,13 @@ public:
 		// in the log beside the timing every time a site is prepared.
 		planet.ReportReliefError(focus);
 
+		// And what the whole fill path costs end to end, against the one
+		// line of arithmetic that says where the ground is. The patch
+		// error above is one contributor to this number; sampling the
+		// density at a float lattice position used to be the other, and
+		// at `--earth-radius 6371000` it was much the larger of the two.
+		planet.ReportSurfaceError(focus, m_LoadRadius * scale * 0.8f);
+
 		planet.SetPrefilling(false);
 
 		EGSS_TRACE("  site cache: {0} chunks read, {1} written",

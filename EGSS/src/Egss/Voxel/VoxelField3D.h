@@ -77,6 +77,30 @@ namespace Egss {
 			return m_Origin + glm::vec3((float)x, (float)y, (float)z) * m_VoxelSize;
 		}
 
+		// **The same lattice point, in double, and this one is the definition.**
+		//
+		// `PositionOf` has the cancellation `PositionFrom` was written to
+		// avoid, and at a planet's radius it is worse than that: both terms
+		// are about 6.4e6, a float carries 24 bits, so an ulp there is 0.5 m
+		// and `origin + i * voxel` rounds each axis onto that grid -- up to
+		// `sqrt(3)/2 = 0.87` m of displacement, over half a voxel at the
+		// 1.59 m Earth uses at 1:1. Everything that *reads* the
+		// field (`PositionFrom`, `SampleDistanceFrom`, a chunk mesh's own
+		// origin) already treats the lattice as exact, so a generator sampled
+		// at the float position is answering about somewhere else, and the
+		// terrain arrives displaced by that much.
+		//
+		// In double the same expression has 53 bits and is exact to a
+		// nanometre at Earth's radius, which is why this is what `Fill` and
+		// `FillChunk` hand the generator. It is not a fast path or a slow
+		// path -- it is three multiplies and three adds against the thirteen
+		// octaves of noise the generator is about to run.
+		glm::dvec3 PositionOfFixed(int x, int y, int z) const
+		{
+			return glm::dvec3(m_Origin)
+				+ glm::dvec3(x, y, z) * (double)m_VoxelSize;
+		}
+
 		// **The same point, measured from a lattice point instead of from the
 		// field's origin.**
 		//
@@ -163,13 +187,17 @@ namespace Egss {
 			glm::vec3& outNormal) const;
 
 		// Writes every voxel from `sdf`, which is given a world position and
-		// returns a signed distance in metres.
+		// returns a signed distance in metres. **The position arrives in
+		// double** -- see `PositionOfFixed` for the half-voxel of terrain
+		// displacement that costs at a planet's radius, and note that the
+		// generator is free to drop straight back to float the moment it has
+		// taken the one difference that needed the bits.
 		//
 		// Chunks entirely beyond the band are left unallocated, which is most of
 		// a terrain: rock well underground and air well above it are both a
 		// single float. Measured on the test field, that is the difference
 		// between the whole lattice and about a tenth of it.
-		void Fill(const std::function<float(const glm::vec3&)>& sdf,
+		void Fill(const std::function<float(const glm::dvec3&)>& sdf,
 			unsigned char material = 1);
 
 		// The same per-voxel logic as Fill, scoped to one chunk -- what makes
@@ -197,7 +225,7 @@ namespace Egss {
 		// and at the corner, and the corner is shared by four chunks nobody
 		// was telling.
 		void FillChunk(const glm::ivec3& chunk,
-			const std::function<float(const glm::vec3&)>& sdf,
+			const std::function<float(const glm::dvec3&)>& sdf,
 			unsigned char material = 1);
 
 		// **One value for the whole chunk, without visiting its voxels.**
@@ -362,7 +390,7 @@ namespace Egss {
 
 		// The body of Fill's triple loop, shared with FillChunk.
 		void FillOneChunk(int cx, int cy, int cz,
-			const std::function<float(const glm::vec3&)>& sdf, unsigned char material);
+			const std::function<float(const glm::dvec3&)>& sdf, unsigned char material);
 
 		glm::ivec3 m_Size = { 0, 0, 0 };
 		glm::ivec3 m_Chunks = { 0, 0, 0 };

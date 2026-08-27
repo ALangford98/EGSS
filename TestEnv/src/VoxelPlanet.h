@@ -707,24 +707,47 @@ public:
 	{
 		unsigned long long hash = 1469598103934665603ull;
 
+		// **Four bytes in, eight bytes hashed, and four of them were the
+		// stack's.** This copied a float into an uninitialised
+		// `unsigned long long` and mixed all sixty-four bits, so half of
+		// every sample was whatever happened to be in that slot. Found by
+		// printing the hash at its two call sites -- `OpenEdits` and
+		// `OpenSiteCache`, three lines apart with nothing in between -- and
+		// getting two different numbers that agreed in the low thirty-two
+		// bits. It is why the site cache rebuilt itself on runs where the
+		// world had not changed: a fingerprint that is partly garbage
+		// sometimes reproduces and sometimes does not, and the failure looks
+		// exactly like a cache doing its job.
+		//
+		// ASan and UBSan do not catch this; the trace did.
 		auto mix = [&hash](double value)
 		{
-			unsigned long long bits;
+			unsigned int bits = 0;
 			float single = (float)value;
 			std::memcpy(&bits, &single, sizeof(single));
 
-			hash = (hash ^ bits) * 1099511628211ull;
+			hash = (hash ^ (unsigned long long)bits) * 1099511628211ull;
 		};
 
 		mix(m_Settings.Radius);
 		mix(m_Settings.VoxelSize);
 		mix((double)m_Settings.Seed);
 
+		// **At a lattice point, through the function the fill actually calls.**
+		//
+		// This sampled `Density` at a float position, which is not where a
+		// voxel is and not the arithmetic that computes one -- so the day the
+		// fill moved to `PositionOfFixed` and `DensityFixed`, every stored
+		// chunk started describing a planet the generator no longer makes and
+		// this hash did not change by a bit. Snapping to the lattice and
+		// going through the same function closes that: the fingerprint now
+		// samples the fill rather than something adjacent to it.
 		for (int i = 0; i < 64; i++)
 		{
-			glm::vec3 direction = SpiralDirection(i, 64, 0.17f);
+			glm::dvec3 at = glm::dvec3(SpiralDirection(i, 64, 0.17f))
+				* ((double)m_Settings.Radius + (double)(i % 5) * 3.0);
 
-			mix(Density(direction * (m_Settings.Radius + (float)(i % 5) * 3.0f)));
+			mix(DensityFixed(LatticePosition(LatticeNear(at))));
 		}
 
 		return hash;
@@ -853,6 +876,31 @@ public:
 	const std::shared_ptr<Egss::VoxelField3D>& Field() const { return m_Field; }
 
 	// --- Generation ---------------------------------------------------------
+
+	// **The same field, asked at a point that is exactly where it says.**
+	//
+	// `Density` takes a float position, and at 6,371 km a float position is
+	// already rounded to half a metre before this function sees it -- and
+	// then `length(p) - Radius` cancels two numbers of that size, so the
+	// answer lands on the same coarse grid. Both halves are fixed by doing
+	// the length and the subtraction in double: the result is small, so it
+	// goes back to float the moment the cancellation is behind it, and the
+	// direction is a unit vector that never had a magnitude problem.
+	//
+	// This is what `FillChunk` calls now. `Density` stays for the callers
+	// that are asking about a body-sized number in the first place -- the
+	// fingerprint, the surface bisection's own float ray -- and for the small
+	// bodies where the two agree to the last bit.
+	float DensityFixed(const glm::dvec3& p) const
+	{
+		double distance = glm::length(p);
+
+		if (distance < 1e-4)
+			return -m_Settings.Radius;
+
+		return (float)(distance - (double)m_Settings.Radius)
+			- Relief(glm::vec3(p / distance));
+	}
 
 	// Signed distance to the surface: negative inside the planet.
 	float Density(const glm::vec3& p) const
@@ -2714,6 +2762,31 @@ public:
 		return m_Chunks.count(Key(chunk)) != 0;
 	}
 
+	// Is every voxel a trilinear read at `about` will touch actually filled?
+	// A read runs from `about - 1` to `about + 1`, and a chunk that was never
+	// generated reads as a uniform far value rather than as an error -- which
+	// would show up in a measurement as terrain that is perfectly wrong.
+	bool ResidentAround(const glm::ivec3& about) const
+	{
+		const int size = Egss::VoxelField3D::ChunkSize;
+
+		// In double: a lattice index at 1:1 is about 4e6, which a float still
+		// holds exactly, but only just -- and this is the one file where
+		// "still exact today" has already been the wrong answer twice.
+		glm::ivec3 low = glm::ivec3(glm::floor(
+			glm::dvec3(about - glm::ivec3(1)) / (double)size));
+		glm::ivec3 high = glm::ivec3(glm::floor(
+			glm::dvec3(about + glm::ivec3(1)) / (double)size));
+
+		for (int z = low.z; z <= high.z; z++)
+		for (int y = low.y; y <= high.y; y++)
+		for (int x = low.x; x <= high.x; x++)
+			if (!m_Filled.count(Key(glm::ivec3(x, y, z))))
+				return false;
+
+		return true;
+	}
+
 	const Chunk* ChunkMesh(const glm::ivec3& chunk) const
 	{
 		auto it = m_Chunks.find(Key(chunk));
@@ -2920,7 +2993,12 @@ private:
 		// the small part is formed from the offset and the large part is
 		// carried alongside it rather than through it.
 		double CentreTangent = 0.0, CentreBitangent = 0.0, CentreNormal = 1.0;
-		glm::vec3 Centre { 0.0f };
+
+		// In double for the same reason the dot products are. A chunk centre
+		// at Earth's radius rounds to half a metre as a float, and the whole
+		// job of this member is to be subtracted from a nearby point -- so
+		// its rounding lands undiminished in an offset that is metres long.
+		glm::dvec3 Centre { 0.0 };
 
 		float Low = 0.0f;      // the (u, v) the grid starts at
 		float InverseStep = 1.0f;
@@ -3041,7 +3119,7 @@ private:
 		patch.Tangent = glm::normalize(glm::cross(pick, n));
 		patch.Bitangent = glm::cross(n, patch.Tangent);
 
-		patch.Centre = glm::vec3(centre);
+		patch.Centre = centre;
 		patch.CentreTangent = glm::dot(centre, glm::dvec3(patch.Tangent));
 		patch.CentreBitangent = glm::dot(centre, glm::dvec3(patch.Bitangent));
 		patch.CentreNormal = glm::dot(centre, glm::dvec3(patch.Normal));
@@ -3142,7 +3220,7 @@ public:
 				glm::dvec3 p = ChunkOriginFixed(chunk)
 					+ glm::dvec3(i2, j, k) * (double)m_Settings.VoxelSize;
 
-				glm::vec3 e = glm::vec3(p) - patch.Centre;
+				glm::vec3 e = glm::vec3(p - patch.Centre);
 
 				double normal = patch.CentreNormal
 					+ (double)glm::dot(e, patch.Normal);
@@ -3176,6 +3254,83 @@ public:
 			samples, 100.0 * worst / (double)m_Settings.VoxelSize);
 	}
 
+	// **Where the ground is, against where the generator says it is.**
+	//
+	// `Density` has an exact zero and it is one line of arithmetic: along a
+	// direction `d` the surface sits at radius `Radius + Relief(d)`. Nothing
+	// in the path being measured computes that -- not the chunk store, not
+	// the sparse encoding, not the trilinear reconstruction, and not the
+	// relief patch the fill actually interpolates. So stand on that point and
+	// ask the field how far it thinks it is from the surface. A field holding
+	// what it claims to hold answers zero; what it answers instead is how far
+	// the terrain has moved, in metres, because the field's gradient here is
+	// one by construction.
+	//
+	// This is the measurement for sampling the density in double. `FillChunk`
+	// used to evaluate the generator at `PositionOf` -- a float, and at a real
+	// planet's radius a *different point* by up to half a voxel -- while every
+	// reader of the field addressed the lattice exactly. The surface arrived
+	// displaced by the difference.
+	void ReportSurfaceError(const glm::dvec3& focus, float reach = 600.0f,
+		int samples = 8192) const
+	{
+		double length = glm::length(focus);
+
+		if (length < 1e-3 || !m_Field)
+			return;
+
+		glm::dvec3 n = focus / length;
+
+		glm::dvec3 pick = std::abs(n.y) < 0.9
+			? glm::dvec3(0.0, 1.0, 0.0) : glm::dvec3(1.0, 0.0, 0.0);
+
+		glm::dvec3 tangent = glm::normalize(glm::cross(pick, n));
+		glm::dvec3 bitangent = glm::cross(n, tangent);
+
+		double worst = 0.0, sum = 0.0;
+		long counted = 0, skipped = 0;
+
+		for (int i = 0; i < samples; i++)
+		{
+			// A sunflower spiral over the patch: equal area per sample, and
+			// no lattice of its own to line up with the voxel lattice and
+			// hide exactly the error being looked for.
+			double radius = (double)reach
+				* std::sqrt(((double)i + 0.5) / (double)samples);
+
+			double angle = (double)i * 2.399963229728653;
+
+			glm::dvec3 direction = glm::normalize(n
+				+ (tangent * std::cos(angle) + bitangent * std::sin(angle))
+					* (radius / (double)m_Settings.Radius));
+
+			// The exact surface, from the generator's own definition.
+			glm::dvec3 point = direction * ((double)m_Settings.Radius
+				+ (double)Relief(glm::vec3(direction)));
+
+			glm::ivec3 about = LatticeNear(point);
+
+			if (!ResidentAround(about))
+			{
+				skipped++;
+				continue;
+			}
+
+			double error = std::abs((double)m_Field->SampleDistanceFrom(
+				glm::vec3(point - LatticePosition(about)), about));
+
+			worst = glm::max(worst, error);
+			sum += error;
+			counted++;
+		}
+
+		EGSS_TRACE("Surface error: mean {0:.4f} m worst {1:.4f} m over {2} points "
+			"({3:.2f}% / {4:.2f}% of a {5:.2f} m voxel), {6} outside the streamed shell",
+			counted ? sum / (double)counted : 0.0, worst, counted,
+			100.0 * (counted ? sum / (double)counted : 0.0) / (double)m_Settings.VoxelSize,
+			100.0 * worst / (double)m_Settings.VoxelSize, m_Settings.VoxelSize, skipped);
+	}
+
 private:
 	// Fills one chunk through the patch, falling back to the exact generator
 	// when a patch would not pay for itself.
@@ -3186,20 +3341,21 @@ private:
 		if (!BuildReliefPatch(ChunkCentreFixed(chunk), patch))
 		{
 			m_Field->FillChunk(chunk,
-				[this](const glm::vec3& p) { return Density(p); }, 1);
+				[this](const glm::dvec3& p) { return DensityFixed(p); }, 1);
 
 			return;
 		}
 
 		float radius = m_Settings.Radius;
 
-		m_Field->FillChunk(chunk, [&patch, radius](const glm::vec3& p)
+		m_Field->FillChunk(chunk, [&patch, radius](const glm::dvec3& p)
 		{
-			// The offset is formed in float and is exact: `p` and the chunk
-			// centre are within a chunk of each other, so the subtraction
-			// itself loses nothing. The large half of each dot product was
-			// taken in double when the patch was built.
-			glm::vec3 e = p - patch.Centre;
+			// **Subtract first, then narrow.** The offset is a chunk long and
+			// is a float once it exists; what it must not be is the
+			// difference of two floats that were each rounded to half a metre
+			// on the way in. The large half of each dot product was taken in
+			// double when the patch was built.
+			glm::vec3 e = glm::vec3(p - patch.Centre);
 
 			double normal = patch.CentreNormal + (double)glm::dot(e, patch.Normal);
 
@@ -3211,7 +3367,11 @@ private:
 			float v = (float)((patch.CentreBitangent
 				+ (double)glm::dot(e, patch.Bitangent)) / normal);
 
-			return glm::length(p) - radius - patch.At(u, v);
+			// The one cancellation left, and the one that has to be in
+			// double: at Earth's radius `length(p)` and `radius` agree to six
+			// figures and everything the terrain is made of lives in what is
+			// left over.
+			return (float)(glm::length(p) - (double)radius) - patch.At(u, v);
 		}, 1);
 	}
 

@@ -933,13 +933,28 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       starts, both caught by OpenWorld: rounding a field origin that is
       deliberately half a voxel off (13.5% of its pixels) and re-associating a
       float addition (34 of them)
-- [ ] **Sample the density in double, which is the other half of 1:1.**
-      `FillChunk` evaluates the generator at `PositionOf`, so at Earth's own
-      radius the sample lattice jitters by up to half a voxel. It displaces the
-      terrain rather than breaking it — neighbouring chunks read the same cell
-      values and still agree — but it is the next thing in the way of the scale
-      actually being used. The same applies to the terrain shader's height,
-      which is `world - u_Origin` in float on the GPU
+- [x] **Sample the density in double, which is the other half of 1:1** —
+      `PositionOfFixed`, a `dvec3` through `Fill`/`FillChunk`, and a
+      `DensityFixed` that takes `|p| - Radius` in double. Measured against the
+      generator's own exact zero (`Radius + Relief(d)`, arithmetic the chunk
+      store and the reconstruction know nothing about): the surface error at
+      1:1 falls from 0.1673 m mean / 0.8509 m worst to 0.0121 / 0.1247, against
+      a hand-computed bound of 0.866 m. At the default 250 km scale it changes
+      the frame by 1.7 of 255, which is what it should. Fixing it exposed that
+      the cache fingerprint sampled the generator rather than the fill, and
+      that it had been hashing four bytes of uninitialised stack since it was
+      written — see the changelog
+- [ ] **The terrain shader's height, which is the GPU half of the same thing.**
+      `length(v_Position) - u_SeaRadius` in `float32` at a planet-centred 6.4e6
+      quantises the shading height by 0.019 m mean and 0.5 m worst, and
+      `v_Position = world.xyz - u_Origin` costs another 0.5 m an axis. Visible
+      as terracing within a few metres of the shore at 1:1 and nowhere else
+      (0.016 m worst at the default scale). No rearrangement of the shader can
+      fix it — it wants a per-vertex altitude computed on the CPU in double, or
+      a per-chunk reference altitude plus a first-order expansion (the
+      second-order term is 4e-5 m over a chunk). The catch is that the sphere
+      stand-in, the horizon mesh and the water share the shader and have no
+      such attribute
 - [x] **Instance the trees** — a landed frame went from about 23,000 draw calls
       to 1,001, and from 16.66 M triangles to 9.49 M once trees behind the camera
       stopped being submitted. Needed instancing in the engine: a divisor on
@@ -1247,6 +1262,110 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-27 (the density sampled in double, and a fingerprint that was half stack)
+
+The other half of 1:1. `--earth-radius 6371000` has streamed, rendered and been
+walked on since 25 August, but only the *reading* of the field was exact:
+`PositionFrom` and `SampleDistanceFrom` subtract on the integers, chunk meshes
+carry their own double origin, and the surface physics world is centred on the
+landing site. The *writing* was not. `FillChunk` evaluated the generator at
+`PositionOf` — `origin + i * voxelSize` in float, both terms about 6.4e6 — so
+the sample stored at a lattice point was the density at somewhere else.
+
+**The bound, from the float format alone.** At Earth's radius the origin is
+−6,386,935.5 m and the voxel is 1.59275 m. A float carries 24 bits, so in that
+range an ulp is 0.5 m; each axis of `PositionOf` is wrong by up to 0.5 m and
+the radial displacement by up to `sqrt(3)/2 = 0.866` m — 54% of a voxel, which
+is the "half a voxel" the roadmap had been asserting without a number behind
+it.
+
+**The measurement, against arithmetic the field does not contain.** `Density`
+has an exact zero: along a direction `d` the surface is at radius
+`Radius + Relief(d)`, one line, and nothing in the path being tested computes
+it — not the sparse chunk store, not the encoding, not the trilinear
+reconstruction, not the relief patch the fill actually interpolates. So stand
+on that point and ask the field how far it thinks it is from the surface. It
+should say zero. `VoxelPlanet::ReportSurfaceError` walks 8,192 points on a
+sunflower spiral over the landing site and reports what it says instead:
+
+| | mean | worst | worst as a voxel |
+|---|---|---|---|
+| Earth at 6,371 km, before | 0.1673 m | 0.8509 m | 53.4% |
+| Earth at 6,371 km, after | 0.0121 m | 0.1247 m | 7.8% |
+| Earth at 250 km, before | 0.0051 m | 0.2016 m | 13.4% |
+| Earth at 250 km, after | 0.0042 m | 0.2015 m | 13.4% |
+
+The 0.8509 m sits just under the hand-computed 0.866 m bound, which is the
+agreement that says the diagnosis was right rather than merely plausible. What
+is left after the fix is the relief patch's own interpolation error — measured
+on the same frame at 0.0721 m worst — plus the trilinear reconstruction of a
+curved surface, and the lattice contributes nothing further.
+
+**At the default 250 km scale it changes almost nothing, and that is the
+honest result.** The float lattice error there is 0.047 m, well under the patch
+error that dominates the residual; the frame does change, but the mean
+difference over the pixels that move is **1.7 of 255** — a shading dither. At
+1:1 the same comparison is **21.4 of 255 over 68% of the frame**, and 218,000
+pixels move by more than 32. The change was never for the scale the demo opens
+at.
+
+The fix is three lines of arithmetic and one signature. `VoxelField3D` gained
+`PositionOfFixed`, and `Fill`/`FillChunk` now hand the generator a `dvec3`;
+`VoxelPlanet::DensityFixed` takes the length and the `- Radius` in double and
+drops to float immediately after, because the result is small and the
+*direction* never had a magnitude problem; `ReliefPatch::Centre` became a
+`dvec3` so that subtracting it from a nearby point is not the difference of two
+numbers each already rounded to half a metre. Cost: nothing measurable. A
+chunk fill is thirteen octaves of value noise, and this is three multiplies and
+three adds in front of it.
+
+**OpenWorld and the Voxel terrain demo are provably untouched**, which is
+better than a screenshot: their origins and voxel sizes are exact dyadic
+rationals, so `origin + i * voxelSize` is bit-identical in float and in double
+over every lattice coordinate either field holds — checked over all of both.
+Confirmed anyway by generating OpenWorld's terrain fresh against chunks its
+cache had stored on 19 August under the old code: the captured frame is
+byte-identical.
+
+**And then the cache stopped rebuilding itself.** `VoxelPlanet::Fingerprint`
+exists so that changing the terrain function throws the stored chunks away
+instead of handing back a world that no longer exists — and it sampled
+`Density` at a float position, which is neither where a voxel is nor the
+arithmetic that computes one. So the day the fill moved to `PositionOfFixed`,
+every `.site` and `.edits` file on disk described a planet the generator no
+longer makes, and the hash did not change by a bit. It samples `DensityFixed`
+at a lattice point now, through the same function the fill calls.
+
+Printing the hash to check that was working turned up a second, older bug in
+the same eight lines. `mix` copied a **four**-byte float into an
+**eight**-byte `unsigned long long` that was never initialised, and hashed all
+sixty-four bits. Half of every sample was whatever the stack held. It showed as
+`Fingerprint()` returning two different values at its two call sites —
+`OpenEdits` and `OpenSiteCache`, three lines apart with nothing in between —
+agreeing exactly in the low thirty-two bits, which is the signature of the
+thing. That is why the site cache had been rebuilding on runs where nothing had
+changed: a fingerprint that is partly garbage sometimes reproduces and
+sometimes does not, and the failure mode looks exactly like a cache working.
+Debug site preparation is **10,461 ms cold against 3,181 ms warm** now, to a
+byte-identical frame, and the warm path is taken every run instead of some of
+them. Neither ASan nor UBSan catches an uninitialised read; the trace did.
+
+**Still float on the GPU, and now with a number on it.** The terrain shader
+computes its shading height as `length(v_Position) - u_SeaRadius`, where
+`v_Position` is `world.xyz - u_Origin` — planet-centred, and at 1:1 about
+6.4e6 in `float32`. Measured over 20,000 directions, `length()` alone
+quantises the height by 0.019 m on average and 0.5 m at worst, and the
+subtraction that produces `v_Position` costs another 0.5 m an axis before it.
+Against a beach band of 4.8 m that is up to a tenth of the band, so the visible
+consequence is terracing within a few metres of the shore, at 1:1 only — 0.016 m
+worst at the default scale. It cannot be fixed by rearranging the shader,
+because `float32` has no more bits: it wants a per-vertex altitude computed on
+the CPU in double, or a per-chunk reference altitude plus a first-order
+expansion over the chunk (the second-order term is 4e-5 m over a 22 m chunk
+half-diagonal, so one term is plenty). Split out as its own roadmap item,
+because it is a different mechanism from this one and the sphere stand-in, the
+horizon mesh and the water all share the shader.
 
 ### 2026-08-26 (clouds, haze, a mip chain that never existed, and a static portal)
 

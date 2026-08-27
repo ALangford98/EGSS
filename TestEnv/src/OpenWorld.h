@@ -1563,7 +1563,9 @@ public:
 
 		int reach = (int)std::ceil(radius / s_ChunkWorld) + 1;
 
-		auto sdf = [this](const glm::vec3& p) { return Density(p); };
+		// Double in, float out: the field hands out an exact lattice
+		// position for planet-scale callers, and this world is 512 m wide.
+		auto sdf = [this](const glm::dvec3& p) { return Density(glm::vec3(p)); };
 
 		// **Nearest first.** This used to walk dz then dx, which fills a disc
 		// in scan-line order: the far edge of the first row arrives before the
