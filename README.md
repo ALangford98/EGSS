@@ -944,17 +944,18 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       the cache fingerprint sampled the generator rather than the fill, and
       that it had been hashing four bytes of uninitialised stack since it was
       written — see the changelog
-- [ ] **The terrain shader's height, which is the GPU half of the same thing.**
-      `length(v_Position) - u_SeaRadius` in `float32` at a planet-centred 6.4e6
-      quantises the shading height by 0.019 m mean and 0.5 m worst, and
-      `v_Position = world.xyz - u_Origin` costs another 0.5 m an axis. Visible
-      as terracing within a few metres of the shore at 1:1 and nowhere else
-      (0.016 m worst at the default scale). No rearrangement of the shader can
-      fix it — it wants a per-vertex altitude computed on the CPU in double, or
-      a per-chunk reference altitude plus a first-order expansion (the
-      second-order term is 4e-5 m over a chunk). The catch is that the sphere
-      stand-in, the horizon mesh and the water share the shader and have no
-      such attribute
+- [x] **The terrain shader's height, the GPU half of the same thing** — each
+      draw carries a reference point near its own geometry, so the shader forms
+      `world.xyz - u_Reference` (small, exact) instead of a planet-centred
+      `length`, and rebuilds the height from a double-computed reference
+      altitude plus `(2|C|(n·e) + e·e) / (|C+e| + |C|)` — an identity, so the
+      horizon mesh's fourteen-kilometre offsets are fine. Predicted from the
+      float format that `fract(height)` could take exactly 2 distinct values at
+      1:1 and exactly 64 at 250 km; counted 2 and 64, and 256 after. The height
+      was carrying 1.145 m of error at 1:1 and 0.047 m at 250 km. It changes
+      1,520 pixels by one level, because the only band narrow enough to notice
+      is the 4.78 m beach and neither captured view has a single pixel of
+      shoreline in it — see the changelog
 - [x] **Instance the trees** — a landed frame went from about 23,000 draw calls
       to 1,001, and from 16.66 M triangles to 9.49 M once trees behind the camera
       stopped being submitted. Needed instancing in the engine: a divisor on
@@ -1262,6 +1263,91 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-27 (the shading height, and a frame with no shoreline in it)
+
+The GPU half of 1:1, and the last precision item on the surface. The terrain
+shader computed its shading height as `length(v_Position) - u_SeaRadius`, where
+`v_Position = world.xyz - u_Origin` is planet-centred — about 6.4e6 at 1:1, in
+`float32`. Both the subtraction that forms it and the `length` that reads it
+happen at that magnitude, and the answer wanted is a few hundred metres, so the
+entire shading height was computed in the bits the format had already thrown
+away. `Biome`'s waterline had the same shape one line up: `u_SeaRadius -
+u_Radius`, two values near 6.4e6 differenced on the GPU for an answer of a few
+hundred metres.
+
+**Predicted from the format, then counted in a frame.** Floats in
+[2²², 2²³) — which is where 6.371e6 lives — are exactly the multiples of 0.5,
+so `length(v_Position)` lands on a 0.5 m grid, `u_SeaRadius` is on the same
+grid, and the difference is a multiple of 0.5 m. Therefore `fract(height)` can
+take **exactly two values**. At the default 250 km the same argument gives
+2⁻⁶ = 0.015625 m and therefore **exactly 64**. A temporary debug output painted
+`fract(height)` into the red channel with green pinned at 1 to mark the pixels
+this shader drew — the first count included the trees and the lander and was
+meaningless — and captured the landing site:
+
+| | distinct levels | spacing in 8-bit |
+|---|---|---|
+| 6,371 km, before | **2** (0, 128) | — |
+| 250 km, before | **64** | 4 |
+| 6,371 km, after | 256 | 1 |
+| 250 km, after | 256 | 1 |
+
+Two scales, two different predictions, both exact. After the change the count
+is 256, which is all an 8-bit buffer can show.
+
+**The fix is the same one the CPU side already uses: never form the large
+number.** Each draw now carries a reference point near its own geometry —
+a chunk's origin, the horizon mesh's site — as `u_Reference` in camera-relative
+coordinates, so `v_Offset = world.xyz - u_Reference` is a difference of two
+small numbers and is exact. The CPU sends `u_ReferenceAltitude = |C| - sea`
+computed in double, and the shader adds `|C + e| - |C|` written as
+
+    (2 |C| (n·e) + e·e) / (|C+e| + |C|)
+
+which is an **identity, not an expansion** — there is no small-`e` assumption in
+it, and that matters because the horizon mesh's `e` reaches fourteen kilometres,
+where a second-order Taylor term would be 15 m. Every quantity in it is either
+small or needs only relative precision. The stand-in sphere keeps the old path
+and does not want a reference: it is body-sized, so `e·e` would be 1e14, and
+when it is drawn at all you are looking at it from space. `u_SeaDepth` replaces
+the waterline subtraction with the answer, taken in double on the CPU.
+
+**How wrong the old height was, measured rather than estimated.** The old
+formula is the true height *rounded*, so the difference between the two is the
+error it was carrying. Painted into the blue channel of the same debug frame:
+
+| | mean | worst |
+|---|---|---|
+| Earth at 6,371 km | +0.157 m | **1.145 m** |
+| Earth at 250 km | +0.012 m | 0.047 m |
+
+Both bigger than the 0.5 m / 0.016 m this roadmap item was opened with, because
+that estimate covered `length()` alone and the `world.xyz - u_Origin`
+subtraction contributes as much again. The two scales agree with each other to
+4% — 1.145 × 250/6371 = 0.045 against 0.047 measured — which is what a purely
+relative float error should do and is the check that the number is the format
+rather than the terrain.
+
+**And it changes almost nothing on screen, for a reason worth writing down.**
+Every band the height drives is hundreds of metres or wider — the altitude ramp
+spans `u_Relief`, which is 15.9 km at 1:1 — except one: the beach, at
+`3 × voxelSize = 4.78 m`, where 1.145 m is a quarter of the band and can put a
+pixel on the wrong side of the waterline outright. So the A/B of the real frame
+is 1,520 pixels differing by a single 8-bit level at the default site and
+**zero** pixels at `--land Earth`. The reason is not that the fix does nothing:
+the same debug pass counted the pixels whose height falls inside the beach band,
+and there are **0 of 579,001 and 0 of 443,698**. Neither view contains a
+shoreline. The defect is real, measured, and currently invisible for want of a
+frame that looks at a beach — which is worth saying plainly rather than
+implying a visual improvement nobody can see.
+
+**Still float, and deliberately.** `settings.OceanRadius` is a `float` member,
+so at 1:1 the sea radius itself is only known on a 0.5 m grid. That is a uniform
+offset in where the waterline sits, not a per-pixel quantisation, and the water
+shell reads the same value, so the sea surface and the terrain's shore agree
+with each other. Making it a double ripples into the bisection that finds it and
+into the water material; listed under known approximations rather than done.
 
 ### 2026-08-27 (the density sampled in double, and a fingerprint that was half stack)
 

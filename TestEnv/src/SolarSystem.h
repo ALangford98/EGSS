@@ -2839,6 +2839,13 @@ public:
 		if (generated)
 			material->SetTexture("u_Map", it->second.Map(), 0);
 
+		// **The sphere has no reference point and does not need one.** It is a
+		// body-sized ball, so an offset from anything on it is body-sized too
+		// and the identity in the shader would be computing `e.e` at 1e14.
+		// When it is drawn at all you are far enough away that half a metre of
+		// shading height is a fraction of a pixel. See `u_ReferenceAltitude`.
+		material->Set("u_HasReference", 0.0f);
+
 		Egss::Renderer::Submit(material, m_Sphere,
 			glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(centre)),
 				glm::vec3(drawn)));
@@ -2847,6 +2854,18 @@ public:
 			return;
 
 		material->Set("u_HasMap", 0.0f);
+		material->Set("u_HasReference", 1.0f);
+
+		// The waterline this body's chunks are measured against, in double, so
+		// that each chunk's reference altitude is the small number it should
+		// be rather than a difference taken on the GPU.
+		//
+		// **Unscaled, and it is allowed to be**: `meshed` implies `isNear`,
+		// and `BodyPlacement` returns a scale of exactly 1 for the body you
+		// are standing on. Everything else the shader compares this against --
+		// `u_SeaDepth`, `u_Beach` -- carries the scale, so if a compressed
+		// body ever grew chunks this would need it too.
+		double sea = SeaRadiusOf(index, it->second.Get());
 
 		// **A transform per chunk, and the sum inside it done in double.**
 		//
@@ -2862,7 +2881,16 @@ public:
 
 		for (const auto& [key, chunk] : it->second.Chunks())
 		{
-			glm::vec3 placed = glm::vec3(centre + ToScene(index, chunk.Origin));
+			glm::dvec3 turned = ToScene(index, chunk.Origin);
+			glm::vec3 placed = glm::vec3(centre + turned);
+
+			// **The chunk's own origin is the reference.** It is already the
+			// point every vertex in this mesh is measured from, so the offset
+			// the shader forms is exactly `a_Position` up to the spin -- a few
+			// tens of metres, and exact as a float. The radius is
+			// rotation-invariant, so it comes from the unturned original.
+			SetReference(material, placed, turned,
+				glm::length(chunk.Origin), sea);
 
 			Egss::Renderer::Submit(material, chunk.MeshPtr,
 				glm::translate(glm::mat4(1.0f), placed) * spin);
@@ -2876,9 +2904,18 @@ public:
 		// is no reason to make the driver work for it.
 		if (m_Horizon.Valid() && m_Walking && (size_t)m_Ground == index)
 		{
+			glm::dvec3 turned = ToScene(index, m_Horizon.Site());
+			glm::vec3 placed = glm::vec3(centre + turned);
+
+			// The same treatment, and the reason the shader's identity is
+			// written without a small-`e` assumption: this mesh reaches
+			// fourteen kilometres from its site, where a Taylor expansion
+			// would be carrying a 15 m second-order term.
+			SetReference(material, placed, turned,
+				glm::length(m_Horizon.Site()), sea);
+
 			Egss::Renderer::Submit(material, m_Horizon.Mesh(),
-				glm::translate(glm::mat4(1.0f),
-					glm::vec3(centre + ToScene(index, m_Horizon.Site()))) * spin);
+				glm::translate(glm::mat4(1.0f), placed) * spin);
 		}
 
 		DrawPlants(index, it->second, centre, spin);
@@ -2936,16 +2973,39 @@ public:
 		return m_SunLight * m_StarBrightness * tint * (0.55f * air * elevation);
 	}
 
+	// **What one draw needs so the shader never forms a planet-sized float.**
+	//
+	// `placed` is the reference in camera-relative coordinates, which is what
+	// the vertex stage subtracts; `turned` is the same point measured from the
+	// planet's centre in the scene's orientation, which is what gives the
+	// radial direction; `radius` is its distance from the centre, taken from
+	// the *unturned* original because a spin is a rotation and cannot change
+	// it. `altitude` is the only one that had to be a subtraction, and it
+	// happens here in double.
+	static void SetReference(const std::shared_ptr<Egss::Material>& material,
+		const glm::vec3& placed, const glm::dvec3& turned, double radius,
+		double sea)
+	{
+		material->Set("u_Reference", placed);
+		material->Set("u_ReferenceNormal",
+			glm::vec3(turned / glm::max(radius, 1e-9)));
+		material->Set("u_ReferenceRadius", (float)radius);
+		material->Set("u_ReferenceAltitude", (float)(radius - sea));
+	}
+
 	// The palette and the waterline, which the terrain and the sea both need
 	// and neither owns.
 	void SetBiome(const std::shared_ptr<Egss::Material>& material, size_t index,
 		const VoxelPlanet::Settings& settings, float scale = 1.0f) const
 	{
-		float radius = (float)DrawnRadius(index);
+		double sea = SeaRadiusOf(index, settings);
 
 		material->Set("u_Vegetated", settings.Vegetated ? 1.0f : 0.0f);
-		material->Set("u_SeaRadius", scale * (settings.HasOcean
-			? settings.OceanRadius : radius - ReliefOf(settings, radius)));
+		material->Set("u_SeaRadius", (float)((double)scale * sea));
+
+		// The one the shader actually shades from. See `SeaRadiusOf`.
+		material->Set("u_SeaDepth",
+			(float)((double)scale * (sea - DrawnRadius(index))));
 
 		material->Set("u_Shallow", settings.Shallow);
 		material->Set("u_Deep", settings.Deep);
@@ -2969,6 +3029,20 @@ public:
 	static float ReliefOf(const VoxelPlanet::Settings& settings, float radius)
 	{
 		return settings.Amplitude > 0.0f ? settings.Amplitude : radius * 0.085f;
+	}
+
+	// **The waterline, in double, because everything that wants it wants the
+	// difference from the radius rather than the number itself.** Both are
+	// about 6.4e6 at 1:1 and the answer is a few hundred metres, so whoever
+	// takes that subtraction decides how well the shore is known -- and the
+	// GPU, in float, knew it to half a metre. Taken here instead, and the
+	// small result is what crosses.
+	double SeaRadiusOf(size_t index, const VoxelPlanet::Settings& settings) const
+	{
+		double radius = DrawnRadius(index);
+
+		return settings.HasOcean ? (double)settings.OceanRadius
+			: radius - (double)ReliefOf(settings, (float)radius);
 	}
 
 	// --- Trees ---------------------------------------------------------------
@@ -4863,7 +4937,26 @@ private:
 			uniform mat4 u_Transform;
 			uniform vec3 u_Origin;
 
+			// **A point on this draw's own ground, and the offset from it.**
+			//
+			// `v_Position` is planet-centred, which at 1:1 is about 6.4e6 --
+			// and `float` has 24 bits, so it arrives on a 0.5 m grid and
+			// `length(v_Position)` lands on one too. Every shading height in
+			// this shader is that length minus a sea radius of the same size,
+			// so the whole of what the terrain is made of is computed in the
+			// bits that were thrown away.
+			//
+			// The fix is the one the CPU side already uses: keep the large
+			// part off the GPU entirely. `u_Reference` is a point near this
+			// draw in camera-relative coordinates -- a chunk's own origin --
+			// so `world.xyz - u_Reference` is a difference of two small
+			// numbers and is exact. The fragment stage rebuilds the height
+			// from that offset plus a reference altitude the CPU computed in
+			// double. See `u_ReferenceAltitude`.
+			uniform vec3 u_Reference;
+
 			out vec3 v_Position;
+			out vec3 v_Offset;
 			out vec3 v_Normal;
 
 			void main()
@@ -4875,6 +4968,7 @@ private:
 				// scaled), so the subtraction has to happen after the
 				// transform rather than before it.
 				v_Position = world.xyz - u_Origin;
+				v_Offset = world.xyz - u_Reference;
 				v_Normal = mat3(u_Transform) * a_Normal;
 
 				gl_Position = u_ViewProjection * world;
@@ -4887,6 +4981,7 @@ private:
 			layout(location = 0) out vec4 color;
 
 			in vec3 v_Position;
+			in vec3 v_Offset;
 			in vec3 v_Normal;
 
 			uniform vec3 u_LightDirection;
@@ -4897,6 +4992,39 @@ private:
 			uniform float u_Radius;
 			uniform float u_Relief;
 			uniform float u_SeaRadius;
+
+			// **The waterline as a small number, because it never was one.**
+			// `u_SeaRadius - u_Radius` is a few hundred metres taken as the
+			// difference of two values near 6.4e6, so on the GPU it was a few
+			// hundred metres known to half a metre. The CPU knows both in
+			// double and can just send the answer.
+			uniform float u_SeaDepth;
+
+			// **The height, without ever forming a planet-sized number.**
+			//
+			// `u_ReferenceRadius` is `|C|` for a reference point `C` near this
+			// draw, and `u_ReferenceAltitude` is `|C| - seaRadius` computed on
+			// the CPU in double. What is left for the GPU is `|C + e| - |C|`
+			// for the small offset `e = v_Offset`, and that is written as the
+			// difference of the squares over the sum:
+			//
+			//     |C+e| - |C| = (2 |C| (n.e) + e.e) / (|C+e| + |C|)
+			//
+			// which is an identity, not an expansion -- there is no small-`e`
+			// assumption in it, which matters because the horizon mesh's `e`
+			// reaches fourteen kilometres. Every term is either small or only
+			// needs relative precision: the numerator is about 1e7 with an ulp
+			// of 1, the denominator about 1.3e7, so the quotient is good to
+			// about 1e-7 m. The subtraction that used to destroy the answer
+			// has been done in double before the value ever arrived.
+			//
+			// `u_HasReference` is 0 for the stand-in sphere, which has no
+			// nearby point to measure from and is a body-sized ball seen from
+			// space when it is drawn at all.
+			uniform vec3 u_ReferenceNormal;
+			uniform float u_ReferenceRadius;
+			uniform float u_ReferenceAltitude;
+			uniform float u_HasReference;
 
 			// Camera distance, for the haze mix below -- v_Position is already
 			// planet-centred, and u_Origin (also bound in the vertex stage) is
@@ -4958,7 +5086,7 @@ private:
 			// ice cap is an ice cap whatever is under it.
 			vec3 Biome(float height, float latitude, float moisture, float warmth)
 			{
-				float sea = u_SeaRadius - u_Radius;
+				float sea = u_SeaDepth;
 
 				if (u_Vegetated < 0.5)
 				{
@@ -5043,9 +5171,15 @@ private:
 				float height;
 
 				if (u_HasMap > 0.5)
-					height = u_Radius + (mapped.r * 2.0 - 1.0) * u_Relief - u_SeaRadius;
+					height = (mapped.r * 2.0 - 1.0) * u_Relief - u_SeaDepth;
+				else if (u_HasReference > 0.5)
+					height = u_ReferenceAltitude
+						+ (2.0 * u_ReferenceRadius * dot(u_ReferenceNormal, v_Offset)
+							+ dot(v_Offset, v_Offset))
+						/ (u_ReferenceRadius + length(v_Position));
 				else
 					height = length(v_Position) - u_SeaRadius;
+
 
 				vec3 base = Biome(height, abs(fixedUp.y), mapped.g, mapped.b);
 

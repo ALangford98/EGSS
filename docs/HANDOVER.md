@@ -1542,6 +1542,25 @@ look caught immediately.
   seconds to check and would have saved most of a session's worth of guessing
   at the transform math instead.
 
+- **A pixel count only means something if the pixels came from the shader you
+  are measuring.** Counting distinct height levels over "the lower half of the
+  frame" gave 195 where the float format predicted 2, and the extra 193 were the
+  trees, the lander and the water, each drawn by its own shader. Pinning an
+  unused channel to a known value in the debug output (`green = 1`, and check
+  `g == 255` when reading back) marks exactly the fragments the shader under test
+  produced, and the count came back as the predicted 2. **When a frame
+  measurement disagrees with a prediction, ask what else drew into those pixels
+  before doubting the prediction.**
+
+- **Check a debug encoding's range before believing what it says.** Painting a
+  height into a channel as `clamp(0.5 + height/32.0, 0, 1)` reported "0 pixels
+  in the beach band" — which was true of the encoding and not of the frame: at
+  the default site every terrain pixel was more than 16 m below the reference
+  and the channel had saturated to a single value at one end. The tell was that
+  `min == max` over half a million pixels. A predicate evaluated *in the shader*
+  (`height > 0.0 && height < u_Beach ? 1.0 : 0.0`) has no range to get wrong and
+  is what the answer eventually came from.
+
 - **A cache keyed by "what the generator does" has to sample the code path the
   cache actually stores, not something next to it.** `VoxelPlanet::Fingerprint`
   hashes 64 evaluations of the density so that changing the terrain function
@@ -1611,7 +1630,14 @@ from the code.
    in double: the surface error at 1:1 fell from 0.8509 m worst to 0.1247 m,
    against a hand-computed 0.866 m bound. What is left is the *GPU* half —
    the terrain shader's `length(v_Position) - u_SeaRadius` in float32 — which
-   is on the roadmap with its own measurement.
+   is done too, on 2026-08-27: each draw carries a reference point near its
+   own geometry, so the shader forms a small exact offset instead of a
+   planet-centred `length`. Predicted from the float format that
+   `fract(height)` could take exactly 2 values at 1:1 and 64 at 250 km, and
+   counted exactly that; the height had been carrying 1.145 m of error at 1:1.
+   **It is worth 1,520 pixels at one 8-bit level**, because the only shading
+   band narrow enough to notice a metre is the 4.78 m beach and neither
+   captured view has a single shoreline pixel in it.
 3. ~~**Biomes — with the drainage pass inside them, not after.**~~ **Done
    2026-08-26**, and the drainage was indeed inside them: `BuildHydrology` is
    Priority-Flood plus flow accumulation on the height map's own grid, checked
@@ -2447,6 +2473,15 @@ inside a box gets a hit at distance zero, so a source in a single-box room never
 gets anywhere.
 
 ### Known approximations, stated so they are not mistaken for bugs
+
+- **The sea radius is a `float`, so at 1:1 the waterline sits on a 0.5 m grid.**
+  `VoxelPlanet::Settings::OceanRadius` is a float member, and 6.37e6 as a float
+  is a multiple of 0.5. This is a *uniform offset* in where the shore is, not a
+  per-pixel quantisation — the terrain shader and the water shell read the same
+  value, so the sea surface and the drawn shoreline agree with each other, which
+  is the thing that would actually be visible. Widening it means widening the
+  bisection that finds it and the water material with it. The per-pixel half of
+  this was the shading height, and that is fixed — see the 2026-08-27 entry.
 
 - **Trees are culled against a cone, not a frustum.** 75 degrees against a
   camera half-angle of about 50, tested per chunk and widened by the chunk's own
