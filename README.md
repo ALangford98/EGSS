@@ -1264,6 +1264,72 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (a snow line that is a temperature, and a pole that is cold)
+
+Wiring the weather into the terrain found a real flaw in the model committed an
+hour earlier. `Redistribution` was answering two different questions with one
+number: how much of noon's heat survives to midnight, and how much of the
+tropics' heat reaches the poles. Those are different physics — the first is
+thermal inertia, ground and water still warm at dawn; the second is *transport*,
+air and ocean actually carrying heat thousands of kilometres — and the second is
+far less complete, which is the entire reason Earth has ice caps. With one
+factor at 0.97, correct for Earth's small day/night swing, the equator came out
+**1.6 K** warmer than the pole against a real 44.
+
+Split in two, with the latitude's own share of the beam from a two-term
+Legendre expansion. `s2` is not fitted: a pole's annual mean is exactly
+`S sin(ε)/π`, and matching the expansion to it gives `s2 = 4 sin(ε)/π − 1`,
+which is −0.494 for Earth against a published −0.482. It has the right limit at
+the other end too — a body with no tilt gets `s2 = −1` and poles that receive
+nothing, which is correct.
+
+| | model | measured |
+|---|---|---|
+| Earth equatorial annual mean | **26.6 °C** | ~26 °C |
+| Earth polar annual mean | −13.9 °C | ~−16 °C (Arctic) |
+| equator-to-pole range | 40.5 K | ~44 K |
+
+The pole is the weaker of the two, and knowably so: this model has no
+ice-albedo feedback, so it cannot reach an Antarctic −50.
+
+**The snow line is now a temperature.** It was `smoothstep(0.74, 0.93, f)` on
+height over relief, so a planet whose tallest hill was 600 m grew a snow cap on
+it and a planet whose tallest was 16 km put snow at the same *fraction*. Both
+cannot be right and neither was. A snow line is an altitude in metres set by how
+fast air cools as it rises. `Warmth` stopped being two things at once as well —
+it carried its own altitude term quoted against the relief, on the reasoning
+that "a planet with more relief has a snow line in the same place relative to
+its own mountains", which is precisely the wrong invariant. It is latitude now,
+and altitude enters once, as `g/c_p` slackened by moisture.
+
+What that gives on Earth: sea-level snow **poleward of 68.8°** against a real
+Arctic circle at 66.5°, and an equator needing 3365 m to freeze against 1757 m
+of relief — so no equatorial snow here, but a tall mid-latitude peak gets some.
+Neither number was aimed at.
+
+Sea ice comes off the same band with no lapse rate in it, because the sea is at
+sea level wherever it is. That means the ice edge and the snow line reach the
+coast at the same latitude **by construction** rather than by being tuned to
+each other. Measured by diffing the same orbital frame before and after: 10,161
+pixels change, all of them in one contiguous cap around the pole.
+
+**And the clouds ride the wind.** The drift was `2π × 365.25/9` radians a year
+for every body in the system — a cloud going round Jupiter in the same nine days
+it goes round the Moon, which for a body forty times wider is a cloud moving
+forty times faster for no reason anyone could point at. The accumulator counts
+seconds now and each body converts at `v/R`. Earth's clouds circle in 1.9 days
+at the drawn 250 km radius; the same line at 1:1 gives **49 days**, which is
+what a mid-latitude weather system actually takes.
+
+One limitation written down rather than fixed: `ClimateBand` is meaningless on
+an airless body. Temperature goes as the fourth root of flux, which is concave,
+so the temperature of the mean flux is not the mean of the temperature, and
+with nothing to carry heat through the night the two are hundreds of degrees
+apart — asked for the Moon's equator it returns 26 °C against a real −20. It
+does not matter, because `Biome` takes its airless branch and returns before
+reaching the snow line, and computing the integral properly would be arithmetic
+nothing reads.
+
 ### 2026-08-28 (the wind pushes things)
 
 Drag, which is the only way air touches anything: `F = ½ ρ Cd A |v| v`, with ρ

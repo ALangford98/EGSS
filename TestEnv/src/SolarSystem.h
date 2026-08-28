@@ -70,6 +70,7 @@
 #include <imgui.h>
 
 #include <chrono>
+#include <set>
 
 #include "Demo.h"
 #include "Vegetation.h"
@@ -1069,12 +1070,54 @@ public:
 			glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
 	}
 
+	// **The wind a body's circulation actually reaches**, taken at 45 degrees
+	// because that is where the mid-latitude westerlies peak. The equator
+	// would give zero -- it is a cell boundary -- and the peak is the number
+	// that decides how fast a cloud band crosses a coastline.
+	float ReferenceWind(size_t index) const
+	{
+		if (index >= m_Bodies.size())
+			return 0.0f;
+
+		const Body& body = m_Bodies[index];
+
+		Climate::Site site;
+		site.StarDistanceAu = (float)StarDistanceAu(index);
+		site.Albedo = body.BondAlbedo;
+		site.AirColumn = body.AtmosphereFraction * body.AtmosphereDensity;
+		site.Gravity = (float)RealSurfaceGravity(index);
+		site.RotationHours = (float)body.RotationHours;
+		site.ObliquityDegrees = body.AxialTiltDegrees;
+		site.LatitudeDegrees = 45.0f;
+		site.CosZenith = 0.25f;
+
+		return Climate::At(site).WindSpeed;
+	}
+
 	// The cloud shell's own rotation: the same axis the body itself spins
-	// about, but at its own drift rate, so a cloud band does not stay glued
+	// about, but drifting relative to it, so a cloud band does not stay glued
 	// to the coastline under it.
+	//
+	// **The drift rate is a wind, not a constant.** It used to be
+	// `2 pi * 365.25 / 9` radians a year for every body in the system, which
+	// says a cloud goes round Jupiter in the same nine days it goes round the
+	// Moon -- and since Jupiter is forty times wider, that is a cloud moving
+	// forty times faster for no reason anyone could point at.
+	//
+	// Clouds move at the speed of the air they are in. So the accumulator
+	// counts *seconds* and each body converts them itself, at `v/R`: the
+	// angular rate of something travelling at wind speed round a sphere of
+	// that radius. A small body's clouds go round quickly because it is small.
+	// One accumulator still serves every body, because each rate is constant
+	// and the conversion is a multiplication.
 	glm::mat4 CloudMatrix(size_t index) const
 	{
-		return RotationMatrix(glm::vec3(SpinAxis(index)), SpinAngle(index) + m_CloudDrift);
+		double radius = glm::max(DrawnRadius(index), 1.0);
+
+		double drift = m_CloudSeconds * (double)ReferenceWind(index) / radius;
+
+		return RotationMatrix(glm::vec3(SpinAxis(index)),
+			SpinAngle(index) + drift);
 	}
 
 	// --- Planets ------------------------------------------------------------
@@ -1865,6 +1908,7 @@ public:
 		site.AirColumn = body.AtmosphereFraction * body.AtmosphereDensity;
 		site.Gravity = (float)RealSurfaceGravity(index);
 		site.RotationHours = (float)body.RotationHours;
+		site.ObliquityDegrees = body.AxialTiltDegrees;
 		site.Altitude = altitude;
 
 		glm::dvec3 up = glm::normalize(sceneDirection);
@@ -1887,6 +1931,65 @@ public:
 			: 0.0f;
 
 		return site;
+	}
+
+	// **The two ends of a body's climate, which is all the terrain needs.**
+	//
+	// Annual-mean sea-level temperature at the equator and at the pole. The
+	// shader has the latitude already (the map's warmth channel is a cosine of
+	// it) and the altitude already (it computes the shading height anyway), so
+	// interpolating between these two and subtracting a lapse rate puts a
+	// temperature on every fragment for the price of three uniforms.
+	//
+	// Setting `CosZenith` to the latitude's own annual mean is what makes
+	// these annual rather than instantaneous: the model blends the sun's
+	// current angle toward the daily mean, and when the two are equal the
+	// blend has nothing left to do. So the snow line does not slide up and
+	// down the mountain as the sun crosses the sky, which is right -- snow
+	// takes a season to melt, not an afternoon.
+	//
+	// **This is meaningless on an airless body, and deliberately not fixed.**
+	// Temperature goes as the fourth root of flux, which is concave, so the
+	// temperature of the mean flux is not the mean of the temperature -- and
+	// on a body with nothing to carry heat through the night the two are
+	// hundreds of degrees apart. Asked for the Moon's equator this returns
+	// 26 C, where the real annual mean is about -20. It does not matter,
+	// because `Biome` takes its airless branch and returns before it reaches
+	// the snow line at all, and computing the integral properly would be
+	// arithmetic nothing reads. If something ever does read it for an airless
+	// body, this is the thing that is wrong.
+	//
+	// On a body with air the objection nearly vanishes: `Redistribution` is
+	// 0.97 for Earth, so the flux being averaged is already almost constant
+	// over the day and there is very little concavity left to bite.
+	void ClimateBand(size_t index, float& equator, float& pole) const
+	{
+		Climate::Site site;
+
+		const Body& body = m_Bodies[index];
+
+		site.StarDistanceAu = (float)StarDistanceAu(index);
+		site.Albedo = body.BondAlbedo;
+		site.AirColumn = body.AtmosphereFraction * body.AtmosphereDensity;
+		site.Gravity = (float)RealSurfaceGravity(index);
+		site.RotationHours = (float)body.RotationHours;
+		site.ObliquityDegrees = body.AxialTiltDegrees;
+		site.Altitude = 0.0f;
+
+		auto it = m_Planets.find(index);
+
+		// The body's own mean, rather than a point's: this is a statement
+		// about the whole planet's climate, and a lake under the camera is
+		// not entitled to move the pole.
+		site.Moisture = it != m_Planets.end() ? it->second.MeanMoisture() : 0.0f;
+
+		site.LatitudeDegrees = 0.0f;
+		site.CosZenith = Climate::MeanCosZenith(0.0f, site.ObliquityDegrees);
+		equator = Climate::At(site).Temperature;
+
+		site.LatitudeDegrees = 90.0f;
+		site.CosZenith = Climate::MeanCosZenith(90.0f, site.ObliquityDegrees);
+		pole = Climate::At(site).Temperature;
 	}
 
 	// **Every line of this is derived, and the panel says which.** A number
@@ -2658,7 +2761,10 @@ public:
 		// Once a call, not once a substep: this is a slow visual drift, not
 		// an orbit, so it carries none of the aliasing risk TrackPeriods is
 		// guarding against above.
-		m_CloudDrift += dt * m_CloudDriftRate;
+		//
+		// Seconds, because `CloudMatrix` turns them into an angle per body at
+		// that body's own wind speed and radius. See the note there.
+		m_CloudSeconds += dt * s_SecondsPerYear;
 
 		CarryWithTheAir(dt);
 
@@ -3175,6 +3281,30 @@ public:
 		// and a fragment sits under both of them. Drifting them apart would
 		// put a step in the haze exactly where the shell takes over, which is
 		// the horizon, which is the one place it would be seen.
+		{
+			float equator = 0.0f, pole = 0.0f;
+			ClimateBand(index, equator, pole);
+
+			material->Set("u_TempEquator", equator);
+			material->Set("u_TempPole", pole);
+
+			// Per metre, because the shader's height is in metres. The
+			// moisture is the body's mean for the same reason the band is.
+			auto plant = m_Planets.find(index);
+
+			float moisture = plant != m_Planets.end()
+				? plant->second.MeanMoisture() : 0.0f;
+
+			material->Set("u_LapseRate", 0.001f * Climate::LapseRate(
+				(float)RealSurfaceGravity(index), moisture));
+
+			// Water melts at 273.15 K. It is a uniform rather than a constant
+			// because the thing that freezes on a body need not be water --
+			// Titan's lakes are methane at 91 K -- and this is where that
+			// would be said.
+			material->Set("u_Freeze", 273.15f);
+		}
+
 		material->Set("u_AirScaleHeight",
 			(float)(radius * (double)m_Bodies[index].AtmosphereFraction
 				* (double)m_AirScale * 0.25));
@@ -4707,6 +4837,16 @@ public:
 			// lake water is a few; the open sea is more, but the sea here is
 			// deep enough everywhere that it saturates either way.
 			water->Set("u_Clarity", 3.5f);
+
+			// The same band the terrain gets, so the ice edge and the snow
+			// line are one answer rather than two.
+			float equator = 0.0f, pole = 0.0f;
+			ClimateBand(index, equator, pole);
+
+			water->Set("u_TempEquator", equator);
+			water->Set("u_TempPole", pole);
+			water->Set("u_Freeze", 273.15f);
+			water->Set("u_Ice", glm::vec3(0.86f, 0.90f, 0.94f));
 			water->Set("u_HasDepth", 0.0f);
 			water->Set("u_NearCentre", glm::vec3(0.0f, 1.0f, 0.0f));
 			water->Set("u_NearCos", 2.0f);
@@ -5494,6 +5634,17 @@ private:
 			// where it is bound for why the two have to agree.
 			uniform float u_AirScaleHeight;
 
+			// **The climate band, in kelvin.** Annual-mean sea-level
+			// temperature at this body's equator and at its pole, and the
+			// lapse rate that gets from sea level to here. Three numbers is
+			// all the shader needs to put a temperature on every fragment,
+			// because latitude is already carried by the map's warmth channel
+			// and altitude is already the height this shader computes.
+			uniform float u_TempEquator;
+			uniform float u_TempPole;
+			uniform float u_LapseRate;     // K per metre
+			uniform float u_Freeze;        // K, water's melting point here
+
 			uniform sampler2D u_Map;
 			uniform float u_HasMap;
 			uniform float u_Vegetated;
@@ -5596,13 +5747,36 @@ private:
 				vec3 colour = mix(u_Sand, green, smoothstep(0.0, u_Beach, height));
 
 				colour = mix(colour, u_Rock, smoothstep(0.45, 0.75, f));
-				colour = mix(colour, u_Snow, smoothstep(0.74, 0.93, f));
 
-				// Cold last, and driven by warmth rather than by latitude, so
-				// the tundra line bends round a highland instead of running
-				// straight through it.
-				colour = mix(colour, u_Tundra, smoothstep(0.30, 0.16, warm));
-				colour = mix(colour, u_Snow, smoothstep(0.14, 0.05, warm));
+				// **Snow is where the air freezes, which is a temperature and
+				// not a fraction of the relief.**
+				//
+				// This was `smoothstep(0.74, 0.93, f)` on the height over the
+				// relief, and a second pass on `warm` -- so a planet whose
+				// tallest hill was 600 m put snow on the top of it, and a
+				// planet whose tallest was 16 km put snow at the same
+				// *fraction*. Both cannot be right and neither was: a snow
+				// line is an altitude in metres, set by how fast air cools as
+				// it rises, and on Earth it is near sea level at the poles and
+				// about 5 km at the equator. That range comes out of these
+				// three uniforms and nothing else.
+				//
+				// `warm` is the latitude, `height` is the altitude, and the
+				// lapse rate is `g/c_p` slackened by moisture. The line bends
+				// round a highland for the same reason it does on Earth --
+				// because the highland is higher, not because a field was
+				// smoothed.
+				float seaLevel = mix(u_TempPole, u_TempEquator, warm);
+				float temperature = seaLevel - u_LapseRate * max(height, 0.0);
+
+				// Tundra in the few degrees above freezing, snow below it.
+				// One threshold, approached from both sides, so there is never
+				// a band of bare rock between the two.
+				colour = mix(colour, u_Tundra,
+					smoothstep(u_Freeze + 6.0, u_Freeze + 1.0, temperature));
+
+				colour = mix(colour, u_Snow,
+					smoothstep(u_Freeze + 1.0, u_Freeze - 2.0, temperature));
 
 				return colour;
 			}
@@ -5827,6 +6001,14 @@ private:
 			uniform vec3 u_NearCentre;
 			uniform float u_NearCos;
 
+			// The same climate band the terrain is coloured from. Water is at
+			// sea level by definition, so there is no lapse rate here -- only
+			// the latitude decides whether this is a sea or an ice sheet.
+			uniform float u_TempEquator;
+			uniform float u_TempPole;
+			uniform float u_Freeze;
+			uniform vec3 u_Ice;
+
 			void main()
 			{
 				vec3 up = normalize(v_Position);
@@ -5968,6 +6150,30 @@ private:
 				// a shelf you can see the bottom of, an ocean you cannot.
 				float alpha = clamp(mix(0.10, 0.92, sunk) + 0.55 * fresnel,
 					0.0, 1.0) * clamp(wet, 0.0, 1.0);
+
+				// **Sea ice, from the same temperature that decides the snow
+				// line, so the two meet at the coast instead of arguing.**
+				//
+				// Water freezes at the surface, so there is no lapse rate in
+				// this one -- the sea is at sea level wherever it is, and only
+				// the latitude is left. Which means the ice edge and the
+				// snow line reach the shore at the same latitude by
+				// construction rather than by being tuned to.
+				//
+				// Ice is opaque and it is not a mirror: the depth colouring
+				// and the Fresnel both go away with it, which is most of what
+				// makes it read as a solid surface rather than pale water.
+				float warmth = SampleSphere(u_Map, uv).b;
+
+				float temperature = mix(u_TempPole, u_TempEquator, warmth);
+
+				float frozen = smoothstep(u_Freeze + 1.0, u_Freeze - 1.0,
+					temperature);
+
+				vec3 sheet = u_Ice * (0.25 + 0.75 * diffuse) * u_LightColor;
+
+				lit = mix(lit, sheet, frozen);
+				alpha = mix(alpha, clamp(wet, 0.0, 1.0), frozen);
 
 				color = vec4(lit, alpha);
 			}
@@ -6959,8 +7165,11 @@ private:
 	// terrain instead of staying glued to whatever coastline is under them.
 	// Arbitrary and purely visual; picked for one full drift in about nine
 	// days of simulated time.
-	double m_CloudDrift = 0.0;
-	double m_CloudDriftRate = 2.0 * 3.14159265358979323846 * (365.25 / 9.0);
+	// Simulated seconds since the start, for the cloud drift. `CloudMatrix`
+	// converts to an angle per body, so this carries no rate of its own.
+	double m_CloudSeconds = 0.0;
+
+	static constexpr double s_SecondsPerYear = 365.25 * 24.0 * 3600.0;
 
 	double m_ShortestPeriod = 1.0;
 	double m_MaxStep = 1.0 / 64.0;

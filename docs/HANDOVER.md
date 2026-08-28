@@ -1621,6 +1621,30 @@ look caught immediately.
   stands back for another, check the two boundaries are the same shape**, not
   just the same nominal size.
 
+- **One factor cannot do both kinds of heat redistribution.** Evening out a
+  day (thermal inertia) and evening out a hemisphere (transport by air and
+  ocean) are different physics and differ by a lot: Earth's day/night swing is
+  nearly abolished and its equator-to-pole range is 44 K. Using one number for
+  both gave a 1.6 K pole-to-equator range and no ice caps anywhere. See
+  `Climate::Redistribution` and `Climate::Transport`.
+
+- **A snow line quoted as a fraction of the relief is the wrong invariant.**
+  It reads as scale-independence and is not: a snow line is an altitude in
+  metres set by `g/c_p`, so a planet of 600 m hills should have *no* snow and
+  was getting a cap on its tallest one. Same trap in `Warmth`, which carried
+  its own altitude term for the same stated reason. Anything quoted "relative
+  to this planet's own mountains" is worth a second look.
+
+- **`Colour` in the body table is not an albedo.** Its luminance puts Earth at
+  0.46 against a real Bond albedo of 0.306, which is 17 K of equilibrium
+  temperature. `BondAlbedo` is the measured column; use it for anything
+  energetic.
+
+- **`AtmosphereFraction * AtmosphereDensity` are render depths, not weights of
+  gas.** They were sized to make a sky look right. Read as a pressure they put
+  Mars at 15.9% of Earth's against a real 0.6%. Fine for optical depth, wrong
+  for anything that weighs the atmosphere.
+
 - **`./egss.py sanitize` reports 16 of 16 demos FAIL and it means nothing.**
   Every one is LeakSanitizer inside system ALSA, reached through vendored
   miniaudio's `ma_context_open_pcm__alsa`; it hits demos nothing has touched in

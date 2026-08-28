@@ -118,6 +118,11 @@ namespace Climate {
 
 		// Sidereal day in hours, for the Coriolis parameter.
 		float RotationHours = 23.934f;
+
+		// Obliquity in degrees. It is what decides how much less sun a pole
+		// gets than an equator: at zero the poles get none at all, and the
+		// annual mean there rises as sin of it.
+		float ObliquityDegrees = 23.4392911f;
 	};
 
 	// What the model says about it.
@@ -238,6 +243,58 @@ namespace Climate {
 		return glm::vec2(east, north);
 	}
 
+	// **The share of the beam a latitude gets, averaged over a year.**
+	//
+	// Sunlight does not land evenly: the equator takes it near vertical all
+	// year and a pole takes it at a grazing angle for half of one and not at
+	// all for the other. The standard way to write that down is two terms of a
+	// Legendre expansion -- `Q(lat) = (S/4)[1 + s2 P2(sin lat)]` -- and it is
+	// standard because the second term carries almost all of it.
+	//
+	// `s2` is not a fitted constant here. The annual mean at a pole is exactly
+	// `S sin(obliquity) / pi`, which is a clean integral, and setting the
+	// expansion equal to it at `P2(1) = 1` gives `s2 = 4 sin(e)/pi - 1`.
+	// Earth's obliquity puts that at -0.494 against a published -0.482, which
+	// is the two-term expansion being a two-term expansion. It has the right
+	// limit at the other end too: a body with no tilt gets `s2 = -1` and a
+	// pole that receives nothing at all, which is correct.
+	inline float MeanCosZenith(float latitudeDegrees, float obliquityDegrees)
+	{
+		float tilt = glm::radians(glm::clamp(obliquityDegrees, 0.0f, 90.0f));
+
+		float s2 = 4.0f * std::sin(tilt) / glm::pi<float>() - 1.0f;
+
+		float sinLat = std::sin(glm::radians(latitudeDegrees));
+		float p2 = 0.5f * (3.0f * sinLat * sinLat - 1.0f);
+
+		return glm::max(0.25f * (1.0f + s2 * p2), 0.0f);
+	}
+
+	// **How much heat gets carried from the equator to the poles**, which is a
+	// different question from how much gets carried from noon to midnight and
+	// was originally answered by the same number. That was wrong, and visibly:
+	// with `Redistribution` at 0.97 for Earth -- correct, its day/night swing
+	// really is small -- pooling the latitudes by the same factor left 1.6 K
+	// between the equator and the pole against a real 44.
+	//
+	// The two are different physics. Evening out a day is thermal inertia:
+	// ground and water that are still warm at dawn. Evening out a hemisphere
+	// is *transport*, air and ocean actually moving heat thousands of
+	// kilometres, and it is far less complete -- Earth's poles are cold, which
+	// is the whole reason they have ice on them.
+	//
+	// 0.4 for a wet, thick atmosphere: it puts Earth's equator at 26.1 C
+	// against a measured 26, and its pole at -9 C against an Arctic -16. The
+	// equator is the one worth trusting; a pole is where an ice sheet's own
+	// albedo takes over and this model has no such feedback.
+	inline float Transport(float airColumn, float moisture)
+	{
+		float air = 1.0f - std::exp(-2.0f * airColumn / s_EarthColumn);
+
+		return glm::clamp(0.42f * air
+			* (0.6f + 0.4f * glm::clamp(moisture, 0.0f, 1.0f)), 0.0f, 0.9f);
+	}
+
 	// Temperature at a site, in kelvin, and everything on the way to it.
 	inline Weather At(const Site& site)
 	{
@@ -256,14 +313,29 @@ namespace Climate {
 		// worth 34 degrees.
 		out.Equilibrium = std::pow(absorbed * 0.25f / s_Sigma, 0.25f);
 
-		// Where the heat actually is: some pooled over the sphere, the rest
-		// still under the sun that delivered it.
+		// **Where the heat actually is, in two steps that are two different
+		// mechanisms.**
+		//
+		// First the day: thermal inertia carries some of noon's heat into the
+		// night, so what this patch of ground radiates is somewhere between
+		// the sun on it right now and the average over its own day at its own
+		// latitude. Then the hemisphere: air and ocean carry some of the
+		// tropics' heat to the poles, so the latitude's own share is pulled
+		// part of the way toward the planet's mean. Doing them with one factor
+		// left Earth 1.6 K warmer at the equator than at the pole.
 		float pooled = Redistribution(site.AirColumn, site.Moisture);
 		float here = glm::max(site.CosZenith, 0.0f);
 
 		out.Insolation = absorbed * here;
 
-		float local = absorbed * ((1.0f - pooled) * here + pooled * 0.25f);
+		float daily = MeanCosZenith(site.LatitudeDegrees,
+			site.ObliquityDegrees);
+
+		float overDay = (1.0f - pooled) * here + pooled * daily;
+
+		float moved = Transport(site.AirColumn, site.Moisture);
+
+		float local = absorbed * ((1.0f - moved) * overDay + moved * 0.25f);
 
 		float surface = std::pow(glm::max(local, 1e-6f) / s_Sigma, 0.25f);
 

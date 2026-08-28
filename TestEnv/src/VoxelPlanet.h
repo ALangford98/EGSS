@@ -334,6 +334,10 @@ public:
 
 	// The two axes of the Whittaker square, where the plant scatter and the
 	// fragment shader both read them.
+	// The area-weighted mean moisture over this body's land. See where it is
+	// set for why the climate wants a single number rather than a field.
+	float MeanMoisture() const { return m_MeanMoisture; }
+
 	float MoistureAt(const glm::vec3& direction) const
 	{
 		return m_Water.Valid() ? SampleHydrology(m_Water.Moisture, direction) : 0.0f;
@@ -1576,21 +1580,30 @@ public:
 			// less arbitrary than a noise field called humidity.
 			float band = 0.5f + 0.5f * std::cos(latitude * 6.0f);
 
-			// Warmth is the cosine of the latitude with a lapse rate on top.
-			// Quoted against the relief rather than in kelvin per kilometre so
-			// that a planet with more relief has a snow line in the same place
-			// relative to its own mountains.
+			// **Warmth is latitude, and only latitude.**
+			//
+			// It used to carry an altitude term as well -- `0.55 * altitude`
+			// over half the relief -- quoted against the relief rather than in
+			// kelvin per kilometre "so that a planet with more relief has a
+			// snow line in the same place relative to its own mountains".
+			// That is precisely the wrong invariant: a snow line is where the
+			// air reaches freezing, which is an altitude in metres set by
+			// `g/c_p`, and has nothing to do with how tall the tallest
+			// mountain on the planet happens to be. A 600 m hill on a world of
+			// 600 m hills was getting a snow cap.
+			//
+			// So altitude now enters as a real lapse rate, once, in the
+			// terrain shader, where it is subtracted from a temperature in
+			// kelvin -- see `Climate::LapseRate` and `u_LapseRate`. This field
+			// stays the latitude index the Whittaker square wants and stops
+			// being two things at once.
 			float sun = glm::clamp(std::cos(latitude) * 1.12f - 0.06f, 0.0f, 1.0f);
 
 			for (int x = 0; x < width; x++)
 			{
 				size_t at = m_Water.At(x, y);
 
-				float altitude = glm::max(m_Water.Land[at], 0.0f);
-
-				m_Water.Warmth[at] = glm::clamp(
-					sun - 0.55f * altitude / glm::max(m_Settings.Amplitude * 0.5f, 1.0f),
-					0.0f, 1.0f);
+				m_Water.Warmth[at] = sun;
 
 				// **Flow as a multiple of the cell's own catchment**, in
 				// decades. A cell that only ever collects its own rain reads
@@ -1607,6 +1620,29 @@ public:
 					0.40f * band + 0.35f * coastal + 0.45f * drained, 0.0f, 1.0f);
 			}
 		}
+
+		// **One moisture for the whole body**, area-weighted over its land.
+		// The climate model wants it because the lapse rate and the
+		// equator-to-pole heat transport are statements about a planet: a lake
+		// under the camera is not entitled to move the pole. Weighted by cell
+		// area because a row near the pole is a great deal narrower than one
+		// at the equator, and counting cells instead would make every planet
+		// look like its own ice caps.
+		double wet = 0.0, land = 0.0;
+
+		for (int y = 0; y < height; y++)
+			for (int x = 0; x < width; x++)
+			{
+				size_t at = m_Water.At(x, y);
+
+				if (m_Water.Land[at] <= 0.0f)
+					continue;
+
+				wet += (double)m_Water.Moisture[at] * (double)area[y];
+				land += (double)area[y];
+			}
+
+		m_MeanMoisture = land > 0.0 ? (float)(wet / land) : 0.0f;
 	}
 
 	// The wet mask: sea, or a basin whose spill height is above the ground.
@@ -2877,6 +2913,9 @@ public:
 	}
 
 private:
+	// Area-weighted over land, filled by BuildHydrology.
+	float m_MeanMoisture = 0.0f;
+
 	// **Twenty-one bits an axis, not sixteen.**
 	//
 	// Sixteen tops out at 65,535 chunks, which is a body 25 km across at
