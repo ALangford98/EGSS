@@ -1264,6 +1264,79 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (a planet with continents on it, and the seam down the middle)
+
+Two bugs that between them had been erasing every landmass on Earth from
+orbit, both found by arithmetic rather than by looking.
+
+**The haze was drawn over 750 km of vacuum.** The terrain shader ended with
+`haze = 1.0 - exp(-camDist * u_HazeDensity)` — the full camera distance and
+nothing else. `u_HazeDensity` is `AtmosphereDensity * m_HazeScale`, and for
+Earth that is `3.0 * 3.3e-3 = 9.9e-3` per metre: a half-hazed distance of 70 m,
+which is the right order for standing in a landscape and is exactly what the
+constant's own comment says it was tuned against. From `--orbit` the camera
+sits four radii out, so `camDist` to the near surface is 750,000 m, the
+exponent is **7425**, and `haze` is 1.0 to the bit. Every land pixel on the
+disc came out *exactly* `u_Sky`.
+
+So the planet had no continents on it because the terrain was never drawn —
+only the sky colour was. The mottled dark speckle that read as malformed
+ground was the atmosphere shell's raymarch over a flat grey ball, and the
+reason nobody had caught it is that it is invisible while anything else is
+wrong: the shell used to be 55% transparent and the terrain used to paint
+itself blue below sea level, so the disc looked plausibly like a water world
+either way.
+
+The missing term is the air. Extinction is the integral of density along the
+ray and density falls off exponentially with height, so a path that spends all
+but four of its 750 kilometres above the atmosphere carries almost none.
+Sampling the density at the **midpoint** of the eye-to-fragment segment is the
+cheapest thing with the right limits at both ends: on the ground both
+endpoints are at zero altitude, the factor is 1, and the landed tuning is
+untouched to within 0.2%; from orbit the midpoint is 375 km up and the factor
+underflows to zero. The scale height is the shell's own — a quarter of its
+thickness — because the two are describing one atmosphere and a fragment sits
+under both, and drifting them apart would put a step in the haze exactly at
+the horizon, which is the one place it would be seen.
+
+**Checked against the hydrology, which the shader never sees.** Green-dominant
+pixels over the disc went from 1.8% to 18.9%, and the 1.8% had been neutral
+cloud grey (108/107/104) rather than anything green. The drainage pass reports
+land at 29.3% of the sphere with 30.68% of it under a lake, so dry land is
+29.3 × (1 − 0.3068) = **20.3%** of the surface. Measured as a share of the lit,
+cloud-free disc: 18.9 / (100 − 9.0 dark − 2.3 cloud) = **21.3%**. One
+percentage point, from a Priority-Flood accounting the fragment shader has no
+access to — it gets a wet mask and a Whittaker square. The small excess is
+what a projection over-weighting the sub-camera point and blending partial
+coastal coverage should give.
+
+**And a two-pixel blue line down the middle of the planet.** Every one of
+these shaders builds `u` from `atan`, so it wraps from 1 back to 0 along one
+meridian. The *value* is right on both sides; the derivative is not, and the
+hardware picks a mip level from the screen-space derivative of the coordinate.
+Across the wrap that derivative is a whole texture wide, so it selects the very
+top of the chain, where a texel is the average of the entire map — and at the
+top of the chain the wet mask averages to roughly the ocean fraction, so along
+the seam the shell decided there was sea and painted it over whatever land the
+meridian crossed.
+
+No sane sampling of a sphere moves half a texture in one pixel, so a derivative
+that claims to has wrapped and subtracting the nearest whole turn recovers the
+true one. `SampleSphere` does that and hands the result to `textureGrad`; it is
+spliced in after the `#version` line of the terrain, water and cloud shaders,
+all three of which had the bug. Measured on a uniform stretch of ocean at
+y = 400, where any deviation is unambiguous: the seam columns went from
+(52, 67, 94) against a background of (27, 47, 84) to **exactly** (27, 47, 84).
+Across the disc the seam column is now 13.5% anomalous by a crude
+neighbour test against controls elsewhere running 10.4–23.5% — indistinguishable
+from ordinary coastline, which is all that test can really measure.
+
+The sanitizer reports 16 of 16 demos failing, and all of it is LeakSanitizer
+inside system ALSA reached through vendored miniaudio's
+`ma_context_open_pcm__alsa`. It hits demos nothing has touched in weeks because
+every demo opens audio. With `detect_leaks=0` there are no ASan or UBSan
+reports at all.
+
 ### 2026-08-27 (the shading height, and a frame with no shoreline in it)
 
 The GPU half of 1:1, and the last precision item on the surface. The terrain

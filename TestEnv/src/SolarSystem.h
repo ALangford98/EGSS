@@ -78,6 +78,51 @@
 #include "HorizonMesh.h"
 #include "PocketDimension.h"
 
+// **Sampling a sphere map across the seam it necessarily has.**
+//
+// Every one of these shaders builds its texture coordinate with `atan`, so `u`
+// runs 0..1 round the equator and wraps from 1 straight back to 0 along one
+// meridian. The value is right on both sides of that line; the *derivative* is
+// not. The hardware picks a mip level from the screen-space derivative of the
+// coordinate, and across the wrap that derivative is a whole texture wide --
+// so it selects the very top of the chain, where a texel is the average of the
+// entire map.
+//
+// From orbit that drew a two-pixel bright blue line down the middle of the
+// planet. At the top of the mip chain the wet mask averages to roughly the
+// ocean fraction, so along the seam the shell decided there was sea and
+// painted it over whatever land the meridian happened to cross.
+//
+// No sane sampling of a sphere moves half a texture in one pixel, so a
+// derivative that claims to has wrapped, and subtracting the nearest whole
+// turn recovers the true one. `textureGrad` is then given the gradient the
+// surface actually has and picks the level it would have picked anywhere else
+// along that meridian.
+static const char* s_SphereSample = R"(
+	vec4 SampleSphere(sampler2D map, vec2 uv)
+	{
+		vec2 dx = dFdx(uv);
+		vec2 dy = dFdy(uv);
+
+		dx.x -= round(dx.x);
+		dy.x -= round(dy.x);
+
+		return textureGrad(map, uv, dx, dy);
+	}
+)";
+
+// `#version` has to be the first thing in a shader, so the shared function
+// goes in immediately after it rather than at the front.
+static std::string WithSphereSample(std::string source)
+{
+	const std::string version = "#version 330 core";
+
+	size_t at = source.find(version);
+	EGSS_CORE_ASSERT(at != std::string::npos, "shader has no #version line");
+
+	return source.insert(at + version.size(), std::string("\n") + s_SphereSample);
+}
+
 class SolarSystem : public DemoLayer
 {
 public:
@@ -2826,6 +2871,15 @@ public:
 		material->Set("u_Unspin", glm::transpose(SpinMatrix(index)));
 		material->Set("u_HazeDensity", m_Bodies[index].AtmosphereDensity * m_HazeScale);
 
+		// The same scale height the shell marches with -- a quarter of the
+		// shell's thickness -- because the two are describing one atmosphere
+		// and a fragment sits under both of them. Drifting them apart would
+		// put a step in the haze exactly where the shell takes over, which is
+		// the horizon, which is the one place it would be seen.
+		material->Set("u_AirScaleHeight",
+			(float)(radius * (double)m_Bodies[index].AtmosphereFraction
+				* (double)m_AirScale * 0.25));
+
 		// A planet with no sea gets a waterline below its deepest valley, so
 		// every point on it is "land" and the altitude ramp is all that runs.
 		SetBiome(material, index, generated
@@ -5044,6 +5098,11 @@ private:
 			uniform vec3 u_Origin;
 			uniform float u_HazeDensity;
 
+			// The height at which the air thins by 1/e. The shell shader uses
+			// the same number to march its density; see `u_AirScaleHeight`
+			// where it is bound for why the two have to agree.
+			uniform float u_AirScaleHeight;
+
 			uniform sampler2D u_Map;
 			uniform float u_HasMap;
 			uniform float u_Vegetated;
@@ -5186,7 +5245,7 @@ private:
 				// your feet -- but moisture has no geometry to be read off,
 				// so it comes from the map wherever you are standing. One
 				// sample serves both.
-				vec4 mapped = texture(u_Map, uv);
+				vec4 mapped = SampleSphere(u_Map, uv);
 
 				float height;
 
@@ -5246,7 +5305,44 @@ private:
 				// density -- an airless body -- leaves this the identity mix,
 				// the same place u_Sky itself already goes to zero.
 				float camDist = length(v_Position + u_Origin);
-				float haze = 1.0 - exp(-camDist * u_HazeDensity);
+
+				// **How much air is on the path, not how long the path is.**
+				//
+				// This was `1.0 - exp(-camDist * u_HazeDensity)`, with the
+				// full camera distance and nothing else. `u_HazeDensity` is
+				// 9.9e-3 per metre for Earth here -- a half-hazed distance of
+				// 70 m, which is the right order for standing in a landscape
+				// and is what it was tuned against. From orbit `camDist` is
+				// 750 km, the exponent is **7425**, and `haze` is 1.0 to the
+				// bit: every land pixel on the disc came out exactly `u_Sky`.
+				// The planet had no continents on it because the terrain was
+				// never drawn, only the sky colour was -- and the mottling
+				// that read as malformed ground was the atmosphere shell's
+				// raymarch over a flat grey ball.
+				//
+				// The missing term is the air itself. Extinction is the
+				// integral of density along the ray, and density falls off
+				// exponentially with height; a path 750 km long that spends
+				// all but four of those kilometres above the atmosphere
+				// carries almost no air. Sampling the density at the midpoint
+				// of the segment is the cheapest thing with the right limits:
+				// on the ground both ends are at zero altitude, the factor is
+				// 1, and the landed tuning is untouched to the last bit;
+				// from orbit the midpoint is 375 km up, the factor underflows
+				// to zero, and the ground is drawn as ground. Between the two
+				// it falls off the way flying up out of the murk actually
+				// looks.
+				//
+				// It is a near-field term and it stays one -- the honest
+				// account of a long slant path is the shell's raymarch, which
+				// is already drawn over the top of this.
+				vec3 eye = -u_Origin;
+				vec3 midway = 0.5 * (eye + v_Position);
+
+				float midAltitude = max(length(midway) - u_SeaRadius, 0.0);
+				float air = exp(-midAltitude / max(u_AirScaleHeight, 1.0));
+
+				float haze = 1.0 - exp(-camDist * u_HazeDensity * air);
 				lit = mix(lit, u_Sky, haze);
 
 				color = vec4(lit, 1.0);
@@ -5254,7 +5350,8 @@ private:
 		)";
 
 		m_TerrainShader.reset(
-			Egss::Shader::Create("PlanetSurface", vertexSrc, fragmentSrc));
+			Egss::Shader::Create("PlanetSurface", vertexSrc,
+				WithSphereSample(fragmentSrc)));
 
 		m_TerrainMaterial = Egss::Material::Create(m_TerrainShader);
 	}
@@ -5391,7 +5488,7 @@ private:
 				// The near mesh carries its own shoreline -- `SurfaceWater`
 				// cut it against the terrain the mesher actually produced --
 				// so gating that by a 1.5 km texel could only erode it.
-				float wet = u_HasDepth > 0.5 ? 1.0 : texture(u_Map, uv).a;
+				float wet = u_HasDepth > 0.5 ? 1.0 : SampleSphere(u_Map, uv).a;
 
 				if (wet < 0.02)
 					discard;
@@ -5452,7 +5549,7 @@ private:
 				float depth = u_HasDepth > 0.5
 					? max(v_Depth, 0.0)
 					: max(u_SeaDepth
-						- (texture(u_Map, uv).r * 2.0 - 1.0) * u_Relief, 0.0);
+						- (SampleSphere(u_Map, uv).r * 2.0 - 1.0) * u_Relief, 0.0);
 
 				float sunk = 1.0 - exp(-2.0 * depth / max(u_Clarity, 0.01));
 
@@ -5485,7 +5582,8 @@ private:
 			}
 		)";
 
-		m_WaterShader.reset(Egss::Shader::Create("PlanetWater", vertexSrc, fragmentSrc));
+		m_WaterShader.reset(Egss::Shader::Create("PlanetWater", vertexSrc,
+			WithSphereSample(fragmentSrc)));
 		m_WaterMaterial = Egss::Material::Create(m_WaterShader);
 	}
 
@@ -5869,7 +5967,7 @@ private:
 				vec2 uv = vec2(atan(up.z, up.x) / (2.0 * pi) + 0.5,
 					acos(clamp(up.y, -1.0, 1.0)) / pi);
 
-				float coverage = texture(u_CloudMap, uv).a;
+				float coverage = SampleSphere(u_CloudMap, uv).a;
 
 				if (coverage < 0.02)
 					discard;
@@ -5886,7 +5984,8 @@ private:
 			}
 		)";
 
-		m_CloudShader.reset(Egss::Shader::Create("Clouds", vertexSrc, fragmentSrc));
+		m_CloudShader.reset(Egss::Shader::Create("Clouds", vertexSrc,
+			WithSphereSample(fragmentSrc)));
 		m_CloudMaterial = Egss::Material::Create(m_CloudShader);
 	}
 

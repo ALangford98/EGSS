@@ -1582,6 +1582,43 @@ look caught immediately.
   **two different values agreeing exactly in the low thirty-two bits**. If a
   hash disagrees only in one half, look at the width of what went into it.
 
+- **A constant tuned at one scale is wrong at every other scale, and an
+  `exp(-x)` hides it by saturating quietly.** The terrain's haze was
+  `1 - exp(-camDist * u_HazeDensity)` with `u_HazeDensity` at 9.9e-3 per metre
+  for Earth -- a half-hazed distance of 70 m, correct for standing in a
+  landscape and tuned against a landed capture. From orbit `camDist` is
+  750,000 m, so the exponent is 7425 and `haze` is 1.0 to the bit: every land
+  pixel on the planet came out exactly `u_Sky` and the continents were never
+  drawn. Nothing errors, nothing looks obviously broken -- a saturated
+  exponential just returns a plausible colour. **If a term has a tuned length
+  constant in it, check what it does at the other end of the range the camera
+  can actually reach.** The fix was to weight the path by the air density at
+  the midpoint of the segment, which is 1 on the ground and underflows from
+  orbit.
+
+- **This bug was invisible because two other bugs were compensating for it.**
+  The shell was 55% transparent and the terrain painted itself blue below sea
+  level, so a disc made entirely of sky colour still read as a water world.
+  Fixing either one alone would have made the planet look *worse*, which is a
+  good reason to distrust "it looked fine before" as evidence.
+
+- **`atan`-built sphere UVs collapse the mip chain along the seam.** `u` wraps
+  from 1 to 0 on one meridian; the value is right either side but the
+  screen-space derivative there is a whole texture wide, so the hardware picks
+  the top of the mip chain, where a texel is the average of the entire map.
+  That drew a two-pixel line down the planet from orbit -- the wet mask averages
+  to about the ocean fraction, so the shell painted sea over the land the
+  meridian crossed. Fix is `SampleSphere` in `SolarSystem.h`: subtract the
+  nearest whole turn from `dFdx`/`dFdy` and use `textureGrad`. **Three shaders
+  had it** (terrain, water, cloud) -- if one sphere map has this, they all do.
+
+- **`./egss.py sanitize` reports 16 of 16 demos FAIL and it means nothing.**
+  Every one is LeakSanitizer inside system ALSA, reached through vendored
+  miniaudio's `ma_context_open_pcm__alsa`; it hits demos nothing has touched in
+  weeks because every demo opens audio. A real regression would be invisible in
+  that noise. Run with `ASAN_OPTIONS=detect_leaks=0` to see ASan and UBSan
+  reports, which is what the sweep is actually for.
+
 ---
 
 ## Conventions
