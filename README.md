@@ -1264,6 +1264,54 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (the lab is a 3x3x3 cube with a biome grid on it)
+
+**Three chunks a side, and the three is the same three as the grid.** The lab
+was built nine chunks across, which was not what was asked for and was wrong for
+the job besides: at 48 m a side each of the nine columns is 16 m square, small
+enough to stand in the middle of one and see its neighbours on every side, which
+is what a biome grid is for. It is a *cube* -- 48 m of vertical extent with the
+terrain in the middle -- so there is real rock underneath to dig into and real
+air above to dig out into, rather than a surface with nothing either side.
+
+**Nine checkboxes, nine biomes, and the blend is the point.** A cell's biome is
+a property of a 16 m square, and a 16 m square of desert against a 16 m square
+of meadow with a hard line between them reads as a tiled floor rather than as
+country. What makes a boundary look like a boundary is that it is *wide*.
+
+So the cells are treated as samples at their own centres and read back
+bilinearly, smoothstepped -- which gives the stated value at each centre and a
+transition a full cell wide between any two neighbours. The same expression runs
+twice, once on the CPU for where grass grows and once in the fragment shader for
+what the ground looks like, because the grass has to agree with the soil it
+comes out of. Nine `vec3`s of (moisture, warmth, weight) is cheaper than a
+texture and needs no upload path.
+
+**An unticked cell contributes nothing rather than contributing zero.** Those
+are different: zero moisture is a desert, and a hole in the ground should not
+make its neighbours arid, so the weights of the cells that exist are
+renormalised. And unticked means *no ground* -- the column is empty, you can
+walk into the gap and look at the section of its neighbours, which is the
+cheapest way to see what the generator is doing under the surface.
+
+Measured on the opening grid, which runs wet-to-dry across and cold-to-warm
+down so that every neighbouring pair is a transition:
+
+| check | result |
+|---|---|
+| each cell centre reads back its own biome | all nine exact |
+| moisture across the middle row | 0.85 → 0.83 → 0.76 → 0.72 → 0.60 → 0.40 → 0.34 |
+| biggest jump between samples 2 m apart | **0.0698** |
+| density at the centre of an unticked cell | **+4.00** (empty) |
+
+The row is monotone from forest through meadow to steppe with no step at either
+cell line, which is the whole claim.
+
+The five named spawn points are gone and the number keys now stand you in a
+grid cell instead. A named list was the right idea while the climate was two
+sliders; now that every cell has its own biome the useful thing to stand in the
+middle of is a cell, and there are exactly nine of them.
+
 ### 2026-08-28 (a lab for the ground, and the trees were never drawing)
 
 **`TerrainLab`, nine chunks of ground with every knob on a slider.** The solar

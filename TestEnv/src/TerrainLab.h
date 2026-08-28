@@ -45,6 +45,24 @@ public:
 	{
 		RegisterParam("Walk speed", &m_WalkSpeed);
 		RegisterParam("Dig radius", &m_DigRadius);
+
+		// **Opens on a gradient, not on one biome nine times.** The demo is
+		// for looking at boundaries, so the default grid runs wet to dry
+		// across it and cold to warm down it -- every neighbouring pair is a
+		// transition, which is the thing to look at.
+		static const int opening[s_Grid][s_Grid] =
+		{
+			{ 2, 1, 0 },   // wetland, forest, meadow
+			{ 1, 0, 3 },   // forest,  meadow, steppe
+			{ 5, 3, 4 },   // tundra,  steppe, desert
+		};
+
+		for (int j = 0; j < s_Grid; j++)
+		for (int i = 0; i < s_Grid; i++)
+		{
+			m_On[i][j] = true;
+			m_Cell[i][j] = opening[j][i];
+		}
 	}
 
 	void OnDemoAttach() override
@@ -58,11 +76,23 @@ public:
 private:
 	// --- The block ----------------------------------------------------------
 
-	// Nine chunks of sixteen voxels, plus the one lattice plane that closes
-	// the last cell. A metre a voxel by default, so the block is 144 m across
-	// and 144 m tall -- room for a hill with air above it and rock below.
-	static constexpr int s_Chunks = 9;
+	// **Three chunks a side, and the three is the same three as the grid.**
+	//
+	// Sixteen voxels a chunk plus the one lattice plane that closes the last
+	// cell. At a metre a voxel that is a 48 m cube: each of the nine columns
+	// is 16 m square, which is small enough to stand in the middle of one and
+	// see its neighbours on every side -- which is the whole point of a biome
+	// grid. Raise `Voxel` to 2 m and the same nine cells cover 96 m.
+	//
+	// It is a *cube*, not a sheet. The vertical extent is 48 m with the
+	// terrain sitting in the middle of it, so there is real rock underneath to
+	// dig into and real air above to dig out into, rather than a surface with
+	// nothing on either side of it.
+	static constexpr int s_Chunks = 3;
 	static constexpr int s_Side = s_Chunks * 16 + 1;
+
+	// The biome grid is one cell per chunk column.
+	static constexpr int s_Grid = s_Chunks;
 
 	static constexpr float s_WalkerRadius = 0.35f;
 	static constexpr float s_WalkerHalfHeight = 0.55f;
@@ -103,13 +133,146 @@ private:
 
 	Shape m_Shape;
 
-	// The climate, as two numbers rather than a hydrology pass. That is the
-	// whole reason a desert is reachable here: on a planet it takes a landing
-	// site search, and here it is a slider.
-	float m_Moisture = 0.62f;
-	float m_Warmth = 0.55f;
+	// **A biome is two numbers and a name.**
+	//
+	// Everything downstream -- the colour of the soil, whether grass grows and
+	// what colour it is, whether it has gone to straw -- reads moisture and
+	// warmth and nothing else. That is deliberate and it is the same pair the
+	// planet's Whittaker square uses, so anything tuned here transfers.
+	struct Biome
+	{
+		const char* Name;
+		float Moisture;
+		float Warmth;
+	};
+
+	static const Biome* Biomes()
+	{
+		static const Biome table[] =
+		{
+			{ "Meadow",   0.72f, 0.55f },
+			{ "Forest",   0.85f, 0.50f },
+			{ "Wetland",  0.97f, 0.60f },
+			{ "Steppe",   0.34f, 0.70f },
+			{ "Desert",   0.06f, 0.94f },
+			{ "Tundra",   0.45f, 0.10f },
+			{ "Bare",     0.02f, 0.40f },
+		};
+
+		return table;
+	}
+
+	static constexpr int s_BiomeCount = 7;
+
+	// ImGui wants a plain array of names. Built from the table rather than
+	// written out again, so adding a biome is still one line in one place.
+	static const char* const* BiomeNames()
+	{
+		static const char* names[s_BiomeCount] = {};
+		static bool filled = false;
+
+		if (!filled)
+		{
+			for (int i = 0; i < s_BiomeCount; i++)
+				names[i] = Biomes()[i].Name;
+
+			filled = true;
+		}
+
+		return names;
+	}
+
+	// **The grid, and what it means.**
+	//
+	// One cell per chunk column. Unticked is not "no biome" -- it is *no
+	// ground*: the column is empty and you can walk into the hole and look at
+	// the section, which is the cheapest way to see what the generator is
+	// doing under the surface.
+	bool m_On[s_Grid][s_Grid];
+	int m_Cell[s_Grid][s_Grid];
 
 	float m_Voxel = 1.0f;
+
+	float CellSize() const { return Extent() / (float)s_Grid; }
+
+	// Which cell a world position falls in, clamped to the grid.
+	glm::ivec2 CellAt(float x, float z) const
+	{
+		float half = 0.5f * Extent();
+		float cell = CellSize();
+
+		return glm::ivec2(
+			glm::clamp((int)std::floor((x + half) / cell), 0, s_Grid - 1),
+			glm::clamp((int)std::floor((z + half) / cell), 0, s_Grid - 1));
+	}
+
+	bool CellOn(int i, int j) const
+	{
+		return i >= 0 && j >= 0 && i < s_Grid && j < s_Grid && m_On[i][j];
+	}
+
+	// **The climate at a point, blended across the grid.**
+	//
+	// A cell's biome is a property of a 16 m square, and a 16 m square of
+	// desert against a 16 m square of meadow with a hard line between them
+	// reads as a tiled floor, not as country. What makes a boundary look like
+	// a boundary is that it is *wide* -- moisture changes over hundreds of
+	// metres in life, and even compressed to a few here the eye accepts it.
+	//
+	// So the cells are treated as samples at their own centres and read back
+	// bilinearly. That gives a smooth field with the stated value at each
+	// centre, and a transition a full cell wide between any two neighbours,
+	// for four multiplies.
+	//
+	// **An unticked cell contributes nothing rather than contributing zero.**
+	// Those are different: zero moisture is a desert, and a hole in the ground
+	// should not make its neighbours arid. The weights of the cells that do
+	// exist are renormalised instead, so ground beside a hole keeps the
+	// climate it would have had.
+	glm::vec2 ClimateAt(float x, float z) const
+	{
+		float half = 0.5f * Extent();
+		float cell = CellSize();
+
+		// Cell-centre coordinates: centre of cell 0 is at 0, of cell 1 at 1.
+		float u = (x + half) / cell - 0.5f;
+		float v = (z + half) / cell - 0.5f;
+
+		int i = (int)std::floor(u), j = (int)std::floor(v);
+
+		float fu = u - (float)i, fv = v - (float)j;
+
+		// Smoothstep rather than linear: a linear blend has a crease along
+		// every cell line, which is exactly the tiling this is here to avoid.
+		fu = fu * fu * (3.0f - 2.0f * fu);
+		fv = fv * fv * (3.0f - 2.0f * fv);
+
+		glm::vec2 sum(0.0f);
+		float total = 0.0f;
+
+		for (int dj = 0; dj <= 1; dj++)
+		for (int di = 0; di <= 1; di++)
+		{
+			int ci = glm::clamp(i + di, 0, s_Grid - 1);
+			int cj = glm::clamp(j + dj, 0, s_Grid - 1);
+
+			if (!m_On[ci][cj])
+				continue;
+
+			float weight = (di ? fu : 1.0f - fu) * (dj ? fv : 1.0f - fv);
+
+			const Biome& biome = Biomes()[m_Cell[ci][cj]];
+
+			sum += glm::vec2(biome.Moisture, biome.Warmth) * weight;
+			total += weight;
+		}
+
+		// Every cell around this point is off, which happens only over a hole.
+		if (total < 1e-4f)
+			return glm::vec2(0.5f, 0.5f);
+
+		return sum / total;
+	}
 
 	// One octave of value noise, warped. `Veg::Hash2DUnit` is the same hash
 	// the vegetation uses, so nothing here needs its own.
@@ -201,6 +364,16 @@ private:
 	// gives the first-order true distance. Same reasoning as `VoxelTerrain`.
 	float Density(const glm::vec3& p) const
 	{
+		// **An unticked cell is a hole, not flat ground.** Returning a large
+		// positive distance is "empty" to everything downstream -- the mesher
+		// makes no triangles, the walker falls, the raycast passes through --
+		// so the column simply is not there and you can walk into the gap and
+		// look at the section of its neighbours.
+		glm::ivec2 cell = CellAt(p.x, p.z);
+
+		if (!m_On[cell.x][cell.y])
+			return m_Voxel * 4.0f;
+
 		float h = Height(p.x, p.z);
 		glm::vec2 slope = Slope(p.x, p.z);
 
@@ -329,13 +502,20 @@ private:
 
 		auto up = [](const glm::vec3&) { return glm::vec3(0.0f, 1.0f, 0.0f); };
 
-		float moisture = m_Moisture;
-
-		// Grass where it is wet enough and not on bare rock. The same test the
-		// ground is coloured with, so the two cannot disagree.
-		auto allow = [moisture](const glm::vec3&, const glm::vec3&)
+		// Grass where it is wet enough, asked of the **blended** field at the
+		// blade's own position rather than of one number for the chunk. That
+		// is what makes a meadow thin out into a steppe across a boundary
+		// instead of stopping on the chunk line.
+		auto allow = [this](const glm::vec3& at, const glm::vec3&)
 		{
-			return glm::smoothstep(0.25f, 0.55f, moisture);
+			glm::vec2 climate = ClimateAt(at.x, at.z);
+
+			// Dry ground grows less, and hot dry ground grows none -- the same
+			// desert rule the ground colour uses.
+			float desert = glm::smoothstep(0.34f, 0.10f, climate.x)
+				* glm::smoothstep(0.45f, 0.75f, climate.y);
+
+			return glm::smoothstep(0.20f, 0.55f, climate.x) * (1.0f - desert);
 		};
 
 		Grass::Settings tall;
@@ -417,52 +597,31 @@ private:
 	// first, where a mistake costs a rebuild of nine chunks rather than a
 	// planet.
 
-	struct Spawn
-	{
-		const char* Name;
-		glm::vec3 Where;
-		float Moisture;
-		float Warmth;
-	};
-
-	// **Named places, each with the climate that makes it what it is.**
-	// A spawn point that only moves the camera shows you the same ground from
-	// somewhere else; what is wanted is to *see a biome*, and here that is two
-	// numbers, so the spawn carries them.
-	static const std::vector<Spawn>& Spawns()
-	{
-		static const std::vector<Spawn> places =
-		{
-			{ "Meadow",     {   0.0f, 40.0f,   0.0f }, 0.72f, 0.55f },
-			{ "Desert",     {  48.0f, 40.0f,  48.0f }, 0.08f, 0.92f },
-			{ "Steppe",     { -48.0f, 40.0f,  48.0f }, 0.34f, 0.70f },
-			{ "Tundra",     {  48.0f, 40.0f, -48.0f }, 0.45f, 0.12f },
-			{ "Wetland",    { -48.0f, 40.0f, -48.0f }, 0.95f, 0.60f },
-		};
-
-		return places;
-	}
-
+	// **The spawn points are the grid.** A named list of places was the right
+	// idea while the climate was two sliders; now that every cell has its own
+	// biome, the useful thing to stand in the middle of is a cell -- and there
+	// are exactly nine of them.
 	void GoTo(int which)
 	{
-		if (which < 0 || which >= (int)Spawns().size())
+		if (which < 0 || which >= s_Grid * s_Grid)
 			return;
-
-		const Spawn& place = Spawns()[(size_t)which];
 
 		m_Spawn = which;
 
-		bool climateMoved = m_Moisture != place.Moisture
-			|| m_Warmth != place.Warmth;
+		int i = which % s_Grid, j = which / s_Grid;
 
-		m_Moisture = place.Moisture;
-		m_Warmth = place.Warmth;
+		float cell = CellSize();
+		float half = 0.5f * Extent();
 
-		// Drop in from above the ground rather than at it: the terrain under a
-		// spawn point changes with every slider, so a fixed height is either
-		// buried or floating, and falling a few metres is neither.
-		glm::vec3 at = place.Where;
-		at.y = Height(at.x, at.z) + 3.0f;
+		glm::vec3 at(
+			-half + ((float)i + 0.5f) * cell,
+			0.0f,
+			-half + ((float)j + 0.5f) * cell);
+
+		// Drop in from above rather than at the ground: the terrain under a
+		// spawn changes with every slider, so a fixed height is either buried
+		// or floating, and falling a couple of metres is neither.
+		at.y = Height(at.x, at.z) + 2.5f;
 
 		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
 		body.Position = at;
@@ -470,11 +629,6 @@ private:
 		body.Awake = true;
 
 		m_Camera.SetPosition(at + glm::vec3(0.0f, s_EyeHeight, 0.0f));
-
-		// The climate decides where grass grows, so moving between biomes has
-		// to rebuild it. Only the grass -- the rock is the same rock.
-		if (climateMoved)
-			RebuildGrass();
 	}
 
 	void RebuildGrass()
@@ -615,7 +769,7 @@ private:
 				// way to compare two biomes: one key each.
 				int digit = key.GetKeyCode() - EGSS_KEY_1;
 
-				if (digit >= 0 && digit < (int)Spawns().size())
+				if (digit >= 0 && digit < s_Grid * s_Grid)
 				{
 					GoTo(digit);
 					return true;
@@ -772,9 +926,17 @@ inline void TerrainLab::BuildShaders()
 		uniform vec3 u_SkyColor;
 		uniform float u_Ambient;
 
-		uniform float u_Moisture;
-		uniform float u_Warmth;
-		uniform float u_Texture;
+		// **The grid, and the blend done per pixel.**
+		//
+		// Nine cells of (moisture, warmth), read back bilinearly at the
+		// fragment's own position -- the same expression `ClimateAt` uses on
+		// the CPU, because the grass has to agree with the ground it grows
+		// out of. Nine vec3s is cheaper than a texture and needs no upload
+		// path; the third component is the cell's weight, which is zero for an
+		// unticked cell so a hole does not dry out its neighbours.
+		uniform vec3 u_Cells[9];
+		uniform float u_CellSize;
+		uniform float u_Half;
 
 		float hash(vec2 p)
 		{
@@ -796,9 +958,44 @@ inline void TerrainLab::BuildShaders()
 				+ noise(p * 5.1) * 0.15;
 		}
 
+		// Bilinear over the cell centres, skipping cells that are not there.
+		vec2 climate(vec2 at)
+		{
+			vec2 c = (at + u_Half) / u_CellSize - 0.5;
+
+			vec2 base = floor(c);
+			vec2 f = c - base;
+
+			f = f * f * (3.0 - 2.0 * f);
+
+			vec2 sum = vec2(0.0);
+			float total = 0.0;
+
+			for (int dj = 0; dj <= 1; dj++)
+			for (int di = 0; di <= 1; di++)
+			{
+				ivec2 g = ivec2(clamp(base + vec2(di, dj), vec2(0.0), vec2(2.0)));
+
+				vec3 cell = u_Cells[g.y * 3 + g.x];
+
+				float weight = (di == 1 ? f.x : 1.0 - f.x)
+					* (dj == 1 ? f.y : 1.0 - f.y) * cell.z;
+
+				sum += cell.xy * weight;
+				total += weight;
+			}
+
+			return total > 1e-4 ? sum / total : vec2(0.5);
+		}
+
 		void main()
 		{
 			vec3 normal = normalize(v_Normal);
+
+			vec2 here = climate(v_World.xz);
+
+			float u_Moisture = here.x;
+			float u_Warmth = here.y;
 
 			// **Soil first.** Everything else is laid on top of this, which is
 			// the point: what shows between blades has to be earth.
@@ -1035,9 +1232,21 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	m_Material->Set("u_SunColor", glm::vec3(1.0f, 0.96f, 0.88f));
 	m_Material->Set("u_SkyColor", glm::vec3(0.50f, 0.62f, 0.75f));
 	m_Material->Set("u_Ambient", 0.55f);
-	m_Material->Set("u_Moisture", m_Moisture);
-	m_Material->Set("u_Warmth", m_Warmth);
-	m_Material->Set("u_Texture", 1.0f);
+	// Nine elements, set one at a time: `Material` has no array setter, and
+	// GLSL exposes `u_Cells[3]` as its own uniform name, so this needs no
+	// engine change to work.
+	for (int j = 0; j < s_Grid; j++)
+	for (int i = 0; i < s_Grid; i++)
+	{
+		const Biome& biome = Biomes()[m_Cell[i][j]];
+
+		m_Material->Set("u_Cells[" + std::to_string(j * s_Grid + i) + "]",
+			glm::vec3(biome.Moisture, biome.Warmth,
+				m_On[i][j] ? 1.0f : 0.0f));
+	}
+
+	m_Material->Set("u_CellSize", CellSize());
+	m_Material->Set("u_Half", 0.5f * Extent());
 
 	if (m_ShowWireframe)
 	{
@@ -1073,10 +1282,6 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		m_GrassMaterial->Set("u_Tip", glm::vec3(0.44f, 0.64f, 0.26f));
 		m_GrassMaterial->Set("u_Dry", glm::vec3(0.62f, 0.55f, 0.28f));
 
-		// Grass goes to straw as the ground dries, before it stops growing.
-		m_GrassMaterial->Set("u_Dryness",
-			glm::smoothstep(0.55f, 0.28f, m_Moisture));
-
 		glm::vec3 eye = m_Camera.GetPosition();
 
 		for (const auto& entry : m_Grass)
@@ -1090,6 +1295,14 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 
 			m_GrassMaterial->Set("u_Keep", glm::mix(1.0f, 0.25f,
 				glm::smoothstep(25.0f, 85.0f, away)));
+
+			// Straw or green, from the climate at this chunk's own centre.
+			// Per chunk rather than per blade because it is a colour and a
+			// 16 m cell is already the resolution the biome has.
+			glm::vec2 climate = ClimateAt(centre.x, centre.z);
+
+			m_GrassMaterial->Set("u_Dryness",
+				glm::smoothstep(0.58f, 0.30f, climate.x));
 
 			Egss::Renderer::Submit(m_GrassMaterial, entry.second,
 				glm::mat4(1.0f));
@@ -1115,88 +1328,54 @@ inline void TerrainLab::OnDemoImGui()
 
 	if (ImGui::CollapsingHeader("Dev tools", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		if (ImGui::Checkbox("No clip (V)", &m_NoClip))
-		{
-			// Nothing to do but say so: `MoveWalker` switches the body between
-			// kinematic and dynamic, which is where it has to happen.
-		}
-
+		ImGui::Checkbox("No clip (V)", &m_NoClip);
 		ImGui::TextDisabled("  space/ctrl to rise and sink while it is on");
+	}
+
+	// --- The biome grid -----------------------------------------------------
+	//
+	// **Laid out the way it is on the ground.** The grid is drawn with +z
+	// running *down* the panel and +x across it, which is the view from above
+	// with north at the top -- so the cell you tick is the cell you can see
+	// when you stand in the middle and face +z. Getting that backwards makes
+	// every experiment take two tries.
+	if (ImGui::CollapsingHeader("Biomes", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		bool ground = false;   // needs the field rebuilt
+		bool cover = false;    // needs only the grass rebuilt
+
+		ImGui::TextDisabled("Tick to fill a column; untick to leave a hole.");
+		ImGui::TextDisabled("Number keys 1-9 stand you in a cell.");
+
+		for (int j = 0; j < s_Grid; j++)
+		{
+			for (int i = 0; i < s_Grid; i++)
+			{
+				if (i > 0)
+					ImGui::SameLine();
+
+				ImGui::PushID(j * s_Grid + i);
+
+				ImGui::BeginGroup();
+
+				// Ticking a cell adds or removes ground, which is the field.
+				if (ImGui::Checkbox("##on", &m_On[i][j]))
+					ground = true;
+
+				ImGui::SetNextItemWidth(96.0f);
+
+				// Changing a biome is only climate: the rock is the same rock,
+				// so this rebuilds the cover and leaves the field alone.
+				if (ImGui::Combo("##biome", &m_Cell[i][j],
+					BiomeNames(), s_BiomeCount))
+					cover = true;
+
+				ImGui::EndGroup();
+				ImGui::PopID();
+			}
+		}
 
 		ImGui::Separator();
-		ImGui::TextDisabled("Spawn points -- number keys 1..%d",
-			(int)Spawns().size());
-
-		for (int i = 0; i < (int)Spawns().size(); i++)
-		{
-			if (i > 0)
-				ImGui::SameLine();
-
-			bool here = m_Spawn == i;
-
-			if (here)
-				ImGui::PushStyleColor(ImGuiCol_Button,
-					ImVec4(0.24f, 0.46f, 0.28f, 1.0f));
-
-			if (ImGui::Button(Spawns()[(size_t)i].Name))
-				GoTo(i);
-
-			if (here)
-				ImGui::PopStyleColor();
-		}
-	}
-
-	// --- Generation --------------------------------------------------------
-	//
-	// Every one of these rebuilds the field, which is why the block is nine
-	// chunks: it costs a fraction of a second, so it can happen on release and
-	// the slider can be dragged.
-
-	if (ImGui::CollapsingHeader("Terrain", ImGuiTreeNodeFlags_DefaultOpen))
-	{
-		bool changed = false;
-
-		changed |= ImGui::SliderFloat("Feature size", &m_Shape.FeatureSize,
-			8.0f, 180.0f, "%.0f m");
-		changed |= ImGui::SliderInt("Octaves", &m_Shape.Octaves, 1, 8);
-		changed |= ImGui::SliderFloat("Amplitude", &m_Shape.Amplitude,
-			1.0f, 90.0f, "%.1f m");
-		changed |= ImGui::SliderFloat("Ridged", &m_Shape.Ridged, 0.0f, 1.0f);
-		changed |= ImGui::SliderFloat("Warp", &m_Shape.Warp, 0.0f, 1.0f);
-
-		ImGui::TextDisabled("  0 rolling hills, 1 ridgelines; warp erodes them");
-
-		changed |= ImGui::SliderFloat("Plateau", &m_Shape.Plateau, 0.0f, 0.9f);
-		ImGui::TextDisabled("  the continental-shelf control, at walking scale");
-
-		changed |= ImGui::SliderFloat("Caves", &m_Shape.CaveStrength,
-			0.0f, 1.0f);
-		changed |= ImGui::SliderFloat("Cave size", &m_Shape.CaveSize,
-			6.0f, 60.0f, "%.0f m");
-
-		int seed = (int)m_Shape.Seed;
-		if (ImGui::SliderInt("Seed", &seed, 1, 9999))
-		{
-			m_Shape.Seed = (unsigned int)seed;
-			changed = true;
-		}
-
-		changed |= ImGui::SliderFloat("Voxel", &m_Voxel, 0.4f, 2.0f, "%.2f m");
-
-		if (ImGui::Button("Regenerate") || (changed && !ImGui::IsAnyItemActive()))
-			Generate();
-	}
-
-	// --- Climate and cover -------------------------------------------------
-
-	if (ImGui::CollapsingHeader("Climate", ImGuiTreeNodeFlags_DefaultOpen))
-	{
-		bool cover = false;
-
-		cover |= ImGui::SliderFloat("Moisture", &m_Moisture, 0.0f, 1.0f);
-		cover |= ImGui::SliderFloat("Warmth", &m_Warmth, 0.0f, 1.0f);
-
-		ImGui::TextDisabled("  dry and warm is desert; the ground follows both");
 
 		cover |= ImGui::Checkbox("Grass", &m_ShowGrass);
 		cover |= ImGui::SliderFloat("Blades per m^2", &m_GrassDensity,
@@ -1207,7 +1386,9 @@ inline void TerrainLab::OnDemoImGui()
 		ImGui::SliderFloat("Wind", &m_WindSpeed, 0.0f, 30.0f, "%.1f m/s");
 		ImGui::SliderFloat("Wind from", &m_WindAngle, 0.0f, 360.0f, "%.0f deg");
 
-		if (cover && !ImGui::IsAnyItemActive())
+		if (ground && !ImGui::IsAnyItemActive())
+			Generate();
+		else if (cover && !ImGui::IsAnyItemActive())
 			RebuildGrass();
 	}
 
