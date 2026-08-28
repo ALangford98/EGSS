@@ -1264,6 +1264,76 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (wind as a field, a lake in a pit, and digging that stays put)
+
+**Wind is a field, not a vector.** A single direction and speed for the whole
+world is what made the grass read as a machine: every blade leaning the same way
+by the same amount, for ever. Real wind over open ground has structure at
+several scales at once, so there are three layers and each is a different
+*size* rather than a different amplitude of the same thing — the prevailing
+wind, gusts about 70 m across that multiply the speed between a lull and a
+squall, and eddies about 18 m across that turn the direction by up to a quarter
+turn and stop a gust front being a straight edge.
+
+All of it is **advected with the mean**, which is the part that makes it look
+like weather rather than like noise: a gust is a structure travelling downwind,
+so it is sampled at `position − mean × time`. Stand still and the pattern comes
+past you. The same three layers run in the grass shader, because a gust is
+metres across and a chunk is sixteen — done per chunk it would be one number for
+a whole gust front.
+
+Measured over the block: mean 5.0 m/s, field **2.41 to 5.92 m/s**, direction
+**±45°** off the mean, and the speed at a fixed point drifts as gusts pass. The
+first version had the noise offsets at 0.75 and 0.80, so the product averaged
+0.6 and every reading came out well under the number on the slider — the sort of
+quiet lie that makes a tuning session take twice as long. They are 1.0 now, so a
+zero-mean noise gives a field whose mean *is* the slider.
+
+**A cap on how far a blade may lean.** The displacement goes as the square of
+the wind, so at the top of the slider a blade was thrown several times its own
+length and the field turned into a smear of stretched triangles. A real blade
+lies flat and stops. The cap is a share of the blade's own length, so a short
+blade in the understorey is capped shorter than a tall one and the two stay in
+proportion.
+
+**Digging no longer teleports you.** `Dig` called `BuildWorld`, which calls
+`SpawnWalker`, which puts the player back at forty metres above the origin — so
+every dig threw you into the sky and digging read as broken rather than as
+working and moving you. The collider holds the field by pointer so the shape
+follows on its own; what does not follow is the broadphase bound. Replacing the
+ground body alone fixes that and leaves the player, their velocity and where
+they were looking exactly as they were.
+
+**Nine by nine by nine, with the grid still three by three.** 144 m of ground,
+each of the nine cells owning a 3×3 group of chunks and covering 48 m.
+Decoupling the block from the grid is what lets it grow without the panel
+growing with it: eighty-one checkboxes would be a worse tool than nine.
+
+**A water pit, and the water is one quad.** Noise does not make lakes — a basin
+has to be a *bowl*, ground that falls away smoothly and comes back up on every
+side, and nothing built from summed octaves reliably closes like that. So the
+pit is put in on purpose: a smooth depression subtracted after the noise,
+squared so the sides are steep near the rim and the floor is broad and flat,
+which is the profile a lake bed actually has.
+
+Then the water needs no mesh of its own at all. A lake surface only has to exist
+where the ground is below it, and the depth buffer already knows where that is —
+draw one horizontal plane across the block and everything underground is
+occluded by the ground in front of it. What is left is exactly the water in the
+pit, with a shoreline that follows the terrain to the pixel and cost nothing to
+find. **That is worth taking back to the planet**, where the ocean is currently
+a whole sphere carrying a wet mask.
+
+Grass stops at the waterline with a metre of margin, so the shore is a band
+rather than a line drawn on the water. The water level is measured from the rim
+rather than from zero, so deepening the pit does not also empty it — which is
+what anyone dragging the slider expects and the opposite of what a fixed level
+gives.
+
+Spawns now face the middle of the block. A spawn tool that drops you looking
+whichever way you happened to be facing makes you turn round before you can see
+anything, and the interesting thing is nearly always toward the centre.
+
 ### 2026-08-28 (the lab is a 3x3x3 cube with a biome grid on it)
 
 **Three chunks a side, and the three is the same three as the grid.** The lab

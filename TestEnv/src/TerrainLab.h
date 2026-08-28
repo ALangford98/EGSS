@@ -70,7 +70,10 @@ public:
 		BuildShaders();
 		Generate();
 
-		GoTo(0);
+		// A rim cell rather than the middle one: the pit is centred, so cell 4
+		// is the bottom of the lake and opens you underwater. From the rim you
+		// are looking across it.
+		GoTo(1);
 	}
 
 private:
@@ -79,20 +82,22 @@ private:
 	// **Three chunks a side, and the three is the same three as the grid.**
 	//
 	// Sixteen voxels a chunk plus the one lattice plane that closes the last
-	// cell. At a metre a voxel that is a 48 m cube: each of the nine columns
-	// is 16 m square, which is small enough to stand in the middle of one and
-	// see its neighbours on every side -- which is the whole point of a biome
-	// grid. Raise `Voxel` to 2 m and the same nine cells cover 96 m.
+	// cell. At a metre a voxel that is a 144 m cube.
 	//
 	// It is a *cube*, not a sheet. The vertical extent is 48 m with the
 	// terrain sitting in the middle of it, so there is real rock underneath to
 	// dig into and real air above to dig out into, rather than a surface with
 	// nothing on either side of it.
-	static constexpr int s_Chunks = 3;
+	static constexpr int s_Chunks = 9;
 	static constexpr int s_Side = s_Chunks * 16 + 1;
 
-	// The biome grid is one cell per chunk column.
-	static constexpr int s_Grid = s_Chunks;
+	// **The grid is three by three whatever the block is.** Nine chunks a side
+	// at a metre a voxel is 144 m, so each of the nine cells owns a 3x3 group
+	// of chunks and covers 48 m -- which is about as small as a biome can be
+	// and still read as a place rather than as a patch. Decoupling the two
+	// numbers is what lets the block grow without the panel growing with it:
+	// eighty-one checkboxes would be a worse tool than nine.
+	static constexpr int s_Grid = 3;
 
 	static constexpr float s_WalkerRadius = 0.35f;
 	static constexpr float s_WalkerHalfHeight = 0.55f;
@@ -122,6 +127,22 @@ private:
 		// mesa. Worth having here because it is much easier to see what it
 		// does from the ground than from orbit.
 		float Plateau = 0.0f;
+
+		// **A pit that holds water, which is a shape and not a texture.**
+		//
+		// Noise does not make lakes. A basin has to be a *bowl* -- ground that
+		// falls away smoothly from a rim and comes back up on every side --
+		// and nothing built from summed octaves reliably closes like that,
+		// which is why the planet needs a whole drainage pass to find the few
+		// places that happen to. Here it is put in on purpose: a smooth
+		// depression subtracted from the height, deepest at the middle and
+		// zero at the rim, so there is somewhere for water to sit.
+		//
+		// `smoothstep` on the radius rather than a cone: a conical pit has a
+		// crease at the bottom that reads as a fold in the ground, and a flat
+		// bottom is where a lake bed belongs anyway.
+		float Basin = 24.0f;         // metres deep at the middle
+		float BasinSize = 62.0f;     // radius of the rim
 
 		// Caves, as rock removed after the fact -- which is what stops the
 		// surface being a height function and lets it fold over.
@@ -192,6 +213,70 @@ private:
 	int m_Cell[s_Grid][s_Grid];
 
 	float m_Voxel = 1.0f;
+
+	// **Wind is a field, not a vector.**
+	//
+	// A single direction and speed for the whole world is the thing that made
+	// the grass read as a machine: every blade leaning the same way by the
+	// same amount, for ever. Real wind over open ground has structure at
+	// several scales at once -- a prevailing direction, gust fronts tens of
+	// metres across that arrive and pass, and small eddies that swirl and die.
+	//
+	// Three layers, and each is a different *size* rather than a different
+	// amplitude of the same thing:
+	//
+	//   * The prevailing wind, which is the slider and does not vary.
+	//   * Gusts, ~70 m across, which multiply the speed between a lull and a
+	//     squall. This is the layer you feel.
+	//   * Eddies, ~18 m across, which turn the direction by up to a quarter
+	//     turn and are what stop a gust front being a straight edge.
+	//
+	// **All of it is advected with the mean wind**, which is the part that
+	// makes it look like weather rather than like noise: a gust is a structure
+	// travelling downwind, so it is sampled at `position - mean * time`. Stand
+	// still and the pattern comes past you; run downwind at wind speed and it
+	// very nearly stops, which is exactly what a balloon does.
+	glm::vec2 MeanWind() const
+	{
+		float angle = glm::radians(m_WindAngle);
+
+		return glm::vec2(std::cos(angle), std::sin(angle)) * m_WindSpeed;
+	}
+
+	// Returns the wind at a point as a 2D vector in the ground plane.
+	glm::vec2 WindAt(float x, float z, float time) const
+	{
+		glm::vec2 mean = MeanWind();
+
+		// Downwind is the direction the pattern travels, so subtracting it is
+		// what carries the gusts past a standing observer.
+		glm::vec2 at = glm::vec2(x, z) - mean * time;
+
+		float gust = Noise2D(at.x / 70.0f, at.y / 70.0f, m_Shape.Seed + 811u);
+		float lull = Noise2D(at.x / 210.0f, at.y / 210.0f, m_Shape.Seed + 812u);
+
+		// Two scales multiplied rather than added: a big slow lull that takes
+		// the whole area quiet, with gusts riding inside it. Added, the two
+		// would average out and the field would be flat again.
+		// **The offsets are 1.0 so the slider means what it says.** The noise
+		// is zero-mean, so a product of `(1 + a n)` terms averages one and the
+		// field's mean speed is the mean wind. With 0.75 and 0.80 here the
+		// product averaged 0.6 and every reading came out well under the
+		// number on the slider, which is the sort of quiet lie that makes a
+		// tuning session take twice as long.
+		float strength = glm::clamp(
+			(1.0f + 0.55f * gust) * (1.0f + 0.45f * lull), 0.15f, 2.1f);
+
+		float swirl = Noise2D(at.x / 18.0f, at.y / 18.0f, m_Shape.Seed + 813u);
+
+		float turn = swirl * 0.8f;   // radians, so about a quarter turn
+
+		float c = std::cos(turn), sn = std::sin(turn);
+
+		glm::vec2 turned(mean.x * c - mean.y * sn, mean.x * sn + mean.y * c);
+
+		return turned * strength;
+	}
 
 	float CellSize() const { return Extent() / (float)s_Grid; }
 
@@ -341,7 +426,34 @@ private:
 				glm::clamp(unit, -1.0f, 1.0f)) * 2.0f - 1.0f;
 		}
 
-		return unit * m_Shape.Amplitude * 0.5f;
+		float height = unit * m_Shape.Amplitude * 0.5f;
+
+		// The bowl, subtracted after the noise so the rim follows the terrain
+		// it is cut into rather than flattening it.
+		if (m_Shape.Basin > 0.0f)
+		{
+			float away = std::sqrt(x * x + z * z);
+
+			float bowl = 1.0f - glm::smoothstep(0.0f,
+				glm::max(m_Shape.BasinSize, 1.0f), away);
+
+			// Squared, so the sides are steep near the rim and the floor is
+			// broad and flat -- the profile a lake bed actually has.
+			height -= m_Shape.Basin * bowl * bowl;
+		}
+
+		return height;
+	}
+
+	// Where the water sits, and whether there is any. The level is measured
+	// from the rim rather than from zero so that deepening the basin does not
+	// also empty it -- which is the behaviour anyone dragging the slider
+	// expects, and the opposite of what a fixed level gives.
+	bool HasWater() const { return m_Shape.Basin > 0.0f && m_WaterFill > 0.0f; }
+
+	float WaterLevel() const
+	{
+		return -m_Shape.Basin * (1.0f - m_WaterFill);
 	}
 
 	glm::vec2 Slope(float x, float z) const
@@ -421,7 +533,7 @@ private:
 		Egss::RigidBody3D ground =
 			Egss::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
 
-		m_World.AddBody(ground);
+		m_Ground = m_World.AddBody(ground);
 
 		SpawnWalker();
 	}
@@ -515,7 +627,16 @@ private:
 			float desert = glm::smoothstep(0.34f, 0.10f, climate.x)
 				* glm::smoothstep(0.45f, 0.75f, climate.y);
 
-			return glm::smoothstep(0.20f, 0.55f, climate.x) * (1.0f - desert);
+			float wet = glm::smoothstep(0.20f, 0.55f, climate.x)
+				* (1.0f - desert);
+
+			// Nothing grows under a lake. A metre of margin so the shoreline
+			// is a band rather than a line drawn on the water.
+			if (HasWater() && at.y < WaterLevel() + 1.0f)
+				wet *= glm::smoothstep(WaterLevel() - 0.5f,
+					WaterLevel() + 1.0f, at.y);
+
+			return wet;
 		};
 
 		Grass::Settings tall;
@@ -584,11 +705,22 @@ private:
 
 		RebuildDirtyMeshes();
 
-		// The collider holds the field by pointer, so the shape follows -- but
-		// the broadphase bounds do not, and a body whose bounds are stale
-		// stops colliding at the edges of what changed.
-		m_World.Clear();
-		BuildWorld();
+		// **Rebuild the ground, not the world.**
+		//
+		// This used to call `BuildWorld`, which calls `SpawnWalker`, which
+		// puts the player back at forty metres above the origin -- so every
+		// dig teleported you into the sky and digging read as broken rather
+		// than as working and moving you.
+		//
+		// The collider holds the field by pointer so the *shape* follows on
+		// its own; what does not follow is the broadphase bound, and a body
+		// whose bounds are stale stops colliding at the edges of what changed.
+		// Replacing the ground body alone fixes that and leaves everything
+		// else -- the player, their velocity, where they were looking --
+		// exactly as it was.
+		Egss::RigidBody3D& ground = m_World.GetBody(m_Ground);
+
+		ground = Egss::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
 	}
 
 	// --- Developer tools ----------------------------------------------------
@@ -627,6 +759,21 @@ private:
 		body.Position = at;
 		body.Velocity = glm::vec3(0.0f);
 		body.Awake = true;
+
+		// **Face the middle of the block.** A spawn tool that drops you facing
+		// whichever way you happened to be looking makes you turn round before
+		// you can see anything, and the interesting thing is nearly always
+		// toward the centre -- the water pit is there, and so is every cell
+		// boundary from a corner.
+		//
+		// Forward is `(cos yaw, ., sin yaw)`, so the yaw that points at the
+		// origin from `at` is the angle of `-at`.
+		if (glm::length(glm::vec2(at.x, at.z)) > 1e-3f)
+		{
+			m_Yaw = glm::degrees(std::atan2(-at.z, -at.x));
+			m_Pitch = -12.0f;
+			m_Camera.SetRotation(m_Yaw, m_Pitch);
+		}
 
 		m_Camera.SetPosition(at + glm::vec3(0.0f, s_EyeHeight, 0.0f));
 	}
@@ -732,6 +879,7 @@ private:
 	// --- Shaders ------------------------------------------------------------
 
 	void BuildShaders();
+	void BuildWater();
 
 	// --- Hooks --------------------------------------------------------------
 
@@ -829,7 +977,12 @@ private:
 	std::shared_ptr<Egss::Shader> m_GrassShader;
 	std::shared_ptr<Egss::Material> m_GrassMaterial;
 
+	std::shared_ptr<Egss::Mesh> m_Water;
+	std::shared_ptr<Egss::Shader> m_WaterShader;
+	std::shared_ptr<Egss::Material> m_WaterMaterial;
+
 	Egss::PhysicsWorld3D::BodyHandle m_Walker = 0;
+	Egss::PhysicsWorld3D::BodyHandle m_Ground = 0;
 
 	bool m_Grounded = false;
 	bool m_NoClip = false;
@@ -851,6 +1004,13 @@ private:
 	// the ground.
 	float m_WindSpeed = 5.0f;
 	float m_WindAngle = 40.0f;
+
+	// How far a blade may lean, as a share of its own length. 0.85 lets it lie
+	// almost flat and no further, which is what grass in a gale actually does.
+	float m_MaxLean = 0.85f;
+
+	// How full the basin is, from dry to level with the rim.
+	float m_WaterFill = 0.55f;
 
 	float m_Time = 0.0f;
 	float m_FrameTime = 0.0f;
@@ -1075,13 +1235,34 @@ inline void TerrainLab::BuildShaders()
 		uniform mat4 u_ViewProjection;
 		uniform mat4 u_Transform;
 
+		// The mean wind; the gusts and eddies are computed here, from the same
+		// three layers `WindAt` uses on the CPU. Kept in the shader rather
+		// than baked per chunk because a gust is metres across and a chunk is
+		// sixteen -- per chunk it would be one number for a whole gust front.
 		uniform vec3 u_Wind;
 		uniform float u_Time;
 		uniform float u_Keep;
+		uniform float u_Seed;
+		uniform float u_MaxLean;
 
 		out vec3 v_Normal;
 		out float v_Up;
 		out float v_Tint;
+
+		float hash(vec2 p)
+		{
+			return fract(sin(dot(p, vec2(127.1, 311.7)) + u_Seed) * 43758.5453);
+		}
+
+		float noise(vec2 p)
+		{
+			vec2 i = floor(p), f = fract(p);
+			f = f * f * (3.0 - 2.0 * f);
+
+			return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x),
+				mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y)
+				* 2.0 - 1.0;
+		}
 
 		void main()
 		{
@@ -1102,18 +1283,53 @@ inline void TerrainLab::BuildShaders()
 				return;
 			}
 
-			// A gust that travels with the air over a long swell -- see the
-			// solar demo's grass for why the wavelength matters as much as the
-			// phase.
-			float speed = length(u_Wind);
+			// **The wind here, not the wind everywhere.** Three layers, all
+			// advected with the mean so a gust is a thing that travels past
+			// you rather than a pattern that flickers in place. Same
+			// expression as `WindAt` on the CPU.
+			vec2 mean = u_Wind.xz;
+			vec2 at = world.xz - mean * u_Time;
 
-			float travel = dot(world.xyz, normalize(u_Wind + vec3(1e-6)));
-			float gust = 1.0 + 0.45 * sin((travel - speed * u_Time) / 55.0);
+			float gust = noise(at / 70.0);
+			float lull = noise(at / 210.0 + 31.7);
+			float swirl = noise(at / 18.0 + 67.3);
 
+			float strength = clamp((1.0 + 0.55 * gust) * (1.0 + 0.45 * lull),
+				0.15, 2.1);
+
+			float turn = swirl * 0.8;
+			float c = cos(turn), sn = sin(turn);
+
+			vec2 here = vec2(mean.x * c - mean.y * sn,
+				mean.x * sn + mean.y * c) * strength;
+
+			// Pressure goes as the square of the *local* speed, which is what
+			// makes a gust arrive as a wave across a field rather than as a
+			// brightness change.
+			float speed = length(here);
 			float pressure = 0.5 * 1.2 * speed * speed;
 
-			vec3 lean = u_Wind * (0.0033 * pressure * along * along * gust);
-			lean.y = 0.0;
+			vec3 push = vec3(here.x, 0.0, here.y);
+
+			vec3 lean = push * (0.0033 * pressure * along * along / max(speed, 1e-4));
+
+			// **A blade cannot lean further than it is long.**
+			//
+			// Without this the displacement goes as the square of the wind, so
+			// at the top of the slider a blade is thrown several times its own
+			// height and the field turns into a smear of stretched triangles.
+			// A real blade lies flat and stops. `u_MaxLean` is a share of the
+			// blade's own length, so a short blade in the understorey is
+			// capped shorter than a tall one and the two stay in proportion.
+			// The blade's own height is not in the vertex, but `along` times
+			// the nominal height is a bound on it, and a bound is all a cap
+			// needs.
+			float limit = u_MaxLean * along;
+
+			float reach = length(lean);
+
+			if (reach > limit && reach > 1e-6)
+				lean *= limit / reach;
 
 			world.xyz += lean;
 
@@ -1182,6 +1398,127 @@ inline void TerrainLab::BuildShaders()
 		Egss::Shader::Create("LabGrass", grassVertex, grassFragment));
 
 	m_GrassMaterial = Egss::Material::Create(m_GrassShader);
+
+	BuildWater();
+}
+
+// **Water is one quad, and the depth buffer does the rest.**
+//
+// A lake surface only needs to exist where the ground is below it, and the
+// depth buffer already knows where that is: draw a single horizontal plane
+// across the whole block at the water level, and every part of it that is
+// underground is hidden by the ground standing in front of it. What is left is
+// exactly the water in the pit, with a shoreline that follows the terrain to
+// the pixel and cost nothing to find.
+//
+// That is the real reason the pit is a *shape* and not a texture. Given a bowl,
+// the water needs no mesh of its own at all -- which is worth remembering when
+// this goes back to the planet, where the ocean is currently a whole sphere
+// with a wet mask on it.
+inline void TerrainLab::BuildWater()
+{
+	Egss::MeshData plane;
+
+	// Unit square, stretched by the transform, so the voxel slider never needs
+	// it rebuilt.
+	for (int j = 0; j < 2; j++)
+	for (int i = 0; i < 2; i++)
+		plane.Vertices.push_back({
+			{ (float)i - 0.5f, 0.0f, (float)j - 0.5f },
+			{ 0.0f, 1.0f, 0.0f },
+			{ (float)i, (float)j } });
+
+	plane.Indices = { 0, 2, 1, 1, 2, 3 };
+
+	Egss::Submesh all;
+	all.IndexCount = 6;
+	plane.Submeshes.push_back(all);
+	plane.RecalculateBounds();
+
+	m_Water = std::make_shared<Egss::Mesh>(plane, "LabWater");
+
+	std::string waterVertex = R"(
+		#version 330 core
+
+		layout(location = 0) in vec3 a_Position;
+		layout(location = 1) in vec3 a_Normal;
+		layout(location = 2) in vec2 a_TexCoord;
+
+		uniform mat4 u_ViewProjection;
+		uniform mat4 u_Transform;
+
+		out vec3 v_World;
+
+		void main()
+		{
+			vec4 world = u_Transform * vec4(a_Position, 1.0);
+
+			v_World = world.xyz;
+
+			gl_Position = u_ViewProjection * world;
+		}
+	)";
+
+	std::string waterFragment = R"(
+		#version 330 core
+
+		layout(location = 0) out vec4 color;
+
+		in vec3 v_World;
+
+		uniform vec3 u_Eye;
+		uniform vec3 u_SunDirection;
+		uniform vec3 u_SunColor;
+		uniform vec3 u_SkyColor;
+		uniform vec3 u_Shallow;
+		uniform vec3 u_Deep;
+		uniform float u_Time;
+		uniform vec3 u_Wind;
+
+		void main()
+		{
+			vec3 view = normalize(u_Eye - v_World);
+
+			// Two crossed ripples travelling with the wind. Not a wave model --
+			// there is no displacement -- but enough that the highlight breaks
+			// up instead of sitting on the plane as one disc.
+			vec2 drift = u_Wind.xz * u_Time * 0.15;
+
+			float a = (v_World.x - drift.x) * 1.7 + u_Time * 1.1;
+			float b = (v_World.z - drift.y) * 2.3 - u_Time * 0.8;
+
+			vec3 normal = normalize(vec3(cos(a) * 0.06, 1.0, cos(b) * 0.06));
+
+			float facing = clamp(dot(normal, view), 0.0, 1.0);
+
+			// Schlick, with water's 0.02 at normal incidence. It is why a lake
+			// is a mirror at a grazing angle and clear straight down, and it
+			// doubles as the alpha -- which is what lets the bottom show near
+			// the shore without a second pass.
+			float fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
+
+			// The plane knows nothing about the ground beneath it, so there is
+			// no depth to colour by; the view angle stands in for it. That is
+			// right at a grazing angle and merely plausible from above, and it
+			// is the one thing here the planet's water does better.
+			vec3 body = mix(u_Deep, u_Shallow, facing);
+
+			float diffuse = max(dot(normal, -u_SunDirection), 0.0);
+
+			vec3 midway = normalize(-u_SunDirection + view);
+			float glint = pow(max(dot(normal, midway), 0.0), 180.0);
+
+			vec3 lit = body * (0.35 * u_SkyColor + 0.65 * u_SunColor * diffuse)
+				+ u_SunColor * glint * fresnel * 6.0;
+
+			color = vec4(lit, clamp(0.50 + 0.45 * fresnel, 0.0, 1.0));
+		}
+	)";
+
+	m_WaterShader.reset(
+		Egss::Shader::Create("LabWater", waterVertex, waterFragment));
+
+	m_WaterMaterial = Egss::Material::Create(m_WaterShader);
 }
 
 // --- Rendering ---------------------------------------------------------------
@@ -1265,10 +1602,9 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 
 	if (m_ShowGrass && !m_Grass.empty())
 	{
-		float angle = glm::radians(m_WindAngle);
+		glm::vec2 mean = MeanWind();
 
-		glm::vec3 wind = glm::vec3(std::cos(angle), 0.0f, std::sin(angle))
-			* m_WindSpeed;
+		glm::vec3 wind(mean.x, 0.0f, mean.y);
 
 		m_GrassMaterial->Set("u_SunDirection", sun);
 		m_GrassMaterial->Set("u_SunColor", glm::vec3(1.0f, 0.96f, 0.88f));
@@ -1276,6 +1612,11 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		m_GrassMaterial->Set("u_Ambient", 0.55f);
 		m_GrassMaterial->Set("u_Wind", wind);
 		m_GrassMaterial->Set("u_Time", m_Time);
+		m_GrassMaterial->Set("u_Seed", (float)(m_Shape.Seed % 997u));
+
+		// Metres, as a share of how far up the blade a vertex is -- so the cap
+		// scales with the blade rather than being one distance for all of them.
+		m_GrassMaterial->Set("u_MaxLean", m_GrassHeight * m_MaxLean);
 
 		// Darker at the root than the tip -- see the fragment shader.
 		m_GrassMaterial->Set("u_Root", glm::vec3(0.14f, 0.22f, 0.09f));
@@ -1309,6 +1650,39 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		}
 	}
 
+	// Water last: it is blended, so anything it may sit in front of has to be
+	// in the depth buffer already.
+	if (HasWater() && m_Water)
+	{
+		glm::vec2 mean = MeanWind();
+
+		m_WaterMaterial->Set("u_Eye", m_Camera.GetPosition());
+		m_WaterMaterial->Set("u_SunDirection", sun);
+		m_WaterMaterial->Set("u_SunColor", glm::vec3(1.0f, 0.96f, 0.88f));
+		m_WaterMaterial->Set("u_SkyColor", glm::vec3(0.50f, 0.62f, 0.75f));
+		m_WaterMaterial->Set("u_Shallow", glm::vec3(0.32f, 0.55f, 0.55f));
+		m_WaterMaterial->Set("u_Deep", glm::vec3(0.05f, 0.16f, 0.27f));
+		m_WaterMaterial->Set("u_Time", m_Time);
+		m_WaterMaterial->Set("u_Wind", glm::vec3(mean.x, 0.0f, mean.y));
+
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
+		Egss::RenderCommand::SetDepthWrite(false);
+
+		// No culling: the camera can be under the surface, and a lake seen
+		// from below is a thing you should be able to swim up through.
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+
+		glm::mat4 transform = glm::scale(
+			glm::translate(glm::mat4(1.0f),
+				glm::vec3(0.0f, WaterLevel(), 0.0f)),
+			glm::vec3(Extent(), 1.0f, Extent()));
+
+		Egss::Renderer::Submit(m_WaterMaterial, m_Water, transform);
+
+		Egss::RenderCommand::SetDepthWrite(true);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+	}
+
 	Egss::Renderer::EndScene();
 }
 
@@ -1339,6 +1713,63 @@ inline void TerrainLab::OnDemoImGui()
 	// with north at the top -- so the cell you tick is the cell you can see
 	// when you stand in the middle and face +z. Getting that backwards makes
 	// every experiment take two tries.
+	// --- Generation ---------------------------------------------------------
+	//
+	// Every one of these rebuilds the field. That is affordable because the
+	// block is bounded: 144 m of ground regenerates in a fraction of a second,
+	// so a slider can rebuild the world on release rather than asking for a
+	// reload -- which is the difference between exploring a parameter and
+	// guessing at one.
+	if (ImGui::CollapsingHeader("Terrain", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		bool changed = false;
+
+		changed |= ImGui::SliderFloat("Feature size", &m_Shape.FeatureSize,
+			8.0f, 220.0f, "%.0f m");
+		changed |= ImGui::SliderInt("Octaves", &m_Shape.Octaves, 1, 8);
+		changed |= ImGui::SliderFloat("Amplitude", &m_Shape.Amplitude,
+			1.0f, 90.0f, "%.1f m");
+		changed |= ImGui::SliderFloat("Ridged", &m_Shape.Ridged, 0.0f, 1.0f);
+		changed |= ImGui::SliderFloat("Warp", &m_Shape.Warp, 0.0f, 1.0f);
+
+		ImGui::TextDisabled("  0 rolling hills, 1 ridgelines; warp erodes them");
+
+		changed |= ImGui::SliderFloat("Plateau", &m_Shape.Plateau, 0.0f, 0.9f);
+		ImGui::TextDisabled("  the continental-shelf control, at walking scale");
+
+		ImGui::Separator();
+
+		changed |= ImGui::SliderFloat("Water pit", &m_Shape.Basin,
+			0.0f, 40.0f, "%.1f m deep");
+		changed |= ImGui::SliderFloat("Pit radius", &m_Shape.BasinSize,
+			10.0f, 200.0f, "%.0f m");
+
+		ImGui::SliderFloat("Water level", &m_WaterFill, 0.0f, 1.0f,
+			"%.2f of the pit");
+
+		ImGui::TextDisabled("  a bowl in the ground; the water is one plane");
+		ImGui::TextDisabled("  the terrain occludes, so the shore is exact");
+
+		ImGui::Separator();
+
+		changed |= ImGui::SliderFloat("Caves", &m_Shape.CaveStrength,
+			0.0f, 1.0f);
+		changed |= ImGui::SliderFloat("Cave size", &m_Shape.CaveSize,
+			6.0f, 60.0f, "%.0f m");
+
+		int seed = (int)m_Shape.Seed;
+		if (ImGui::SliderInt("Seed", &seed, 1, 9999))
+		{
+			m_Shape.Seed = (unsigned int)seed;
+			changed = true;
+		}
+
+		changed |= ImGui::SliderFloat("Voxel", &m_Voxel, 0.5f, 3.0f, "%.2f m");
+
+		if (ImGui::Button("Regenerate") || (changed && !ImGui::IsAnyItemActive()))
+			Generate();
+	}
+
 	if (ImGui::CollapsingHeader("Biomes", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		bool ground = false;   // needs the field rebuilt
@@ -1385,6 +1816,8 @@ inline void TerrainLab::OnDemoImGui()
 
 		ImGui::SliderFloat("Wind", &m_WindSpeed, 0.0f, 30.0f, "%.1f m/s");
 		ImGui::SliderFloat("Wind from", &m_WindAngle, 0.0f, 360.0f, "%.0f deg");
+		ImGui::SliderFloat("Max lean", &m_MaxLean, 0.0f, 1.2f, "%.2f of length");
+		ImGui::TextDisabled("  gusts and eddies are noise; the slider is the mean");
 
 		if (ground && !ImGui::IsAnyItemActive())
 			Generate();
