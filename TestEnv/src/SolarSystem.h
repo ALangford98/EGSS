@@ -1963,6 +1963,8 @@ public:
 	{
 		m_Weather = Climate::Weather();
 		m_HasWeather = false;
+		m_WindFixed = glm::vec3(0.0f);
+		m_WindScene = glm::vec3(0.0f);
 
 		size_t index = m_Walking ? (size_t)m_Ground : m_Frame;
 
@@ -1992,6 +1994,31 @@ public:
 		m_Weather = Climate::At(m_WeatherSite);
 		m_HasWeather = true;
 
+		// **The wind as a vector, worked out once.** The model answers in east
+		// and north because that is what a circulation is described in; the
+		// physics wants a push and the trees want a direction to lean. Doing
+		// the conversion here rather than at each call site is what stops a
+		// gust shoving the player one way and the grass beside them another.
+		//
+		// The site frame is a pure translation of the body's fixed frame, so a
+		// direction built here is usable in the physics without rotation, and
+		// `ToScene` puts the same vector in the frame things are drawn in.
+		glm::dvec3 east = glm::cross(SpinAxis(index), up);
+		double span = glm::length(east);
+
+		// On the pole east has no direction -- and no wind either, since 90
+		// degrees is a cell boundary, so there is nothing to special-case.
+		if (span < 1e-9)
+			return;
+
+		east /= span;
+
+		glm::dvec3 north = glm::cross(up, east);
+
+		m_WindFixed = glm::vec3(east * (double)m_Weather.Wind.x
+			+ north * (double)m_Weather.Wind.y);
+
+		m_WindScene = glm::vec3(ToScene(index, glm::dvec3(m_WindFixed)));
 	}
 
 	void ApplyGravity()
@@ -2032,6 +2059,103 @@ public:
 			float mass = 1.0f / body.InverseMass;
 
 			m_World.ApplyForce(BodyHandleOf(body), toCentre * acceleration * mass);
+		}
+	}
+
+	// **The mean area a shape presents to a wind that can come from
+	// anywhere**, which is a theorem rather than a choice.
+	//
+	// Cauchy's formula: averaged over every orientation, the projected area of
+	// any convex body is a quarter of its surface area. So there is no
+	// per-shape guess and no "pick the biggest face" -- one rule covers the
+	// sphere, the capsule and the box, and it reduces correctly: a sphere's
+	// 4 pi r^2 over four is pi r^2, which is exactly the disc it presents from
+	// every direction anyway.
+	//
+	// The alternative was orienting each collider against the wind every step,
+	// which for a tumbling rock is a more precise answer to a question nobody
+	// asked -- the rock is tumbling, so the average is the honest number.
+	static float CrossSection(const Egss::RigidBody3D& body)
+	{
+		const float pi = glm::pi<float>();
+
+		switch (body.Shape)
+		{
+			case Egss::ColliderShape3D::Sphere:
+				return pi * body.Radius * body.Radius;
+
+			case Egss::ColliderShape3D::Capsule:
+			{
+				// A cylinder's side plus two hemispheres making one sphere.
+				float side = 2.0f * pi * body.Radius * (2.0f * body.HalfHeight);
+				float caps = 4.0f * pi * body.Radius * body.Radius;
+
+				return (side + caps) * 0.25f;
+			}
+
+			case Egss::ColliderShape3D::Box:
+			{
+				const glm::vec3& h = body.HalfExtents;
+
+				return 2.0f * (h.x * h.y + h.y * h.z + h.z * h.x);
+			}
+
+			default:
+				return pi * body.Radius * body.Radius;
+		}
+	}
+
+	// **Drag is the only way air touches anything.**
+	//
+	// `F = 1/2 rho Cd A |v| v`, with rho out of the weather, A off the
+	// collider, and v the wind *relative to the body*. That last part is what
+	// makes it drag rather than a push: standing still in a gale is shoved
+	// hardest, moving downwind is barely touched, and something already
+	// travelling at wind speed feels nothing at all. It also means the same
+	// expression is what slows a thrown rock down, with no wind at all.
+	//
+	// 0.8 is the measured drag coefficient of a rounded body -- a sphere is
+	// 0.47, a person about 1.0, a car 0.3. One number for everything here,
+	// because the shapes are spheres, capsules and boxes and the difference
+	// between them is smaller than the difference between this model and a
+	// real boundary layer.
+	//
+	// The magnitudes are worth knowing before looking for the effect, and
+	// these are measured rather than estimated. The player is a capsule of
+	// radius 0.4 and half-height 0.9, so Cauchy gives it 1.6336 m^2, and it
+	// weighs 78 kg. The default site's 3.9 m/s breeze then puts
+	// 0.5 * 1.2078 * 0.8 * 1.6336 * 3.91^2 = **12.07 N** on it, which is
+	// 0.155 m/s^2 and is *meant* to be nearly imperceptible -- that is what a
+	// light breeze does to a person. The same line at 30 m/s gives 720 N and
+	// 9.2 m/s^2, which is more than this planet's gravity and would take you
+	// off your feet. One expression, four orders of magnitude apart.
+	void ApplyWind()
+	{
+		if (!m_HasWeather || m_Pocket.InPocket() || m_Ground < 0)
+			return;
+
+		float density = m_Weather.AirDensity;
+
+		if (density <= 1e-6f || m_Weather.WindSpeed < 1e-4f)
+			return;
+
+		const glm::vec3& wind = m_WindFixed;
+
+		for (Egss::RigidBody3D& body : m_World.GetBodies())
+		{
+			if (body.Type != Egss::BodyType::Dynamic || body.InverseMass <= 0.0f)
+				continue;
+
+			glm::vec3 relative = wind - body.Velocity;
+			float speed = glm::length(relative);
+
+			if (speed < 1e-4f)
+				continue;
+
+			float force = 0.5f * density * s_DragCoefficient
+				* CrossSection(body) * speed;
+
+			m_World.ApplyForce(BodyHandleOf(body), relative * force);
 		}
 	}
 
@@ -2415,6 +2539,7 @@ public:
 		}
 
 		ApplyGravity();
+		ApplyWind();
 		ApplyBuoyancy();
 		m_World.Step(dt);
 
@@ -3511,6 +3636,13 @@ public:
 		bark->Set("u_Sky", SkyLight(index));
 		bark->Set("u_Up", m_Up);
 		bark->Set("u_LightColor", m_SunLight * m_StarBrightness);
+		bark->Set("u_Wind", m_WindScene);
+		bark->Set("u_AirDensity", m_Weather.AirDensity);
+		bark->Set("u_Time", (float)m_Time * 8766.0f);
+
+		// The trunk, which in any wind worth standing in barely moves:
+		// a ten-metre tree leans 1.1 cm in the default site's 3.9 m/s.
+		bark->Set("u_Compliance", 1.25e-5f);
 
 		auto leaves = Egss::Material::CreateInstance(m_TreeMaterial);
 		leaves->Set("u_Color", glm::vec4(0.16f, 0.34f, 0.13f, 1.0f));
@@ -3518,6 +3650,15 @@ public:
 		leaves->Set("u_Sky", SkyLight(index));
 		leaves->Set("u_Up", m_Up);
 		leaves->Set("u_LightColor", m_SunLight * m_StarBrightness);
+		leaves->Set("u_Wind", m_WindScene);
+		leaves->Set("u_AirDensity", m_Weather.AirDensity);
+		leaves->Set("u_Time", (float)m_Time * 8766.0f);
+
+		// Twenty times, standing in for the r^4 between a trunk and the
+		// twigs the leaves are actually on. That puts the same breeze at
+		// 22 cm at the top of the same tree, which is a canopy stirring
+		// over a trunk that is not.
+		leaves->Set("u_Compliance", 20.0f * 1.25e-5f);
 
 		// **A directional light faked as a very distant point.** The shader
 		// this shares with the rocks and the star takes a position and
@@ -5134,6 +5275,33 @@ private:
 			uniform mat4 u_ViewProjection;
 			uniform mat4 u_Transform;
 
+			// The wind where this forest is, in the frame the trees are drawn
+			// in, metres per second. Length is the speed; a calm day is zero
+			// and the whole term below vanishes with it.
+			uniform vec3 u_Wind;
+			uniform vec3 u_Up;
+			uniform float u_AirDensity;
+			uniform float u_Time;
+
+			// **How far this part of the tree bends for a given load.**
+			//
+			// A beam's compliance goes as 1/(E I), and the second moment I of
+			// a round section goes as the fourth power of its radius. So a
+			// twig a tenth the thickness of the trunk is ten thousand times
+			// easier to bend, which is the whole reason a tree in a light
+			// breeze is still at the bottom and moving at the top -- the
+			// trunk genuinely is not going anywhere, and the leaves genuinely
+			// are.
+			//
+			// The mesh has one trunk radius and no twigs, so the r^4 cannot be
+			// computed from anything here; the ratio between the two values
+			// bound below stands in for it. It is the one number in this
+			// shader that is a stand-in rather than a derivation, and it is
+			// worth one, because the alternative is a forest that is either
+			// rigid in every wind you will actually stand in or waving like
+			// seaweed in a calm.
+			uniform float u_Compliance;
+
 			out vec3 v_WorldPosition;
 			out vec3 v_Normal;
 
@@ -5142,6 +5310,48 @@ private:
 				mat4 model = u_Transform * a_Model;
 
 				vec4 world = model * vec4(a_Position, 1.0);
+
+				// **A tree bends like a cantilever, so the top moves and the
+				// roots do not.**
+				//
+				// Two parts of this are physics and one is a calibration, and
+				// it is worth being clear which is which. The load is wind
+				// pressure, `1/2 rho v^2`, which is why a wind twice as fast
+				// bends a tree four times as far and why there is no bending
+				// at all in a vacuum. The *shape* is the first bending mode of
+				// a beam clamped at one end, which goes as the square of the
+				// height above the clamp -- that is what keeps the trunk
+				// planted while the crown swings, and it is why this is
+				// height-squared rather than linear.
+				//
+				// The compliance is the calibration: the trunk's 1.25e-5 m
+				// per pascal per square metre is the number that makes a
+				// ten-metre tree lean about 30 cm in a 20 m/s wind. That is an
+				// observation about trees rather than a derivation, because
+				// deriving it needs the trunk taper and the elastic modulus
+				// of wood, and this mesh has neither. See `u_Compliance` for
+				// why the canopy gets a larger one.
+				vec3 root = (model * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+
+				float height = max(dot(world.xyz - root, u_Up), 0.0);
+
+				float pressure = 0.5 * u_AirDensity * dot(u_Wind, u_Wind);
+
+				// Gusting, so a forest does not lean like one rigid object.
+				// The phase comes off the root position, which is fixed for
+				// the life of the tree -- so neighbouring trees are out of
+				// step with each other and each one is in step with itself.
+				float phase = dot(root, vec3(0.7, 1.3, 0.9));
+				float gust = 1.0 + 0.3 * sin(u_Time * 1.7 + phase);
+
+				vec3 lean = u_Wind * (u_Compliance * pressure * height * height * gust);
+
+				// Along the ground, not into it: the wind pushes sideways and
+				// a tree that sank into the hill would be worse than one that
+				// did not move.
+				lean -= u_Up * dot(lean, u_Up);
+
+				world.xyz += lean;
 
 				v_WorldPosition = world.xyz;
 				v_Normal = mat3(model) * a_Normal;
@@ -6541,6 +6751,10 @@ private:
 	// against a capture instead: this is the value at which the foreground
 	// stays clean and the treeline a few hundred metres out visibly greys
 	// toward the sky.
+	// A rounded body's drag coefficient. Measured: a sphere is 0.47, a
+	// standing person about 1.0, a car 0.3.
+	static constexpr float s_DragCoefficient = 0.8f;
+
 	float m_HazeScale = 3.3e-3f;
 
 	// The weather where the camera is. Recomputed once a fixed step rather
@@ -6551,6 +6765,11 @@ private:
 	Climate::Site m_WeatherSite;
 	Climate::Weather m_Weather;
 	bool m_HasWeather = false;
+
+	// The same wind in the two frames that want it: the body-fixed one the
+	// physics runs in, and the scene one things are drawn in.
+	glm::vec3 m_WindFixed = glm::vec3(0.0f);
+	glm::vec3 m_WindScene = glm::vec3(0.0f);
 
 	std::shared_ptr<Egss::Shader> m_TerrainShader;
 	std::shared_ptr<Egss::Material> m_TerrainMaterial;

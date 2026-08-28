@@ -1264,6 +1264,55 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (the wind pushes things)
+
+Drag, which is the only way air touches anything: `F = ½ ρ Cd A |v| v`, with ρ
+out of the weather model, A off the collider, and **v the wind relative to the
+body**. That last part is what makes it drag rather than a push — standing
+still in a gale is shoved hardest, moving downwind is barely touched, and
+something already travelling at wind speed feels nothing at all. The same line
+is what slows a thrown rock with no wind blowing.
+
+The area is a theorem rather than a choice. **Cauchy's formula** — averaged
+over every orientation, a convex body's projected area is a quarter of its
+surface area — covers the sphere, the capsule and the box with one rule, and
+reduces correctly: a sphere's 4πr² over four is πr², which is the disc it
+presents from every direction anyway. The alternative was orienting each
+collider against the wind every step, which for a tumbling rock is a more
+precise answer to a question nobody asked.
+
+Checked by hand against the engine. The player is a capsule of radius 0.4 and
+half-height 0.9, so its surface is 2π(0.4)(1.8) + 4π(0.4)² = 6.5345 m² and
+Cauchy gives **1.6336 m²** — matching the engine to the digit. Then
+½(1.2078)(0.8)(1.6336)(3.91²) = **12.066 N** against a measured 12.0662, on a
+78 kg body, so 0.155 m/s². That is meant to be nearly imperceptible: it is what
+a 3.9 m/s breeze does to a person. The same expression at 30 m/s gives 720 N
+and 9.2 m/s², more than this planet's gravity, which would take you off your
+feet. Four orders of magnitude out of one line.
+
+**Trees bend like cantilevers.** The load is wind pressure ½ρv², which is why
+twice the wind bends a tree four times as far and why nothing bends in a
+vacuum; the shape is the first bending mode of a beam clamped at one end, which
+goes as the square of the height above the clamp, and is what keeps the trunk
+planted while the crown swings. The gust phase comes off the root position, so
+neighbouring trees are out of step with each other and each one is in step with
+itself.
+
+The compliance is the one stand-in here, and it is split in two for a reason
+that is real: a beam's compliance goes as 1/(E I) and I goes as the fourth
+power of the section radius, so a twig a tenth the thickness of a trunk is ten
+thousand times easier to bend. That is the whole reason a tree in a light
+breeze is still at the bottom and moving at the top. The mesh has one trunk
+radius and no twigs, so the r⁴ cannot be computed from it; the canopy gets 20×
+the trunk's compliance instead. At the default site's 3.9 m/s that is 1.1 cm at
+the top of a ten-metre trunk and 22 cm in its canopy — a stirring crown over a
+still trunk, which is what the calibration is trying to buy.
+
+Measured by capturing the same frame with the compliance zeroed and diffing:
+**35,152 pixels move, 3.81% of the frame**, worst channel delta 175, and every
+one of them is in rows 48–413. The ground below y=420 is untouched, which is
+the check that nothing else moved with it.
+
 ### 2026-08-28 (weather, derived rather than authored)
 
 `TestEnv/src/Climate.h`: one temperature and one wind for any point on any
