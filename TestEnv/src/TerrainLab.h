@@ -67,6 +67,15 @@ public:
 
 	void OnDemoAttach() override
 	{
+		// `--time 0.5` puts the sun overhead for a capture. Unattended runs
+		// have nobody to move a slider, and comparing a dawn against a noon is
+		// the first thing anyone wants of a day cycle.
+		const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
+
+		for (size_t i = 1; i + 1 < arguments.size(); i++)
+			if (arguments[i] == "--time")
+				m_TimeOfDay = (float)std::atof(arguments[i + 1].c_str());
+
 		BuildShaders();
 		Generate();
 
@@ -680,6 +689,90 @@ private:
 		m_Grass[key] = std::make_shared<Egss::Mesh>(blades, "LabGrass");
 	}
 
+	// --- Sky ------------------------------------------------------------------
+	//
+	// **A day, as one angle.** Everything below reads `m_TimeOfDay` -- where
+	// the sun is, what colour its light is, how bright the sky is, which way
+	// the moon sits and whether it is up at all. One slider moves all of it,
+	// and nothing has its own idea of what time it is.
+	//
+	// This is the solar demo's sky reduced to what a flat 144 m block needs. It
+	// keeps the parts that carry the look -- a sun that reddens at the horizon,
+	// a sky that darkens with it, haze that thickens with distance, a moon
+	// opposite the sun -- and drops the parts that only mean anything on a
+	// sphere, which is the raymarched shell and the curvature.
+
+	// Where the sun is, as a unit vector. Noon is overhead; the day runs
+	// east to west through it.
+	glm::vec3 SunDirection() const
+	{
+		// 0 is midnight, 0.5 is noon. Rising in the east means the sun's
+		// azimuth is fixed here and only its elevation moves, which for a
+		// block this size is the whole of what anyone can see.
+		float angle = (m_TimeOfDay - 0.25f) * 6.2831853f;
+
+		return glm::normalize(glm::vec3(
+			std::cos(angle) * 0.55f, std::sin(angle), 0.35f));
+	}
+
+	// The moon rides opposite, so it is up when the sun is not.
+	glm::vec3 MoonDirection() const
+	{
+		return -SunDirection();
+	}
+
+	// **How high the sun is, which decides everything else.** Clamped at zero
+	// rather than allowed negative: below the horizon it stops contributing
+	// rather than contributing backwards.
+	float SunHeight() const
+	{
+		return glm::clamp(SunDirection().y, 0.0f, 1.0f);
+	}
+
+	// **Sunlight reddens because the blue has been scattered out of it.**
+	//
+	// The path through the air is longest at the horizon, and scattering goes
+	// as 1/lambda^4, so blue leaves the beam first. That is one expression
+	// rather than a sunset colour anyone picked: attenuate each channel by its
+	// own optical depth over a path that grows as the sun sets.
+	glm::vec3 SunColour() const
+	{
+		float height = SunHeight();
+
+		// Air mass, near enough: one at the zenith, rising sharply at the
+		// horizon. The 0.06 keeps it finite when the sun is exactly level.
+		float path = 1.0f / glm::max(height, 0.06f);
+
+		glm::vec3 scatter(0.22f, 0.45f, 1.00f);   // the Rayleigh ratio
+
+		glm::vec3 through = glm::exp(-scatter * (path - 1.0f) * m_Haze * 320.0f);
+
+		return through * m_SunBrightness;
+	}
+
+	// The sky is what was scattered *out* of that beam, so it is the same
+	// numbers the other way up -- bright blue overhead in the day, and near
+	// black with a little starlight at night.
+	glm::vec3 SkyColour() const
+	{
+		float height = SunHeight();
+
+		glm::vec3 day(0.42f, 0.58f, 0.86f);
+		glm::vec3 dusk(0.52f, 0.36f, 0.30f);
+		glm::vec3 night(0.02f, 0.03f, 0.07f);
+
+		// Dusk is a narrow band round the horizon, so it is a separate mix
+		// rather than a point on one gradient -- a single ramp from day to
+		// night passes through grey and never through orange.
+		float lit = glm::smoothstep(0.0f, 0.35f, height);
+		float low = glm::smoothstep(0.30f, 0.02f, height)
+			* glm::smoothstep(-0.25f, 0.02f, SunDirection().y);
+
+		glm::vec3 sky = glm::mix(night, day, lit);
+
+		return glm::mix(sky, dusk, low * 0.75f);
+	}
+
 	// --- Trees ---------------------------------------------------------------
 
 	struct Tree
@@ -1021,6 +1114,7 @@ private:
 	void BuildShaders();
 	void BuildWater();
 	void BuildTrees();
+	void BuildSky();
 
 	// --- Hooks --------------------------------------------------------------
 
@@ -1136,6 +1230,10 @@ private:
 	std::shared_ptr<Egss::Shader> m_GrassShader;
 	std::shared_ptr<Egss::Material> m_GrassMaterial;
 
+	std::shared_ptr<Egss::Mesh> m_Sky;
+	std::shared_ptr<Egss::Shader> m_SkyShader;
+	std::shared_ptr<Egss::Material> m_SkyMaterial;
+
 	std::shared_ptr<Egss::Mesh> m_Water;
 	std::shared_ptr<Egss::Shader> m_WaterShader;
 	std::shared_ptr<Egss::Material> m_WaterMaterial;
@@ -1174,6 +1272,16 @@ private:
 	float m_LodNear = 20.0f;
 	float m_LodFar = 75.0f;
 	float m_LodBand = 0.30f;
+
+	// The sky. One angle for the day, and two knobs for how thick the air is.
+	float m_TimeOfDay = 0.34f;      // 0 midnight, 0.5 noon
+	float m_DayLength = 0.0f;       // turns a second; 0 holds the time still
+	float m_Haze = 0.0022f;         // per metre, before the air-mass term
+	float m_SunBrightness = 1.25f;
+	bool m_ShowSky = true;
+	bool m_ShowClouds = true;
+	float m_CloudCover = 0.45f;
+	float m_CloudHeight = 90.0f;
 
 	// How full the basin is, from dry to level with the rim.
 	float m_WaterFill = 0.55f;
@@ -1256,6 +1364,8 @@ inline void TerrainLab::BuildShaders()
 		uniform vec3 u_SunColor;
 		uniform vec3 u_SkyColor;
 		uniform float u_Ambient;
+		uniform vec3 u_Eye;
+		uniform float u_Haze;
 
 		// **The grid, and the blend done per pixel.**
 		//
@@ -1382,6 +1492,15 @@ inline void TerrainLab::BuildShaders()
 
 			vec3 lit = base * (u_SkyColor * dome * u_Ambient
 				+ u_SunColor * diffuse);
+
+			// **Haze, after the lighting and not before it.** This is air
+			// between the eye and the ground, not a property of the ground --
+			// so it sits outside the `base * (...)` term, or a shaded slope
+			// and a lit one would haze by different amounts for no physical
+			// reason. Same `1 - exp(-x)` extinction the sky is built from.
+			float away = length(v_World - u_Eye);
+
+			lit = mix(lit, u_SkyColor, 1.0 - exp(-away * u_Haze));
 
 			color = vec4(lit, 1.0);
 		}
@@ -1657,6 +1776,181 @@ inline void TerrainLab::BuildShaders()
 
 	BuildWater();
 	BuildTrees();
+	BuildSky();
+}
+
+// **The sky is one inverted cube drawn behind everything.**
+//
+// The solar demo raymarches a shell because it has to work from orbit *and*
+// from the ground in one continuous space. Standing on a 144 m block there is
+// no orbit to serve, so the sky is a gradient with a sun, a moon and some cloud
+// in it -- evaluated per pixel along the view ray, which is all the shell's
+// raymarch would give at this scale anyway and costs one draw.
+//
+// Drawn first with depth writes off, so it fills the frame and everything else
+// lands in front of it. That also means it needs no depth range trickery: it is
+// simply the first thing drawn and the last thing anyone sees behind.
+inline void TerrainLab::BuildSky()
+{
+	Egss::MeshData box;
+
+	// A cube of side two centred on the origin, wound inward -- the camera is
+	// inside it, so the faces that matter are the ones pointing at it.
+	const glm::vec3 corners[8] = {
+		{ -1, -1, -1 }, { 1, -1, -1 }, { 1, 1, -1 }, { -1, 1, -1 },
+		{ -1, -1,  1 }, { 1, -1,  1 }, { 1, 1,  1 }, { -1, 1,  1 } };
+
+	for (int i = 0; i < 8; i++)
+		box.Vertices.push_back({ corners[i], glm::normalize(-corners[i]),
+			{ 0.0f, 0.0f } });
+
+	const unsigned int faces[36] = {
+		0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
+		3,7,6, 3,6,2,  0,4,7, 0,7,3,  1,2,6, 1,6,5 };
+
+	box.Indices.assign(faces, faces + 36);
+
+	Egss::Submesh all;
+	all.IndexCount = 36;
+	box.Submeshes.push_back(all);
+	box.RecalculateBounds();
+
+	m_Sky = std::make_shared<Egss::Mesh>(box, "LabSky");
+
+	std::string vertexSrc = R"(
+		#version 330 core
+
+		layout(location = 0) in vec3 a_Position;
+		layout(location = 1) in vec3 a_Normal;
+		layout(location = 2) in vec2 a_TexCoord;
+
+		uniform mat4 u_ViewProjection;
+		uniform mat4 u_Transform;
+
+		out vec3 v_Ray;
+
+		void main()
+		{
+			vec4 world = u_Transform * vec4(a_Position, 1.0);
+
+			// The direction from the eye, which is the transform's own
+			// translation because the box is centred on the camera.
+			v_Ray = world.xyz - u_Transform[3].xyz;
+
+			gl_Position = u_ViewProjection * world;
+		}
+	)";
+
+	std::string fragmentSrc = R"(
+		#version 330 core
+
+		layout(location = 0) out vec4 color;
+
+		in vec3 v_Ray;
+
+		uniform vec3 u_SunDirection;
+		uniform vec3 u_MoonDirection;
+		uniform vec3 u_SunColor;
+		uniform vec3 u_SkyColor;
+		uniform float u_SunHeight;
+		uniform float u_Time;
+		uniform float u_CloudCover;
+		uniform float u_CloudHeight;
+		uniform float u_ShowClouds;
+		uniform vec3 u_Wind;
+
+		float hash(vec2 p)
+		{
+			return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+		}
+
+		float noise(vec2 p)
+		{
+			vec2 i = floor(p), f = fract(p);
+			f = f * f * (3.0 - 2.0 * f);
+
+			return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x),
+				mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+		}
+
+		float fbm(vec2 p)
+		{
+			return noise(p) * 0.52 + noise(p * 2.1) * 0.28
+				+ noise(p * 4.3) * 0.14 + noise(p * 8.7) * 0.06;
+		}
+
+		void main()
+		{
+			vec3 ray = normalize(v_Ray);
+
+			// **The gradient is the air, and it is thickest at the horizon.**
+			// Looking up you see through the least of it and the sky is at its
+			// deepest; looking level you see through the most and it pales.
+			// One term, and it is the same reason a sunset is red.
+			float up = clamp(ray.y, 0.0, 1.0);
+
+			vec3 sky = mix(u_SkyColor * 1.35, u_SkyColor * 0.72,
+				pow(1.0 - up, 2.2));
+
+			// Below the horizon the dome is ground-coloured rather than sky,
+			// so a camera that tips down does not see blue underneath itself.
+			sky = mix(sky, u_SkyColor * 0.22, smoothstep(0.0, -0.12, ray.y));
+
+			// **The sun, as a disc with a glow round it.** Half a degree is
+			// 0.0087 radians, so the disc is `dot > cos(0.0044)` -- and the
+			// glow is the same scattering that reddens it, spread over a few
+			// degrees.
+			float toSun = dot(ray, u_SunDirection);
+
+			float disc = smoothstep(0.99993, 0.99997, toSun);
+			float glow = pow(max(toSun, 0.0), 220.0) * 0.55
+				+ pow(max(toSun, 0.0), 8.0) * 0.10;
+
+			sky += u_SunColor * (disc * 14.0 + glow) * step(-0.15, u_SunDirection.y);
+
+			// The moon: a smaller, cooler disc, only while it is up, and
+			// fading as the sky brightens because a daytime moon is faint.
+			float toMoon = dot(ray, u_MoonDirection);
+
+			float moon = smoothstep(0.99990, 0.99995, toMoon);
+
+			float moonlit = step(-0.05, u_MoonDirection.y)
+				* (1.0 - smoothstep(0.0, 0.35, u_SunHeight));
+
+			sky += vec3(0.82, 0.84, 0.78) * moon * 6.0 * moonlit;
+
+			// **Cloud on a plane, read where the ray crosses it.** A ray going
+			// up hits `u_CloudHeight` at a distance that grows without bound as
+			// it approaches level -- which is exactly right, and is what makes
+			// cloud bunch toward the horizon on its own without a second term.
+			if (u_ShowClouds > 0.5 && ray.y > 0.02)
+			{
+				float reach = u_CloudHeight / ray.y;
+				vec2 at = ray.xz * reach - u_Wind.xz * u_Time * 3.0;
+
+				float cloud = fbm(at * 0.0032);
+
+				// A coverage threshold rather than a brightness: cloud has
+				// edges, and mixing a noise field straight in gives fog.
+				float mask = smoothstep(0.62 - u_CloudCover * 0.45,
+					0.86 - u_CloudCover * 0.45, cloud);
+
+				// Thin out toward the horizon, where the plane model breaks
+				// down and the ray would otherwise smear one cloud for ever.
+				mask *= smoothstep(0.02, 0.22, ray.y);
+
+				vec3 top = u_SunColor * 0.9 + u_SkyColor * 0.4;
+				vec3 base = u_SkyColor * 0.55;
+
+				sky = mix(sky, mix(base, top, 0.35 + 0.65 * u_SunHeight), mask);
+			}
+
+			color = vec4(sky, 1.0);
+		}
+	)";
+
+	m_SkyShader.reset(Egss::Shader::Create("LabSky", vertexSrc, fragmentSrc));
+	m_SkyMaterial = Egss::Material::Create(m_SkyShader);
 }
 
 // **Three shapes, built once, drawn everywhere.**
@@ -2050,17 +2344,65 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 
 	Look((float)ts);
 
-	Egss::RenderCommand::SetClearColor({ 0.50f, 0.62f, 0.75f, 1.0f });
+	// The day advances on the frame clock rather than the fixed step, because
+	// it changes nothing the simulation can see -- and holding it still at
+	// zero is how you compare two shots of the same scene.
+	m_TimeOfDay = glm::fract(m_TimeOfDay + m_DayLength * (float)ts);
+
+	glm::vec3 skyColour = SkyColour();
+
+	Egss::RenderCommand::SetClearColor(
+		{ skyColour.r, skyColour.g, skyColour.b, 1.0f });
+
 	Egss::RenderCommand::Clear();
 
 	Egss::Renderer::BeginScene(m_Camera);
 
-	glm::vec3 sun = glm::normalize(glm::vec3(-0.4f, -0.72f, -0.45f));
+	// `u_SunDirection` is the direction light *travels*, which is the opposite
+	// of the direction to the sun. Getting that backwards lights the world from
+	// underneath and reads as a broken normal rather than a sign error.
+	glm::vec3 sun = -SunDirection();
+
+	glm::vec3 sunColour = SunColour();
+	glm::vec2 windMean = MeanWind();
+
+	if (m_ShowSky && m_Sky)
+	{
+		m_SkyMaterial->Set("u_SunDirection", SunDirection());
+		m_SkyMaterial->Set("u_MoonDirection", MoonDirection());
+		m_SkyMaterial->Set("u_SunColor", sunColour);
+		m_SkyMaterial->Set("u_SkyColor", skyColour);
+		m_SkyMaterial->Set("u_SunHeight", SunHeight());
+		m_SkyMaterial->Set("u_Time", m_Time);
+		m_SkyMaterial->Set("u_CloudCover", m_CloudCover);
+		m_SkyMaterial->Set("u_CloudHeight", m_CloudHeight);
+		m_SkyMaterial->Set("u_ShowClouds", m_ShowClouds ? 1.0f : 0.0f);
+		m_SkyMaterial->Set("u_Wind", glm::vec3(windMean.x, 0.0f, windMean.y));
+
+		// **Depth writes off and drawn first.** The box is centred on the
+		// camera and scaled to sit inside the far plane; with no depth written
+		// everything drawn afterwards lands in front of it whatever its own
+		// distance, so the sky needs no special depth range.
+		Egss::RenderCommand::SetDepthWrite(false);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+
+		Egss::Renderer::Submit(m_SkyMaterial, m_Sky,
+			glm::scale(glm::translate(glm::mat4(1.0f), m_Camera.GetPosition()),
+				glm::vec3(400.0f)));
+
+		Egss::RenderCommand::SetDepthWrite(true);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+	}
 
 	m_Material->Set("u_SunDirection", sun);
-	m_Material->Set("u_SunColor", glm::vec3(1.0f, 0.96f, 0.88f));
-	m_Material->Set("u_SkyColor", glm::vec3(0.50f, 0.62f, 0.75f));
+	m_Material->Set("u_SunColor", sunColour);
+	m_Material->Set("u_SkyColor", skyColour);
 	m_Material->Set("u_Ambient", 0.55f);
+	m_Material->Set("u_Eye", m_Camera.GetPosition());
+
+	// Ambient falls with the sun: the ground at night is lit by the sky and
+	// the sky at night is nearly black, so one number does both.
+	m_Material->Set("u_Haze", m_Haze);
 	// Nine elements, set one at a time: `Material` has no array setter, and
 	// GLSL exposes `u_Cells[3]` as its own uniform name, so this needs no
 	// engine change to work.
@@ -2094,13 +2436,11 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 
 	if (m_ShowGrass && !m_Grass.empty())
 	{
-		glm::vec2 mean = MeanWind();
-
-		glm::vec3 wind(mean.x, 0.0f, mean.y);
+		glm::vec3 wind(windMean.x, 0.0f, windMean.y);
 
 		m_GrassMaterial->Set("u_SunDirection", sun);
-		m_GrassMaterial->Set("u_SunColor", glm::vec3(1.0f, 0.96f, 0.88f));
-		m_GrassMaterial->Set("u_SkyColor", glm::vec3(0.50f, 0.62f, 0.75f));
+		m_GrassMaterial->Set("u_SunColor", sunColour);
+		m_GrassMaterial->Set("u_SkyColor", skyColour);
 		m_GrassMaterial->Set("u_Ambient", 0.55f);
 		m_GrassMaterial->Set("u_Wind", wind);
 		m_GrassMaterial->Set("u_Time", m_Time);
@@ -2163,11 +2503,11 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	// Trees before the water, because they are opaque and the water is not.
 	if (m_ShowTrees && !m_Trees.empty())
 	{
-		glm::vec2 mean = MeanWind();
+		glm::vec2 mean = windMean;
 
 		m_TreeMaterial->Set("u_SunDirection", sun);
-		m_TreeMaterial->Set("u_SunColor", glm::vec3(1.0f, 0.96f, 0.88f));
-		m_TreeMaterial->Set("u_SkyColor", glm::vec3(0.50f, 0.62f, 0.75f));
+		m_TreeMaterial->Set("u_SunColor", sunColour);
+		m_TreeMaterial->Set("u_SkyColor", skyColour);
 		m_TreeMaterial->Set("u_Ambient", 0.55f);
 		m_TreeMaterial->Set("u_Wind", glm::vec3(mean.x, 0.0f, mean.y));
 		m_TreeMaterial->Set("u_Time", m_Time);
@@ -2224,12 +2564,12 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	// in the depth buffer already.
 	if (HasWater() && m_Water)
 	{
-		glm::vec2 mean = MeanWind();
+		glm::vec2 mean = windMean;
 
 		m_WaterMaterial->Set("u_Eye", m_Camera.GetPosition());
 		m_WaterMaterial->Set("u_SunDirection", sun);
-		m_WaterMaterial->Set("u_SunColor", glm::vec3(1.0f, 0.96f, 0.88f));
-		m_WaterMaterial->Set("u_SkyColor", glm::vec3(0.50f, 0.62f, 0.75f));
+		m_WaterMaterial->Set("u_SunColor", sunColour);
+		m_WaterMaterial->Set("u_SkyColor", skyColour);
 		m_WaterMaterial->Set("u_Shallow", glm::vec3(0.32f, 0.55f, 0.55f));
 		m_WaterMaterial->Set("u_Deep", glm::vec3(0.05f, 0.16f, 0.27f));
 		m_WaterMaterial->Set("u_Time", m_Time);
@@ -2417,6 +2757,42 @@ inline void TerrainLab::OnDemoImGui()
 			Generate();
 		else if (cover && !ImGui::IsAnyItemActive())
 			RebuildGrass();
+	}
+
+	// --- Sky ----------------------------------------------------------------
+
+	if (ImGui::CollapsingHeader("Sky", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		ImGui::SliderFloat("Time of day", &m_TimeOfDay, 0.0f, 1.0f, "%.3f");
+
+		// The clock as hours, because 0.34 means nothing and 08:10 does.
+		int hour = (int)(m_TimeOfDay * 24.0f) % 24;
+		int minute = (int)(m_TimeOfDay * 1440.0f) % 60;
+
+		ImGui::SameLine();
+		ImGui::Text("%02d:%02d", hour, minute);
+
+		ImGui::SliderFloat("Day length", &m_DayLength, 0.0f, 0.05f,
+			"%.4f turns a second");
+		ImGui::TextDisabled("  zero holds the sun still, which is what two "
+			"comparable captures need");
+
+		ImGui::SliderFloat("Sun brightness", &m_SunBrightness, 0.0f, 3.0f);
+		ImGui::SliderFloat("Haze", &m_Haze, 0.0f, 0.02f, "%.4f per m");
+
+		ImGui::Checkbox("Sky", &m_ShowSky);
+		ImGui::SameLine();
+		ImGui::Checkbox("Clouds", &m_ShowClouds);
+
+		ImGui::SliderFloat("Cloud cover", &m_CloudCover, 0.0f, 1.0f);
+		ImGui::SliderFloat("Cloud height", &m_CloudHeight, 20.0f, 400.0f,
+			"%.0f m");
+
+		glm::vec3 sun = SunDirection();
+
+		ImGui::Text("sun %+.0f deg above the horizon, light %.2f %.2f %.2f",
+			glm::degrees(std::asin(glm::clamp(sun.y, -1.0f, 1.0f))),
+			SunColour().r, SunColour().g, SunColour().b);
 	}
 
 	ImGui::Checkbox("Wireframe", &m_ShowWireframe);
