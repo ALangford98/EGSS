@@ -545,6 +545,7 @@ private:
 		m_Ground = m_World.AddBody(ground);
 
 		SpawnWalker();
+		ScatterLoose();
 	}
 
 	void SpawnWalker()
@@ -1017,6 +1018,174 @@ private:
 		RebuildDirtyMeshes();
 	}
 
+	// --- Loose bodies and buoyancy --------------------------------------------
+
+	struct Loose
+	{
+		Egss::PhysicsWorld3D::BodyHandle Body = 0;
+		int Shape = 0;
+		float Size = 1.0f;
+		bool Floats = false;
+	};
+
+	// **Archimedes, and nothing else.** The upward force on a submerged body is
+	// the weight of the fluid it displaces -- `rho g V` -- and whether a thing
+	// floats is therefore whether its own density is under the water's. That is
+	// the entire model, and it is worth having as the entire model because it
+	// means a boat will float for the same reason a log does, and neither needs
+	// a flag saying so.
+	//
+	// The displaced volume is the part of the body under the surface. Boxes and
+	// spheres both get the same treatment: take how far the body's centre is
+	// below the waterline, in units of its own half-height, and clamp -- so
+	// nothing submerged is zero, half in is a half, and fully under is one.
+	// That is exact for a box and within a few per cent for a sphere over most
+	// of the range, and the error is smaller than the wave height.
+	void ApplyBuoyancy()
+	{
+		if (!HasWater())
+			return;
+
+		const float water = 1000.0f;   // kg/m^3
+
+		float level = WaterLevel();
+
+		for (const Loose& loose : m_Loose)
+		{
+			Egss::RigidBody3D& body = m_World.GetBody(loose.Body);
+
+			if (body.InverseMass <= 0.0f)
+				continue;
+
+			float half = loose.Size;
+
+			float under = glm::clamp((level - (body.Position.y - half))
+				/ (2.0f * half), 0.0f, 1.0f);
+
+			if (under <= 0.0f)
+				continue;
+
+			// A cube of side 2r for a box, a sphere of radius r otherwise --
+			// close enough that the density printed on the panel is the
+			// density that decides whether it swims.
+			float volume = loose.Shape == 0
+				? (4.0f / 3.0f) * glm::pi<float>() * half * half * half
+				: 8.0f * half * half * half;
+
+			float mass = 1.0f / body.InverseMass;
+
+			// **A sleeping body ignores forces, and buoyancy is a force.**
+			//
+			// The solver puts a body that has stopped moving to sleep, which
+			// is right -- a boulder resting on a hillside should not be
+			// integrated for ever. But a log that fell into the lake, hit the
+			// bed and slept there stays asleep no matter how hard the water
+			// pushes up on it, because the push is applied to a body that is
+			// not being stepped. It read as buoyancy being too weak: the log
+			// sat at 0.276 submerged with its own weight measurably greater
+			// than the force lifting it, which is not an equilibrium at all
+			// and was the tell.
+			//
+			// Anything with water on it is awake by definition.
+			body.Awake = true;
+
+			// Up is the weight of the water pushed aside.
+			m_World.ApplyForce(loose.Body,
+				glm::vec3(0.0f, water * 9.81f * volume * under, 0.0f));
+
+			// **And water is thick.** Without drag a floating body is a
+			// spring with no damper: it overshoots the surface, leaves the
+			// water, falls back and bobs for ever. Quadratic, like the air
+			// drag, but with a thousand times the density behind it -- which
+			// is why a log bobs twice and settles.
+			glm::vec3 relative = -body.Velocity;
+			float speed = glm::length(relative);
+
+			if (speed > 1e-4f)
+			{
+				float area = glm::pi<float>() * half * half;
+
+				// **No fudge factor.** This had a `* 0.02` on it, which took a
+				// force of eight thousand newtons down to a hundred and sixty
+				// against a weight of ninety-six thousand -- so the log bobbed
+				// for ever and was still moving at 1.78 m/s when it was
+				// measured, which read as buoyancy being too weak. It was not:
+				// the lift was right and the damping was crippled.
+				//
+				// `1/2 rho Cd A v^2` with water's own density behind it is
+				// large, and it should be. That is why a log dropped in a lake
+				// bobs twice and settles rather than oscillating like a spring.
+				m_World.ApplyForce(loose.Body, relative
+					* (0.5f * water * 0.9f * area * speed * under));
+			}
+
+			// Torque is not modelled: a real hull rights itself because its
+			// centre of buoyancy moves as it heels, and that needs the
+			// displaced *shape* rather than its volume. Worth knowing before
+			// anyone puts a mast on one of these.
+			(void)mass;
+		}
+	}
+
+	// Boulders, and a few things light enough to swim. Both go through the same
+	// list because the only difference between them is density -- which is the
+	// point of doing buoyancy properly rather than tagging things as floaty.
+	void ScatterLoose()
+	{
+		m_Loose.clear();
+
+		unsigned int seed = 20261u;
+
+		for (int i = 0; i < m_LooseCount; i++)
+		{
+			float u = Veg::Hash2DUnit(i, 1, seed);
+			float v = Veg::Hash2DUnit(i, 2, seed);
+
+			float half = 0.5f * Extent();
+
+			glm::vec3 at((u - 0.5f) * Extent() * 0.8f, 0.0f,
+				(v - 0.5f) * Extent() * 0.8f);
+
+			at.y = Height(at.x, at.z) + 6.0f + Veg::Hash2DUnit(i, 3, seed) * 8.0f;
+
+			(void)half;
+
+			Loose loose;
+
+			// A third of them are driftwood -- 500 kg/m^3, which is oak, and
+			// which floats about half out of the water. The rest are granite
+			// at 2650 and do not.
+			loose.Floats = Veg::Hash2DUnit(i, 4, seed) < 0.34f;
+			loose.Size = 0.5f + Veg::Hash2DUnit(i, 5, seed) * 0.9f;
+			loose.Shape = loose.Floats ? 1 : 0;
+
+			float density = loose.Floats ? 500.0f : 2650.0f;
+
+			float volume = loose.Shape == 0
+				? (4.0f / 3.0f) * glm::pi<float>() * loose.Size * loose.Size * loose.Size
+				: 8.0f * loose.Size * loose.Size * loose.Size;
+
+			float mass = density * volume;
+
+			Egss::RigidBody3D body = loose.Shape == 0
+				? Egss::RigidBody3D::MakeSphere(at, loose.Size, mass)
+				: Egss::RigidBody3D::MakeBox(at, glm::vec3(loose.Size), mass);
+
+			body.Friction = 0.6f;
+			body.Restitution = 0.05f;
+
+			// **Air drag stays off.** These are metres across and the demo has
+			// no wind force on solids; leaving the default damping on would
+			// slow a falling boulder for no stated reason.
+			body.LinearDamping = 0.0f;
+			body.AngularDamping = 0.02f;
+
+			loose.Body = m_World.AddBody(body);
+
+			m_Loose.push_back(loose);
+		}
+	}
+
 	// --- Walking ------------------------------------------------------------
 
 	void MoveWalker(Egss::Timestep step)
@@ -1172,6 +1341,8 @@ private:
 		m_WasDigging = dig;
 		m_WasAdding = add;
 
+		ApplyBuoyancy();
+
 		MoveWalker(step);
 		m_World.Step(step);
 
@@ -1204,6 +1375,10 @@ private:
 	std::map<size_t, std::shared_ptr<Egss::Mesh>> m_Chunks;
 	std::map<size_t, std::shared_ptr<Egss::Mesh>> m_Grass;
 	std::map<size_t, std::vector<Tree>> m_Trees;
+
+	std::vector<Loose> m_Loose;
+	std::shared_ptr<Egss::Mesh> m_Boulder;
+	int m_LooseCount = 26;
 
 	static constexpr int s_TreeShapes = 6;
 
@@ -2186,6 +2361,12 @@ inline void TerrainLab::BuildTrees()
 
 	m_TreeShader.reset(Egss::Shader::Create("LabTree", vertexSrc, fragmentSrc));
 	m_TreeMaterial = Egss::Material::Create(m_TreeShader);
+
+	// One boulder mesh for every rock and every log. The shape is a jittered
+	// sphere either way -- what tells a granite boulder from a floating log
+	// here is its density and its colour, not its silhouette, and that is
+	// honest enough for a buoyancy test.
+	m_Boulder = std::make_shared<Egss::Mesh>(Boulder::Build(4177u), "LabRock");
 }
 
 // **Water is one quad, and the depth buffer does the rest.**
@@ -2558,6 +2739,32 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		}
 
 		m_TreeCount = drawn;
+	}
+
+	// Boulders and driftwood, through the tree shader with the sway switched
+	// off -- it is already lit by the same sun and sky, and a second shader
+	// that differed only in having no wind term would be a second thing to
+	// keep in step.
+	if (m_Boulder && !m_Loose.empty())
+	{
+		m_TreeMaterial->Set("u_Compliance", 0.0f);
+		m_TreeMaterial->Set("u_MaxLean", 0.0f);
+
+		for (const Loose& loose : m_Loose)
+		{
+			const Egss::RigidBody3D& body = m_World.GetBody(loose.Body);
+
+			m_TreeMaterial->Set("u_Color", loose.Floats
+				? glm::vec3(0.42f, 0.30f, 0.18f)
+				: glm::vec3(0.40f, 0.39f, 0.37f));
+
+			glm::mat4 transform =
+				glm::translate(glm::mat4(1.0f), body.Position)
+				* glm::mat4_cast(body.Orientation)
+				* glm::scale(glm::mat4(1.0f), glm::vec3(loose.Size));
+
+			Egss::Renderer::Submit(m_TreeMaterial, m_Boulder, transform);
+		}
 	}
 
 	// Water last: it is blended, so anything it may sit in front of has to be

@@ -58,6 +58,7 @@
 #include "FirstPersonController.h"
 #include "ChunkCache.h"
 #include "Grass.h"
+#include "Rocks.h"
 
 #include <unordered_set>
 #include <unordered_map>
@@ -2203,71 +2204,11 @@ public:
 	// soft gradient with a couple of bands crossing it; a faceted one is a set
 	// of flat plates, each a single shade, which is what makes it read as
 	// stone in this style at all.
+	// The boulder mesh moved to `Rocks.h` so the terrain lab could have it
+	// too. Kept as a one-line forward here rather than renaming every call.
 	static Egss::MeshData MakeRockMesh(unsigned int seed)
 	{
-		const int segments = 16, rings = 10;
-
-		auto point = [&](int i, int j)
-		{
-			// Wrap the seam so the last column is literally the first.
-			int wrapped = i % segments;
-
-			float u = (float)wrapped / (float)segments * 6.2831853f;
-			float v = (float)j / (float)rings * 3.14159265f;
-
-			// 0.84..1.0. Was 0.68..1.0 on a 9x6 lattice, which read as a lump
-			// of coal -- more facets and a shallower jitter give a boulder that
-			// is still faceted but no longer jagged. The ceiling stays at 1.0
-			// so the blob cannot leave the box that collides for it.
-			float radius = 0.84f + Hash2DUnit(wrapped, j, seed) * 0.16f;
-
-			// Poles pulled in a little, or a jittered pole spikes.
-			if (j == 0 || j == rings)
-				radius = 0.86f + Hash2DUnit(0, j, seed) * 0.10f;
-
-			return glm::vec3(
-				std::sin(v) * std::cos(u), std::cos(v), std::sin(v) * std::sin(u)) * radius;
-		};
-
-		Egss::MeshData data;
-
-		auto face = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
-		{
-			glm::vec3 n = glm::cross(b - a, c - a);
-			if (glm::length(n) < 1e-8f)
-				return;
-
-			n = glm::normalize(n);
-
-			unsigned int base = (unsigned int)data.Vertices.size();
-			data.Vertices.push_back({ a, n, { 0.0f, 0.0f } });
-			data.Vertices.push_back({ b, n, { 1.0f, 0.0f } });
-			data.Vertices.push_back({ c, n, { 0.5f, 1.0f } });
-			data.Indices.push_back(base);
-			data.Indices.push_back(base + 1);
-			data.Indices.push_back(base + 2);
-		};
-
-		for (int j = 0; j < rings; j++)
-		{
-			for (int i = 0; i < segments; i++)
-			{
-				glm::vec3 a = point(i, j), b = point(i + 1, j);
-				glm::vec3 c = point(i + 1, j + 1), d = point(i, j + 1);
-
-				// Degenerate at the poles, where the whole ring is one point --
-				// `face` drops those on the zero-area test.
-				face(a, b, c);
-				face(a, c, d);
-			}
-		}
-
-		Egss::Submesh all;
-		all.IndexCount = (unsigned int)data.Indices.size();
-		data.Submeshes.push_back(all);
-		data.RecalculateBounds();
-
-		return data;
+		return Boulder::Build(seed);
 	}
 
 	// Cuts a mesh with an axis-aligned plane and caps the hole, so the piece
