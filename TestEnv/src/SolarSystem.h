@@ -4312,8 +4312,19 @@ public:
 			water->SetTexture("u_Map", it->second.Map(), 0);
 			water->Set("u_Unspin", glm::transpose(SpinMatrix(index)));
 			water->Set("u_Radius", settings.Radius * scale);
-			water->Set("u_Relief", settings.Amplitude * scale);
+
+			// **The relief the map was baked with, not the body's amplitude.**
+			// The shell decodes the map's red channel to find how deep the
+			// water over it is, and a decode has to use the same scale the
+			// encode did -- which is the terrain shader's `u_Relief`, and that
+			// is `ReliefReach() * 2`. This said `Amplitude` while nothing read
+			// it, and would have been quietly wrong by the ratio between them
+			// the moment something did.
+			water->Set("u_Relief", it->second.ReliefReach() * 2.0f * scale);
 			water->Set("u_SeaRadius", settings.OceanRadius * scale);
+			water->Set("u_SeaDepth",
+				(float)((double)scale * (SeaRadiusOf(index, settings)
+					- DrawnRadius(index))));
 			water->Set("u_LightDirection", SunDirection(index));
 			water->Set("u_LightColor", m_SunLight * m_StarBrightness);
 			water->Set("u_Origin", centre);
@@ -5095,9 +5106,18 @@ private:
 					return mix(u_LowColour.rgb, u_HighColour.rgb, t);
 				}
 
-				if (height <= 0.0)
-					return mix(u_Shallow, u_Deep,
-						clamp(-height / (u_Relief * 0.35), 0.0, 1.0));
+				// **Ground is ground, however low it is.**
+				//
+				// This returned ocean colour for anything below the
+				// waterline, which is a statement about altitude and not
+				// about water -- so the 3,425 km^2 across 435 basins that the
+				// drainage pass correctly calls *dry* were painted sea, and
+				// the planet from orbit was a uniform blue-grey ball with no
+				// coastline anywhere on it. Whether there is water somewhere
+				// is `SurfaceWater`'s answer and the wet mask's, and both of
+				// them are drawn *as water*, in front of this. A seabed is
+				// allowed to look like a seabed; what is over it decides what
+				// colour it arrives as.
 
 				float top = max(u_Relief * 0.5 - sea, 1.0);
 				float f = clamp(height / top, 0.0, 1.0);
@@ -5299,6 +5319,12 @@ private:
 			uniform float u_Radius;
 			uniform float u_Relief;
 			uniform float u_SeaRadius;
+
+			// Sea radius less mean radius, taken in double on the CPU -- see
+			// the terrain shader's own `u_SeaDepth` for why it is not a
+			// subtraction done here.
+			uniform float u_SeaDepth;
+
 			uniform vec3 u_LightDirection;
 			uniform vec3 u_LightColor;
 			uniform vec3 u_Eye;            // camera, in the planet's frame
@@ -5343,7 +5369,31 @@ private:
 				// quarter as wet errs toward too much sea, which puts the
 				// disagreement with the real geometry under the ground rather
 				// than leaving a fringe of missing sea along every shore.
-				if (texture(u_Map, uv).a < 0.25)
+				// **Coverage, not a threshold** -- and the local sheet is not
+				// asked at all.
+				//
+				// This was `if (mask < 0.25) discard`, which is a claim that
+				// a texel is either sea or not. A texel is 1.5 km across and
+				// a coastline runs through the middle of it, so at any real
+				// distance it is *part* sea -- and once the mip chain landed
+				// (2026-08-26) the averaged mask stopped dropping below 0.25
+				// almost anywhere, so from orbit the shell covered the whole
+				// disc and the planet had no land on it at all. That was
+				// invisible only because the shell was 55% transparent and
+				// the terrain under it was painting itself blue; take either
+				// of those away and the continents vanish.
+				//
+				// Weighting the alpha by the mask is the same statement the
+				// mip chain is already making: a half-wet texel is half a
+				// pixel of sea. It antialiases the coastline for free instead
+				// of stair-stepping it, and it costs nothing.
+				//
+				// The near mesh carries its own shoreline -- `SurfaceWater`
+				// cut it against the terrain the mesher actually produced --
+				// so gating that by a 1.5 km texel could only erode it.
+				float wet = u_HasDepth > 0.5 ? 1.0 : texture(u_Map, uv).a;
+
+				if (wet < 0.02)
 					discard;
 
 				vec3 view = normalize(u_Eye - v_Position);
@@ -5386,9 +5436,25 @@ private:
 				// The view angle still has a job -- it is why a lake is a
 				// mirror at a grazing angle -- but it is applied as Fresnel
 				// below, where it belongs, rather than as a colour.
-				float sunk = u_HasDepth > 0.5
-					? 1.0 - exp(-2.0 * max(v_Depth, 0.0) / max(u_Clarity, 0.01))
-					: 1.0;
+				// **The sphere has a depth too, and it comes off the map.**
+				//
+				// It had none: `u_HasDepth` was 0 for the shell and `sunk`
+				// went straight to 1, so every ocean pixel on the planet was
+				// the same flat `u_Deep` at a constant 0.55 alpha. Half the
+				// terrain showed through it and the terrain was painting
+				// itself blue underneath, which between them is the whole
+				// reason the planet had no visible coastline from orbit.
+				//
+				// The map already carries the ground height in its red
+				// channel -- the terrain shader decodes it the same way --
+				// and the shell stands at sea level, so the depth under any
+				// point of it is however far that ground is below zero.
+				float depth = u_HasDepth > 0.5
+					? max(v_Depth, 0.0)
+					: max(u_SeaDepth
+						- (texture(u_Map, uv).r * 2.0 - 1.0) * u_Relief, 0.0);
+
+				float sunk = 1.0 - exp(-2.0 * depth / max(u_Clarity, 0.01));
 
 				vec3 body = mix(u_Shallow, u_Deep, sunk);
 
@@ -5410,9 +5476,10 @@ private:
 				// running right up the beach is the other half of why this
 				// read as a texture. Fresnel still floors it, because even a
 				// film is a mirror edge-on.
-				float alpha = u_HasDepth > 0.5
-					? clamp(mix(0.10, 0.92, sunk) + 0.55 * fresnel, 0.0, 1.0)
-					: clamp(0.55 + 0.45 * fresnel, 0.0, 1.0);
+				// The same number again, and now the shell obeys it as well:
+				// a shelf you can see the bottom of, an ocean you cannot.
+				float alpha = clamp(mix(0.10, 0.92, sunk) + 0.55 * fresnel,
+					0.0, 1.0) * clamp(wet, 0.0, 1.0);
 
 				color = vec4(lit, alpha);
 			}

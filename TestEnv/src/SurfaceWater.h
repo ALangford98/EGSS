@@ -41,7 +41,19 @@ public:
 
 	float GroundAt(int i) const { return m_Ground[i]; }
 	float LevelAt(int i) const { return m_Level[i]; }
-	bool WetAt(int i) const { return m_Level[i] > m_Ground[i] + m_Film; }
+	// **Deep enough to be water, and connected to somewhere water came
+	// from.** The second half is not a refinement, it is the requirement:
+	// "water exists where it can get to". Priority-Flood on its own fills
+	// every depression it can find whether or not anything could ever have
+	// filled it, so on voxel terrain -- which dips by centimetres all over --
+	// every dimple in the ground became a lake. Raising `m_Film` to a quarter
+	// of a voxel took that from about five hundred sheets to 393 by hiding
+	// the shallowest ones, which is a threshold against a structural problem:
+	// a 40 cm dimple on a hilltop is not a pond, at any depth. See `Flood`.
+	bool WetAt(int i) const
+	{
+		return m_Sourced[i] && m_Level[i] > m_Ground[i] + m_Film;
+	}
 
 	const glm::vec3& DirectionAt(int i) const { return m_Direction[i]; }
 
@@ -122,6 +134,12 @@ private:
 	// on screen exactly the answer the local terrain gave.
 	static constexpr int s_SeedMargin = 6;
 
+	// **Above this, the rim's water is a lake and its level is not trusted.**
+	// A metre: the drainage pass gives the sea exactly zero and a basin its
+	// own spill height, so anything that is not the sea is comfortably clear
+	// of this and the test never has to be close. See the seeding in `Build`.
+	static constexpr float s_LakeAbove = 1.0f;
+
 	int Index(int u, int v) const { return v * Side + u; }
 
 	// The column a point in the site's local frame falls in, *not* clamped to
@@ -168,6 +186,10 @@ private:
 	std::vector<glm::vec3> m_Direction;
 	std::vector<float> m_Ground;
 	std::vector<float> m_Level;
+
+	// Whether this column's water came from somewhere rather than from the
+	// flood raising the column to its own ground. See `WetAt` and `Flood`.
+	std::vector<unsigned char> m_Sourced;
 };
 
 inline float SurfaceWater::GroundFrom(const VoxelPlanet& planet,
@@ -236,6 +258,7 @@ inline void SurfaceWater::Build(const VoxelPlanet& planet,
 	m_Direction.assign(count, glm::vec3(0.0f));
 	m_Ground.assign(count, 0.0f);
 	m_Level.assign(count, 0.0f);
+	m_Sourced.assign(count, 0);
 
 	glm::vec3 up = glm::vec3(glm::normalize(site));
 	glm::vec3 east, north;
@@ -276,30 +299,43 @@ inline void SurfaceWater::Build(const VoxelPlanet& planet,
 		m_Ground[at] = GroundFrom(planet, lattice, direction, guess,
 			3.0f * planet.Get().VoxelSize);
 
-		// **The map only gets to seed a rim cell within a plausible reach of
-		// what the fine terrain there actually is.** `WetnessAt`/
-		// `WaterHeightAt` are a 1.5 km texel's answer, already documented to
-		// disagree with the terrain the mesher cuts by up to 116 m -- and a
-		// 1.5 km texel is wider than this whole grid (2x380 m), so one
-		// texel's classification can cover every direction around the rim at
-		// once, not just the side a real shore is actually on. Nothing
-		// stopped that disagreement from being seeded here and flooding
-		// inward through the interior, well past `s_SeedMargin`, which only
-		// hides the seam this leaves in the *drawn* mesh, not what the flood
-		// itself believes. Measured at the default landing site: a rim
-		// direction the map called a lake 39.5 m above sea level seeded a
-		// flood that reached the lander's own column, whose fine, sampled
-		// ground is 21 m above sea level and has nothing to do with that
-		// basin. A real shoreline's water sits close to the ground beside
-		// it; a coarse texel guessing at a point it cannot resolve does not.
-		float mapLevel = planet.WetnessAt(direction) > 0.25f
-			? (float)planet.Get().OceanRadius + planet.WaterHeightAt(direction)
-			: -1.0f;
+		// **What the rim is allowed to say, and it depends on what it is.**
+		//
+		// The sea and a lake are not the same kind of claim. Sea level is a
+		// *constant* -- `OceanRadius`, exact, with no texel error in it at
+		// all -- so out at sea the map's absolute answer is the best one
+		// there is, and the fine terrain decides where the shoreline falls.
+		// A lake's level is a spill height the coarse grid computed, and the
+		// coarse grid is documented to disagree with the terrain the mesher
+		// cuts by up to 116 m; one of its texels is wider than this whole
+		// 2x380 m grid, so a single texel's opinion can cover every direction
+		// around the rim at once. Measured at the default site: a rim
+		// direction the map called a lake 39.5 m above sea level flooded the
+		// lander's own column, whose fine ground is 21 m up and has nothing
+		// to do with that basin.
+		//
+		// **The previous guard fixed that by refusing any seed more than
+		// three voxels above the ground, and in doing so refused the sea.**
+		// Open water is legitimately tens or hundreds of metres above its own
+		// seabed, so the test threw away every rim column that was not within
+		// 4.5 m of the waterline -- 4 of 508 rim columns seeded at the default
+		// site, which is why the only water anywhere near the player was the
+		// fixed-radius shell.
+		//
+		// So: take the sea's level, and take a lake's *depth*. A texel that
+		// is 116 m wrong about where the surface is can still be right that
+		// forty metres of water stand on it, and laying that depth on the
+		// fine ground keeps the answer local.
+		float wetness = planet.WetnessAt(direction);
+		float above = planet.WaterHeightAt(direction);
+		float land = planet.LandHeightAt(direction);
 
-		float shoreSlack = 3.0f * planet.Get().VoxelSize;
-
-		outside[at] = (mapLevel > 0.0f && mapLevel <= m_Ground[at] + shoreSlack)
-			? mapLevel : -1.0f;
+		if (wetness <= 0.25f)
+			outside[at] = -1.0f;
+		else if (above <= s_LakeAbove)
+			outside[at] = (float)planet.Get().OceanRadius;
+		else
+			outside[at] = m_Ground[at] + glm::max(above - land, 0.0f);
 	}
 
 	Flood(outside);
@@ -329,6 +365,12 @@ inline void SurfaceWater::Flood(const std::vector<float>& outside)
 		int at = Index(u, v);
 
 		m_Level[at] = glm::max(m_Ground[at], outside[at]);
+
+		// **A seed is only a source if it actually put water here.** A rim
+		// column the planet-wide map called dry is handed `-1` and settles at
+		// its own ground; that is a bank, not a shore, and nothing downstream
+		// of it should inherit a claim to water.
+		m_Sourced[at] = outside[at] > m_Ground[at] ? 1 : 0;
 
 		done[at] = 1;
 		open.push({ m_Level[at], at });
@@ -362,6 +404,26 @@ inline void SurfaceWater::Flood(const std::vector<float>& outside)
 			// the lake in it is flat, which is the property the planet-wide
 			// version had to be reordered to get.
 			m_Level[next] = glm::max(m_Ground[next], m_Level[at]);
+
+			// **Where the water came from, carried with it.**
+			//
+			// Priority-Flood answers "how high would water stand here if it
+			// were here", which is the depression-filling question and not
+			// the one this grid is asked. Two cases, and the arithmetic
+			// separates them exactly: if the neighbour's surface is above
+			// this column's ground then this column is *under* that water and
+			// inherits wherever it came from; if it is not, the column was
+			// raised to its own ground, which is dry land at the top of a
+			// pit, and the chain stops there.
+			//
+			// A sill does the right thing without being special-cased. Sea at
+			// the rim, ground rising to a sill, a hollow behind it: the sill
+			// is raised to its own height and loses the source, and the
+			// hollow inherits the sill's height with no source, so it is dry.
+			// Cut a channel through the sill and the chain reconnects, which
+			// is the property the demo was always meant to have.
+			m_Sourced[next] = (m_Sourced[at] && m_Level[at] > m_Ground[next])
+				? 1 : 0;
 
 			done[next] = 1;
 			open.push({ m_Level[next], next });
@@ -461,6 +523,28 @@ inline void SurfaceWater::Report() const
 			worstSpread = glm::max(worstSpread, high - low);
 	}
 
+	// **And how much of it is actually drawn.** A sheet is only geometry where
+	// a whole 2x2 of wet columns exists, so a scatter of one- and two-column
+	// puddles reports as water and renders as nothing -- which leaves the
+	// fixed-radius planet-wide shell as the only water anywhere near the
+	// player, at a radius the local terrain has never agreed with. Counted
+	// the same way `BuildMesh` counts it, so the two cannot drift apart.
+	int seeds = 0;
+
+	for (int v = 0; v < Side; v++)
+	for (int u = 0; u < Side; u++)
+		if ((u == 0 || v == 0 || u == Side - 1 || v == Side - 1)
+			&& m_Sourced[Index(u, v)])
+			seeds++;
+
+	int quads = 0;
+
+	for (int v = s_SeedMargin; v < Side - s_SeedMargin - 1; v++)
+	for (int u = s_SeedMargin; u < Side - s_SeedMargin - 1; u++)
+		if (WetAt(Index(u, v)) && WetAt(Index(u + 1, v))
+			&& WetAt(Index(u, v + 1)) && WetAt(Index(u + 1, v + 1)))
+			quads++;
+
 	// And what the seam at the rim actually costs, separately, because it is
 	// a real step in the drawn surface even though it is not the flood's.
 	float worstSeam = 0.0f;
@@ -492,9 +576,11 @@ inline void SurfaceWater::Report() const
 
 	EGSS_TRACE("Surface water: {0} of {1} columns wet ({2:.1f}%) in {3} sheets, "
 		"{4:.0f} m^3; each sheet level to {5:.5f} m inside the seeded ring, "
-		"ground above its own surface by at most {6:.5f} m",
+		"ground above its own surface by at most {6:.5f} m; {7} quads drawn "
+		"({8:.1f}% of the wet columns are in one), from {9} seeded rim columns",
 		wet, count, 100.0f * (float)wet / (float)count, sheets,
-		volume * (double)cell * (double)cell, worstSpread, worstStanding);
+		volume * (double)cell * (double)cell, worstSpread, worstStanding,
+		quads, wet ? 100.0f * (float)quads / (float)wet : 0.0f, seeds);
 
 	// **The seam where the planet-wide answer meets the local one.** The map
 	// says water stands somewhere the real terrain does not support, by up to

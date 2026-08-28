@@ -307,6 +307,19 @@ public:
 		return SampleHydrology(m_Water.Level, direction);
 	}
 
+	// **The ground the map thinks is here**, in the same metres-above-sea-level
+	// that `WaterHeightAt` reports. The pair is what makes a *depth* available
+	// to a caller, and a depth is the one thing a 1.5 km texel knows well: it
+	// can be 116 m out about where the surface is and still right that there
+	// are forty metres of water standing on it.
+	float LandHeightAt(const glm::vec3& direction) const
+	{
+		if (!m_Water.Valid())
+			return 0.0f;
+
+		return SampleHydrology(m_Water.Land, direction);
+	}
+
 	// 1 where there is standing water, 0 where there is not, bilinear between.
 	// The soft edge does not matter: the shoreline a viewer sees comes from
 	// the ground occluding the water surface, at whatever resolution the
