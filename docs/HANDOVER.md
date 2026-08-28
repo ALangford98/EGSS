@@ -1638,6 +1638,13 @@ look caught immediately.
   both gave a 1.6 K pole-to-equator range and no ice caps anywhere. See
   `Climate::Redistribution` and `Climate::Transport`.
 
+- **Below a voxel field, an SDF collider reads solid for ever.** The field is
+  only defined across its own block; queries under it come back negative, so the
+  solver pushes bodies upward without limit. A toolshed placed 400 m underground
+  threw the player out at ninety-five metres a step, and the placement was
+  correct the whole time. Above the field the same query reads as air, so
+  anything that needs to live off the block belongs *up*.
+
 - **The editor viewport is a `glViewport` call, not a framebuffer, and that
   is deliberate.** `EditorShell` publishes the central dock node's rect and
   `DemoLayer` sets the viewport to it before `OnDemoUpdate`. An off-screen

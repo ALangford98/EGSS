@@ -554,6 +554,7 @@ private:
 
 		SpawnWalker();
 		ScatterLoose();
+		BuildShed();
 	}
 
 	void SpawnWalker()
@@ -1194,6 +1195,205 @@ private:
 		}
 	}
 
+	// --- The portal and the toolshed ------------------------------------------
+	//
+	// **A door you can carry, and a room that is not where the door is.**
+	//
+	// The shed is built once, four hundred metres below the block, and stays
+	// there. Deploying the portal does not create it -- it creates a *way in*.
+	// That is the whole idea of a pocket dimension and it is worth building the
+	// cheap version first: the room is somewhere the terrain is not, so it
+	// needs no hole cut in the ground, no clipping against the world, and its
+	// floor is a box rather than a heightfield.
+	//
+	// **Crossing is a plane test, not a trigger volume.** A box you must be
+	// inside for a frame can be stepped through at speed -- the player is at
+	// six metres a second and a fixed step is a sixtieth of a second, so a
+	// half-metre trigger is missed one time in five. Testing which *side* of
+	// the doorway the player was on last step and is on now cannot be outrun,
+	// because the two positions bracket the crossing however fast it happened.
+
+	// **Above the block, not below it, and the reason is the ground collider.**
+	//
+	// The shed was first put 400 m *under* the terrain, which placed the player
+	// correctly and then shoved them upward at ninety-five metres a step. The
+	// ground is an SDF collider over the voxel field, and the field is only
+	// defined across the block: below it every query reads as solid, so the
+	// solver was doing exactly its job -- pushing a body out of rock that goes
+	// down for ever.
+	//
+	// Above the field the same query reads as air, so a room up there is left
+	// alone. The asymmetry is in the field, not in the collider, and putting
+	// the pocket dimension in the sky costs nothing -- nobody can see it, which
+	// is rather the point of a pocket dimension.
+	static constexpr float s_ShedDrop = -400.0f;
+	static constexpr float s_ShedHalf = 4.0f;     // the room is 8 m square
+	static constexpr float s_DoorHalf = 1.1f;     // half the doorway's width
+
+	glm::vec3 ShedCentre() const
+	{
+		return glm::vec3(0.0f, -s_ShedDrop, 0.0f);
+	}
+
+	// The doorway inside the shed, which is the way back out.
+	glm::vec3 ShedDoor() const
+	{
+		return ShedCentre() + glm::vec3(0.0f, 0.0f, -s_ShedHalf);
+	}
+
+	void BuildShed()
+	{
+		glm::vec3 centre = ShedCentre();
+
+		// Floor and four walls as static boxes. The doorway is a gap in one
+		// wall rather than a hole in a mesh: two short walls either side of it,
+		// so the collider and the thing you can see through are the same shape
+		// and there is nothing to keep in step.
+		auto wall = [&](const glm::vec3& at, const glm::vec3& half)
+		{
+			Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(at, half, 0.0f);
+			body.Type = Egss::BodyType::Static;
+			body.Friction = 0.7f;
+
+			m_World.AddBody(body);
+		};
+
+		const float h = s_ShedHalf;
+
+		wall(centre + glm::vec3(0.0f, -0.25f, 0.0f), { h, 0.25f, h });
+		wall(centre + glm::vec3(0.0f, 3.25f, 0.0f), { h, 0.25f, h });
+		wall(centre + glm::vec3(-h, 1.5f, 0.0f), { 0.25f, 1.75f, h });
+		wall(centre + glm::vec3(h, 1.5f, 0.0f), { 0.25f, 1.75f, h });
+		wall(centre + glm::vec3(0.0f, 1.5f, h), { h, 1.75f, 0.25f });
+
+		// The wall with the door in it: two posts and a lintel.
+		float side = 0.5f * (h - s_DoorHalf);
+
+		wall(centre + glm::vec3(-(s_DoorHalf + side), 1.5f, -h),
+			{ side, 1.75f, 0.25f });
+		wall(centre + glm::vec3(s_DoorHalf + side, 1.5f, -h),
+			{ side, 1.75f, 0.25f });
+		wall(centre + glm::vec3(0.0f, 2.85f, -h), { s_DoorHalf, 0.4f, 0.25f });
+	}
+
+	// Which side of a doorway a point is on. The doorway faces +z in its own
+	// frame; `yaw` turns it.
+	static float DoorSide(const glm::vec3& at, const glm::vec3& door, float yaw)
+	{
+		glm::vec3 facing(std::sin(yaw), 0.0f, std::cos(yaw));
+
+		return glm::dot(at - door, facing);
+	}
+
+	// True if the point is within the doorway's opening, ignoring which side.
+	static bool ThroughOpening(const glm::vec3& at, const glm::vec3& door,
+		float yaw)
+	{
+		glm::vec3 facing(std::sin(yaw), 0.0f, std::cos(yaw));
+		glm::vec3 across(facing.z, 0.0f, -facing.x);
+
+		glm::vec3 offset = at - door;
+
+		return std::abs(glm::dot(offset, across)) < s_DoorHalf
+			&& offset.y > -0.4f && offset.y < 2.6f;
+	}
+
+	void TogglePortal()
+	{
+		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+
+		if (m_PortalOn)
+		{
+			// Picked up only from close by, or E anywhere in the world
+			// silently pockets a door you left on the far side of the block.
+			if (glm::length(body.Position - m_PortalAt) < 6.0f)
+				m_PortalOn = false;
+
+			return;
+		}
+
+		// Deployed at your feet, facing the way you came from -- so the first
+		// thing you do after planting it is walk forward through it.
+		glm::vec3 forward = m_Camera.GetForward();
+		forward.y = 0.0f;
+
+		if (glm::length(forward) < 1e-4f)
+			return;
+
+		forward = glm::normalize(forward);
+
+		m_PortalAt = body.Position - glm::vec3(0.0f,
+			s_WalkerHalfHeight + s_WalkerRadius, 0.0f) + forward * 2.2f;
+
+		m_PortalAt.y = Height(m_PortalAt.x, m_PortalAt.z);
+
+		m_PortalYaw = std::atan2(forward.x, forward.z);
+		m_PortalOn = true;
+
+		m_PortalSide = DoorSide(body.Position, m_PortalAt, m_PortalYaw);
+	}
+
+	// Called every fixed step, after the walker has moved.
+	void StepPortal()
+	{
+		if (!m_PortalOn)
+			return;
+
+		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+
+		if (!m_InShed)
+		{
+			float side = DoorSide(body.Position, m_PortalAt, m_PortalYaw);
+
+			// **A sign change, in either direction.**
+			//
+			// This tested `was > 0 && is <= 0` -- front to back only -- and
+			// the portal is planted two metres *in front* of you, so you begin
+			// behind it and walk the other way. It never fired once. A door is
+			// a door from both sides anyway, and a sign change says "crossed"
+			// without caring which way.
+			if ((m_PortalSide > 0.0f) != (side > 0.0f)
+				&& ThroughOpening(body.Position, m_PortalAt, m_PortalYaw))
+			{
+				// Arrive just inside the shed, past its own door, so you are
+				// not standing in the doorway you would immediately re-cross.
+				body.Position = ShedDoor()
+					+ glm::vec3(0.0f, s_WalkerHalfHeight + s_WalkerRadius + 0.3f,
+						1.2f);
+
+				body.Velocity = glm::vec3(0.0f);
+				body.Awake = true;
+
+				m_InShed = true;
+				m_ShedSide = DoorSide(body.Position, ShedDoor(), 0.0f);
+			}
+
+			m_PortalSide = side;
+
+			return;
+		}
+
+		float side = DoorSide(body.Position, ShedDoor(), 0.0f);
+
+		if ((m_ShedSide > 0.0f) != (side > 0.0f)
+			&& ThroughOpening(body.Position, ShedDoor(), 0.0f))
+		{
+			glm::vec3 facing(std::sin(m_PortalYaw), 0.0f, std::cos(m_PortalYaw));
+
+			body.Position = m_PortalAt + facing * 1.6f
+				+ glm::vec3(0.0f, s_WalkerHalfHeight + s_WalkerRadius + 0.3f,
+					0.0f);
+
+			body.Velocity = glm::vec3(0.0f);
+			body.Awake = true;
+
+			m_InShed = false;
+			m_PortalSide = DoorSide(body.Position, m_PortalAt, m_PortalYaw);
+		}
+
+		m_ShedSide = side;
+	}
+
 	// --- Walking ------------------------------------------------------------
 
 	void MoveWalker(Egss::Timestep step)
@@ -1316,6 +1516,13 @@ private:
 
 		m_WasToggling = toggle;
 
+		bool portal = Egss::Input::IsKeyPressed(EGSS_KEY_E);
+
+		if (portal && !m_WasPortal)
+			TogglePortal();
+
+		m_WasPortal = portal;
+
 		bool clip = Egss::Input::IsKeyPressed(EGSS_KEY_V);
 
 		if (clip && !m_WasClipping)
@@ -1354,6 +1561,8 @@ private:
 		MoveWalker(step);
 		m_World.Step(step);
 
+		StepPortal();
+
 		m_Time += (float)step;
 	}
 
@@ -1386,6 +1595,7 @@ private:
 
 	std::vector<Loose> m_Loose;
 	std::shared_ptr<Egss::Mesh> m_Boulder;
+	std::shared_ptr<Egss::Mesh> m_Cube;
 	int m_LooseCount = 26;
 
 	static constexpr int s_TreeShapes = 6;
@@ -1492,6 +1702,14 @@ private:
 	bool m_WasDigging = false;
 	bool m_WasAdding = false;
 	bool m_WasSpawning[s_Grid * s_Grid] = {};
+	bool m_WasPortal = false;
+
+	bool m_PortalOn = false;
+	bool m_InShed = false;
+	glm::vec3 m_PortalAt = glm::vec3(0.0f);
+	float m_PortalYaw = 0.0f;
+	float m_PortalSide = 0.0f;
+	float m_ShedSide = 0.0f;
 	float m_LastMouseX = 0.0f;
 	float m_LastMouseY = 0.0f;
 };
@@ -2380,6 +2598,44 @@ inline void TerrainLab::BuildTrees()
 	// here is its density and its colour, not its silhouette, and that is
 	// honest enough for a buoyancy test.
 	m_Boulder = std::make_shared<Egss::Mesh>(Boulder::Build(4177u), "LabRock");
+
+	// A unit cube, scaled by whatever draws it. The doorway and the shed are
+	// both made of boxes and neither is worth a mesh of its own.
+	{
+		Egss::MeshData cube;
+
+		const glm::vec3 n[6] = { { 0,0,1 }, { 0,0,-1 }, { 1,0,0 },
+			{ -1,0,0 }, { 0,1,0 }, { 0,-1,0 } };
+
+		for (int f = 0; f < 6; f++)
+		{
+			glm::vec3 normal = n[f];
+			glm::vec3 up = std::abs(normal.y) > 0.5f
+				? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0);
+
+			glm::vec3 right = glm::cross(up, normal);
+			up = glm::cross(normal, right);
+
+			unsigned int at = (unsigned int)cube.Vertices.size();
+
+			for (int j = 0; j < 2; j++)
+			for (int i = 0; i < 2; i++)
+				cube.Vertices.push_back({
+					normal + right * ((float)i * 2.0f - 1.0f)
+						+ up * ((float)j * 2.0f - 1.0f),
+					normal, { (float)i, (float)j } });
+
+			cube.Indices.insert(cube.Indices.end(),
+				{ at, at + 1, at + 3, at, at + 3, at + 2 });
+		}
+
+		Egss::Submesh all;
+		all.IndexCount = (unsigned int)cube.Indices.size();
+		cube.Submeshes.push_back(all);
+		cube.RecalculateBounds();
+
+		m_Cube = std::make_shared<Egss::Mesh>(cube, "LabCube");
+	}
 }
 
 // **Water is one quad, and the depth buffer does the rest.**
@@ -2893,6 +3149,80 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		}
 	}
 
+	// **The doorway, and the shed if you are in it.** Both are drawn from the
+	// same unit cube through the tree shader with the sway off -- a frame is
+	// three boxes and a room is six, and neither is worth its own mesh or its
+	// own shader while the point is to test that walking through works.
+	if (m_PortalOn || m_InShed)
+	{
+		m_TreeMaterial->Set("u_Compliance", 0.0f);
+		m_TreeMaterial->Set("u_MaxLean", 0.0f);
+
+		auto box = [&](const glm::vec3& at, const glm::vec3& half,
+			float yaw, const glm::vec3& colour)
+		{
+			m_TreeMaterial->Set("u_Color", colour);
+
+			glm::mat4 transform =
+				glm::scale(
+					glm::rotate(glm::translate(glm::mat4(1.0f), at),
+						yaw, glm::vec3(0.0f, 1.0f, 0.0f)),
+					half);
+
+			Egss::Renderer::Submit(m_TreeMaterial, m_Cube, transform);
+		};
+
+		glm::vec3 timber(0.36f, 0.24f, 0.14f);
+
+		if (m_PortalOn)
+		{
+			glm::vec3 across(std::cos(m_PortalYaw), 0.0f, -std::sin(m_PortalYaw));
+
+			// Two posts and a lintel, standing on the ground where it was
+			// planted. The dark panel between them is not a rendered portal --
+			// it is a flat quad, and it is honest about that: what makes the
+			// door work is the plane test, not the picture.
+			box(m_PortalAt + across * (s_DoorHalf + 0.12f)
+				+ glm::vec3(0.0f, 1.25f, 0.0f), { 0.12f, 1.25f, 0.12f },
+				m_PortalYaw, timber);
+
+			box(m_PortalAt - across * (s_DoorHalf + 0.12f)
+				+ glm::vec3(0.0f, 1.25f, 0.0f), { 0.12f, 1.25f, 0.12f },
+				m_PortalYaw, timber);
+
+			box(m_PortalAt + glm::vec3(0.0f, 2.62f, 0.0f),
+				{ s_DoorHalf + 0.24f, 0.12f, 0.14f }, m_PortalYaw, timber);
+
+			box(m_PortalAt + glm::vec3(0.0f, 1.25f, 0.0f),
+				{ s_DoorHalf, 1.25f, 0.02f }, m_PortalYaw,
+				glm::vec3(0.03f, 0.03f, 0.05f));
+		}
+
+		if (m_InShed)
+		{
+			glm::vec3 centre = ShedCentre();
+			const float h = s_ShedHalf;
+
+			glm::vec3 plank(0.30f, 0.22f, 0.15f);
+
+			box(centre + glm::vec3(0.0f, -0.25f, 0.0f), { h, 0.25f, h }, 0.0f,
+				glm::vec3(0.24f, 0.18f, 0.12f));
+			box(centre + glm::vec3(0.0f, 3.25f, 0.0f), { h, 0.25f, h }, 0.0f, plank);
+			box(centre + glm::vec3(-h, 1.5f, 0.0f), { 0.25f, 1.75f, h }, 0.0f, plank);
+			box(centre + glm::vec3(h, 1.5f, 0.0f), { 0.25f, 1.75f, h }, 0.0f, plank);
+			box(centre + glm::vec3(0.0f, 1.5f, h), { h, 1.75f, 0.25f }, 0.0f, plank);
+
+			float side = 0.5f * (h - s_DoorHalf);
+
+			box(centre + glm::vec3(-(s_DoorHalf + side), 1.5f, -h),
+				{ side, 1.75f, 0.25f }, 0.0f, plank);
+			box(centre + glm::vec3(s_DoorHalf + side, 1.5f, -h),
+				{ side, 1.75f, 0.25f }, 0.0f, plank);
+			box(centre + glm::vec3(0.0f, 2.85f, -h),
+				{ s_DoorHalf, 0.4f, 0.25f }, 0.0f, plank);
+		}
+	}
+
 	// Water last: it is blended, so anything it may sit in front of has to be
 	// in the depth buffer already.
 	if (HasWater() && m_Water)
@@ -2949,6 +3279,12 @@ inline void TerrainLab::OnDemoImGui()
 	{
 		ImGui::Checkbox("No clip (V)", &m_NoClip);
 		ImGui::TextDisabled("  space/ctrl to rise and sink while it is on");
+
+		ImGui::Separator();
+		ImGui::Text("Portal: %s%s", m_PortalOn ? "deployed" : "stowed",
+			m_InShed ? " (you are in the shed)" : "");
+		ImGui::TextDisabled("  E to plant it in front of you, E again nearby");
+		ImGui::TextDisabled("  to pick it up; walk through to reach the shed");
 	}
 
 	// --- The biome grid -----------------------------------------------------

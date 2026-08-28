@@ -1264,6 +1264,41 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-29 (a door you can carry, and a room that is not where the door is)
+
+`E` plants a doorway in front of you and `E` again nearby pockets it. Walk
+through and you are in a toolshed; walk out of the shed's door and you are back
+where you left it. One portal, and the shed is built once and stays built --
+deploying does not create a room, it creates a *way in*, which is what a pocket
+dimension is.
+
+**Crossing is a plane test, not a trigger volume.** A box you must be inside for
+a frame can be outrun: the player moves six metres a second and a fixed step is
+a sixtieth, so a half-metre trigger is missed one time in five. Testing which
+*side* of the doorway the player was on last step and is on now cannot be
+outrun, because the two positions bracket the crossing however fast it happened.
+
+Two faults, and the second is the interesting one.
+
+The crossing test was `was in front && is behind` -- one direction only -- and
+the portal is planted two metres *in front* of you, so you begin behind it and
+walk the other way. It never fired once. A door is a door from both sides, and a
+sign change says "crossed" without caring which way.
+
+**The shed was 400 m underground, and the ground collider threw the player out
+of it at ninety-five metres a step.** The placement was exactly right -- y
+-398.80 with the floor at -400 -- and then the solver shoved them upward,
+continuously. It was doing precisely its job: the ground is an SDF collider over
+the voxel field, the field is only defined across the block, and *below* it
+every query reads as solid. The player was being pushed out of rock that goes
+down for ever.
+
+Above the field the same query reads as air. So the pocket dimension is in the
+sky instead, which costs nothing because nobody can see it -- and the asymmetry
+is worth remembering, because anything else placed outside the block will meet
+the same wall. Verified: into the shed at y 400.9 standing on its floor, back
+out at y 3.0 on the terrain.
+
 ### 2026-08-29 (an editor layout, and the demo gets a viewport)
 
 Every panel in the sandbox was an independent ImGui window dropped wherever it
