@@ -1638,6 +1638,13 @@ look caught immediately.
   both gave a 1.6 K pole-to-equator range and no ice caps anywhere. See
   `Climate::Redistribution` and `Climate::Transport`.
 
+- **The default landing site is a hard-coded direction, and any change to
+  `Relief` invalidates it.** `SolarSystem::DefaultSite()` was surveyed once
+  against terrain that has since changed twice. When it goes stale the demo
+  opens underwater or inside a cliff, and it reads as a broken camera rather
+  than a moved site. The survey that picks a new one is written out in the
+  2026-08-28 changelog; it is temporary code each time, run once and deleted.
+
 - **`1 - |n|` doubles the frequency, and every band limit has to know.**
   A ridge field of wavelength L carries detail at L/2, so a cap that cuts
   octaves at "the finest wavelength this sampler can represent" keeps one that

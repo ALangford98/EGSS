@@ -1264,6 +1264,67 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (grass, wind you can see, and the first two shared modules)
+
+Two new modules, and they are the first pieces built as modules rather than
+found inside a demo and left there.
+
+**`Grass.h`** is `OpenWorld::BuildGrass` lifted out so the planet can have grass
+too. That move was most of the work: the original assumed `+Y` was up in four
+separate places, which is true on a flat world and false everywhere on a sphere.
+Nothing in the module knows which way up is — it asks.
+
+It asks through a **template parameter rather than a `std::function`**, and the
+reason is the one place in this refactor where the choice has a cost either way.
+The callbacks run once per terrain triangle, thousands of times per chunk while
+chunks stream in. A `std::function` is an indirect call the optimiser cannot see
+through, so it cannot inline the body or hoist anything out of the loop; a
+template is resolved at compile time, and OpenWorld's `up` — which returns a
+constant — compiles away to nothing. The price is that a template lives in a
+header and every user compiles its own copy. **Things called in a loop are worth
+a template; things called once are worth a `.cpp`.**
+
+On the planet, the vertical has to be recovered by adding the chunk's
+float-sized local position back onto its planet-sized origin *in double*, which
+is the same split the whole chunk system rests on. Where grass belongs is asked
+of the hydrology's own moisture field, so the grass line and the biome colour
+cannot disagree.
+
+The blade bends by the height it already carries in `a_TexCoord.y` — zero at the
+root, one at the tip — so the root stays planted without anything knowing where
+it is. Grass goes as the **first** power of that where a trunk goes as the
+square: a trunk is a cantilever, a blade is closer to a hinge.
+
+**Bending preserves length, and leaving that out was immediately visible.** The
+first version displaced the tip sideways and nothing else, so at this site's
+8 m/s the blade did not bend, it *stretched* — the meadow came out as long dark
+streaks lying across the ground. A blade pivots, so its tip travels an arc of
+its own length and must drop by `h - sqrt(h² - d²)`. That caps the lean on its
+own, since `d` can never exceed `h`.
+
+**`WindStreaks.h`** draws the wind. Everything else the weather does is a force,
+legible only if you already know to look for it; this is the wind as something
+you can see, drifting at exactly the speed the model says the air is moving, so
+the grass and the strokes above it are two views of one number. Painterly on
+purpose — air is transparent and there is nothing there to draw, so what these
+stand in for is what a painter puts on a canvas to say "windy". The geometry is
+honest and the appearance is a brush stroke.
+
+One static mesh, advected on the GPU and wrapped in a box centred on the camera,
+so a streak that leaves downwind reappears upwind and the field is endless for
+one draw call. The first pass made them 0.1 to 0.45 m wide, which at a hundred
+metres is well under a pixel — every soft profile in the fragment shader was
+thrown away by the rasteriser and the field came out as hard thin scratches. A
+brush stroke has to cover enough pixels for its own taper to show, which is a
+lower bound in *pixels* and therefore in metres once the box fixes the distance.
+
+**And the default landing site had to be re-surveyed.** It is a hard-coded
+direction, chosen once against relief that no longer exists — after the
+continent work the old site came out underwater, which looks like a broken
+camera rather than a moved site. The new one is 54.8 m above sea level, slope
+0.066, 138 m of relief inside 400 m, shore 240 m away. **Anything that changes
+`Relief` invalidates that constant.**
+
 ### 2026-08-28 (the planet had no continents, and four reasons why)
 
 The orbital view had been called "malformed terrain" three times, and looking at

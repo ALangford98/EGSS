@@ -79,6 +79,7 @@
 #include "HorizonMesh.h"
 #include "PocketDimension.h"
 #include "Climate.h"
+#include "WindStreaks.h"
 
 // **Sampling a sphere map across the seam it necessarily has.**
 //
@@ -3457,6 +3458,8 @@ public:
 		}
 
 		DrawPlants(index, it->second, centre, spin);
+
+		DrawWindStreaks(index);
 	}
 
 	// **What the sky over this body is worth as a light.**
@@ -3794,6 +3797,59 @@ public:
 		EGSS_TRACE("Planet trees: {0} shapes x {1} levels, {2} triangles each "
 			"on average", s_TreeShapes, s_TreeLods,
 			triangles / (s_TreeShapes * s_TreeLods));
+	}
+
+	// **The wind, as something you can see.** See `WindStreaks.h` for what
+	// these are and are not.
+	//
+	// Only from the ground, and only in air: from orbit there is nothing to
+	// draw streaks *in*, and the same field seen from 750 km would be a haze
+	// of specks over the whole disc. The strength goes as the wind speed
+	// itself, so a calm day draws nothing at all rather than drawing a still
+	// field of strokes -- which would be worse than drawing none.
+	void DrawWindStreaks(size_t index)
+	{
+		if (!m_Walking || (size_t)m_Ground != index || m_Pocket.InPocket())
+			return;
+
+		if (!m_HasWeather || !m_StreakMesh || m_Weather.AirDensity <= 1e-4f)
+			return;
+
+		float speed = m_Weather.WindSpeed;
+
+		if (speed < 0.3f)
+			return;
+
+		auto material = Egss::Material::CreateInstance(m_StreakMaterial);
+
+		material->Set("u_Wind", m_WindScene);
+		material->Set("u_Extent", s_StreakExtent);
+
+		// Seconds, so the drift really is metres per second of wind. The
+		// clock is in years, and near a surface it runs at `SecondsPerDay`.
+		material->Set("u_Time", (float)(m_Time * 365.25 * 24.0 * 3600.0));
+
+		// Normalised against a brisk wind, so the field thickens as it picks
+		// up and is gone when it drops.
+		material->Set("u_Speed", glm::clamp(speed / 12.0f, 0.0f, 1.4f));
+
+		material->Set("u_Colour", glm::mix(glm::vec3(0.86f, 0.90f, 0.95f),
+			SkyLight(index) * 3.0f + glm::vec3(0.35f), 0.5f));
+
+		material->Set("u_Strength", 0.42f);
+
+		// Premultiplied and no depth write: these are air, so they add light
+		// to what is behind them and never hide it. No culling, because a
+		// stroke is a flat quad and half of them face away.
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Premultiplied);
+		Egss::RenderCommand::SetDepthWrite(false);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+
+		Egss::Renderer::Submit(material, m_StreakMesh, glm::mat4(1.0f));
+
+		Egss::RenderCommand::SetDepthWrite(true);
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
 	}
 
 	// Everything the grass shader needs about this body, now.
@@ -5720,6 +5776,14 @@ private:
 			grassVertexSrc, grassFragmentSrc));
 
 		m_GrassMaterial = Egss::Material::Create(m_GrassShader);
+
+		m_StreakShader.reset(Egss::Shader::Create("WindStreaks",
+			WindStreaks::VertexSource(), WindStreaks::FragmentSource()));
+
+		m_StreakMaterial = Egss::Material::Create(m_StreakShader);
+
+		m_StreakMesh = std::make_shared<Egss::Mesh>(
+			WindStreaks::BuildMesh(s_StreakCount, s_StreakExtent), "WindStreaks");
 		m_Material = Egss::Material::Create(m_Shader);
 
 		BuildTerrainShader();
@@ -7237,6 +7301,15 @@ private:
 	std::vector<glm::mat4> m_TreeBatch[s_TreeShapes][s_TreeLods];
 
 	std::shared_ptr<Egss::Shader> m_TreeShader;
+	// The wind field: one static mesh in a box round the camera, drifted on
+	// the GPU. 220 m is a little past where the strokes stop being legible.
+	static constexpr int s_StreakCount = 1100;
+	static constexpr float s_StreakExtent = 150.0f;
+
+	std::shared_ptr<Egss::Shader> m_StreakShader;
+	std::shared_ptr<Egss::Material> m_StreakMaterial;
+	std::shared_ptr<Egss::Mesh> m_StreakMesh;
+
 	std::shared_ptr<Egss::Shader> m_GrassShader;
 	std::shared_ptr<Egss::Material> m_GrassMaterial;
 	std::shared_ptr<Egss::Material> m_TreeMaterial;
