@@ -1638,6 +1638,23 @@ look caught immediately.
   both gave a 1.6 K pole-to-equator range and no ice caps anywhere. See
   `Climate::Redistribution` and `Climate::Transport`.
 
+- **There is no MSAA in this engine.** Nothing calls `glEnable(GL_MULTISAMPLE)`
+  and no window hint asks for samples. That is why sub-pixel geometry -- grass
+  blades are 6 mm -- aliases as hard as it does, and it is worth knowing before
+  building impostors to work around it.
+
+- **Sub-pixel geometry aliases in its *shading*, not its silhouette.** The fix
+  that worked for grass was not smoothing or more triangles: it was converging
+  each blade's normal, colour and gradient toward the ground's with distance, so
+  that a pixel landing on a blade and one landing beside it shade the same and
+  the coverage coin-flip stops showing. Measured as mean Laplacian of luminance:
+  -58% on the far band, -0.2% near, which is the shape you want.
+
+- **Flat normals are why anything built as a jittered low-poly sphere looks
+  blocky.** `Veg::LeafCluster` gave each triangle its own face normal; radial
+  normals from the cluster centre cost nothing and turn the same geometry into a
+  blob. Check this before adding triangles.
+
 - **Put input that edits or teleports on the fixed step, not on events.**
   Events are not in the replay stream and `Egss::Input` is, so a digging session
   polled on the fixed step records and replays and one handled from events does

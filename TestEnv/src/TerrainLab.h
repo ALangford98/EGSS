@@ -1408,6 +1408,7 @@ inline void TerrainLab::BuildShaders()
 		uniform float u_Keep;
 		uniform float u_Seed;
 		uniform float u_MaxLean;
+		uniform float u_Fade;
 
 		out vec3 v_Normal;
 		out float v_Up;
@@ -1522,19 +1523,52 @@ inline void TerrainLab::BuildShaders()
 		uniform vec3 u_Tip;
 		uniform vec3 u_Dry;
 		uniform float u_Dryness;
+		uniform vec3 u_Up;
+
+		// 0 close, 1 far. See the note in `main` -- this is the whole of the
+		// distance treatment and it is a shading change, not a geometry one.
+		uniform float u_Fade;
 
 		void main()
 		{
+			// **Distant grass stops being individual blades.**
+			//
+			// A blade is six millimetres across, so beyond a couple of metres
+			// it is well under a pixel wide. Coverage is then a coin-flip per
+			// pixel -- the blade either contains the sample point or it does
+			// not -- and every blade carries its own normal, its own colour
+			// jitter and its own root-to-tip gradient. Three high-frequency
+			// signals, all aliasing, all moving in the wind: that is the
+			// grainy sparkle, and no amount of smoothing the *geometry* will
+			// touch it, because the geometry is not the thing being sampled
+			// too coarsely -- the shading is.
+			//
+			// The fix is to make the two outcomes of that coin-flip look the
+			// same. Converge every blade's normal toward the ground's, and its
+			// colour toward the field's mean, as it recedes. Then a pixel that
+			// lands on a blade and a pixel that lands on the gap beside it
+			// shade almost identically, and the aliasing stops *showing* even
+			// though it is still there.
+			//
+			// It is also the physically sensible thing. A field of grass seen
+			// from a distance does not shade like a million independent
+			// leaves; it shades like a surface. Close up you are looking at
+			// blades and far away you are looking at a meadow, and this is the
+			// one line that says so.
 			vec3 normal = normalize(v_Normal);
 
-			if (normal.y < 0.0)
+			if (dot(normal, u_Up) < 0.0)
 				normal = -normal;
+
+			normal = normalize(mix(normal, u_Up, u_Fade));
 
 			// Dark at the root, light at the tip: ambient occlusion, and a
 			// real one -- a blade near the ground is surrounded by other
 			// blades and sees almost none of the sky. It is the single thing
 			// that makes a field read as depth rather than as a green plane.
-			vec3 base = mix(u_Root, u_Tip, v_Up);
+			// The root-to-tip gradient is the third aliasing signal, so it
+			// goes the same way: at distance every blade is its own average.
+			vec3 base = mix(u_Root, u_Tip, mix(v_Up, 0.62, u_Fade));
 
 			// **Blade to blade variation, from the ticket.** Two independent
 			// shifts rather than one: a brightness spread alone reads as
@@ -1542,8 +1576,11 @@ inline void TerrainLab::BuildShaders()
 			// Wide enough to read as different plants, not so wide that the
 			// low end goes black -- which is what 0.72 of an already dark
 			// root did.
-			base *= mix(0.86, 1.22, v_Tint);
-			base = mix(base, base.gbr, 0.10 * fract(v_Tint * 7.13));
+			// And the per-blade variation, faded out with the rest: it is what
+			// makes a near field look like plants and what makes a far one
+			// look like static.
+			base *= mix(mix(0.86, 1.22, v_Tint), 1.02, u_Fade);
+			base = mix(base, base.gbr, 0.10 * fract(v_Tint * 7.13) * (1.0 - u_Fade));
 
 			// Drying out: the same blades, gone to straw.
 			base = mix(base, u_Dry * mix(0.8, 1.2, v_Tint), u_Dryness);
@@ -2019,6 +2056,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		m_GrassMaterial->Set("u_MaxLean", m_GrassHeight * m_MaxLean);
 
 		// Darker at the root than the tip -- see the fragment shader.
+		m_GrassMaterial->Set("u_Up", glm::vec3(0.0f, 1.0f, 0.0f));
 		m_GrassMaterial->Set("u_Root", glm::vec3(0.14f, 0.22f, 0.09f));
 		m_GrassMaterial->Set("u_Tip", glm::vec3(0.44f, 0.64f, 0.26f));
 		m_GrassMaterial->Set("u_Dry", glm::vec3(0.62f, 0.55f, 0.28f));
@@ -2034,8 +2072,16 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 
 			float away = glm::length(centre - eye);
 
-			m_GrassMaterial->Set("u_Keep", glm::mix(1.0f, 0.25f,
-				glm::smoothstep(25.0f, 85.0f, away)));
+			// **Blades stop entirely at the far end, and the ground carries
+			// it.** Thinning to a fifth still leaves a fifth of the sparkle;
+			// going to nothing leaves the terrain, which is already tinted
+			// green by the same climate the grass grew from and already has a
+			// noise texture on it. The only thing lost past sixty metres is
+			// detail nobody can resolve.
+			float fade = glm::smoothstep(18.0f, 60.0f, away);
+
+			m_GrassMaterial->Set("u_Keep", 1.0f - fade);
+			m_GrassMaterial->Set("u_Fade", fade);
 
 			// Straw or green, from the climate at this chunk's own centre.
 			// Per chunk rather than per blade because it is a colour and a

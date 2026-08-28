@@ -109,18 +109,41 @@ namespace Veg {
 				std::sin(v) * std::sin(u)) * r;
 		};
 
+		// **Radial normals, not the triangle's own.**
+		//
+		// This used one flat normal per face, and that is the whole reason a
+		// leaf cluster read as *blocky*: it is a low-polygon sphere with the
+		// radius jittered per point, so flat shading draws every one of those
+		// facets as its own flat patch of colour and the lumpiness that was
+		// meant to make it look organic instead outlines each triangle.
+		//
+		// A cluster of leaves is a blob. The normal a blob has at a point is
+		// the direction from its centre to that point -- which is free here,
+		// because the centre is already known, and which shades the whole
+		// cluster as one rounded mass while leaving the silhouette exactly as
+		// jagged as it was. The lumpy radius then reads as what it is, a rough
+		// surface, rather than as a modelling error.
 		auto face = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
 		{
-			glm::vec3 n = glm::cross(b - a, c - a);
-			if (glm::length(n) < 1e-9f)
+			glm::vec3 flat = glm::cross(b - a, c - a);
+			if (glm::length(flat) < 1e-9f)
 				return;
 
-			n = glm::normalize(n);
+			auto outward = [&](const glm::vec3& p)
+			{
+				glm::vec3 out = p - centre;
+				float length = glm::length(out);
+
+				// Degenerate only if a point landed on the centre, which the
+				// radius jitter cannot produce -- but a normalize of zero is
+				// a NaN that spreads, so it is worth the branch.
+				return length > 1e-6f ? out / length : glm::normalize(flat);
+			};
 
 			unsigned int at = (unsigned int)data.Vertices.size();
-			data.Vertices.push_back({ a, n, { 0.0f, 0.0f } });
-			data.Vertices.push_back({ b, n, { 1.0f, 0.0f } });
-			data.Vertices.push_back({ c, n, { 0.5f, 1.0f } });
+			data.Vertices.push_back({ a, outward(a), { 0.0f, 0.0f } });
+			data.Vertices.push_back({ b, outward(b), { 1.0f, 0.0f } });
+			data.Vertices.push_back({ c, outward(c), { 0.5f, 1.0f } });
 			data.Indices.push_back(at);
 			data.Indices.push_back(at + 1);
 			data.Indices.push_back(at + 2);

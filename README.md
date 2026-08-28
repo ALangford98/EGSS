@@ -1264,6 +1264,60 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (leaves that are blobs, and grass that stops being blades)
+
+**Leaf clusters were blocky for one reason: flat normals.** `LeafCluster` builds
+a low-polygon sphere with the radius jittered per point and gave every triangle
+its own face normal, so flat shading drew each facet as its own flat patch of
+colour -- and the jitter that was there to make the blob look organic instead
+outlined every triangle in it.
+
+A cluster of leaves is a blob, and the normal a blob has at a point is the
+direction from its centre. That was already known here and free to compute. The
+silhouette is exactly as jagged as it was; what changed is that the lumpy radius
+now reads as a rough surface rather than as a modelling error.
+
+**The grass sparkle is not a smoothing problem, and smoothing would not have
+fixed it.** A blade is six millimetres across, so beyond a couple of metres it
+is well under a pixel wide. Coverage is then a coin-flip per pixel -- the blade
+either contains the sample point or it does not -- and every blade carries its
+own normal, its own colour jitter *and* its own root-to-tip gradient. Three
+high-frequency signals, all aliasing, all moving in the wind.
+
+The proposal on the table was to texture-map distant grass. That is the standard
+endgame and it is a lot of machinery -- bake an atlas, cross-quads, cross-fade
+between two representations, and impostors bring their own popping. There is a
+cheaper thing that targets the actual complaint: **make the two outcomes of the
+coin-flip look the same.** Converge each blade's normal toward the ground's, and
+its colour and gradient toward the field's mean, as it recedes. A pixel that
+lands on a blade and a pixel that lands on the gap beside it then shade almost
+identically, and the aliasing stops *showing* even though it is still there.
+
+It is also the physically sensible thing. A field of grass at a distance does
+not shade like a million independent leaves; it shades like a surface. Close up
+you are looking at blades, far away you are looking at a meadow.
+
+Blades now stop entirely past sixty metres rather than thinning to a fifth --
+a fifth of the blades is still a fifth of the sparkle, and the terrain beneath
+is already tinted green by the same climate the grass grew from and already
+carries a noise texture. Measured as mean Laplacian of luminance, which is what
+a per-pixel sparkle *is*:
+
+| band | before | after | |
+|---|---|---|---|
+| far hillside | 7.462 | 3.133 | **−58%** |
+| mid | 10.324 | 8.218 | −20% |
+| near | 14.319 | 14.285 | −0.2% |
+
+The near field is deliberately untouched: at two metres a blade is about 3.7
+pixels wide, so what varies there is detail rather than aliasing, and flattening
+it would be throwing away the thing the density was bought for.
+
+Worth writing down for whoever reaches for impostors later: **there is no MSAA
+anywhere in this engine**, which is why sub-pixel geometry aliases as hard as it
+does here. Turning it on is probably worth more than any of this, and is a
+window-creation flag rather than a rendering feature.
+
 ### 2026-08-28 (digging was on the wrong input path, and trees that bend rather than fall)
 
 **The dig was fine; the way it was being asked for was not.** Every part of the
