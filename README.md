@@ -1264,6 +1264,74 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (the planet had no continents, and four reasons why)
+
+The orbital view had been called "malformed terrain" three times, and looking at
+it was never going to settle it. Dumping the baked map did, immediately: the
+land was not continents but a **spidery filigree**, a net of threads with no
+landmass anywhere in it. Two numbers off that dump:
+
+- The wet mask had **exactly two distinct alpha values** — a hard binary
+  land/sea test, no antialiasing at all.
+- **129 land/sea crossings per row** of 1024 texels. A handful of continents
+  would give five or six.
+
+Four separate causes, each measured on its own.
+
+**1. The coastline was cut across flat ground.** Sea level is solved for a
+target land fraction, so it goes wherever it must — and the height field was
+near-Gaussian with only **8.6% of its variance at continent scale** and 41%
+below 6 km. Cutting a unimodal distribution near its mode is the case that
+maximises boundary length. Earth's hypsometry is strongly bimodal — continental
+platform, abyssal plain four kilometres down, sea level in the gap — which is
+exactly why its coastlines are crisp. `ContinentEdge` squashes the broad noise
+into two plateaus joined by a slope, so the same detail noise now shifts the
+coast a little way along a gradient instead of shredding it. 129 → 87.
+
+**2. Mountains were being built on the sea floor.** `Landscape` was added at
+full strength everywhere, and on this planet it is the *larger* of the two: up
+to 700 m of range on a continental step of about 270 m. The shape that decides
+where land is was outvoted by the shape that decides what land looks like.
+Weighting it by the platform is what the real thing does anyway — ocean floor is
+smooth because nothing uplifts it, coastal plains are flat because they are the
+drowned edge of the platform, ranges are inland. 87 → 59, and with the
+continental share raised, 59 → 55.
+
+**3. The map was aliasing the landscape into noise, and the drainage pass
+believed it.** This was the big one, and the cap that was supposed to prevent it
+was already there and already carried a comment saying exactly what would happen
+("an aliased height field routes water into pits that are not there"). It cut
+octaves at the finest wavelength the sampler could represent — but `1 - |n|`
+puts a corner wherever the noise crosses zero, so **a ridge field of wavelength
+L carries detail at L/2**, and the cap never accounted for the fold. It also
+floored at one octave, so the layer went into the map no matter what. A 4 km
+ridge field with 700 m of rise, on a 1.5 km texel, came out as per-texel salt
+and pepper across every continent.
+
+That is not just a rendering problem. The drainage pass runs on that grid, and
+it reported **a quarter of all land under a lake** against about two per cent
+for the real thing. Doubling the cut and dropping the layer when even its
+coarsest octave is below the line: **55 → 24.8 crossings**, and lakes 23.3% →
+12.1%. The ground you walk on is meshed at 1.5 m and passes no cap, so it keeps
+every octave — this only ever trims the map.
+
+**4. And then the continents came out grey.** Fixing the coastline made the
+hypsometry bimodal, which broke a ramp that had been fine before:
+`smoothstep(0.45, 0.75, height/top)` for bare rock. A fraction of the tallest
+land reads as scale-independence and is not — it assumes land heights are spread
+evenly from sea level to the summit, and a continental platform sits near the
+*top* of the range by construction. Every interior landed above `f = 0.7` and
+was painted rock with a thin green rim at the shore.
+
+Height does not decide what grows; temperature does. The tree line is the
+isotherm where the warm part of the year stops being warm enough to build wood,
+and driving it the same way as the snow line means the two cannot cross. That
+removed `u_LandTop` and `ReliefHigh` again on the way — both had been added an
+hour earlier for a ramp that no longer exists.
+
+From orbit: land 23.7% → 19.8% of the disc against 24% expected from the
+hydrology's own dry-land figure, and it is continents now rather than lace.
+
 ### 2026-08-28 (a snow line that is a temperature, and a pole that is cold)
 
 Wiring the weather into the terrain found a real flaw in the model committed an
