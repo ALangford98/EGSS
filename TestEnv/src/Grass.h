@@ -34,9 +34,13 @@ namespace Grass {
 
 	struct Settings
 	{
-		// Blades per qualifying triangle. Fractional, and honestly so -- see
-		// the note at the count below.
-		float Density = 0.6f;
+		// **Density is what makes grass look like grass**, more than any other
+		// number here. A real lawn is thousands of blades a square metre; this
+		// ran at 0.6 blades per terrain triangle, which on a chunk of metre-
+		// scale triangles is a few blades a square metre, and no shape or
+		// width will rescue that -- it reads as sparse spikes because it *is*
+		// sparse spikes.
+		float Density = 5.0f;
 
 		float Height = 0.42f;
 		float Width = 0.045f;
@@ -59,11 +63,8 @@ namespace Grass {
 	// `allow` returns 0..1 for how much grass belongs at a point, given the
 	// point and its face normal -- the caller's biome test, whatever that is.
 	//
-	// One triangle a blade. A quad would be two triangles for a shape nobody
-	// can distinguish at the size these are drawn, and grass is the one thing
-	// here where the count is the cost.
-	//
-	// Placed on the terrain's own triangles rather than on a grid, so blades
+	// Three triangles a blade -- see the note where they are built for why one
+	// is not enough. Placed on the terrain's own triangles rather than on a grid, so blades
 	// follow the ground exactly and inherit the mesh's density -- more
 	// triangles where the surface is busier is also where more grass looks
 	// right.
@@ -165,17 +166,44 @@ namespace Grass {
 
 				unsigned int at = (unsigned int)grass.Vertices.size();
 
+				// **A blade with a waist, not a spike.**
+				//
+				// This was one triangle: two corners at the root and a point
+				// at the tip. That is a *needle*, and a field of them looks
+				// like one -- the shape has no length along which anything can
+				// happen, so it cannot curve, and the only way to make it read
+				// as grass is to make it fat, which makes it read as a leaf.
+				//
+				// Three triangles and a middle pair of corners costs five
+				// vertices instead of three and buys the thing that actually
+				// matters: the blade can *bend along itself*. The shader leans
+				// each vertex by its own height up the blade, so with a
+				// mid-point at 55% the blade curves over instead of pivoting
+				// rigidly, which is what grass in wind does and what a single
+				// triangle can never do at any width.
+				//
+				// The waist is 70% of the root's width and the tip is a point,
+				// so the silhouette tapers the way a real blade does.
+				//
 				// **The texture coordinate carries height up the blade**, 0 at
 				// the root and 1 at the tip, which is what lets the shader bend
-				// it in the wind without knowing anything about where the root
-				// is. Same trick the trees use, one dimension smaller.
-				grass.Vertices.push_back({ base - side, bladeNormal, { 0.0f, 0.0f } });
-				grass.Vertices.push_back({ base + side, bladeNormal, { 1.0f, 0.0f } });
-				grass.Vertices.push_back({ tip,         bladeNormal, { 0.5f, 1.0f } });
+				// it without knowing anything about where the root is. Same
+				// trick the trees use, one dimension smaller.
+				const float waist = 0.55f;
 
-				grass.Indices.push_back(at);
-				grass.Indices.push_back(at + 1);
-				grass.Indices.push_back(at + 2);
+				glm::vec3 middle = base + vert * (height * waist)
+					+ lean * (waist * waist);
+
+				grass.Vertices.push_back({ base - side,          bladeNormal, { 0.0f, 0.0f } });
+				grass.Vertices.push_back({ base + side,          bladeNormal, { 1.0f, 0.0f } });
+				grass.Vertices.push_back({ middle - side * 0.7f, bladeNormal, { 0.1f, waist } });
+				grass.Vertices.push_back({ middle + side * 0.7f, bladeNormal, { 0.9f, waist } });
+				grass.Vertices.push_back({ tip,                  bladeNormal, { 0.5f, 1.0f } });
+
+				grass.Indices.insert(grass.Indices.end(), {
+					at,     at + 1, at + 3,
+					at,     at + 3, at + 2,
+					at + 2, at + 3, at + 4 });
 			}
 		}
 

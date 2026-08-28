@@ -3565,7 +3565,7 @@ public:
 
 	// --- Grass as geometry ---
 	bool m_Grass = true;
-	float m_GrassDensity = 0.6f;    // blades per qualifying terrain triangle
+	float m_GrassDensity = 4.0f;    // blades per qualifying terrain triangle
 	float m_GrassHeight = 0.42f;
 	float m_GrassWidth = 0.045f;
 	int m_GrassDrawn = 0;

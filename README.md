@@ -1264,6 +1264,66 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (the forest was swaying in time with how fast you walked)
+
+**A real bug, reported as "the trees are tied to the camera".** The gust phase
+in both the tree and the grass shader was taken from a world position — and in
+this demo "world" is camera-relative, because everything is drawn that way to
+keep planet-sized coordinates off the GPU. So the phase changed every time the
+player took a step, and the whole forest swayed in time with walking speed.
+
+The comment beside it claimed the root position "is fixed for the life of the
+tree". In a frame fixed to the planet it is. That was the wrong frame, and the
+comment was confidently describing a property the code did not have.
+
+The fix is that `a_Model`'s translation is the tree's offset from the forest
+origin, and that origin follows the camera — so the two move by equal and
+opposite amounts and their **sum** is exactly the planet-fixed position. The CPU
+adds the origin's half in double and hands it over as a uniform, folded into
+`[0, 2π)` first: a phase only means anything modulo a turn, and folding is what
+lets a 250 km coordinate survive the cast to float. The grass does the same
+thing per chunk, with the gust axis taken in the planet's frame while the lean
+stays in the scene frame — the same vector seen from two places, and keeping
+them apart is the whole fix.
+
+Measured over a 400 m walk past a fixed tree, as the sine of the gust phase,
+where 0 to 2 is the entire range:
+
+| | swing |
+|---|---|
+| taken from the camera-relative position | **1.6313** |
+| taken from the planet-fixed position | **0.0000274** |
+
+So the old gust went through most of a full cycle from walking alone. That is
+the reported symptom, in a number.
+
+**Grass that is grass rather than needles.** Two things were wrong and only one
+of them was the shape.
+
+The shape was one triangle a blade — two corners at the root and a point at the
+tip, which is a *needle*. It has no length along which anything can happen, so
+it cannot curve, and the only way to make it read as grass is to make it fat,
+which makes it read as a leaf. Three triangles and a middle pair of corners at
+55% of the height costs five vertices instead of three and buys the thing that
+matters: the blade bends **along itself**. The wind lean now goes as the square
+of height up the blade rather than the first power, which is a beam bending
+under a load rather than a hinge at the root, so the root stays vertical and the
+tip lies over.
+
+The larger error was density. It ran at 0.6 blades per terrain triangle, which
+on metre-scale triangles is a few blades a square metre — no shape or width
+rescues that, because it reads as sparse spikes by being sparse spikes. A real
+lawn is thousands a square metre. Now 6 on the planet and 4 in the open world,
+with the blade half again as tall.
+
+Cost, measured: 400 steps of the open world in 3.49 s and 600 of the solar demo
+in 8.03 s, both including generation. Roughly twenty times the grass geometry
+for no change anyone would notice in the frame time, which is the answer to
+whether three triangles a blade was affordable.
+
+**And the wind streaks are down from 0.42 to 0.11.** They were drawn to be
+found, and once found they were far too loud for something standing in for air.
+
 ### 2026-08-28 (grass, wind you can see, and the first two shared modules)
 
 Two new modules, and they are the first pieces built as modules rather than

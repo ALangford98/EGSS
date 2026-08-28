@@ -1638,6 +1638,16 @@ look caught immediately.
   both gave a 1.6 K pole-to-equator range and no ice caps anywhere. See
   `Climate::Redistribution` and `Climate::Transport`.
 
+- **"World space" in the Solar demo is camera-relative, and anything that
+  wants a *fixed* position must say so.** Everything is drawn camera-relative to
+  keep planet-sized coordinates off the GPU, so a shader that reads a phase, a
+  seed or a hash off `world.xyz` gets a value that changes as the player walks.
+  Both the tree and the grass gust did exactly that, and the forest swayed in
+  time with walking speed. The pattern that works: take the small local offset
+  from the vertex, and have the CPU add the large origin's share in double,
+  folded into one turn before it is narrowed to a float. Measured swing over a
+  400 m walk: 1.63 before, 0.0000274 after.
+
 - **The default landing site is a hard-coded direction, and any change to
   `Relief` invalidates it.** `SolarSystem::DefaultSite()` was surveyed once
   against terrain that has since changed twice. When it goes stale the demo

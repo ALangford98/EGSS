@@ -1201,8 +1201,8 @@ public:
 			// coastline a coastline instead of a lace.
 			settings.ContinentEdge = 0.15f;
 			settings.PlantsPerChunk = 14;
-			settings.GrassDensity = 0.5f;
-			settings.GrassHeight = 0.5f;
+			settings.GrassDensity = 6.0f;
+			settings.GrassHeight = 0.75f;
 
 			// Finer ridges than the other bodies get, because the continents
 			// are already carrying the large shapes here -- without this the
@@ -3404,6 +3404,14 @@ public:
 		// instance per frame for a body that never draws one is pure waste.
 		std::shared_ptr<Egss::Material> grass;
 
+		// **The gust travels in the planet's frame, so its axis lives there.**
+		// The lean itself still uses the scene-frame wind, because the
+		// vertices it displaces are in that frame -- the two are the same
+		// vector seen from two places, and keeping them apart is what stops
+		// the ripple moving when the camera does.
+		glm::vec3 gustAxis = glm::length(m_WindFixed) > 1e-5f
+			? glm::normalize(m_WindFixed) : glm::vec3(1.0f, 0.0f, 0.0f);
+
 		for (const auto& [key, chunk] : it->second.Chunks())
 		{
 			glm::dvec3 turned = ToScene(index, chunk.Origin);
@@ -3429,6 +3437,12 @@ public:
 					grass = Egss::Material::CreateInstance(m_GrassMaterial);
 					DressGrass(grass, index);
 				}
+
+				// Per chunk, because it is where the chunk sits along the
+				// wind. Cheap: the material is bound per draw anyway, so this
+				// rides along with uniforms that were already being sent.
+				grass->Set("u_GustOffset",
+					GustPhase(chunk.Origin, glm::dvec3(gustAxis)));
 
 				Egss::Renderer::Submit(grass, chunk.GrassPtr,
 					glm::translate(glm::mat4(1.0f), placed) * spin);
@@ -3836,7 +3850,7 @@ public:
 		material->Set("u_Colour", glm::mix(glm::vec3(0.86f, 0.90f, 0.95f),
 			SkyLight(index) * 3.0f + glm::vec3(0.35f), 0.5f));
 
-		material->Set("u_Strength", 0.42f);
+		material->Set("u_Strength", 0.11f);
 
 		// Premultiplied and no depth write: these are air, so they add light
 		// to what is behind them and never hide it. No culling, because a
@@ -3850,6 +3864,23 @@ public:
 		Egss::RenderCommand::SetDepthWrite(true);
 		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
 		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+	}
+
+	// **A planet-sized dot product that still fits in a float.**
+	//
+	// The gust phase is `dot(fixedPosition, axis)`, and a fixed position is a
+	// planet radius long -- 250 km here and 6,371 km at 1:1. Cast that to a
+	// float and the phase lands on a grid coarser than the wave it is feeding.
+	// But a phase only means anything modulo a turn, so the sum is done in
+	// double and folded into `[0, 2pi)` before it is narrowed, which is exact
+	// enough for anything.
+	static float GustPhase(const glm::dvec3& at, const glm::dvec3& axis)
+	{
+		const double turn = 2.0 * 3.14159265358979323846;
+
+		double raw = glm::dot(at, axis);
+
+		return (float)(raw - std::floor(raw / turn) * turn);
 	}
 
 	// Everything the grass shader needs about this body, now.
@@ -3877,6 +3908,9 @@ public:
 		grass->Set("u_GrassHeight", plant != m_Planets.end()
 			? plant->second.Get().GrassHeight : 0.45f);
 
+		grass->Set("u_GustAxis", glm::length(m_WindFixed) > 1e-5f
+			? glm::normalize(m_WindFixed) : glm::vec3(1.0f, 0.0f, 0.0f));
+
 		grass->Set("u_Root", glm::vec3(0.09f, 0.17f, 0.07f));
 		grass->Set("u_Tip", glm::vec3(0.34f, 0.55f, 0.22f));
 	}
@@ -3901,7 +3935,12 @@ public:
 		glm::mat4 frame = glm::translate(glm::mat4(1.0f),
 			glm::vec3(centre + ToScene(index, localOrigin))) * spin;
 
+		// The forest origin's share of every tree's gust phase. See the note
+		// by `phase` in the tree shader.
+		float gustOffset = GustPhase(localOrigin, glm::dvec3(0.7, 1.3, 0.9));
+
 		auto bark = Egss::Material::CreateInstance(m_TreeMaterial);
+		bark->Set("u_GustOffset", gustOffset);
 		bark->Set("u_Color", glm::vec4(0.30f, 0.22f, 0.15f, 1.0f));
 		bark->Set("u_Emissive", 0.0f);
 		bark->Set("u_Sky", SkyLight(index));
@@ -3916,6 +3955,7 @@ public:
 		bark->Set("u_Compliance", 1.25e-5f);
 
 		auto leaves = Egss::Material::CreateInstance(m_TreeMaterial);
+		leaves->Set("u_GustOffset", gustOffset);
 		leaves->Set("u_Color", glm::vec4(0.16f, 0.34f, 0.13f, 1.0f));
 		leaves->Set("u_Emissive", 0.0f);
 		leaves->Set("u_Sky", SkyLight(index));
@@ -5564,6 +5604,11 @@ private:
 			uniform float u_AirDensity;
 			uniform float u_Time;
 
+			// The forest origin's own contribution to the gust phase, summed
+			// in double on the CPU and wrapped into one turn. See the note by
+			// `phase` for why this cannot just be read off the world position.
+			uniform float u_GustOffset;
+
 			// **How far this part of the tree bends for a given load.**
 			//
 			// A beam's compliance goes as 1/(E I), and the second moment I of
@@ -5583,6 +5628,11 @@ private:
 			// seaweed in a calm.
 			uniform float u_Compliance;
 			uniform float u_GrassHeight;
+
+			// The gust's direction and this chunk's place along it, both in
+			// the planet's fixed frame. See the note by `travel`.
+			uniform vec3 u_GustAxis;
+			uniform float u_GustOffset;
 
 			out vec3 v_WorldPosition;
 			out vec3 v_Normal;
@@ -5619,11 +5669,26 @@ private:
 
 				float pressure = 0.5 * u_AirDensity * dot(u_Wind, u_Wind);
 
-				// Gusting, so a forest does not lean like one rigid object.
-				// The phase comes off the root position, which is fixed for
-				// the life of the tree -- so neighbouring trees are out of
-				// step with each other and each one is in step with itself.
-				float phase = dot(root, vec3(0.7, 1.3, 0.9));
+				// Gusting, so a forest does not lean like one rigid object,
+				// with the phase off each tree's own position so neighbours
+				// are out of step and each tree is in step with itself.
+				//
+				// **In the planet's frame, not this one.** The comment here
+				// used to say the root position "is fixed for the life of the
+				// tree", and in a frame fixed to the planet it is -- but
+				// `root` is `model * origin`, and `u_Transform` is built
+				// camera-relative, so it changed every time the player took a
+				// step. The whole forest then swayed in time with how fast you
+				// were walking, which is a strange enough thing to see that it
+				// gets reported as the wind being tied to the camera.
+				//
+				// `a_Model`'s translation is the tree's offset from the
+				// forest's origin, and that origin follows the camera -- so
+				// the two move by equal and opposite amounts and their sum is
+				// exactly the planet-fixed position. The CPU adds the origin's
+				// half in double and hands it over already wrapped into a
+				// turn, which is why this is a uniform and not a vec3.
+				float phase = u_GustOffset + dot(a_Model[3].xyz, vec3(0.7, 1.3, 0.9));
 				float gust = 1.0 + 0.3 * sin(u_Time * 1.7 + phase);
 
 				vec3 lean = u_Wind * (u_Compliance * pressure * height * height * gust);
@@ -5674,6 +5739,11 @@ private:
 			uniform float u_Compliance;
 			uniform float u_GrassHeight;
 
+			// The gust's direction and this chunk's place along it, both in
+			// the planet's fixed frame. See the note by `travel`.
+			uniform vec3 u_GustAxis;
+			uniform float u_GustOffset;
+
 			out vec3 v_WorldPosition;
 			out vec3 v_Normal;
 			out float v_Up;
@@ -5692,10 +5762,27 @@ private:
 				// rather than from position alone, so the ripple moves across
 				// the field the way a gust actually does instead of the whole
 				// meadow breathing in and out together.
-				float travel = dot(world.xyz, normalize(u_Wind + vec3(1e-6)));
+				//
+				// **Measured in the planet's frame**, for the same reason the
+				// trees are -- `world.xyz` is camera-relative, so taking the
+				// phase from it made the ripple travel at walking pace
+				// whenever the player moved. `a_Position` is this chunk's own
+				// lattice frame, which does not move at all, and the chunk
+				// origin's share of the dot product arrives as a uniform
+				// already summed in double.
+				float travel = u_GustOffset + dot(a_Position, u_GustAxis);
 				float gust = 1.0 + 0.45 * sin(travel * 0.35 - u_Time * 3.1);
 
-				vec3 lean = u_Wind * (u_Compliance * pressure * along * gust);
+				// **Squared, so the blade curves instead of pivoting.** A
+				// hinge at the root displaces every point in proportion to its
+				// height and leaves the blade dead straight; a beam bending
+				// under a load along its length goes as the square, which
+				// leaves the root vertical and the tip lying over. The
+				// scatterer already builds its static lean the same way, so
+				// the two agree and a blade in still air is the same shape as
+				// a blade in a light wind, only less of it.
+				vec3 lean = u_Wind
+					* (u_Compliance * pressure * along * along * gust);
 
 				lean -= u_Up * dot(lean, u_Up);
 
