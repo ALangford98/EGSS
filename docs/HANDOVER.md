@@ -1638,6 +1638,13 @@ look caught immediately.
   both gave a 1.6 K pole-to-equator range and no ice caps anywhere. See
   `Climate::Redistribution` and `Climate::Transport`.
 
+- **Put input that edits or teleports on the fixed step, not on events.**
+  Events are not in the replay stream and `Egss::Input` is, so a digging session
+  polled on the fixed step records and replays and one handled from events does
+  not -- and an event can be consumed before a demo layer sees it, which is how
+  it presents. `VoxelTerrain` has always done this; `TerrainLab` did not, and
+  digging looked broken while every part of the dig path measured clean.
+
 - **The planet's buried trees are not a placement-frame problem.** They draw
   as flat canopy slabs lying across the ground. The obvious theory -- that
   placing by analytic surface radius disagrees with the meshed isosurface -- was

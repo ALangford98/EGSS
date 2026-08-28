@@ -718,7 +718,13 @@ private:
 	{
 		m_Trees.erase(key);
 
-		if (!m_ShowTrees || m_TreeDensity <= 0.0f || data.Indices.size() < 3)
+		m_ShapesOn = 0;
+
+		for (int k = 0; k < s_TreeShapes; k++)
+			m_ShapesOn += m_ShapeOn[k] ? 1 : 0;
+
+		if (!m_ShowTrees || m_TreeDensity <= 0.0f || m_ShapesOn == 0
+			|| data.Indices.size() < 3)
 			return;
 
 		unsigned int seed = 5501u + (unsigned int)(chunk.x * 73 + chunk.y * 19
@@ -789,8 +795,19 @@ private:
 				tree.At = a + (b - a) * (su * (1.0f - v)) + (c - a) * (su * v);
 				tree.Yaw = Veg::Hash2DUnit((int)t, i * 4 + 3, seed) * 6.2831853f;
 				tree.Scale = 0.65f + Veg::Hash2DUnit((int)t, i * 4 + 4, seed) * 0.8f;
-				tree.Shape = (int)(Veg::Hash2DUnit((int)t, i * 4 + 5, seed)
-					* (float)s_TreeShapes) % s_TreeShapes;
+				// Chosen from the shapes that are switched on, so the panel
+				// can isolate one habit and look at a wood made only of it.
+				int wanted = (int)(Veg::Hash2DUnit((int)t, i * 4 + 5, seed)
+					* (float)m_ShapesOn) % glm::max(m_ShapesOn, 1);
+
+				tree.Shape = 0;
+
+				for (int k = 0, seen = 0; k < s_TreeShapes; k++)
+					if (m_ShapeOn[k] && seen++ == wanted)
+					{
+						tree.Shape = k;
+						break;
+					}
 
 				trees.push_back(tree);
 			}
@@ -1007,8 +1024,60 @@ private:
 
 	// --- Hooks --------------------------------------------------------------
 
+	// **Input is polled on the fixed step, not handled as events.**
+	//
+	// This demo had digging on a `MouseButtonPressedEvent` and it did not
+	// work. Two reasons, and the second is the one that matters: an event can
+	// be consumed before it reaches a demo layer, and -- much worse --
+	// **events are not in the replay stream**. `Egss::Input` is, so a session
+	// polled here records and plays back and one handled from events does not.
+	// `VoxelTerrain` has done it this way since it was written and says so in
+	// a comment; the lab simply did not follow it.
+	//
+	// Everything that edits or teleports goes through here for that reason.
+	// Looking around stays in `Look`, which is also polled.
 	void OnDemoFixedUpdate(Egss::Timestep step) override
 	{
+		bool toggle = Egss::Input::IsKeyPressed(EGSS_KEY_TAB);
+
+		if (toggle && !m_WasToggling)
+			SetMouseLook(!m_MouseLook);
+
+		m_WasToggling = toggle;
+
+		bool clip = Egss::Input::IsKeyPressed(EGSS_KEY_V);
+
+		if (clip && !m_WasClipping)
+			m_NoClip = !m_NoClip;
+
+		m_WasClipping = clip;
+
+		// The number row stands you in a cell. Edge-triggered, or holding a
+		// key respawns you every step and you never fall.
+		for (int i = 0; i < s_Grid * s_Grid; i++)
+		{
+			bool down = Egss::Input::IsKeyPressed(EGSS_KEY_1 + i);
+
+			if (down && !m_WasSpawning[i])
+				GoTo(i);
+
+			m_WasSpawning[i] = down;
+		}
+
+		// **One edit per press, not per step.** Holding the button otherwise
+		// hollows the block out in a second, which reads as the dig radius
+		// being enormous rather than as the edit repeating.
+		bool dig = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
+		bool add = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_RIGHT);
+
+		if (dig && !m_WasDigging)
+			Dig(false);
+		else if (add && !m_WasAdding)
+			Dig(true);
+
+		m_WasDigging = dig;
+		m_WasAdding = add;
+
 		MoveWalker(step);
 		m_World.Step(step);
 
@@ -1017,60 +1086,6 @@ private:
 
 	void OnDemoUpdate(Egss::Timestep ts) override;
 	void OnDemoImGui() override;
-
-	void OnDemoEvent(Egss::Event& event) override
-	{
-		Egss::EventDispatcher dispatcher(event);
-
-		dispatcher.Dispatch<Egss::KeyPressedEvent>(
-			[this](Egss::KeyPressedEvent& key)
-			{
-				if (key.GetKeyCode() == EGSS_KEY_TAB)
-				{
-					SetMouseLook(!m_MouseLook);
-					return true;
-				}
-
-				if (key.GetKeyCode() == EGSS_KEY_V)
-				{
-					m_NoClip = !m_NoClip;
-					return true;
-				}
-
-				// The number row walks the spawn points, which is the fastest
-				// way to compare two biomes: one key each.
-				int digit = key.GetKeyCode() - EGSS_KEY_1;
-
-				if (digit >= 0 && digit < s_Grid * s_Grid)
-				{
-					GoTo(digit);
-					return true;
-				}
-
-				return false;
-			});
-
-		dispatcher.Dispatch<Egss::MouseButtonPressedEvent>(
-			[this](Egss::MouseButtonPressedEvent& mouse)
-			{
-				if (!m_MouseLook)
-					return false;
-
-				if (mouse.GetMouseButton() == EGSS_MOUSE_BUTTON_LEFT)
-				{
-					Dig(false);
-					return true;
-				}
-
-				if (mouse.GetMouseButton() == EGSS_MOUSE_BUTTON_RIGHT)
-				{
-					Dig(true);
-					return true;
-				}
-
-				return false;
-			});
-	}
 
 	void SetMouseLook(bool on)
 	{
@@ -1096,7 +1111,7 @@ private:
 	std::map<size_t, std::shared_ptr<Egss::Mesh>> m_Grass;
 	std::map<size_t, std::vector<Tree>> m_Trees;
 
-	static constexpr int s_TreeShapes = 3;
+	static constexpr int s_TreeShapes = 6;
 
 	std::shared_ptr<Egss::Mesh> m_TreeBark[s_TreeShapes];
 	std::shared_ptr<Egss::Mesh> m_TreeLeaves[s_TreeShapes];
@@ -1108,6 +1123,12 @@ private:
 	float m_TreeDensity = 0.012f;   // trees per square metre where fully wooded
 	int m_TreeCount = 0;
 	float m_TreeReach = 130.0f;
+	float m_TreeMaxLean = 0.10f;
+
+	// Which habits are in the mix. All on is a mixed wood; one on is a stand
+	// of that shape, which is how you tell whether it is any good.
+	bool m_ShapeOn[s_TreeShapes] = { true, true, true, true, true, true };
+	int m_ShapesOn = s_TreeShapes;
 
 	std::shared_ptr<Egss::Shader> m_Shader;
 	std::shared_ptr<Egss::Material> m_Material;
@@ -1163,6 +1184,11 @@ private:
 
 	bool m_MouseLook = false;
 	bool m_MouseSampled = false;
+	bool m_WasToggling = false;
+	bool m_WasClipping = false;
+	bool m_WasDigging = false;
+	bool m_WasAdding = false;
+	bool m_WasSpawning[s_Grid * s_Grid] = {};
 	float m_LastMouseX = 0.0f;
 	float m_LastMouseY = 0.0f;
 };
@@ -1557,31 +1583,75 @@ inline void TerrainLab::BuildTrees()
 {
 	Veg::TreeParams shapes[s_TreeShapes];
 
-	// Tall and narrow -- a conifer's habit.
+	// **Six habits, not six seeds.** Three seeds of the same parameters give
+	// three trees that are recognisably the same tree; what makes a wood look
+	// like a wood is that its trees have different *architecture*. The
+	// parameters worth moving are the branching count, how far a child leans
+	// off its parent, and how fast length falls off with depth -- those three
+	// between them decide whether a tree is a spire, a vase or a mop.
+	//
+	// They are laid out here as a set to choose from rather than tuned to one
+	// answer, because which of them reads best is a question for looking at
+	// them, and the panel can turn each on and off for exactly that.
+
+	// 0: spire. Narrow, steep branching, long leader -- a conifer.
 	shapes[0].Depth = 5;
 	shapes[0].Children = 3;
-	shapes[0].Length = 3.2f;
-	shapes[0].Radius = 0.16f;
-	shapes[0].Spread = 26.0f;
-	shapes[0].LengthRatio = 0.78f;
-	shapes[0].LeafRadius = 0.50f;
+	shapes[0].Length = 3.4f;
+	shapes[0].Radius = 0.15f;
+	shapes[0].Spread = 22.0f;
+	shapes[0].LengthRatio = 0.80f;
+	shapes[0].RadiusRatio = 0.58f;
+	shapes[0].LeafRadius = 0.42f;
 
-	// Broad and low -- an open-grown hardwood.
+	// 1: vase. Few children, wide angle, short leader -- an open-grown oak.
 	shapes[1].Depth = 4;
-	shapes[1].Children = 4;
-	shapes[1].Length = 2.2f;
-	shapes[1].Radius = 0.24f;
-	shapes[1].Spread = 48.0f;
-	shapes[1].LengthRatio = 0.70f;
-	shapes[1].LeafRadius = 0.75f;
+	shapes[1].Children = 3;
+	shapes[1].Length = 2.4f;
+	shapes[1].Radius = 0.26f;
+	shapes[1].Spread = 52.0f;
+	shapes[1].LengthRatio = 0.72f;
+	shapes[1].RadiusRatio = 0.66f;
+	shapes[1].LeafRadius = 0.80f;
 
-	// Between the two.
+	// 2: mop. Many short children off a stout trunk.
 	shapes[2].Depth = 4;
-	shapes[2].Children = 3;
-	shapes[2].Length = 2.7f;
-	shapes[2].Radius = 0.20f;
-	shapes[2].Spread = 36.0f;
-	shapes[2].LeafRadius = 0.60f;
+	shapes[2].Children = 5;
+	shapes[2].Length = 1.9f;
+	shapes[2].Radius = 0.22f;
+	shapes[2].Spread = 44.0f;
+	shapes[2].LengthRatio = 0.64f;
+	shapes[2].LeafRadius = 0.62f;
+
+	// 3: sapling. Small, sparse, and the thing that makes a wood look grown
+	// rather than planted -- a stand of one size reads as an orchard.
+	shapes[3].Depth = 3;
+	shapes[3].Children = 3;
+	shapes[3].Length = 1.6f;
+	shapes[3].Radius = 0.09f;
+	shapes[3].Spread = 34.0f;
+	shapes[3].LengthRatio = 0.70f;
+	shapes[3].LeafRadius = 0.40f;
+
+	// 4: parasol. A bare trunk carrying a flat wide crown, which is what an
+	// isolated tree on open ground grows into.
+	shapes[4].Depth = 4;
+	shapes[4].Children = 4;
+	shapes[4].Length = 2.9f;
+	shapes[4].Radius = 0.20f;
+	shapes[4].Spread = 68.0f;
+	shapes[4].LengthRatio = 0.58f;
+	shapes[4].LeafRadius = 0.72f;
+
+	// 5: scrub. Low, many-stemmed, barely a tree -- the thing that belongs at
+	// the dry edge of a wood where the others give out.
+	shapes[5].Depth = 3;
+	shapes[5].Children = 5;
+	shapes[5].Length = 1.2f;
+	shapes[5].Radius = 0.08f;
+	shapes[5].Spread = 62.0f;
+	shapes[5].LengthRatio = 0.66f;
+	shapes[5].LeafRadius = 0.45f;
 
 	for (int i = 0; i < s_TreeShapes; i++)
 	{
@@ -1612,6 +1682,7 @@ inline void TerrainLab::BuildTrees()
 		uniform float u_Time;
 		uniform float u_Seed;
 		uniform float u_Compliance;
+		uniform float u_MaxLean;
 
 		out vec3 v_Normal;
 		out float v_Up;
@@ -1669,7 +1740,28 @@ inline void TerrainLab::BuildTrees()
 			// root stays vertical and the crown does the moving.
 			vec3 push = vec3(here.x, 0.0, here.y) / max(speed, 1e-4);
 
-			world.xyz += push * (u_Compliance * pressure * height * height);
+			vec3 lean = push * (u_Compliance * pressure * height * height);
+
+			// **A tree bends; it does not fall over.**
+			//
+			// The displacement goes as the square of the height *and* the
+			// square of the wind, so a crown six metres up in a strong gust
+			// was being thrown many times its own height and the wood came out
+			// as a tangle of stretched triangles. A real tree of this size
+			// moves a fraction of its height even in a gale -- the trunk is
+			// stiff and what is really happening is the branches flexing.
+			//
+			// The cap is a share of how high up the tree this vertex is, so a
+			// low branch is held tighter than the crown and the shape stays a
+			// tree rather than being sheared uniformly.
+			float limit = u_MaxLean * height;
+
+			float reach = length(lean);
+
+			if (reach > limit && reach > 1e-6)
+				lean *= limit / reach;
+
+			world.xyz += lean;
 
 			v_Normal = mat3(u_Transform) * a_Normal;
 			v_Up = height;
@@ -1971,6 +2063,11 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		m_TreeMaterial->Set("u_Time", m_Time);
 		m_TreeMaterial->Set("u_Seed", (float)(m_Shape.Seed % 997u));
 
+		// A share of the height. A tenth is already a lot of movement on a
+		// six-metre crown; the grass gets 0.85 because grass really does lie
+		// flat and a tree really does not.
+		m_TreeMaterial->Set("u_MaxLean", m_TreeMaxLean);
+
 		glm::vec3 eye = m_Camera.GetPosition();
 
 		int drawn = 0;
@@ -2174,7 +2271,22 @@ inline void TerrainLab::OnDemoImGui()
 		cover |= ImGui::Checkbox("Trees", &m_ShowTrees);
 		cover |= ImGui::SliderFloat("Trees per m^2", &m_TreeDensity,
 			0.0f, 0.12f, "%.3f");
+
+		// Turn all but one off to see a stand of a single habit, which is the
+		// only way to judge whether that habit is any good.
+		static const char* habits[s_TreeShapes] =
+			{ "spire", "vase", "mop", "sapling", "parasol", "scrub" };
+
+		for (int k = 0; k < s_TreeShapes; k++)
+		{
+			if (k % 3 != 0)
+				ImGui::SameLine();
+
+			cover |= ImGui::Checkbox(habits[k], &m_ShapeOn[k]);
+		}
 		ImGui::SliderFloat("Tree reach", &m_TreeReach, 20.0f, 220.0f, "%.0f m");
+		ImGui::SliderFloat("Tree sway", &m_TreeMaxLean, 0.0f, 0.5f,
+			"%.2f of height");
 		ImGui::TextDisabled("  trees want it wetter than grass does, so a wood"
 			" ends inside a transition");
 

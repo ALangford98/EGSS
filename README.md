@@ -1264,6 +1264,45 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (digging was on the wrong input path, and trees that bend rather than fall)
+
+**The dig was fine; the way it was being asked for was not.** Every part of the
+path measured clean -- the raycast hit at 3.29 m, `EditSphere` touched 52
+voxels, one chunk went dirty, the triangle count moved -- so nothing about the
+editing was broken. It was hung off a `MouseButtonPressedEvent`.
+
+`VoxelTerrain` polls the mouse on the fixed step instead, and says why in a
+comment that has been there since it was written: *"the mouse and the keyboard
+are in the replay stream and events are not, so a digging session records and
+replays."* An event can also be consumed before it reaches a demo layer, which
+is the symptom; the replay problem is the reason. The lab simply had not
+followed a convention the project already had.
+
+Everything that edits or teleports is polled now -- dig, add, the clipping
+toggle, mouse-look and the nine spawn keys -- all edge-triggered, because one
+edit per *press* rather than per step is the difference between digging a hole
+and hollowing the block out in a second.
+
+**Trees bend now rather than falling over.** The displacement goes as the square
+of the height *and* the square of the wind, so a crown six metres up in a gust
+was thrown many times its own height and a wood came out as a tangle of
+stretched triangles. Capped at a share of how high up the tree a vertex is, so a
+low branch is held tighter than the crown and the shape stays a tree rather than
+being sheared uniformly. A tenth of the height is already a lot of movement;
+grass gets 0.85 because grass really does lie flat and a tree really does not.
+
+**Six habits rather than three seeds.** Three seeds of the same parameters give
+three trees that are recognisably the same tree. What makes a wood look like a
+wood is different *architecture*, and the three parameters that decide it are
+the branching count, how far a child leans off its parent, and how fast length
+falls off with depth. Between them: a spire, a vase, a mop, a sapling, a parasol
+and a scrub.
+
+They are a set to choose from rather than one tuned answer, and each has its own
+checkbox -- turning all but one off gives a stand of a single habit, which is
+the only way to judge whether that habit is any good. The sapling earns its
+place for a reason worth stating: a stand all of one size reads as an orchard.
+
 ### 2026-08-28 (trees in the lab, and a theory the lab disproved)
 
 Three tree shapes, scattered by biome, leaning in the same three-layer wind the
