@@ -1264,6 +1264,69 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (weather, derived rather than authored)
+
+`TestEnv/src/Climate.h`: one temperature and one wind for any point on any
+body, out of the numbers the system already had. Nothing in it is a designer's
+dial, which is the whole point — a wind you can lean into means very little if
+someone typed the number and a great deal if it came out of the same orbit
+that decides when the sun rises.
+
+The chain is five steps: the star's output spread over a sphere gives the flux
+arriving; what is not reflected is absorbed and re-radiated, and setting those
+equal gives a temperature; air is transparent to sunlight and not to heat, so
+it raises that temperature by a closed form in one optical depth; ground higher
+up is colder at a rate that is `g/c_p` and nothing else; and air moves from
+where there is more of it to where there is less while the planet turns
+underneath, which is what makes the bands.
+
+Axial tilt and time of day never appear in the code. They do not have to — the
+zenith angle is `dot(up, toSun)` with both vectors in scene coordinates, so
+the seasons happen because the axis the body turns about is not its orbit's,
+and the sun rises because the body turns. That was the test that the frames
+were already right.
+
+**Twenty-five checks against numbers the model contains no fit for**, run from
+a temporary self-test and then deleted:
+
+| | model | measured | off |
+|---|---|---|---|
+| solar constant, 1 AU | 1361.17 W/m² | 1361 | 0.01% |
+| Earth equilibrium temperature | 254.04 K | 254 | 0.02% |
+| Earth scale height | 8429 m | 8500 | 0.84% |
+| Earth sea-level air density | 1.23 kg/m³ | 1.225 | 0.03% |
+| dry adiabatic lapse rate | 9.76 K/km | 9.76 | 0.01% |
+| saturated lapse rate | 6.54 K/km | 6.5 | 0.62% |
+| **lunar subsolar temperature** | **380.9 K** | **390** | **2.3%** |
+| lunar night temperature | 101.7 K | 100 | 1.7% |
+| **Mars equilibrium temperature** | **209.8 K** | **210** | **0.09%** |
+
+The Moon and Mars are the ones worth having: the greenhouse coefficient is
+calibrated so Earth lands on 288 K, so Earth's surface temperature is not
+evidence of anything, but nothing is fitted to an airless body's subsolar
+point or to Mars's distance and albedo. The circulation was checked
+structurally instead — the prevailing wind is zero at 0°, 30°, 60° and 90°,
+easterly in the trades, westerly in the mid-latitudes and easterly again at
+the pole, all out of `sin(π |lat| / 30)` with no cases in it.
+
+Two things the checks turned up. `Colour` is not an albedo: its luminance puts
+Earth at 0.46 against a real Bond albedo of 0.306, which would have made the
+equilibrium temperature 17 K too cold, so `BondAlbedo` is now a measured column
+in the table. And Mars's surface pressure comes out at **15.9% of Earth's**
+against a real 0.6% — the table's `AtmosphereFraction × AtmosphereDensity` are
+render depths chosen to make a sky look right, not weights of gas. The model is
+reading them as weights, and that is written down rather than tuned around.
+
+Known to be wrong: Venus. Its column gives a grey optical depth of 17 and a
+surface of 442 K against a real 737 K. A grey atmosphere is simply the wrong
+model for an optically thick CO₂ one, and no single coefficient fixes it.
+
+At the default landing site the model reads 18.4 °C at latitude 4.1° and 22 m
+up, with 600 W/m² absorbed, 101.1 kPa, and a 3.9 m/s wind from the east
+blowing toward the equator. Each of those is checkable by hand: 1361 × 0.694 ×
+0.635 = 600.0, and 101.325 × exp(−22/8430) = 101.06. The wind is the trades,
+because latitude 4.1 is in them.
+
 ### 2026-08-28 (a planet with continents on it, and the seam down the middle)
 
 Two bugs that between them had been erasing every landmass on Earth from

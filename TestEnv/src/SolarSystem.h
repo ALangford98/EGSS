@@ -77,6 +77,7 @@
 #include "SurfaceWater.h"
 #include "HorizonMesh.h"
 #include "PocketDimension.h"
+#include "Climate.h"
 
 // **Sampling a sphere map across the seam it necessarily has.**
 //
@@ -217,6 +218,16 @@ public:
 		float RingInner;
 		float RingOuter;
 		glm::vec3 RingColour;
+
+		// **Bond albedo: the fraction of all incident sunlight reflected back
+		// to space**, which is the one that belongs in an energy budget. Not
+		// the geometric albedo (how bright the disc looks face-on) and not
+		// `Colour`, which was picked to render well -- its luminance puts
+		// Earth at 0.46 and would make the equilibrium temperature 17 K too
+		// cold. Real measured values: Venus reflects three quarters of what
+		// reaches it at 0.76 and still has the hottest surface in the system,
+		// which is the greenhouse doing all of the work.
+		float BondAlbedo;
 	};
 
 	// Real numbers, because they cost nothing and the check at the bottom of
@@ -231,24 +242,24 @@ public:
 	{
 		static const std::vector<BodyDescription> table =
 		{
-			{ "Sun",      -1, 0.0,       696000.0, 1.0, 609.0,     0.0f,     { 1.00f, 0.86f, 0.42f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Sun",      -1, 0.0,       696000.0, 1.0, 609.0,     0.0f,     { 1.00f, 0.86f, 0.42f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.000f },
 
-			{ "Mercury",   0, 0.387,       2440.0, 1.660e-7, 1407.6, 0.034f,   { 0.62f, 0.58f, 0.54f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Venus",     0, 0.723,       6052.0, 2.448e-6, 5832.5, 177.4f,   { 0.92f, 0.80f, 0.55f }, 0.0410f, 22.5f, 1.0f, { 0.85f, 0.62f, 0.25f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Earth",     0, 1.000,       6371.0, 3.003e-6, 23.934, 23.4392911f, { 0.28f, 0.48f, 0.85f }, 0.0157f, 3.0f, 0.0f, { 0.22f, 0.45f, 1.00f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Mars",      0, 1.524,       3390.0, 3.227e-7, 24.623, 25.19f,   { 0.80f, 0.38f, 0.24f }, 0.0150f, 0.5f, 0.0f, { 0.80f, 0.45f, 0.30f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Jupiter",   0, 5.203,      69911.0, 9.545e-4, 9.925,  3.13f,    { 0.80f, 0.68f, 0.52f }, 0.0700f, 11.0f, 1.0f, { 0.75f, 0.62f, 0.45f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Saturn",    0, 9.537,      58232.0, 2.858e-4, 10.656, 26.73f,   { 0.88f, 0.80f, 0.60f }, 0.0800f, 9.6f, 1.0f, { 0.80f, 0.72f, 0.50f }, 1.24f, 2.27f, { 0.94f, 0.88f, 0.76f } },
-			{ "Uranus",    0, 19.191,     25362.0, 4.366e-5, 17.24,  97.77f,   { 0.60f, 0.85f, 0.88f }, 0.0700f, 11.0f, 1.0f, { 0.40f, 0.80f, 0.85f }, 1.60f, 2.01f, { 0.34f, 0.34f, 0.36f } },
-			{ "Neptune",   0, 30.070,     24622.0, 5.151e-5, 16.11,  28.32f,   { 0.30f, 0.44f, 0.86f }, 0.0700f, 11.0f, 1.0f, { 0.25f, 0.42f, 0.95f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Mercury",   0, 0.387,       2440.0, 1.660e-7, 1407.6, 0.034f,   { 0.62f, 0.58f, 0.54f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.088f },
+			{ "Venus",     0, 0.723,       6052.0, 2.448e-6, 5832.5, 177.4f,   { 0.92f, 0.80f, 0.55f }, 0.0410f, 22.5f, 1.0f, { 0.85f, 0.62f, 0.25f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.760f },
+			{ "Earth",     0, 1.000,       6371.0, 3.003e-6, 23.934, 23.4392911f, { 0.28f, 0.48f, 0.85f }, 0.0157f, 3.0f, 0.0f, { 0.22f, 0.45f, 1.00f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.306f },
+			{ "Mars",      0, 1.524,       3390.0, 3.227e-7, 24.623, 25.19f,   { 0.80f, 0.38f, 0.24f }, 0.0150f, 0.5f, 0.0f, { 0.80f, 0.45f, 0.30f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.250f },
+			{ "Jupiter",   0, 5.203,      69911.0, 9.545e-4, 9.925,  3.13f,    { 0.80f, 0.68f, 0.52f }, 0.0700f, 11.0f, 1.0f, { 0.75f, 0.62f, 0.45f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.503f },
+			{ "Saturn",    0, 9.537,      58232.0, 2.858e-4, 10.656, 26.73f,   { 0.88f, 0.80f, 0.60f }, 0.0800f, 9.6f, 1.0f, { 0.80f, 0.72f, 0.50f }, 1.24f, 2.27f, { 0.94f, 0.88f, 0.76f }, 0.342f },
+			{ "Uranus",    0, 19.191,     25362.0, 4.366e-5, 17.24,  97.77f,   { 0.60f, 0.85f, 0.88f }, 0.0700f, 11.0f, 1.0f, { 0.40f, 0.80f, 0.85f }, 1.60f, 2.01f, { 0.34f, 0.34f, 0.36f }, 0.300f },
+			{ "Neptune",   0, 30.070,     24622.0, 5.151e-5, 16.11,  28.32f,   { 0.30f, 0.44f, 0.86f }, 0.0700f, 11.0f, 1.0f, { 0.25f, 0.42f, 0.95f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.290f },
 
-			{ "Moon",      3, 0.002570,    1737.0, 3.694e-8, 655.7, 0.0f,     { 0.72f, 0.71f, 0.68f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Phobos",    4, 0.0000627,     11.3, 5.0e-15, 7.65,  0.0f,     { 0.55f, 0.50f, 0.46f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Io",        5, 0.002819,    1822.0, 4.490e-8, 42.46, 0.0f,     { 0.88f, 0.82f, 0.45f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Europa",    5, 0.004486,    1561.0, 2.413e-8, 85.2,  0.0f,     { 0.80f, 0.78f, 0.72f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Ganymede",  5, 0.007155,    2634.0, 7.450e-8, 171.7, 0.0f,     { 0.66f, 0.62f, 0.58f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Callisto",  5, 0.012585,    2410.0, 5.410e-8, 400.5, 0.0f,     { 0.48f, 0.45f, 0.44f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Titan",     6, 0.008168,    2575.0, 6.766e-8, 382.7, 0.0f,     { 0.85f, 0.65f, 0.30f }, 0.2300f, 2.7f, 0.8f, { 0.90f, 0.60f, 0.25f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Moon",      3, 0.002570,    1737.0, 3.694e-8, 655.7, 0.0f,     { 0.72f, 0.71f, 0.68f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.110f },
+			{ "Phobos",    4, 0.0000627,     11.3, 5.0e-15, 7.65,  0.0f,     { 0.55f, 0.50f, 0.46f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.071f },
+			{ "Io",        5, 0.002819,    1822.0, 4.490e-8, 42.46, 0.0f,     { 0.88f, 0.82f, 0.45f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.630f },
+			{ "Europa",    5, 0.004486,    1561.0, 2.413e-8, 85.2,  0.0f,     { 0.80f, 0.78f, 0.72f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.680f },
+			{ "Ganymede",  5, 0.007155,    2634.0, 7.450e-8, 171.7, 0.0f,     { 0.66f, 0.62f, 0.58f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.430f },
+			{ "Callisto",  5, 0.012585,    2410.0, 5.410e-8, 400.5, 0.0f,     { 0.48f, 0.45f, 0.44f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.220f },
+			{ "Titan",     6, 0.008168,    2575.0, 6.766e-8, 382.7, 0.0f,     { 0.85f, 0.65f, 0.30f }, 0.2300f, 2.7f, 0.8f, { 0.90f, 0.60f, 0.25f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.265f },
 		};
 
 		return table;
@@ -1823,6 +1834,166 @@ public:
 		return m_SiteFixed + glm::dvec3(local);
 	}
 
+	// --- Weather ------------------------------------------------------------
+	//
+	// **A moon is as far from the star as its planet is.** Io's own orbit is
+	// 0.0028 AU across, which is inside the width of the line on any plot of
+	// where Jupiter is. Walking up to the body that orbits the star directly
+	// is both simpler and more nearly true than summing the chain.
+	double StarDistanceAu(size_t index) const
+	{
+		size_t at = index;
+
+		while (m_Bodies[at].Parent > 0)
+			at = (size_t)m_Bodies[at].Parent;
+
+		return m_Bodies[at].SemiMajorAu;
+	}
+
+	// Fills in everything `Climate::At` needs about one point on one body.
+	// `sceneDirection` is the outward unit normal in scene coordinates;
+	// `altitude` is metres above that body's sea level.
+	Climate::Site SiteWeather(size_t index, const glm::dvec3& sceneDirection,
+		float altitude) const
+	{
+		Climate::Site site;
+
+		const Body& body = m_Bodies[index];
+
+		site.StarDistanceAu = (float)StarDistanceAu(index);
+		site.Albedo = body.BondAlbedo;
+		site.AirColumn = body.AtmosphereFraction * body.AtmosphereDensity;
+		site.Gravity = (float)RealSurfaceGravity(index);
+		site.RotationHours = (float)body.RotationHours;
+		site.Altitude = altitude;
+
+		glm::dvec3 up = glm::normalize(sceneDirection);
+
+		// Both of these are in scene coordinates already, so the axial tilt
+		// and the time of day are in them without either being mentioned
+		// here: the sun moves because the body turns, and the seasons happen
+		// because the axis it turns about is not the orbit's.
+		site.CosZenith = (float)glm::dot(up, glm::dvec3(SunDirection(index)));
+
+		site.LatitudeDegrees = glm::degrees((float)std::asin(
+			glm::clamp(glm::dot(up, SpinAxis(index)), -1.0, 1.0)));
+
+		// Moisture is a property of the ground, so it is asked for in the
+		// frame the ground is fixed in rather than the one it is drawn in.
+		auto it = m_Planets.find(index);
+
+		site.Moisture = it != m_Planets.end()
+			? it->second.MoistureAt(glm::vec3(ToFixed(index, up)))
+			: 0.0f;
+
+		return site;
+	}
+
+	// **Every line of this is derived, and the panel says which.** A number
+	// on a HUD that someone typed into a slider teaches nothing; the same
+	// number with the flux it came from beside it is the model showing its
+	// working. So the insolation is printed next to the temperature it
+	// produced, and the equilibrium next to the greenhouse that is the
+	// difference between it and the ground.
+	void WeatherPanel()
+	{
+		if (!m_HasWeather)
+		{
+			ImGui::TextDisabled("no weather here -- vacuum");
+			return;
+		}
+
+		const Climate::Weather& w = m_Weather;
+		const Climate::Site& site = m_WeatherSite;
+
+		// Kelvin is the physics and Celsius is what a person reads.
+		ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.5f, 1.0f),
+			"%.1f C  (%.1f K)", w.Temperature - 273.15f, w.Temperature);
+
+		bool day = site.CosZenith > 0.0f;
+
+		ImGui::Text("  sun %.0f deg %s the horizon, %s",
+			glm::degrees(std::asin(glm::clamp(site.CosZenith, -1.0f, 1.0f))),
+			day ? "above" : "below", day ? "day" : "night");
+
+		ImGui::Text("  %.0f W/m^2 in, %.0f W/m^2 arriving at the top",
+			w.Insolation, w.SolarConstant);
+
+		ImGui::Text("  equilibrium %.1f K, greenhouse +%.1f K",
+			w.Equilibrium, w.Greenhouse);
+
+		ImGui::Text("  lapse %.2f K/km over %.0f m of altitude",
+			w.LapseRate, site.Altitude);
+
+		ImGui::Text("  %.1f kPa, scale height %.0f m, air %.3f kg/m^3",
+			w.Pressure * 0.001f, w.ScaleHeight, w.AirDensity);
+
+		// Which way the wind is going, said as a bearing, because "north-east
+		// at 4 m/s" is a sentence and a vector is not.
+		if (w.WindSpeed < 0.05f)
+		{
+			ImGui::Text("  calm");
+		}
+		else
+		{
+			static const char* points[8] = {
+				"N", "NE", "E", "SE", "S", "SW", "W", "NW" };
+
+			// Bearing of the direction the wind is blowing *towards*,
+			// clockwise from north. `Wind.x` is east and `Wind.y` is north.
+			float bearing = glm::degrees(std::atan2(w.Wind.x, w.Wind.y));
+
+			if (bearing < 0.0f)
+				bearing += 360.0f;
+
+			int point = ((int)std::lround(bearing / 45.0f)) % 8;
+
+			ImGui::Text("  wind %.1f m/s toward %s (%.0f deg), lat %.1f",
+				w.WindSpeed, points[point], bearing, site.LatitudeDegrees);
+		}
+
+		ImGui::Text("  moisture %.2f, albedo %.3f, air column %.4f",
+			site.Moisture, site.Albedo, site.AirColumn);
+	}
+
+	// The weather where the camera is, recomputed every fixed step so a
+	// replay sees the same numbers. Airless bodies and deep space both come
+	// back as the default `Weather`, which is all zeros and no wind.
+	void StepWeather()
+	{
+		m_Weather = Climate::Weather();
+		m_HasWeather = false;
+
+		size_t index = m_Walking ? (size_t)m_Ground : m_Frame;
+
+		if (index == 0 || index >= m_Bodies.size() || m_Pocket.InPocket())
+			return;
+
+		glm::dvec3 fixedAt = m_Walking
+			? SiteFixed(m_World.GetBody(m_Player).Position)
+			: ToFixed(index, m_Local);
+
+		double distance = glm::length(fixedAt);
+
+		if (distance < 1.0)
+			return;
+
+		glm::dvec3 up = fixedAt / distance;
+
+		auto it = m_Planets.find(index);
+
+		double sea = it != m_Planets.end()
+			? (double)it->second.Get().OceanRadius
+			: DrawnRadius(index);
+
+		m_WeatherSite = SiteWeather(index, ToScene(index, up),
+			(float)(distance - sea));
+
+		m_Weather = Climate::At(m_WeatherSite);
+		m_HasWeather = true;
+
+	}
+
 	void ApplyGravity()
 	{
 		// A pocket dimension is not on any planet, so it does not get a
@@ -2316,6 +2487,9 @@ public:
 		EnsurePlanets();
 
 		StreamTerrain();
+
+		// After the frame is chosen and before anything reads the weather.
+		StepWeather();
 
 		// **The clock has to follow the camera, not the other way round.**
 		// A day on Earth is 1/365 of a year, so at a time scale that makes
@@ -4599,6 +4773,7 @@ private:
 		float AtmosphereFraction = 0.0f;
 		float AtmosphereDensity = 1.0f;
 		float AtmosphereGlow = 0.0f;
+		float BondAlbedo = 0.3f;
 		glm::vec3 Scatter = glm::vec3(0.0f);
 		float RingInner = 0.0f;
 		float RingOuter = 0.0f;
@@ -4646,6 +4821,7 @@ private:
 			body.AxialTiltDegrees = description.AxialTiltDegrees;
 			body.AtmosphereFraction = description.AtmosphereFraction;
 			body.AtmosphereDensity = description.AtmosphereDensity;
+			body.BondAlbedo = description.BondAlbedo;
 			body.AtmosphereGlow = description.AtmosphereGlow;
 			body.RingInner = description.RingInner;
 			body.RingOuter = description.RingOuter;
@@ -6096,6 +6272,8 @@ private:
 		ImGui::TextColored(ImVec4(0.6f, 0.9f, 0.6f, 1.0f), "%s %s, %.1f m up",
 			m_Walking ? "on" : "near", m_Bodies[m_Frame].Name.c_str(), altitude);
 
+		WeatherPanel();
+
 		if (m_Walking)
 		{
 			VoxelPlanet& planet = m_Planets[(size_t)m_Ground];
@@ -6364,6 +6542,15 @@ private:
 	// stays clean and the treeline a few hundred metres out visibly greys
 	// toward the sky.
 	float m_HazeScale = 3.3e-3f;
+
+	// The weather where the camera is. Recomputed once a fixed step rather
+	// than per frame or per draw: several things read it -- the panel, and
+	// shortly the wind on the ship and the trees -- and they all have to be
+	// looking at the same instant, or a gust pushes the player and not the
+	// grass beside them.
+	Climate::Site m_WeatherSite;
+	Climate::Weather m_Weather;
+	bool m_HasWeather = false;
 
 	std::shared_ptr<Egss::Shader> m_TerrainShader;
 	std::shared_ptr<Egss::Material> m_TerrainMaterial;
