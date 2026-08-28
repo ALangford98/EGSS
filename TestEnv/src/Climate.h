@@ -295,6 +295,33 @@ namespace Climate {
 			* (0.6f + 0.4f * glm::clamp(moisture, 0.0f, 1.0f)), 0.0f, 0.9f);
 	}
 
+	// **Wind goes to zero at the ground, and the profile is logarithmic.**
+	//
+	// A wind speed is always quoted at a reference height -- ten metres, by
+	// meteorological convention -- and the air below that is slower, because
+	// the ground is not moving and viscosity has to get from one to the other.
+	// The shape of that is the log wind profile,
+	// `v(z) = v_ref ln(z/z0) / ln(z_ref/z0)`, which comes out of the
+	// turbulent boundary layer and is what every wind measurement in the world
+	// is corrected with.
+	//
+	// `z0` is the roughness length, a real measured property of a surface:
+	// about 0.0002 m over open water, 0.03 m over grass, 0.1 m over scattered
+	// obstacles, and a metre or more over forest. 0.1 here.
+	//
+	// This matters because without it a boulder lying on the ground gets the
+	// full ten-metre wind, and a light breeze rolls it away. With it, a rock
+	// whose centre is 0.9 m up sits in `ln(9)/ln(100)` = 48% of the reference
+	// wind and therefore 23% of the force -- and a person's feet are in
+	// slower air than their head, which is also true.
+	inline float WindFraction(float height, float roughness = 0.1f)
+	{
+		float z0 = glm::max(roughness, 1e-4f);
+		float z = glm::max(height, z0);
+
+		return glm::clamp(std::log(z / z0) / std::log(10.0f / z0), 0.0f, 1.5f);
+	}
+
 	// Temperature at a site, in kelvin, and everything on the way to it.
 	inline Weather At(const Site& site)
 	{

@@ -1330,6 +1330,42 @@ does not matter, because `Biome` takes its airless branch and returns before
 reaching the snow line, and computing the integral properly would be arithmetic
 nothing reads.
 
+### 2026-08-28 (wind goes to zero at the ground, and the rocks were already rolling)
+
+The first landed capture after the drag went in showed the boulders in
+different places, which looked exactly like a 3.9 m/s breeze rolling rocks
+across a landscape. It was not, and finding out which is a good example of
+suspecting the measurement.
+
+Measured with the wind disabled entirely: the rocks reach **150 m/s and keep
+climbing**. They are spheres with `Friction 0.7` but no rolling resistance and
+`LinearDamping` and `AngularDamping` both zeroed (deliberately -- see the
+comment where they are spawned, which is about orbits), sitting on a site with
+233 m of relief inside 400 m. They roll downhill and nothing ever stops them.
+That is pre-existing and predates every change in this session.
+
+With the drag on they settle at 8-13 m/s instead. Which is to say the wind
+force is not blowing the boulders around, it is **the only thing giving them a
+terminal velocity**: for a 40 kg sphere of 2.54 m² presented area, balancing
+½ρCdAv² against `g sin θ` at 13 m/s puts the slope at 32°, which is about what
+that hillside is. Worth writing down that the rocks are 40 kg -- a real rock of
+that radius is eleven tonnes, so this is a gameplay mass and the wind moving it
+at all is correct.
+
+**Wind still had to go to zero at the ground, though.** A wind speed is quoted
+at ten metres by convention, and the air below is slower because the ground is
+not moving. That is the log wind profile,
+`v(z) = v_ref ln(z/z0) / ln(z_ref/z0)`, out of the turbulent boundary layer and
+the correction every wind measurement in the world gets. `z0` is a measured
+property of a surface: 0.0002 m over open water, 0.03 m over grass, 0.1 m over
+scattered obstacles, a metre over forest.
+
+Without it a boulder lying on the ground was being handed the wind from a storey
+above it. With it, a settled rock sits in 53% of the reference wind and so 28%
+of the force, and a person's feet are in slower air than their head. The clamp
+is at 1.5 rather than 1 on purpose: a body forty metres up genuinely gets 1.31×
+the ten-metre wind, and that is the profile being right rather than overflowing.
+
 ### 2026-08-28 (the wind pushes things)
 
 Drag, which is the only way air touches anything: `F = ½ ρ Cd A |v| v`, with ρ

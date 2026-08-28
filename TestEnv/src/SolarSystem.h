@@ -2242,12 +2242,35 @@ public:
 		if (density <= 1e-6f || m_Weather.WindSpeed < 1e-4f)
 			return;
 
-		const glm::vec3& wind = m_WindFixed;
+		auto it = m_Planets.find((size_t)m_Ground);
 
 		for (Egss::RigidBody3D& body : m_World.GetBodies())
 		{
 			if (body.Type != Egss::BodyType::Dynamic || body.InverseMass <= 0.0f)
 				continue;
+
+			// **How much of the ten-metre wind reaches this body**, which for
+			// anything lying on the ground is not much. See
+			// `Climate::WindFraction`: without it a 3.9 m/s breeze rolls
+			// boulders across the landscape, because a boulder was being given
+			// the wind measured a storey above it.
+			glm::vec3 wind = m_WindFixed;
+
+			if (it != m_Planets.end())
+			{
+				glm::dvec3 at = SiteFixed(body.Position);
+				double distance = glm::length(at);
+
+				if (distance > 1.0)
+				{
+					glm::vec3 direction = glm::vec3(at / distance);
+
+					float above = (float)(distance
+						- (double)it->second.SurfaceRadius(direction));
+
+					wind *= Climate::WindFraction(above);
+				}
+			}
 
 			glm::vec3 relative = wind - body.Velocity;
 			float speed = glm::length(relative);

@@ -1621,6 +1621,16 @@ look caught immediately.
   stands back for another, check the two boundaries are the same shape**, not
   just the same nominal size.
 
+- **The Solar demo's rocks roll downhill for ever, and it is not the wind.**
+  They are spheres with no rolling resistance and both damping terms zeroed
+  (deliberately, for orbits -- see the spawn comment), on a site with 233 m of
+  relief inside 400 m. With air drag disabled they reach 150 m/s and keep
+  going; with it they settle at 8-13 m/s, which is terminal velocity on a 32
+  degree slope. So the drag is the only thing bounding them. If loose bodies
+  ever need to *stay* put, the missing physics is rolling resistance, not
+  anything to do with the weather. They are also 40 kg where a real rock of
+  that radius is eleven tonnes.
+
 - **One factor cannot do both kinds of heat redistribution.** Evening out a
   day (thermal inertia) and evening out a hemisphere (transport by air and
   ocean) are different physics and differ by a lot: Earth's day/night swing is
