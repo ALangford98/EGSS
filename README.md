@@ -1264,6 +1264,73 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (a lab for the ground, and the trees were never drawing)
+
+**`TerrainLab`, nine chunks of ground with every knob on a slider.** The solar
+demo is where the terrain has to work and a poor place to find out why it does
+not: a change costs a planet-wide rebuild, the interesting ground is wherever
+the camera happens to point, and half the effects only appear at a scale you
+have to fly to. Nine chunks of sixteen voxels is 144 m across — big enough for
+a hill and a hollow, small enough that the whole field regenerates in a fraction
+of a second, so a slider can rebuild the world on release.
+
+Feature size, octaves, amplitude, a rolling-to-ridged mix, domain warp, the
+plateau control the planet's continental shelf came from, caves, seed and voxel
+size. Digging with the mouse. And the climate is **two sliders** rather than a
+hydrology pass, which is the entire reason a desert is reachable here: on a
+planet it takes a landing-site search.
+
+**Developer tools, built here to be ported.** Five named spawn points on the
+number keys — meadow, desert, steppe, tundra, wetland — and each one carries the
+climate that makes it what it is, because a spawn that only moves the camera
+shows you the same ground from somewhere else. And a clipping toggle on `V`.
+
+The tempting way to write no-clip is to keep simulating and turn the collider
+off, which leaves the solver pushing a shape nothing pushes back on — so gravity
+still accumulates and letting go of the keys drops you through the floor at
+whatever speed you had reached. Making the body **kinematic** and integrating
+the position by hand is simpler and is what a person means by "let me through
+the ground": while it is on, the world does not act on you at all.
+
+**Ground is dirt with grass on it, not a green surface.** Painting the ground
+the colour of what grows on it works from orbit and fails underfoot — what shows
+between blades is *soil*, and painting it green is the single thing that makes a
+field read as a carpet. So the ground is brown and the green is a tint over it,
+which means the blades and the earth between them are different colours and the
+eye reads depth. The texture is three octaves of value noise on the world
+position; two things about it are worth more than a bitmap would be, that it is
+in world space so it does not swim as you walk, and that it moves the *colour*
+rather than the brightness, because a surface varied only in value reads as
+dirty rather than as soil.
+
+Blades come in two passes now, a tall sparse one and a short dense one. One
+length reads as a brush: every tip at the same height is a flat plane of green
+with nothing behind it. The short pass is what hides the ground between the tall
+blades, which is the job density was being asked to do alone. Colour varies
+blade to blade off the per-blade ticket the scatterer already writes — a
+brightness spread *and* a small hue shift, because brightness alone reads as
+noise and both together read as different plants.
+
+**And the reason there were no trees: the tree shader had not compiled since
+the sway work.** Two commits ago a `.replace` meant for the grass shader also
+matched the tree one — they share a `u_Compliance` line — and left
+`u_GustOffset` declared twice. `SolarSystemTrees` failed to compile from that
+point on and drew nothing.
+
+That is worth writing down twice over, because the measurement taken at the time
+said **"656 instances drawn"** and was believed. It was counting *submissions*,
+not pixels: the batch was built, the buffer uploaded, the draw issued, and the
+program behind it was dead. A count taken on the CPU says nothing about whether
+anything reached the framebuffer, and the log line that would have said so —
+`Shader 'SolarSystemTrees' compilation failed` — was scrolling past under a
+`grep` for the word "error", which it does not contain.
+
+With the shader fixed the trees draw, and they are visibly wrong: enormous flat
+leaf polygons lying across the ground, which is what a buried tree looks like
+when only its canopy clears the terrain. Disabling the sway entirely leaves the
+image byte-identical, so it is a placement fault and not a bending one. Not yet
+root-caused; written down rather than guessed at.
+
 ### 2026-08-28 (the geometry artifacts were the grass, and grass LOD)
 
 **The artifact was the grass all along.** Reported as flat angular slabs cutting

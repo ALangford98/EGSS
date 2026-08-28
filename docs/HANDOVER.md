@@ -1638,6 +1638,22 @@ look caught immediately.
   both gave a 1.6 K pole-to-equator range and no ice caps anywhere. See
   `Climate::Redistribution` and `Climate::Transport`.
 
+- **A CPU-side count of what was submitted says nothing about what was
+  drawn.** "656 tree instances drawn" was measured, reported and believed while
+  `SolarSystemTrees` had been failing to compile for two commits -- the batch
+  was built, the buffer uploaded and the draw issued into a dead program. **Grep
+  the log for `compilation failed`, not for `error`**; the shader failure
+  message does not contain the word.
+
+- **A `.replace` across a file that holds five shaders will hit more than one
+  of them.** The grass and tree vertex shaders share a `u_Compliance` line, and
+  an edit meant for one declared `u_GustOffset` twice in the other. When editing
+  one shader in `SolarSystem.h`, bound the edit to that shader's line range.
+
+- **`flat` is a GLSL interpolation qualifier**, so `float flat = ...` is a
+  syntax error, and the compiler reports it as "unexpected FLAT" without
+  mentioning that it is a keyword. Same family as `half` and `near`/`far`.
+
 - **Both sides of a stochastic LOD test must be constant across the
   primitive.** Grass drops whole blades past a distance by comparing a
   per-blade ticket against a keep-fraction. Computing that fraction from the

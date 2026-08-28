@@ -5671,15 +5671,6 @@ private:
 			// rigid in every wind you will actually stand in or waving like
 			// seaweed in a calm.
 			uniform float u_Compliance;
-			uniform float u_GrassHeight;
-
-			// The gust's direction and this chunk's place along it, both in
-			// the planet's fixed frame. See the note by `travel`.
-			uniform vec3 u_GustAxis;
-			uniform float u_GustOffset;
-			uniform float u_GustScale;
-			uniform float u_WindSpeed;
-			uniform float u_Keep;
 
 			out vec3 v_WorldPosition;
 			out vec3 v_Normal;
