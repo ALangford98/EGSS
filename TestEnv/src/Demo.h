@@ -27,7 +27,12 @@ using DemoId = int;
 constexpr DemoId InvalidDemo = -1;
 
 // Index into s_Demos. Change to whichever demo you are working on.
-inline DemoId g_ActiveDemo = 5;
+//
+// **16 is the terrain lab**, which is where the ground, the weather and the
+// vegetation are being worked on. It is the last entry because the array's
+// order is the recording file format -- see the note in `DemoRegistry.h` --
+// so a new demo is appended and never inserted, whatever it is for.
+inline DemoId g_ActiveDemo = 16;
 
 // Base for every demo layer.
 //
