@@ -26,6 +26,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include "ChunkCache.h"
+#include "Grass.h"
 
 #include <queue>
 #include <algorithm>
@@ -118,6 +119,11 @@ public:
 		// level sitting in the gap between them -- and almost no land area
 		// sits at exactly zero.
 		float ContinentEdge = 0.0f;
+
+		// Grass: blades per qualifying terrain triangle, and how tall they
+		// stand. Zero is no grass, which is every body without vegetation.
+		float GrassDensity = 0.0f;
+		float GrassHeight = 0.45f;
 
 		// **Landscape: the relief you can actually stand in.**
 		//
@@ -2353,6 +2359,8 @@ public:
 		entry.MeshPtr = std::make_shared<Egss::Mesh>(data, "PlanetChunk");
 		entry.Centre = ChunkCentreFixed(chunk);
 		entry.Origin = ChunkOriginFixed(chunk);
+
+		entry.GrassPtr = ChunkGrass(data, chunk, stride, entry.Origin);
 		entry.Triangles = data.Indices.size() / 3;
 		entry.Stride = stride;
 		entry.Coord = chunk;
@@ -2372,6 +2380,73 @@ public:
 			PlantChunk(chunk, entry.Plants);
 
 		m_Chunks[key] = std::move(entry);
+	}
+
+	// **Grass over one chunk's triangles.** The scattering itself is
+	// `Grass::Build`, shared with the flat-world demo; everything here is the
+	// two things that are specific to a planet.
+	//
+	// The first is which way is up, and it is not a constant. A chunk's mesh
+	// is measured from its own lattice origin -- a few tens of metres of float
+	// -- while that origin is a planet radius from the centre, so the vertical
+	// has to be recovered by adding the two back together **in double**. That
+	// is the same split the whole chunk system is built on, and getting it
+	// wrong here would tilt every blade by the angle the chunk subtends.
+	//
+	// The second is where grass belongs. It is asked of the same fields the
+	// surface is coloured from, so a blade never stands on a seabed, on rock
+	// above the tree line, or in a desert.
+	std::shared_ptr<Egss::Mesh> ChunkGrass(const Egss::MeshData& data,
+		const glm::ivec3& chunk, int stride, const glm::dvec3& origin) const
+	{
+		if (!m_Settings.Vegetated || stride != 1 || m_Settings.GrassDensity <= 0.0f)
+			return nullptr;
+
+		Grass::Settings settings;
+		settings.Density = m_Settings.GrassDensity;
+		settings.Height = m_Settings.GrassHeight;
+		settings.Width = m_Settings.GrassHeight * 0.10f;
+
+		float sea = m_Settings.OceanRadius;
+		float top = m_Settings.Radius + ReliefReach();
+
+		auto direction = [origin](const glm::vec3& local)
+		{
+			return glm::normalize(origin + glm::dvec3(local));
+		};
+
+		Egss::MeshData blades = Grass::Build(data, settings,
+			(unsigned int)(chunk.x * 73 + chunk.y * 19 + chunk.z * 131),
+			[&direction](const glm::vec3& local)
+			{
+				return glm::vec3(direction(local));
+			},
+			[&, this](const glm::vec3& local, const glm::vec3&)
+			{
+				glm::dvec3 out = origin + glm::dvec3(local);
+
+				double radius = glm::length(out);
+				glm::vec3 where = glm::vec3(out / radius);
+
+				// Above the waterline, with a metre of margin so the beach
+				// itself stays sand.
+				float above = (float)(radius - (double)sea);
+
+				if (above < 1.0f || radius > (double)top)
+					return 0.0f;
+
+				// Dry ground grows less of it. The hydrology's own field, so
+				// the grass line and the biome colour cannot disagree.
+				float wet = MoistureAt(where);
+
+				return glm::smoothstep(1.0f, 4.0f, above)
+					* glm::smoothstep(0.25f, 0.55f, wet);
+			});
+
+		if (blades.Indices.empty())
+			return nullptr;
+
+		return std::make_shared<Egss::Mesh>(blades, "PlanetGrass");
 	}
 
 	// `MeshChunk`, plus the neighbours that meshing it just invalidated.
@@ -2897,6 +2972,12 @@ public:
 	struct Chunk
 	{
 		std::shared_ptr<Egss::Mesh> MeshPtr;
+
+		// **Grass, on stride-1 chunks only.** Not a special case bolted on: a
+		// stride-2 chunk is the streamer saying this is far enough away to
+		// halve its detail, and grass is the first thing that should go. Null
+		// on every other chunk, and on every body with no vegetation.
+		std::shared_ptr<Egss::Mesh> GrassPtr;
 
 		// **In the planet's frame, in double, and the mesh is not.** The
 		// vertices in `MeshPtr` are measured from this chunk's own lattice

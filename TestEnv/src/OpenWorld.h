@@ -57,6 +57,7 @@
 #include "Demo.h"
 #include "FirstPersonController.h"
 #include "ChunkCache.h"
+#include "Grass.h"
 
 #include <unordered_set>
 #include <unordered_map>
@@ -1872,110 +1873,34 @@ public:
 		m_Chunks[key] = entry;
 	}
 
-	// Blades of grass, as geometry, built from the chunk's own triangles.
-	//
-	// One triangle a blade: a base edge across the slope and a point above it.
-	// A quad would be two triangles for a shape nobody can distinguish at the
-	// size these are drawn, and grass is the one thing here where the count is
-	// the cost.
-	//
-	// Placed on the terrain surface rather than on a grid, so blades follow
-	// the ground exactly and inherit the mesh's own density -- more triangles
-	// where the surface is busier is also where more grass looks right.
+	// Blades of grass, from the shared module. Everything specific to this
+	// world is in the two callbacks: up is +Y because this world is flat, and
+	// grass grows above the sand line. See `Grass.h` for why they are template
+	// parameters rather than `std::function`s.
 	//
 	// Only stride-1 chunks get grass. That is not a special case bolted on: a
 	// stride-2 chunk is already the renderer saying this is far enough away to
 	// halve its detail, and grass is the first thing that should go.
 	Egss::MeshData BuildGrass(const Egss::MeshData& terrain, const glm::ivec3& chunk) const
 	{
-		Egss::MeshData grass;
+		Grass::Settings settings;
+		settings.Density = m_GrassDensity;
+		settings.Height = m_GrassHeight;
+		settings.Width = m_GrassWidth;
 
-		if (m_GrassDensity <= 0.0f)
-			return grass;
+		unsigned int chunkSeed = (unsigned int)(chunk.x * 73 + chunk.y * 19
+			+ chunk.z * 131);
 
-		size_t triangles = terrain.Indices.size() / 3;
-		unsigned int seed = 977u + (unsigned int)(chunk.x * 73 + chunk.y * 19 + chunk.z * 131);
+		float low = m_GrassLow, high = m_GrassHigh;
 
-		for (size_t t = 0; t < triangles; t++)
-		{
-			const glm::vec3& a = terrain.Vertices[terrain.Indices[t * 3 + 0]].Position;
-			const glm::vec3& b = terrain.Vertices[terrain.Indices[t * 3 + 1]].Position;
-			const glm::vec3& c = terrain.Vertices[terrain.Indices[t * 3 + 2]].Position;
-
-			glm::vec3 centre = (a + b + c) / 3.0f;
-
-			glm::vec3 face = glm::cross(b - a, c - a);
-			float area2 = glm::length(face);
-			if (area2 < 1e-8f)
-				continue;
-
-			glm::vec3 n = face / area2;
-
-			// The same test the shader shades with, so a blade never appears on
-			// bare sand or on a face too steep to be green.
-			float high = glm::smoothstep(m_GrassLow, m_GrassHigh, centre.y);
-			float flatness = glm::smoothstep(0.55f, 0.88f, n.y);
-			float chance = high * flatness * m_GrassDensity;
-
-			if (chance <= 0.001f)
-				continue;
-
-			// Fractional density done honestly: the whole part is a guaranteed
-			// count and the remainder is a threshold, so 0.3 gives roughly
-			// three blades every ten triangles rather than none.
-			int count = (int)chance;
-			if (Hash2DUnit((int)t, 0, seed) < chance - (float)count)
-				count++;
-
-			for (int i = 0; i < count; i++)
+		return Grass::Build(terrain, settings, chunkSeed,
+			[](const glm::vec3&) { return glm::vec3(0.0f, 1.0f, 0.0f); },
+			[low, high](const glm::vec3& at, const glm::vec3&)
 			{
-				// Uniform inside the triangle: the sqrt is what stops the
-				// points bunching along one edge.
-				float u = Hash2DUnit((int)t, i * 3 + 1, seed);
-				float v = Hash2DUnit((int)t, i * 3 + 2, seed);
-				float su = std::sqrt(u);
-
-				glm::vec3 base = a + (b - a) * (su * (1.0f - v)) + (c - a) * (su * v);
-
-				float angle = Hash2DUnit((int)t, i * 3 + 3, seed) * 6.2831853f;
-				float height = m_GrassHeight * (0.65f + Hash2DUnit((int)t, i * 3 + 4, seed) * 0.7f);
-
-				glm::vec3 side(std::cos(angle) * m_GrassWidth, 0.0f, std::sin(angle) * m_GrassWidth);
-
-				// Leaning, and leaning the same way per blade: upright blades
-				// read as spikes, and a whole field of them looks like a bed of
-				// nails rather than grass.
-				glm::vec3 lean = glm::vec3(std::cos(angle + 1.57f), 0.0f, std::sin(angle + 1.57f))
-					* (height * 0.35f);
-
-				glm::vec3 tip = base + n * height + lean;
-
-				// Facing the lean, so a blade catches the light on its face
-				// rather than edge-on.
-				glm::vec3 bladeNormal = glm::normalize(glm::cross(side * 2.0f, tip - (base - side)));
-				if (glm::dot(bladeNormal, glm::vec3(0.0f, 1.0f, 0.0f)) < 0.0f)
-					bladeNormal = -bladeNormal;
-
-				unsigned int at = (unsigned int)grass.Vertices.size();
-				grass.Vertices.push_back({ base - side, bladeNormal, { 0.0f, 0.0f } });
-				grass.Vertices.push_back({ base + side, bladeNormal, { 1.0f, 0.0f } });
-				grass.Vertices.push_back({ tip,         bladeNormal, { 0.5f, 1.0f } });
-
-				grass.Indices.push_back(at);
-				grass.Indices.push_back(at + 1);
-				grass.Indices.push_back(at + 2);
-			}
-		}
-
-		if (grass.Indices.empty())
-			return grass;
-
-		Egss::Submesh all;
-		all.IndexCount = (unsigned int)grass.Indices.size();
-		grass.Submeshes.push_back(all);
-		grass.RecalculateBounds();
-
-		return grass;
+				// The same test the shader shades with, so a blade never
+				// appears on bare sand.
+				return glm::smoothstep(low, high, at.y);
+			});
 	}
 
 	// --- Level of detail --------------------------------------------------

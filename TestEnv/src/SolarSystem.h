@@ -336,15 +336,22 @@ public:
 	// ground, standable slope, relief close enough to see, high ground within
 	// six kilometres, and water within walking distance. This one measured:
 	//
-	//     21 m above sea level, slope 0.103 where the lander stands,
-	//     233 m of relief inside 400 m, 187 m of high ground within 6 km,
-	//     and the shore 150 m away.
+	//     54.8 m above sea level, slope 0.066 where the lander stands,
+	//     138 m of relief inside 400 m, and the shore 240 m away.
+	//
+	// **Re-surveyed on 2026-08-28**, because it had to be: the continental
+	// shelf and the map's band limit changed the terrain everywhere, and a
+	// direction chosen against the old relief is a direction chosen against
+	// nothing. The old one -- (-0.660266340, -0.232047454, 0.714284480), 21 m
+	// up with the shore 150 m away -- came out underwater. **Anything that
+	// changes `Relief` invalidates this constant**, and the failure looks like
+	// a broken camera rather than a moved site.
 	//
 	// A shore at the foot of a mountain, which is about as much as one place
 	// can be asked to show.
 	static glm::vec3 DefaultSite()
 	{
-		return glm::vec3(-0.660266340f, -0.232047454f, 0.714284480f);
+		return glm::vec3(-0.851041138f, 0.153262675f, 0.502234519f);
 	}
 
 	// The planet-fixed heading from a site toward the highest ground within a
@@ -1193,6 +1200,8 @@ public:
 			// coastline a coastline instead of a lace.
 			settings.ContinentEdge = 0.15f;
 			settings.PlantsPerChunk = 14;
+			settings.GrassDensity = 0.5f;
+			settings.GrassHeight = 0.5f;
 
 			// Finer ridges than the other bodies get, because the continents
 			// are already carrying the large shapes here -- without this the
@@ -3390,6 +3399,10 @@ public:
 		// all in [-1, 1] and lose nothing.
 		glm::mat4 spin = SpinMatrix(index);
 
+		// Built on first use: most bodies have no grass at all, and a material
+		// instance per frame for a body that never draws one is pure waste.
+		std::shared_ptr<Egss::Material> grass;
+
 		for (const auto& [key, chunk] : it->second.Chunks())
 		{
 			glm::dvec3 turned = ToScene(index, chunk.Origin);
@@ -3405,6 +3418,20 @@ public:
 
 			Egss::Renderer::Submit(material, chunk.MeshPtr,
 				glm::translate(glm::mat4(1.0f), placed) * spin);
+
+			// Grass rides the same transform: it was scattered over this
+			// chunk's own triangles, so it is in the chunk's frame already.
+			if (chunk.GrassPtr)
+			{
+				if (!grass)
+				{
+					grass = Egss::Material::CreateInstance(m_GrassMaterial);
+					DressGrass(grass, index);
+				}
+
+				Egss::Renderer::Submit(grass, chunk.GrassPtr,
+					glm::translate(glm::mat4(1.0f), placed) * spin);
+			}
 		}
 
 		// **And the world past the chunks.** The same material with the same
@@ -3767,6 +3794,35 @@ public:
 		EGSS_TRACE("Planet trees: {0} shapes x {1} levels, {2} triangles each "
 			"on average", s_TreeShapes, s_TreeLods,
 			triangles / (s_TreeShapes * s_TreeLods));
+	}
+
+	// Everything the grass shader needs about this body, now.
+	void DressGrass(const std::shared_ptr<Egss::Material>& grass, size_t index)
+	{
+		grass->Set("u_LightDirection", SunDirection(index));
+		grass->Set("u_LightColor", m_SunLight * m_StarBrightness);
+		grass->Set("u_Sky", SkyLight(index));
+		grass->Set("u_Up", m_Up);
+		grass->Set("u_Wind", m_WindScene);
+		grass->Set("u_AirDensity", m_Weather.AirDensity);
+		grass->Set("u_Time", (float)m_Time * 8766.0f);
+
+		// Far more compliant than a trunk and more than a canopy: a blade of
+		// grass is a few millimetres thick, and compliance goes as the fourth
+		// power of that. This is the number that makes a light breeze visible
+		// at ground level, which is where a person standing in it looks.
+		grass->Set("u_Compliance", 260.0f * 1.25e-5f);
+
+		// The blade length the bend is measured against. Nominal -- the
+		// scatterer varies each blade between 0.65 and 1.35 of it -- which is
+		// close enough for a limit that only has to stop a blade stretching.
+		auto plant = m_Planets.find(index);
+
+		grass->Set("u_GrassHeight", plant != m_Planets.end()
+			? plant->second.Get().GrassHeight : 0.45f);
+
+		grass->Set("u_Root", glm::vec3(0.09f, 0.17f, 0.07f));
+		grass->Set("u_Tip", glm::vec3(0.34f, 0.55f, 0.22f));
 	}
 
 	// One planet's trees, in the frame the chunks are already drawn in.
@@ -5470,6 +5526,7 @@ private:
 			// rigid in every wind you will actually stand in or waving like
 			// seaweed in a calm.
 			uniform float u_Compliance;
+			uniform float u_GrassHeight;
 
 			out vec3 v_WorldPosition;
 			out vec3 v_Normal;
@@ -5533,6 +5590,136 @@ private:
 			Egss::Shader::Create("SolarSystemTrees", treeVertexSrc, fragmentSrc));
 
 		m_TreeMaterial = Egss::Material::Create(m_TreeShader);
+
+		// **Grass, which is the same idea as the trees one dimension smaller.**
+		//
+		// A blade carries how far up itself each vertex is, in `a_TexCoord.y`:
+		// zero at the two root corners and one at the tip. That is all the
+		// bend needs -- the root stays planted because its coordinate is zero,
+		// and nothing has to know where the root is in world space.
+		//
+		// The trees use height *squared* because a trunk is a cantilever and
+		// that is the first bending mode of one. A blade of grass is not a
+		// cantilever; it is closer to a hinge at the ground, so it goes as the
+		// first power. The difference is visible: trunks bow, grass lies over.
+		std::string grassVertexSrc = R"(
+			#version 330 core
+
+			layout(location = 0) in vec3 a_Position;
+			layout(location = 1) in vec3 a_Normal;
+			layout(location = 2) in vec2 a_TexCoord;
+
+			uniform mat4 u_ViewProjection;
+			uniform mat4 u_Transform;
+			uniform vec3 u_Wind;
+			uniform vec3 u_Up;
+			uniform float u_AirDensity;
+			uniform float u_Time;
+			uniform float u_Compliance;
+			uniform float u_GrassHeight;
+
+			out vec3 v_WorldPosition;
+			out vec3 v_Normal;
+			out float v_Up;
+
+			void main()
+			{
+				vec4 world = u_Transform * vec4(a_Position, 1.0);
+
+				float along = a_TexCoord.y;
+
+				// The same wind pressure the trees feel, and the same reason:
+				// twice the wind lies the grass over four times as far.
+				float pressure = 0.5 * u_AirDensity * dot(u_Wind, u_Wind);
+
+				// A gust that travels. Phase from position *along the wind*
+				// rather than from position alone, so the ripple moves across
+				// the field the way a gust actually does instead of the whole
+				// meadow breathing in and out together.
+				float travel = dot(world.xyz, normalize(u_Wind + vec3(1e-6)));
+				float gust = 1.0 + 0.45 * sin(travel * 0.35 - u_Time * 3.1);
+
+				vec3 lean = u_Wind * (u_Compliance * pressure * along * gust);
+
+				lean -= u_Up * dot(lean, u_Up);
+
+				// **Bending preserves length, and leaving that out is
+				// immediately obvious.**
+				//
+				// The first version just displaced the tip sideways. At this
+				// site's 8 m/s that is 0.45 m of lean on a 0.5 m blade, and
+				// because nothing pulled the tip back down the blade simply
+				// got longer -- the meadow came out as a field of long dark
+				// streaks lying across the ground rather than grass bent over
+				// by a wind.
+				//
+				// A blade does not stretch. It pivots, so the tip travels on
+				// an arc of its own length: displace it by `d` sideways and it
+				// must drop by `h - sqrt(h^2 - d^2)`. That also caps the lean
+				// on its own, since `d` can never exceed `h` -- which is the
+				// right behaviour, because grass flat on the ground is what
+				// grass in a gale actually does.
+				float blade = u_GrassHeight * along;
+
+				float reach = length(lean);
+				float limit = blade * 0.92;
+
+				if (reach > limit && reach > 1e-6)
+					lean *= limit / reach;
+
+				float drop = blade - sqrt(max(blade * blade
+					- dot(lean, lean), 0.0));
+
+				world.xyz += lean - u_Up * drop;
+
+				v_WorldPosition = world.xyz;
+				v_Normal = mat3(u_Transform) * a_Normal;
+				v_Up = along;
+
+				gl_Position = u_ViewProjection * world;
+			}
+		)";
+
+		std::string grassFragmentSrc = R"(
+			#version 330 core
+
+			layout(location = 0) out vec4 color;
+
+			in vec3 v_WorldPosition;
+			in vec3 v_Normal;
+			in float v_Up;
+
+			uniform vec3 u_LightDirection;
+			uniform vec3 u_LightColor;
+			uniform vec3 u_Sky;
+			uniform vec3 u_Up;
+			uniform vec3 u_Root;
+			uniform vec3 u_Tip;
+
+			void main()
+			{
+				vec3 normal = normalize(v_Normal);
+
+				float diffuse = max(dot(normal, u_LightDirection), 0.0);
+				float dome = 0.5 + 0.5 * dot(normal, u_Up);
+
+				// **Darker at the root than at the tip**, which is the one
+				// thing that makes a field of blades read as depth rather than
+				// as a green rug. It is ambient occlusion, and a real one: a
+				// blade near the ground is surrounded by other blades and sees
+				// almost none of the sky.
+				vec3 base = mix(u_Root, u_Tip, v_Up);
+
+				vec3 lit = base * (u_Sky * dome + u_LightColor * diffuse);
+
+				color = vec4(lit, 1.0);
+			}
+		)";
+
+		m_GrassShader.reset(Egss::Shader::Create("PlanetGrass",
+			grassVertexSrc, grassFragmentSrc));
+
+		m_GrassMaterial = Egss::Material::Create(m_GrassShader);
 		m_Material = Egss::Material::Create(m_Shader);
 
 		BuildTerrainShader();
@@ -7050,6 +7237,8 @@ private:
 	std::vector<glm::mat4> m_TreeBatch[s_TreeShapes][s_TreeLods];
 
 	std::shared_ptr<Egss::Shader> m_TreeShader;
+	std::shared_ptr<Egss::Shader> m_GrassShader;
+	std::shared_ptr<Egss::Material> m_GrassMaterial;
 	std::shared_ptr<Egss::Material> m_TreeMaterial;
 
 	// Room for every tree the streaming radius can hold: 14 a chunk over a few
