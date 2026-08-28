@@ -1461,6 +1461,11 @@ private:
 	// How full the basin is, from dry to level with the rim.
 	float m_WaterFill = 0.55f;
 
+	// Swell in the geometry, ripples in the normal. Both switchable, because
+	// whether either reads as water or as noise depends on the wind.
+	bool m_Waves = true;
+	bool m_Ripples = false;
+
 	float m_Time = 0.0f;
 	float m_FrameTime = 0.0f;
 
@@ -2386,19 +2391,40 @@ inline void TerrainLab::BuildWater()
 {
 	Egss::MeshData plane;
 
-	// Unit square, stretched by the transform, so the voxel slider never needs
-	// it rebuilt.
-	for (int j = 0; j < 2; j++)
-	for (int i = 0; i < 2; i++)
-		plane.Vertices.push_back({
-			{ (float)i - 0.5f, 0.0f, (float)j - 0.5f },
-			{ 0.0f, 1.0f, 0.0f },
-			{ (float)i, (float)j } });
+	// **A grid, not a quad, because waves need somewhere to happen.**
+	//
+	// One quad was enough while the surface was flat: the depth buffer found
+	// the shoreline and the shader did the rest. Displacing it needs vertices
+	// to displace, and 128 a side over a 144 m block is a vertex every 1.1 m
+	// -- fine enough for a swell of ten metres and far too coarse for ripples,
+	// which is why the ripples stay in the normal rather than the geometry.
+	const int side = 128;
 
-	plane.Indices = { 0, 2, 1, 1, 2, 3 };
+	for (int j = 0; j <= side; j++)
+	for (int i = 0; i <= side; i++)
+	{
+		float u = (float)i / (float)side;
+		float v = (float)j / (float)side;
+
+		plane.Vertices.push_back({
+			{ u - 0.5f, 0.0f, v - 0.5f },
+			{ 0.0f, 1.0f, 0.0f },
+			{ u, v } });
+	}
+
+	for (int j = 0; j < side; j++)
+	for (int i = 0; i < side; i++)
+	{
+		unsigned int a = (unsigned int)(j * (side + 1) + i);
+		unsigned int b = a + 1;
+		unsigned int c = a + (unsigned int)(side + 1);
+		unsigned int d = c + 1;
+
+		plane.Indices.insert(plane.Indices.end(), { a, c, b, b, c, d });
+	}
 
 	Egss::Submesh all;
-	all.IndexCount = 6;
+	all.IndexCount = (unsigned int)plane.Indices.size();
 	plane.Submeshes.push_back(all);
 	plane.RecalculateBounds();
 
@@ -2415,10 +2441,70 @@ inline void TerrainLab::BuildWater()
 		uniform mat4 u_Transform;
 
 		out vec3 v_World;
+		out vec3 v_Normal;
+
+		uniform vec3 u_Wind;
+		uniform float u_Time;
+		uniform float u_Waves;
+		uniform float u_Ripples;
+
+		// **Two crossed swells, travelling with the wind.**
+		//
+		// A gerstner wave would move the water in a circle and give the sharp
+		// crests real waves have; this is a plain sine sum, which is enough for
+		// a lake and costs two sines. What matters more than the shape is that
+		// both components travel *downwind* -- a wave field that sits still, or
+		// worse travels crosswind, reads as a texture rather than as water.
+		//
+		// The second is at 0.71 of the first's wavelength and 40 degrees off
+		// it: an irrational-ish ratio, so the two never come back into phase
+		// and the surface never repeats visibly.
+		vec2 wave(vec2 at, vec2 wind, float time)
+		{
+			float speed = max(length(wind), 0.001);
+			vec2 dir = wind / speed;
+
+			vec2 cross = vec2(dir.y, -dir.x);
+			vec2 second = normalize(dir * 0.77 + cross * 0.64);
+
+			float k1 = 0.42, k2 = 0.59;
+
+			// Deep-water waves travel at sqrt(g/k), which is why a long swell
+			// outruns a short chop. Using it means the two components separate
+			// over time instead of marching in lockstep.
+			float c1 = sqrt(9.81 / k1), c2 = sqrt(9.81 / k2);
+
+			float p1 = dot(at, dir) * k1 - time * k1 * c1;
+			float p2 = dot(at, second) * k2 - time * k2 * c2;
+
+			float amplitude = 0.055 * speed;
+
+			// Height, and the slope along the dominant direction -- enough to
+			// tilt the normal without a second pass.
+			float h = sin(p1) * amplitude + sin(p2) * amplitude * 0.62;
+
+			float slope = cos(p1) * amplitude * k1
+				+ cos(p2) * amplitude * 0.62 * k2;
+
+			return vec2(h, slope);
+		}
 
 		void main()
 		{
 			vec4 world = u_Transform * vec4(a_Position, 1.0);
+
+			vec2 w = wave(world.xz, u_Wind.xz, u_Time);
+
+			world.y += w.x * u_Waves;
+
+			// The swell's own slope, as a normal. Ripples are added in the
+			// fragment shader instead: they are centimetres across and this
+			// grid has a vertex every 1.1 m, so putting them here would alias
+			// them into nothing.
+			vec2 dir = normalize(u_Wind.xz + vec2(1e-6));
+
+			v_Normal = normalize(vec3(-dir.x * w.y * u_Waves, 1.0,
+				-dir.y * w.y * u_Waves));
 
 			v_World = world.xyz;
 
@@ -2432,8 +2518,10 @@ inline void TerrainLab::BuildWater()
 		layout(location = 0) out vec4 color;
 
 		in vec3 v_World;
+		in vec3 v_Normal;
 
 		uniform vec3 u_Eye;
+		uniform float u_Ripples;
 		uniform vec3 u_SunDirection;
 		uniform vec3 u_SunColor;
 		uniform vec3 u_SkyColor;
@@ -2449,12 +2537,27 @@ inline void TerrainLab::BuildWater()
 			// Two crossed ripples travelling with the wind. Not a wave model --
 			// there is no displacement -- but enough that the highlight breaks
 			// up instead of sitting on the plane as one disc.
-			vec2 drift = u_Wind.xz * u_Time * 0.15;
+			// The swell arrives as a normal from the vertex stage; the
+			// ripples are a perturbation on top of it, and they are optional
+			// because whether they read as wind on water or as noise depends
+			// on the wind speed and is worth being able to switch off.
+			vec3 normal = normalize(v_Normal);
 
-			float a = (v_World.x - drift.x) * 1.7 + u_Time * 1.1;
-			float b = (v_World.z - drift.y) * 2.3 - u_Time * 0.8;
+			if (u_Ripples > 0.5)
+			{
+				vec2 drift = u_Wind.xz * u_Time * 0.15;
 
-			vec3 normal = normalize(vec3(cos(a) * 0.06, 1.0, cos(b) * 0.06));
+				float a = (v_World.x - drift.x) * 1.7 + u_Time * 1.1;
+				float b = (v_World.z - drift.y) * 2.3 - u_Time * 0.8;
+
+				// Scaled by the wind: a calm lake is a mirror, and ripples
+				// that persist at zero wind are the giveaway that they are
+				// decoration rather than weather.
+				float chop = clamp(length(u_Wind.xz) / 12.0, 0.0, 1.0);
+
+				normal = normalize(normal + vec3(cos(a) * 0.09 * chop, 0.0,
+					cos(b) * 0.09 * chop));
+			}
 
 			float facing = clamp(dot(normal, view), 0.0, 1.0);
 
@@ -2781,6 +2884,8 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		m_WaterMaterial->Set("u_Deep", glm::vec3(0.05f, 0.16f, 0.27f));
 		m_WaterMaterial->Set("u_Time", m_Time);
 		m_WaterMaterial->Set("u_Wind", glm::vec3(mean.x, 0.0f, mean.y));
+		m_WaterMaterial->Set("u_Waves", m_Waves ? 1.0f : 0.0f);
+		m_WaterMaterial->Set("u_Ripples", m_Ripples ? 1.0f : 0.0f);
 
 		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
 		Egss::RenderCommand::SetDepthWrite(false);
@@ -2863,6 +2968,11 @@ inline void TerrainLab::OnDemoImGui()
 
 		ImGui::SliderFloat("Water level", &m_WaterFill, 0.0f, 1.0f,
 			"%.2f of the pit");
+
+		ImGui::Checkbox("Swell", &m_Waves);
+		ImGui::SameLine();
+		ImGui::Checkbox("Wind ripples", &m_Ripples);
+		ImGui::TextDisabled("  swell moves the surface; ripples only tilt it");
 
 		ImGui::TextDisabled("  a bowl in the ground; the water is one plane");
 		ImGui::TextDisabled("  the terrain occludes, so the shore is exact");
