@@ -58,6 +58,28 @@ public:
 	const glm::vec3& DirectionAt(int i) const { return m_Direction[i]; }
 
 	float Reach() const { return m_Reach; }
+
+	// **How far the mesh actually reaches, which is not `Reach()`.**
+	//
+	// `BuildMesh` leaves `s_SeedMargin` columns off each edge, so what gets
+	// drawn is a square of half-width `m_Reach * (1 - 2*margin/(Side-1))` --
+	// 90.6% of the reach -- and the largest circle inside that square has the
+	// same radius. The sphere stands back over a *cone*, and it was given
+	// `Reach()`: so between 90.6% and 100% of the reach the shell had gone and
+	// the mesh had never arrived, taking four bites out of the sea at the edge
+	// midpoints of the square, each 9.4% of the reach deep. A hole in the
+	// water at the far edge of the local sheet is exactly what "the water
+	// falls away into the middle of the body" looks like from the shore.
+	//
+	// This is the radius the cone has to use. Deriving it from the same two
+	// constants `BuildMesh` loops over is the point -- the alternative is a
+	// second copy of the margin that drifts the first time either changes.
+	float DrawnReach() const
+	{
+		return m_Reach
+			* (1.0f - 2.0f * (float)s_SeedMargin / (float)(Side - 1));
+	}
+
 	const glm::dvec3& Site() const { return m_Site; }
 
 	// The water's own radius above a point given in the landing site's local
@@ -583,10 +605,13 @@ inline void SurfaceWater::Report() const
 		quads, wet ? 100.0f * (float)quads / (float)wet : 0.0f, seeds);
 
 	// **The seam where the planet-wide answer meets the local one.** The map
-	// says water stands somewhere the real terrain does not support, by up to
-	// a couple of metres. It is confined to the seeded ring -- the flood
-	// corrects it in one column -- and the drawn mesh leaves that ring out, so
-	// it is measured here and never seen.
+	// says water stands somewhere the real terrain does not support. This said
+	// "by up to a couple of metres", which was measured somewhere dry: at the
+	// default shore site it is **59.375 m**, because a 1.5 km texel that
+	// straddles a coast averages a cliff. It is confined to the seeded ring --
+	// the flood corrects it in one column -- and the drawn mesh leaves that
+	// ring out, so it is measured here and never seen. Print it rather than
+	// trusting the number in this comment; it is a property of the site.
 	EGSS_TRACE("  the map and the terrain disagree by up to {0:.3f} m at the "
 		"seeded rim, which is why the outer {1} columns are not drawn",
 		worstSeam, s_SeedMargin);
@@ -602,9 +627,11 @@ inline void SurfaceWater::BuildMesh(Egss::MeshData& out) const
 	std::vector<int> vertex((size_t)Side * Side, -1);
 
 	// **Well in from the edge.** The seeded ring carries the planet-wide map's
-	// answer, which disagrees with the terrain here by up to 2.5 m, and that
-	// disagreement reaches about six columns inward before the local flood
-	// overrides it. Leaving that margin out draws only what the flood decided.
+	// answer, which disagrees with the terrain by up to 59 m at a coast, and
+	// that disagreement reaches about six columns inward before the local
+	// flood overrides it. Leaving that margin out draws only what the flood
+	// decided -- and `DrawnReach` is what the sphere has to stand back over,
+	// or the margin becomes a hole instead of a seam.
 	for (int v = s_SeedMargin; v < Side - s_SeedMargin; v++)
 	for (int u = s_SeedMargin; u < Side - s_SeedMargin; u++)
 	{

@@ -4415,8 +4415,13 @@ public:
 		{
 			material->Set("u_NearCentre",
 				glm::vec3(glm::normalize(m_Water.Site())));
+
+			// **`DrawnReach`, not `Reach`.** The mesh leaves a margin off each
+			// edge and the cone did not, so the shell stood back over a disc
+			// 10% wider than anything that replaced it -- a ring of missing
+			// sea at the far edge of the local sheet. See `DrawnReach`.
 			material->Set("u_NearCos", std::cos(std::atan(
-				m_Water.Reach() / glm::max(settings.Radius, 1.0f))));
+				m_Water.DrawnReach() / glm::max(settings.Radius, 1.0f))));
 		}
 
 		Egss::Renderer::Submit(material, m_Sphere,

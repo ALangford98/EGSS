@@ -1612,6 +1612,15 @@ look caught immediately.
   nearest whole turn from `dFdx`/`dFdy` and use `textureGrad`. **Three shaders
   had it** (terrain, water, cloud) -- if one sphere map has this, they all do.
 
+- **A circle standing back for a square leaves a ring.** The ocean shell
+  discards inside a cone of `SurfaceWater::Reach()`, but `BuildMesh` draws a
+  square of half-width `0.9055 * Reach` (it drops `s_SeedMargin` = 6 of 128
+  columns each edge). 6.87% of the local water disc was drawn by neither --
+  four bites at the edge midpoints. Use `DrawnReach()`, which derives the
+  radius from the same constants the mesh loop uses. **Whenever one surface
+  stands back for another, check the two boundaries are the same shape**, not
+  just the same nominal size.
+
 - **`./egss.py sanitize` reports 16 of 16 demos FAIL and it means nothing.**
   Every one is LeakSanitizer inside system ALSA, reached through vendored
   miniaudio's `ma_context_open_pcm__alsa`; it hits demos nothing has touched in

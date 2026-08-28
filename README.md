@@ -1337,6 +1337,36 @@ inside system ALSA reached through vendored miniaudio's
 every demo opens audio. With `detect_leaks=0` there are no ASan or UBSan
 reports at all.
 
+**And a ring of missing sea, from a circle standing back over a square.** The
+ocean shell discards inside a cone around the local water so the two never
+blend over each other, and it was given `SurfaceWater::Reach()`. But
+`BuildMesh` leaves `s_SeedMargin` = 6 columns off each edge of a 128-column
+grid, so what it actually draws is a *square* of half-width
+`Reach × (1 − 12/127)` = 0.9055 Reach. The largest circle inside that square
+has the same radius, and the shell had stood back over a disc of radius Reach:
+between the two there was nothing at all.
+
+The uncovered part is the disc minus the square, which is four circular
+segments cut at distance `a` from the centre — a shape the code contains no
+formula for. `4[R² acos(a/R) − a√(R²−a²)] / πR²` gives **6.87%** of the local
+water disc; two million Monte Carlo samples of the same question gave 6.858%.
+Four bites at the edge midpoints of the square, each 9.4% of the reach deep,
+at the far edge of the sheet you are standing on — which is what "the water
+falls away into the middle of the body" looks like from a shore.
+
+`DrawnReach()` derives the radius from the same two constants `BuildMesh`
+loops over, so the cone cannot drift from the mesh again; with it the
+uncovered fraction is exactly 0. The wet-column and quad counts are unchanged
+(3482 and 1966), which is the point — nothing about the local answer moved,
+only how much of the sphere stood back for it.
+
+While measuring this, two comments turned out to be wrong: both said the map
+and the terrain disagree at the seeded rim "by up to a couple of metres" and
+"up to 2.5 m". At the dry `--land Earth` site it is 1.859 m, and at the default
+shore site it is **59.375 m** — a 1.5 km texel that straddles a coast averages
+a cliff. The margin was already wide enough; the number in the comment was
+measured somewhere the question is easy.
+
 ### 2026-08-27 (the shading height, and a frame with no shoreline in it)
 
 The GPU half of 1:1, and the last precision item on the surface. The terrain
