@@ -50,11 +50,14 @@ public:
 		// for looking at boundaries, so the default grid runs wet to dry
 		// across it and cold to warm down it -- every neighbouring pair is a
 		// transition, which is the thing to look at.
+		// Wet to dry across, cold to warm down, so every neighbouring pair is
+		// a transition -- which is the thing the demo is for looking at.
 		static const int opening[s_Grid][s_Grid] =
 		{
-			{ 2, 1, 0 },   // wetland, forest, meadow
-			{ 1, 0, 3 },   // forest,  meadow, steppe
-			{ 5, 3, 4 },   // tundra,  steppe, desert
+			{ 2, 1, 0, 3 },   // wetland, forest, meadow,  steppe
+			{ 1, 0, 3, 4 },   // forest,  meadow, steppe,  desert
+			{ 0, 3, 4, 4 },   // meadow,  steppe, desert,  desert
+			{ 5, 5, 3, 6 },   // tundra,  tundra, steppe,  bare
 		};
 
 		for (int j = 0; j < s_Grid; j++)
@@ -100,13 +103,18 @@ private:
 	static constexpr int s_Chunks = 9;
 	static constexpr int s_Side = s_Chunks * 16 + 1;
 
-	// **The grid is three by three whatever the block is.** Nine chunks a side
-	// at a metre a voxel is 144 m, so each of the nine cells owns a 3x3 group
-	// of chunks and covers 48 m -- which is about as small as a biome can be
-	// and still read as a place rather than as a patch. Decoupling the two
-	// numbers is what lets the block grow without the panel growing with it:
-	// eighty-one checkboxes would be a worse tool than nine.
-	static constexpr int s_Grid = 3;
+	// **The grid has nothing to do with the chunks.** `CellAt` is purely
+	// positional, so the two numbers are free of each other entirely -- which
+	// is what lets the grid be refined without touching the terrain, and what
+	// made this change one constant.
+	//
+	// Four by four over the same 144 m block: sixteen cells of 36 m. That is
+	// "nine more" read as *roughly double*, kept square because a rectangular
+	// grid of eighteen would put the panel out of shape and make the layout
+	// stop matching the ground. One line to change if a finer grid is wanted;
+	// the only cost is that a cell smaller than about 20 m stops reading as a
+	// place and starts reading as a patch.
+	static constexpr int s_Grid = 4;
 
 	static constexpr float s_WalkerRadius = 0.35f;
 	static constexpr float s_WalkerHalfHeight = 0.55f;
@@ -3003,7 +3011,7 @@ inline void TerrainLab::OnDemoImGui()
 		bool cover = false;    // needs only the grass rebuilt
 
 		ImGui::TextDisabled("Tick to fill a column; untick to leave a hole.");
-		ImGui::TextDisabled("Number keys 1-9 stand you in a cell.");
+		ImGui::TextDisabled("Number keys walk the first nine cells.");
 
 		for (int j = 0; j < s_Grid; j++)
 		{
