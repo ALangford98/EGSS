@@ -1638,10 +1638,26 @@ look caught immediately.
   both gave a 1.6 K pole-to-equator range and no ice caps anywhere. See
   `Climate::Redistribution` and `Climate::Transport`.
 
-- **There is no MSAA in this engine.** Nothing calls `glEnable(GL_MULTISAMPLE)`
-  and no window hint asks for samples. That is why sub-pixel geometry -- grass
-  blades are 6 mm -- aliases as hard as it does, and it is worth knowing before
-  building impostors to work around it.
+- **The editor viewport is a `glViewport` call, not a framebuffer, and that
+  is deliberate.** `EditorShell` publishes the central dock node's rect and
+  `DemoLayer` sets the viewport to it before `OnDemoUpdate`. An off-screen
+  target would have broken every capture, because `--hide-ui` draws no panels
+  and there would be nothing to blit the texture with. The rect is invalid
+  under `--hide-ui` and `--no-editor`, in which case nothing fires and the demo
+  owns the whole framebuffer as before.
+
+- **ImGui runs in layer order.** Anything that publishes state for other layers'
+  ImGui to read must be pushed *before* them. `EditorShell` sat after the demos
+  at first and published its dock id a frame too late, and `FirstUseEver` only
+  fires once, so demo panels floated for ever.
+
+- **MSAA is on now: four samples**, hinted at window creation *and* enabled in
+  `OpenGLRendererAPI::Init`. Both halves are needed and neither reports the
+  other missing. The sample count is logged at startup.
+
+- ~~**There is no MSAA in this engine.**~~ Fixed 2026-08-29; see above. Left
+  here because the *reasoning* still applies: sub-pixel geometry aliases hard,
+  and multisampling is the half of the answer that edge coverage needs.
 
 - **Sub-pixel geometry aliases in its *shading*, not its silhouette.** The fix
   that worked for grass was not smoothing or more triangles: it was converging

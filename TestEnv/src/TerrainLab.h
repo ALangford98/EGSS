@@ -2636,6 +2636,21 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 
 	Look((float)ts);
 
+	// **The camera follows the pane, not the window.**
+	//
+	// The viewport is set to the editor's central node, which is a different
+	// shape from the window -- 1.27 against 16:9 here. Leaving the projection
+	// alone stretches the scene vertically by the ratio between them, and a
+	// stretched scene is the kind of wrong that is easy to look at and hard to
+	// name: nothing is obviously broken, the trees are simply too tall.
+	//
+	// Cheap to keep in step, since `SetAspectRatio` only rebuilds a matrix.
+	if (g_Viewport.Valid())
+		m_Camera.SetAspectRatio((float)g_Viewport.Width
+			/ glm::max((float)g_Viewport.Height, 1.0f));
+	else
+		m_Camera.SetAspectRatio(16.0f / 9.0f);
+
 	// The day advances on the frame clock rather than the fixed step, because
 	// it changes nothing the simulation can see -- and holding it still at
 	// zero is how you compare two shots of the same scene.

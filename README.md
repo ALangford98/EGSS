@@ -1264,6 +1264,55 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-29 (an editor layout, and the demo gets a viewport)
+
+Every panel in the sandbox was an independent ImGui window dropped wherever it
+last happened to be, over a demo drawn across the whole framebuffer. Fine for
+one panel and unreadable by the time there are four: they overlap the thing they
+describe, they move when the window resizes, and the scene is always partly
+behind something.
+
+`EditorShell` lays them out -- controls down the left with the demo selector
+under them, the profiler on the right, a spare `Assets` pane along the bottom,
+and the demo in the middle. **Nothing about any demo changed to make that
+happen.**
+
+**The demo is drawn into the central node by setting the viewport, not by
+rendering to a framebuffer.** A framebuffer is the textbook answer and it would
+have broken every capture in this project: `--hide-ui` exists so an unattended
+run draws no panels at all, and with an off-screen target there would be nothing
+to blit it with. Setting the viewport degrades correctly on its own -- no panels
+means the rect is invalid means the demo owns the whole framebuffer, exactly as
+before. Verified: `--hide-ui` still produces a full 1280x720 frame with all four
+corners lit.
+
+The camera's aspect follows the pane rather than the window. Leaving it alone
+stretched the scene vertically by the ratio between them, which is the kind of
+wrong that is easy to look at and hard to name -- nothing is obviously broken,
+the trees are simply too tall.
+
+Three things went wrong on the way and all three are worth keeping:
+
+**Docking by window title is too fragile.** A demo's panel is titled whatever
+its author chose, which is not its name in the registry, and a list of both in a
+third file is exactly the thing that silently falls out of step. The shell
+publishes the dock id instead and `DemoLayer` applies it to the window it is
+about to open, so a demo written next year lands in the right place without
+anyone adding it to a list.
+
+**ImGui runs in layer order, and the shell has to go first.** Pushed after the
+demos, it published the dock id *after* they had already opened their windows --
+and `FirstUseEver` only fires once, so the panel floated for ever. It handles no
+events, so sitting at the bottom of the stack costs nothing.
+
+**`PassthruCentralNode` is what leaves the middle transparent.** Without it the
+central node paints itself and the demo behind it is never seen, which looks
+exactly like the scene failing to render.
+
+The layout is built into `imgui.ini` once and only if that file does not already
+describe one, so it is a starting point rather than a cage -- drag a panel
+somewhere better and it stays. `--no-editor` turns the whole thing off.
+
 ### 2026-08-28 (leaves that are blobs, and grass that stops being blades)
 
 **Leaf clusters were blocky for one reason: flat normals.** `LeafCluster` builds
