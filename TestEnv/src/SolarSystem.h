@@ -1185,8 +1185,13 @@ public:
 			// Continents rather than ridge filaments -- see the note on
 			// `ContinentShare`. Roughly a planet-radius across, which is a
 			// handful of landmasses.
-			settings.ContinentShare = 0.62f;
+			settings.ContinentShare = 0.85f;
 			settings.ContinentSize = radius * 0.45f;
+
+			// The continental slope, as a share of the broad noise's range.
+			// See `Settings::ContinentEdge` -- this is what makes the
+			// coastline a coastline instead of a lace.
+			settings.ContinentEdge = 0.15f;
 			settings.PlantsPerChunk = 14;
 
 			// Finer ridges than the other bodies get, because the continents
@@ -3530,6 +3535,7 @@ public:
 		// Three voxels of shore: enough to read as a beach from a distance and
 		// not so much that it becomes the landscape.
 		material->Set("u_Beach", scale * 3.0f * glm::max(settings.VoxelSize, 0.1f));
+
 	}
 
 	static float ReliefOf(const VoxelPlanet::Settings& settings, float radius)
@@ -5743,8 +5749,6 @@ private:
 				// allowed to look like a seabed; what is over it decides what
 				// colour it arrives as.
 
-				float top = max(u_Relief * 0.5 - sea, 1.0);
-				float f = clamp(height / top, 0.0, 1.0);
 
 				// Without a climate map, fall back to the old latitude band --
 				// which is exactly what a body with no water has to do.
@@ -5769,7 +5773,30 @@ private:
 				// the voxels the ground is actually made of.
 				vec3 colour = mix(u_Sand, green, smoothstep(0.0, u_Beach, height));
 
-				colour = mix(colour, u_Rock, smoothstep(0.45, 0.75, f));
+				// **Bare rock is above the tree line, and the tree line is a
+				// temperature too.**
+				//
+				// This was `smoothstep(0.45, 0.75, height/top)` -- a fraction
+				// of the tallest land on the planet. That reads as
+				// scale-independence and is not: it assumes land heights are
+				// spread evenly from sea level to the summit. Once the
+				// continents became real plateaus that stopped being true. A
+				// continental platform sits near the *top* of the relief range
+				// by construction, so every interior came out above `f = 0.7`
+				// and the whole landmass was painted rock with a thin green
+				// rim at the shore.
+				//
+				// Height does not decide what grows; temperature does, and the
+				// tree line is the isotherm where the warm part of the year
+				// stops being warm enough to build wood. Driving it the same
+				// way as the snow line means the two cannot cross each other,
+				// and means a plateau is bare because it is cold rather than
+				// because it is a large fraction of something.
+				float seaLevel = mix(u_TempPole, u_TempEquator, warm);
+				float temperature = seaLevel - u_LapseRate * max(height, 0.0);
+
+				colour = mix(colour, u_Rock,
+					smoothstep(u_Freeze + 12.0, u_Freeze + 5.0, temperature));
 
 				// **Snow is where the air freezes, which is a temperature and
 				// not a fraction of the relief.**
@@ -5789,9 +5816,6 @@ private:
 				// round a highland for the same reason it does on Earth --
 				// because the highland is higher, not because a field was
 				// smoothed.
-				float seaLevel = mix(u_TempPole, u_TempEquator, warm);
-				float temperature = seaLevel - u_LapseRate * max(height, 0.0);
-
 				// Tundra in the few degrees above freezing, snow below it.
 				// One threshold, approached from both sides, so there is never
 				// a band of bare rock between the two.

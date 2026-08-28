@@ -95,6 +95,30 @@ public:
 		float ContinentShare = 0.0f;
 		float ContinentSize = 0.0f;    // metres; the rises, not the ridges
 
+		// **How sharp the edge of a continent is**, as a share of the broad
+		// noise's range. Zero leaves the old smooth rise; small values squash
+		// the noise into two plateaus -- a continental platform and an abyssal
+		// basin -- joined by a slope that narrow.
+		//
+		// This is the difference between a coastline and a filigree, and the
+		// reason is worth stating because it is not obvious. Sea level is
+		// solved for a target land fraction, so it lands wherever it must. If
+		// the broad shape is a smooth unimodal rise, that level cuts through
+		// ground that is *nearly flat*, and the hundred metres of ridge and
+		// landscape detail added on top then decide the coastline: every dip
+		// becomes a lake and every bump an island, and the map comes out a
+		// spidery lace with no landmass anywhere in it. Measured on Earth
+		// here: 129 land/sea crossings per row of 1024 texels, where a
+		// handful of continents would give five or six.
+		//
+		// Put the same level on a *slope* and the same detail noise only
+		// shifts the coast a little way along it. That is why Earth's
+		// coastlines are crisp: its hypsometry is strongly bimodal -- a
+		// continental platform, an abyssal plain four kilometres down, and sea
+		// level sitting in the gap between them -- and almost no land area
+		// sits at exactly zero.
+		float ContinentEdge = 0.0f;
+
 		// **Landscape: the relief you can actually stand in.**
 		//
 		// The planetary spectrum above is a 1/f fractal anchored at
@@ -972,6 +996,11 @@ public:
 		float ridged = 1.0f - std::abs(unit);
 		float shape = ridged - 0.5f;
 
+		// 1 well inside a continent, 0 out on the abyssal plain, with the
+		// transition on the continental slope. Hoisted out of the block below
+		// because the landscape layer needs it too -- see where it is added.
+		float platform = 1.0f;
+
 		if (m_Settings.ContinentShare > 0.0f && m_Settings.ContinentSize > 0.0f)
 		{
 			float f = m_Settings.Radius / m_Settings.ContinentSize;
@@ -979,12 +1008,53 @@ public:
 			float broad = Noise3D(direction * f, m_Settings.Seed + 101u)
 				+ Noise3D(direction * f * 2.0f, m_Settings.Seed + 102u) * 0.5f;
 
-			shape = glm::mix(shape, broad / 3.0f, m_Settings.ContinentShare);
+			// Into roughly -1..1 before it is shaped, so `ContinentEdge` means
+			// the same thing whatever the noise happens to be scaled to.
+			float mask = glm::clamp(broad / 1.5f, -1.0f, 1.0f);
+
+			// A plateau, a slope, a plateau. See `ContinentEdge`: without this
+			// the coastline is cut across flat ground and the detail noise
+			// shreds it. `smoothstep` rather than a hard step because the
+			// slope is the whole point -- a cliff would put the coast back on
+			// flat ground, just a shorter way down.
+			if (m_Settings.ContinentEdge > 0.0f)
+			{
+				float edge = m_Settings.ContinentEdge;
+
+				mask = glm::smoothstep(-edge, edge, mask) * 2.0f - 1.0f;
+			}
+
+			platform = mask * 0.5f + 0.5f;
+
+			shape = glm::mix(shape, mask * 0.5f, m_Settings.ContinentShare);
 		}
 
 		float relief = shape * m_Settings.Amplitude - m_ReliefBias;
 
-		relief += Landscape(direction, maxOctaves);
+		// **Mountains are built on continents, and coastal plains are flat.**
+		//
+		// This was added at full strength everywhere, and on this planet it is
+		// the larger of the two: up to 700 m of ridge and range on a
+		// continental step of about 270 m. So the shape that was supposed to
+		// decide where the land is was being outvoted by the shape that
+		// decides what the land looks like, and sea level -- solved for a land
+		// fraction, so it goes wherever it must -- ended up cutting through
+		// the *landscape* rather than through the continental slope. Every dip
+		// became a lake and every rise an island.
+		//
+		// Weighting it by the platform fixes that and is what the real thing
+		// does anyway. Ocean floor is smooth because nothing is uplifting it;
+		// coastal plains are flat because they are the drowned edge of the
+		// platform; ranges are inland. `smoothstep` rather than the raw mask
+		// so the shore itself gets almost none of it -- which is the part that
+		// stops the coastline being shredded -- and a floor of 0.12 rather
+		// than zero so the seabed has some shape to it for anyone who goes
+		// looking.
+		float uplift = m_Settings.ContinentEdge > 0.0f
+			? glm::mix(0.12f, 1.0f, glm::smoothstep(0.10f, 0.80f, platform))
+			: 1.0f;
+
+		relief += Landscape(direction, maxOctaves) * uplift;
 
 		// The local layer, added rather than mixed: it is small next to the
 		// planetary relief by construction, so it cannot push the surface
@@ -1044,10 +1114,37 @@ public:
 			float finest = m_Settings.FeatureSize
 				/ (float)(1 << glm::max(maxOctaves - 1, 0));
 
+			// **The ridge fold doubles the frequency, and the cap has to know.**
+			//
+			// `1 - |n|` puts a corner wherever the noise crosses zero, so a
+			// ridge field of wavelength L carries detail at L/2. Cutting at
+			// `finest` therefore kept octaves whose *folded* content was below
+			// what the sampler could represent, and one of them was always
+			// kept -- the loop floors at a single octave -- so this layer
+			// aliased into the map no matter what the cap said.
+			//
+			// On Earth here that was the whole of the artifact: a 4 km ridge
+			// field with 700 m of rise, sampled on a 1.5 km texel, came out as
+			// per-texel salt and pepper across every continent. It did not
+			// merely look wrong. The drainage pass runs on this grid, believed
+			// the noise, and reported **a quarter of all land under a lake**
+			// against about two per cent for the real thing -- so the planet
+			// from orbit was a reticulated net of water inside every landmass.
+			//
+			// If even the coarsest landscape octave is below the line, this
+			// layer has nothing the caller can represent and contributes
+			// nothing but aliasing, so it contributes nothing at all. The
+			// ground you actually walk on is meshed at 1.5 m and passes no
+			// cap, so it keeps every octave; this only ever trims the map.
+			float coarsest = 2.0f * finest;
+
+			if (m_Settings.LandscapeSize < coarsest)
+				return 0.0f;
+
 			octaves = 1;
 
 			while (octaves < m_Settings.LandscapeOctaves
-				&& m_Settings.LandscapeSize / (float)(1 << octaves) > finest)
+				&& m_Settings.LandscapeSize / (float)(1 << octaves) >= coarsest)
 				octaves++;
 		}
 
@@ -1091,7 +1188,27 @@ public:
 		float share = m_Settings.LandscapeFloor
 			+ (1.0f - m_Settings.LandscapeFloor) * uplift;
 
-		return m_Settings.Landscape * share * (ridge - 0.35f);
+		// **Uplift builds up; erosion only cuts down to a base level.**
+		//
+		// `ridge - 0.35` is centred so the mean stays near the mean radius,
+		// which the volume check wants -- but it also let this layer cut 245 m
+		// *below* the continental platform, and the platform only stands about
+		// a hundred metres above sea level. So continental interiors flooded:
+		// a quarter of all land came out under a lake, against about two per
+		// cent for the real thing, and the map from orbit was a reticulated
+		// net of water inside every landmass.
+		//
+		// The asymmetry is the physics. A mountain range has no ceiling -- it
+		// rises until it is eroded as fast as it lifts -- but a valley between
+		// two ranges cuts down toward a base level and stops, because below
+		// that there is nothing left to carry the sediment away. So the same
+		// ridge field is worth four times as much upward as downward.
+		float lift = ridge - 0.35f;
+
+		if (lift < 0.0f)
+			lift *= 0.25f;
+
+		return m_Settings.Landscape * share * lift;
 	}
 
 	// --- The height map -----------------------------------------------------

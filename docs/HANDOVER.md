@@ -1638,6 +1638,22 @@ look caught immediately.
   both gave a 1.6 K pole-to-equator range and no ice caps anywhere. See
   `Climate::Redistribution` and `Climate::Transport`.
 
+- **`1 - |n|` doubles the frequency, and every band limit has to know.**
+  A ridge field of wavelength L carries detail at L/2, so a cap that cuts
+  octaves at "the finest wavelength this sampler can represent" keeps one that
+  aliases. The planet map did exactly that for months: a 4 km ridge field on a
+  1.5 km texel became per-texel salt and pepper, and because the *drainage pass
+  runs on that grid* it reported a quarter of all land under a lake. **When a
+  height field looks like noise, dump the map before touching the shader** --
+  two minutes with the baked texture said more than three rendering sessions.
+
+- **Anything quoted as a fraction of the relief is suspect.**
+  `smoothstep(0.45, 0.75, height/top)` for the rock line assumes land heights
+  are spread evenly from sea level to the summit. That was true while the
+  hypsometry was unimodal and false the moment the continents became plateaus,
+  and it painted every landmass grey. Same trap as the snow line and `Warmth`
+  below. Prefer an absolute quantity -- a temperature, a depth in metres.
+
 - **A snow line quoted as a fraction of the relief is the wrong invariant.**
   It reads as scale-independence and is not: a snow line is an altitude in
   metres set by `g/c_p`, so a planet of 600 m hills should have *no* snow and
