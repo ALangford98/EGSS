@@ -1638,6 +1638,21 @@ look caught immediately.
   both gave a 1.6 K pole-to-equator range and no ice caps anywhere. See
   `Climate::Redistribution` and `Climate::Transport`.
 
+- **Both sides of a stochastic LOD test must be constant across the
+  primitive.** Grass drops whole blades past a distance by comparing a
+  per-blade ticket against a keep-fraction. Computing that fraction from the
+  *vertex* position tore about two per cent of blades in half and drew long
+  black slivers to the collapse point. The fraction is a uniform set per chunk
+  now. Related: a derivative normal (`cross(dFdx, dFdy)`) is noise on geometry
+  a few millimetres wide -- it is only valid where a triangle covers several
+  pixels.
+
+- **When something in the near field looks like a "geometry artifact", check
+  the scale of the small props before suspecting the terrain.** Flat angular
+  slabs through a hillside turned out to be grass blades 9 cm wide. Two
+  measured hypotheses (the horizon mesh bridging valleys -- it stands 0.08 m
+  proud; terrain LOD -- 5.6% of pixels and all in the right places) died first.
+
 - **"World space" in the Solar demo is camera-relative, and anything that
   wants a *fixed* position must say so.** Everything is drawn camera-relative to
   keep planet-sized coordinates off the GPU, so a shader that reads a phase, a

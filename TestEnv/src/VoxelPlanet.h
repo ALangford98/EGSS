@@ -120,6 +120,20 @@ public:
 		// sits at exactly zero.
 		float ContinentEdge = 0.0f;
 
+		// **The climate band, in kelvin, so plants and paint agree.**
+		//
+		// The terrain shader decides where bare rock starts from a real
+		// temperature -- a tree line is an isotherm, not a height. Tree
+		// *placement* was still using `height / (Amplitude/2 - sea)`, a
+		// fraction of the relief, which on this planet stopped trees 87 m
+		// above sea level while the shader painted green forest floor for
+		// another five hundred. Filled by the demo from the same model the
+		// shader gets, so the two cannot drift apart.
+		float TempEquator = 0.0f;   // K at sea level, annual mean
+		float TempPole = 0.0f;      // K at sea level, annual mean
+		float LapseRate = 0.0f;     // K per metre
+		float Freeze = 273.15f;
+
 		// Grass: blades per qualifying terrain triangle, and how tall they
 		// stand. Zero is no grass, which is every body without vegetation.
 		float GrassDensity = 0.0f;
@@ -2144,8 +2158,6 @@ public:
 		glm::dvec3 high = low + glm::dvec3(m_ChunkWorld);
 
 		float sea = m_Settings.OceanRadius;
-		float top = std::max(m_Settings.Amplitude * 0.5f
-			- (sea - m_Settings.Radius), 1.0f);
 
 		for (int i = 0; i < m_Settings.PlantsPerChunk; i++)
 		{
@@ -2172,7 +2184,7 @@ public:
 			// green does rather than marching up a snowfield.
 			float height = (float)(radius - (double)sea);
 
-			if (height < 0.8f || height / top > 0.62f)
+			if (height < 0.8f)
 				continue;
 
 			// **Off the ice, and out of the desert.**
@@ -2185,6 +2197,23 @@ public:
 			// and moisture puts the edge of the forest where the water stops.
 			float wet = SampleHydrology(m_Water.Moisture, direction);
 			float warm = SampleHydrology(m_Water.Warmth, direction);
+
+			// **The tree line, as the isotherm the shader paints it at.**
+			// The old cut was `height / top > 0.62` with `top` half the
+			// relief -- an altitude expressed as a fraction of the tallest
+			// hill, which stopped trees 87 m up on a planet whose forest floor
+			// the shader was still drawing green at 500 m. Nothing grows where
+			// the ground is too cold for wood, and that is a temperature.
+			if (m_Settings.TempEquator > 0.0f)
+			{
+				float seaLevel = glm::mix(m_Settings.TempPole,
+					m_Settings.TempEquator, warm);
+
+				float here = seaLevel - m_Settings.LapseRate * height;
+
+				if (here < m_Settings.Freeze + 6.0f)
+					continue;
+			}
 
 			if (warm < 0.22f || wet < 0.42f)
 				continue;
@@ -2405,7 +2434,9 @@ public:
 		Grass::Settings settings;
 		settings.Density = m_Settings.GrassDensity;
 		settings.Height = m_Settings.GrassHeight;
-		settings.Width = m_Settings.GrassHeight * 0.10f;
+		// A blade is millimetres across whatever its height. Tying the width
+		// to the height gave 9 cm blades and a field of green shards.
+		settings.Width = 0.006f;
 
 		float sea = m_Settings.OceanRadius;
 		float top = m_Settings.Radius + ReliefReach();

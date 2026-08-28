@@ -3565,9 +3565,9 @@ public:
 
 	// --- Grass as geometry ---
 	bool m_Grass = true;
-	float m_GrassDensity = 4.0f;    // blades per qualifying terrain triangle
+	float m_GrassDensity = 55.0f;    // blades per qualifying terrain triangle
 	float m_GrassHeight = 0.42f;
-	float m_GrassWidth = 0.045f;
+	float m_GrassWidth = 0.007f;
 	int m_GrassDrawn = 0;
 	glm::vec4 m_BladeColour{ 0.26f, 0.44f, 0.15f, 1.0f };
 	float m_GrassLow = 1.1f;

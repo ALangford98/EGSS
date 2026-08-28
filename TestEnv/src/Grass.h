@@ -34,16 +34,34 @@ namespace Grass {
 
 	struct Settings
 	{
-		// **Density is what makes grass look like grass**, more than any other
-		// number here. A real lawn is thousands of blades a square metre; this
-		// ran at 0.6 blades per terrain triangle, which on a chunk of metre-
-		// scale triangles is a few blades a square metre, and no shape or
-		// width will rescue that -- it reads as sparse spikes because it *is*
-		// sparse spikes.
-		float Density = 5.0f;
+		// **Blades per square metre.** A real lawn is thousands; the eye stops
+		// counting somewhere in the low hundreds, and every one of them has to
+		// be built, uploaded and transformed. This started at the equivalent of
+		// two or three a square metre, which is stubble, and the number that
+		// makes it read as a field is nearer sixty.
+		//
+		// It is worth knowing what this costs before turning it up: each blade
+		// is five vertices and three triangles, so sixty a square metre over a
+		// fifty-metre circle is half a million triangles. That is why the
+		// radius grass is built over is the first thing to trade, not this.
+		float Density = 60.0f;
 
 		float Height = 0.42f;
-		float Width = 0.045f;
+
+		// **Half-width at the root, in metres, and it wants to be small.**
+		//
+		// This was 0.045 -- a blade 9 cm across. Real grass is four or five
+		// millimetres, so every blade was twenty times too wide, and standing
+		// in it you were not looking at grass but at a heap of flat green
+		// shards the size of dinner plates. That is what the "geometry
+		// artifacts" in the near field were: correct geometry at an absurd
+		// scale.
+		//
+		// Narrow blades only work if there are a great many of them, which is
+		// what the LOD below is for. The two numbers move together and always
+		// have -- a blade you can see individually has to be thin, and a field
+		// of thin blades has to be dense or it is bare ground with hairs on.
+		float Width = 0.006f;
 
 		// How far the tip leans off vertical, as a share of the blade's
 		// height. Upright blades read as spikes and a field of them looks like
@@ -105,7 +123,16 @@ namespace Grass {
 			float flatness = glm::smoothstep(settings.FlatLow, settings.FlatHigh,
 				glm::dot(n, vertical));
 
-			float chance = allow(centre, n) * flatness * settings.Density;
+			// **Blades per square metre, not per triangle.** Per triangle is a
+			// number that means nothing on its own: it depends on how finely
+			// the terrain happens to be meshed, so the same setting gives a
+			// lawn on one body and a stubble field on another. The triangle's
+			// own area turns it into a density anyone can reason about, and
+			// makes the cost of a change predictable -- doubling it doubles
+			// the geometry, wherever it is.
+			float area = 0.5f * area2;
+
+			float chance = allow(centre, n) * flatness * settings.Density * area;
 
 			if (chance <= 0.001f)
 				continue;
@@ -194,11 +221,36 @@ namespace Grass {
 				glm::vec3 middle = base + vert * (height * waist)
 					+ lean * (waist * waist);
 
-				grass.Vertices.push_back({ base - side,          bladeNormal, { 0.0f, 0.0f } });
-				grass.Vertices.push_back({ base + side,          bladeNormal, { 1.0f, 0.0f } });
-				grass.Vertices.push_back({ middle - side * 0.7f, bladeNormal, { 0.1f, waist } });
-				grass.Vertices.push_back({ middle + side * 0.7f, bladeNormal, { 0.9f, waist } });
-				grass.Vertices.push_back({ tip,                  bladeNormal, { 0.5f, 1.0f } });
+				// **`TexCoord.x` is a per-blade lottery ticket, not a
+				// coordinate.** The shader needs one number that is the same
+				// at all five vertices of a blade and different between
+				// blades, so it can drop a fixed share of the field with
+				// distance and have whole blades vanish rather than corners
+				// of them. There is nowhere else to put it -- `Normal` is
+				// doing lighting and `TexCoord.y` is the height up the blade
+				// the bend depends on -- and the across-the-blade coordinate
+				// it replaces was never read by anything.
+				// **The texture coordinate carries height up the blade**, 0 at
+				// the root and 1 at the tip, which is what lets the shader
+				// bend it without knowing where the root is.
+				//
+				// `x` is a per-blade lottery ticket, the same at all five
+				// vertices; `y` is the height up the blade. The across-blade
+				// coordinate it replaces was never read by anything.
+				//
+				// The ticket is what the level of detail thresholds against.
+				// It has to be identical across a blade or the blade tears in
+				// half, and the number it is compared with has to be identical
+				// too -- which is why that one is a uniform per chunk rather
+				// than anything computed from a vertex. Both halves of that
+				// were learned the hard way; see the changelog.
+				float ticket = Veg::Hash2DUnit((int)t, i * 3 + 5, seed);
+
+				grass.Vertices.push_back({ base - side,          bladeNormal, { ticket, 0.0f } });
+				grass.Vertices.push_back({ base + side,          bladeNormal, { ticket, 0.0f } });
+				grass.Vertices.push_back({ middle - side * 0.7f, bladeNormal, { ticket, waist } });
+				grass.Vertices.push_back({ middle + side * 0.7f, bladeNormal, { ticket, waist } });
+				grass.Vertices.push_back({ tip,                  bladeNormal, { ticket, 1.0f } });
 
 				grass.Indices.insert(grass.Indices.end(), {
 					at,     at + 1, at + 3,

@@ -1201,8 +1201,38 @@ public:
 			// coastline a coastline instead of a lace.
 			settings.ContinentEdge = 0.15f;
 			settings.PlantsPerChunk = 14;
-			settings.GrassDensity = 6.0f;
+			settings.GrassDensity = 60.0f;
 			settings.GrassHeight = 0.75f;
+
+			// The tree line, from the same model the terrain shader is given.
+			// `ClimateBand` needs a generated planet to read a mean moisture
+			// off, and this runs before there is one, so the moisture here is
+			// the whole-planet default; the band moves by under a kelvin for
+			// it and the tree line by a few metres.
+			{
+				const Body& body = m_Bodies[index];
+
+				Climate::Site band;
+				band.StarDistanceAu = (float)StarDistanceAu(index);
+				band.Albedo = body.BondAlbedo;
+				band.AirColumn = body.AtmosphereFraction * body.AtmosphereDensity;
+				band.Gravity = (float)RealSurfaceGravity(index);
+				band.RotationHours = (float)body.RotationHours;
+				band.ObliquityDegrees = body.AxialTiltDegrees;
+				band.Moisture = 0.58f;
+				band.Altitude = 0.0f;
+
+				band.LatitudeDegrees = 0.0f;
+				band.CosZenith = Climate::MeanCosZenith(0.0f, band.ObliquityDegrees);
+				settings.TempEquator = Climate::At(band).Temperature;
+
+				band.LatitudeDegrees = 90.0f;
+				band.CosZenith = Climate::MeanCosZenith(90.0f, band.ObliquityDegrees);
+				settings.TempPole = Climate::At(band).Temperature;
+
+				settings.LapseRate = 0.001f * Climate::LapseRate(
+					band.Gravity, band.Moisture);
+			}
 
 			// Finer ridges than the other bodies get, because the continents
 			// are already carrying the large shapes here -- without this the
@@ -3444,6 +3474,15 @@ public:
 				grass->Set("u_GustOffset",
 					GustPhase(chunk.Origin, glm::dvec3(gustAxis)));
 
+				// **How much of this chunk's grass to draw.** Full inside
+				// 20 m, a fifth by the edge of the stride-1 radius. The
+				// distance is the chunk's, so every blade in it agrees -- see
+				// the note in the shader for why that matters.
+				float away = glm::length(placed);
+
+				grass->Set("u_Keep", glm::mix(1.0f, 0.20f,
+					glm::smoothstep(20.0f, 52.0f, away)));
+
 				Egss::Renderer::Submit(grass, chunk.GrassPtr,
 					glm::translate(glm::mat4(1.0f), placed) * spin);
 			}
@@ -3850,7 +3889,7 @@ public:
 		material->Set("u_Colour", glm::mix(glm::vec3(0.86f, 0.90f, 0.95f),
 			SkyLight(index) * 3.0f + glm::vec3(0.35f), 0.5f));
 
-		material->Set("u_Strength", 0.11f);
+		material->Set("u_Strength", 0.035f);
 
 		// Premultiplied and no depth write: these are air, so they add light
 		// to what is behind them and never hide it. No culling, because a
@@ -3907,6 +3946,11 @@ public:
 
 		grass->Set("u_GrassHeight", plant != m_Planets.end()
 			? plant->second.Get().GrassHeight : 0.45f);
+
+		// One radian per 55 m: a swell you walk through rather than a ripple
+		// you outrun. See the note by `gust` in the shader.
+		grass->Set("u_GustScale", 1.0f / 55.0f);
+		grass->Set("u_WindSpeed", m_Weather.WindSpeed);
 
 		grass->Set("u_GustAxis", glm::length(m_WindFixed) > 1e-5f
 			? glm::normalize(m_WindFixed) : glm::vec3(1.0f, 0.0f, 0.0f));
@@ -5633,6 +5677,9 @@ private:
 			// the planet's fixed frame. See the note by `travel`.
 			uniform vec3 u_GustAxis;
 			uniform float u_GustOffset;
+			uniform float u_GustScale;
+			uniform float u_WindSpeed;
+			uniform float u_Keep;
 
 			out vec3 v_WorldPosition;
 			out vec3 v_Normal;
@@ -5743,6 +5790,9 @@ private:
 			// the planet's fixed frame. See the note by `travel`.
 			uniform vec3 u_GustAxis;
 			uniform float u_GustOffset;
+			uniform float u_GustScale;
+			uniform float u_WindSpeed;
+			uniform float u_Keep;
 
 			out vec3 v_WorldPosition;
 			out vec3 v_Normal;
@@ -5753,6 +5803,41 @@ private:
 				vec4 world = u_Transform * vec4(a_Position, 1.0);
 
 				float along = a_TexCoord.y;
+
+				// **LOD: drop a share of the blades, decided per chunk.**
+				//
+				// Six-millimetre blades only read as grass if there are a very
+				// great many, and rasterising all of them out to the edge of
+				// the stride-1 radius costs more than everything else in the
+				// frame put together -- 28.5 ms a step against 12.4.
+				//
+				// `u_Keep` is the fraction to keep and is a **uniform**, set
+				// per chunk from that chunk's own distance. `a_TexCoord.x` is
+				// a per-blade ticket. Both sides of the comparison are
+				// therefore constant across a blade, which is the whole point:
+				// an earlier version computed the distance per vertex, so
+				// blades near the threshold had some vertices collapse and
+				// some not, and the field filled with long black slivers
+				// stretched to the collapse point.
+				//
+				// Chunk granularity means the density steps at chunk edges
+				// rather than fading continuously. At 24 m a chunk and a band
+				// from 20 to 55 m that is two or three steps, on grass that is
+				// already small -- and the ground beneath is coloured by the
+				// same biome rule, so what shows between blades is the green
+				// they are standing in.
+				if (a_TexCoord.x > u_Keep)
+				{
+					// Every vertex of this blade takes this branch, so the
+					// triangle is degenerate rather than stretched.
+					gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
+					v_WorldPosition = world.xyz;
+					v_Normal = vec3(0.0, 1.0, 0.0);
+					v_Up = 0.0;
+					return;
+				}
+
+
 
 				// The same wind pressure the trees feel, and the same reason:
 				// twice the wind lies the grass over four times as far.
@@ -5771,7 +5856,23 @@ private:
 				// origin's share of the dot product arrives as a uniform
 				// already summed in double.
 				float travel = u_GustOffset + dot(a_Position, u_GustAxis);
-				float gust = 1.0 + 0.45 * sin(travel * 0.35 - u_Time * 3.1);
+				// **The gust travels at the wind's own speed, over a swell
+				// long enough that walking through it barely registers.**
+				//
+				// This was `travel * 0.35 - u_Time * 3.1`: an 18 m wavelength
+				// moving at 8.9 m/s. Walking at 6 m/s through an 18 m pattern
+				// changes the rate you meet it by most of itself, so the
+				// ripple still sped up when the player did -- the phase was
+				// camera-independent by then, but the *wavelength* was short
+				// enough that moving through space did the same job.
+				//
+				// A real gust front is tens of metres across and travels with
+				// the air. Both of those are the fix: `u_GustScale` is one
+				// radian per 55 m, and the time term is that same scale times
+				// the wind speed, so the pattern advects at exactly the speed
+				// the air is moving and nothing else.
+				float gust = 1.0 + 0.45 * sin(u_GustScale
+					* (travel - u_WindSpeed * u_Time));
 
 				// **Squared, so the blade curves instead of pivoting.** A
 				// hinge at the root displaces every point in proportion to its
@@ -5842,6 +5943,11 @@ private:
 			void main()
 			{
 				vec3 normal = normalize(v_Normal);
+
+				// Either face of a blade can be toward the eye, and a blade
+				// lit from behind should not be black -- it is a thin leaf.
+				if (dot(normal, u_Up) < 0.0)
+					normal = -normal;
 
 				float diffuse = max(dot(normal, u_LightDirection), 0.0);
 				float dome = 0.5 + 0.5 * dot(normal, u_Up);
@@ -7526,7 +7632,13 @@ private:
 	// Terrain level of detail, in metres from the camera at Earth's voxel
 	// size. See the note where they are handed to the planet.
 	bool m_Lod = true;
-	float m_LodNear = 100.0f;
+	// **Stride 2 begins here, and so does the end of the grass.** Grass is
+	// built on stride-1 chunks only, so this radius is the grass budget as
+	// much as the terrain one -- pulling it from 100 m to 55 m is what pays
+	// for sixty blades a square metre instead of six. The terrain loses very
+	// little by it: stride 2 at 55 m is 3 m between samples on ground that is
+	// 55 m away.
+	float m_LodNear = 55.0f;
 	float m_LodFar = 200.0f;
 	int m_ChunksPerStep = 12;
 

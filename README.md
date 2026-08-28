@@ -1264,6 +1264,84 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (the geometry artifacts were the grass, and grass LOD)
+
+**The artifact was the grass all along.** Reported as flat angular slabs cutting
+through the hillside, and they looked like terrain — big, planar, dark. Two
+hypotheses were measured and both were wrong before the right one turned up:
+
+- The **horizon mesh** stands 192 spokes at 340 m, which is 11 m triangles
+  against 1.5 m chunks, so it should bridge valleys and poke through. Measured
+  as mean-of-two-ends against the generator's own height at the midpoint, net
+  of the droop meant to keep it under: it stands **0.08 m proud, at 340 m out**.
+  Not it.
+- **Terrain LOD.** `--no-terrain-lod` against the same frame differs by 5.6% of
+  pixels, all of it at the coarse strides where it should be. Not it either.
+
+The blades were `Width = Height * 0.10`, so 9 cm across. A real blade is four or
+five millimetres. Standing in it you were not looking at grass but at a heap of
+flat green shards the size of dinner plates — correct geometry at an absurd
+scale, which is exactly what "geometry artifact" looks like from the inside.
+
+**Narrow blades need many more of them, and that needs LOD.** At 6 mm and 60
+blades a square metre over the full stride-1 radius the frame went from 12.4 ms
+to **57 ms**. Three things fixed that, and two of them failed first:
+
+1. **Density became blades per square metre.** Per terrain triangle is a number
+   that means nothing on its own — it depends on how finely the ground happens
+   to be meshed. The triangle's own area makes it a density anyone can reason
+   about, and makes the cost of a change predictable.
+2. **Grass exists only on stride-1 chunks, so that radius *is* the grass
+   budget.** Pulling it from 100 m to 55 m is what pays for sixty blades a
+   square metre instead of six. The terrain loses very little: stride 2 at 55 m
+   is 3 m between samples on ground 55 m away.
+3. **A keep-fraction per chunk against a per-blade ticket.** Both sides of the
+   comparison have to be constant across a blade. The first attempt computed
+   the distance *per vertex*, so blades near the threshold had some vertices
+   collapse and some not, and the field filled with long black slivers stretched
+   to the collapse point — about two per cent of blades. Moving the blade's root
+   into the position slot fixed that exactly, but cost the normal its attribute,
+   and a **derivative normal is noise on geometry six millimetres wide** — the
+   whole field went black. The version that works keeps the normal and makes the
+   *threshold* a uniform set per chunk, so it cannot vary across a blade at all.
+
+| | ms per step |
+|---|---|
+| 60 blades/m² over 100 m, no LOD | 57.0 |
+| the same over 55 m, no LOD | 28.5 |
+| per-chunk keep, full inside 20 m to a fifth at 52 m | **12.5** |
+
+Ten times the blade density of two commits ago, at the frame time it had before
+any of this.
+
+**The gust was still tied to walking speed, and the frame was only half of it.**
+The phase became camera-independent last commit; the *wavelength* did not. It
+was an 18 m pattern travelling at 8.9 m/s, and walking at 6 m/s through an 18 m
+pattern changes the rate you meet it by most of itself. A real gust front is
+tens of metres across and travels with the air, and both of those are the fix:
+one radian per 55 m, and a time term that is that scale times the wind speed, so
+the pattern advects at exactly the speed the air is moving and nothing else.
+
+**Trees are placed and drawn** — 2,061 made, 656 batched — but the nearest to
+the default site is **151 m away**, so the opening view has none in it. The
+landing clearing is 20 m and the batch cap is 16,384, so neither of those is
+it; this is not yet root-caused and is written down rather than guessed at. The
+tree line is at least honest now: it was `height / (Amplitude/2 - sea)`, a
+fraction of the relief that stopped trees 87 m above sea level while the shader
+painted green forest floor for another five hundred. It is the same isotherm the
+shader uses, filled from the same model, so the two cannot drift.
+
+**Wind streaks down from 0.11 to 0.035.** Third time; they were built to be
+found and kept being far too loud for something standing in for air.
+
+**And the solar scale is already exact.** From the demo's own numbers at
+`p = q = 1.000`: the Sun is 27,311 km drawn at 5.87e9 m, which is **0.5331°**
+across against a real 0.533°, and the Moon 0.5177° against a real 0.518°. Both
+are within a tenth of a per cent. They look small because the real ones are
+small — half a degree is about a pencil eraser at arm's length. Games nearly
+always exaggerate them; the `Bodies q` slider is that exaggeration, and it
+defaults to true scale on purpose.
+
 ### 2026-08-28 (the forest was swaying in time with how fast you walked)
 
 **A real bug, reported as "the trees are tied to the camera".** The gust phase
