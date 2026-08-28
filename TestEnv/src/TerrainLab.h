@@ -1168,6 +1168,13 @@ private:
 	// almost flat and no further, which is what grass in a gale actually does.
 	float m_MaxLean = 0.85f;
 
+	// Where the thinning begins and ends, and how soft the edge of it is.
+	// `Band` is in ticket space: 0 is a hard cut and 0.5 means half the field
+	// is part-grown at any distance.
+	float m_LodNear = 20.0f;
+	float m_LodFar = 75.0f;
+	float m_LodBand = 0.30f;
+
 	// How full the basin is, from dry to level with the rim.
 	float m_WaterFill = 0.55f;
 
@@ -1405,7 +1412,10 @@ inline void TerrainLab::BuildShaders()
 		// sixteen -- per chunk it would be one number for a whole gust front.
 		uniform vec3 u_Wind;
 		uniform float u_Time;
-		uniform float u_Keep;
+		uniform float u_LodNear;
+		uniform float u_LodFar;
+		uniform float u_LodBand;
+		uniform float u_GrassHeight;
 		uniform float u_Seed;
 		uniform float u_MaxLean;
 		uniform float u_Fade;
@@ -1436,17 +1446,62 @@ inline void TerrainLab::BuildShaders()
 			float along = a_TexCoord.y;
 			float ticket = a_TexCoord.x;
 
-			// Same level of detail as the planet: a per-blade ticket against a
-			// threshold that is a uniform, so both sides are constant across a
-			// blade and it can never tear.
-			if (ticket > u_Keep)
-			{
-				gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
-				v_Normal = vec3(0.0, 1.0, 0.0);
-				v_Up = 0.0;
-				v_Tint = 0.0;
-				return;
-			}
+			// **Level of detail that shrinks blades rather than dropping
+			// them, so there is no line anywhere.**
+			//
+			// The old version was a hard test against a threshold held in a
+			// uniform, set once per chunk. Both sides being constant across a
+			// blade is what stopped it tearing blades in half -- but a value
+			// that is constant per *chunk* changes in a step at every chunk
+			// boundary, and sixteen metres is large enough to see: the field
+			// thinned in visible straight lines and then stopped dead.
+			//
+			// Two changes fix it, and the second is what makes the first safe.
+			// The distance is measured per vertex now, so it varies smoothly
+			// across the whole field and there are no boundaries in it at all.
+			// And a blade that loses the lottery is not discarded -- it is
+			// *shrunk*, pulled down toward its own base over a band of
+			// tickets, so a blade caught halfway is simply a shorter blade.
+			//
+			// That is the part that matters. A discard has to be all-or-
+			// nothing across five vertices or the triangle between them is
+			// stretched across the screen; a shrink does not, because a
+			// slightly different shrink at each vertex is a slightly different
+			// blade and not a defect. So the per-vertex distance that would
+			// have torn the old scheme is harmless in this one.
+			//
+			// Pulling *down along the blade's own height* is what collapses it
+			// to its base without knowing where its base is: each vertex moves
+			// by its own share of the height, so the root (share zero) does not
+			// move and the tip closes onto it.
+			float range = length(world.xyz);
+
+			float keep = 1.0 - smoothstep(u_LodNear, u_LodFar, range);
+
+			// A soft band rather than a step: over `u_LodBand` of ticket space
+			// the blade goes from full height to nothing, so at any distance
+			// some blades are part-grown and the field has no edge in it.
+			float shrink = clamp((ticket - keep) / max(u_LodBand, 0.001),
+				0.0, 1.0);
+
+			// **No discard, at any point.** The first version of this kept a
+			// hard branch for `shrink >= 1` -- and that reintroduced exactly
+			// the fault the shrink exists to avoid, because the branch is
+			// taken per *vertex*: a blade straddling the line had some
+			// vertices sent behind the near plane and the rest left where they
+			// were, and the triangle between them was drawn across the screen.
+			// The field filled with long straight streaks radiating from the
+			// camera, which is what a stretched triangle looks like.
+			//
+			// Letting the shrink saturate instead costs nothing and cannot
+			// tear: at full shrink every vertex has moved down by its own
+			// share of the height, so the blade closes onto its own base and
+			// becomes a six-millimetre sliver lying flat on ground of the same
+			// colour, seventy-five metres away. The vertex work is still done
+			// and the fragment work is not, which is the same trade the branch
+			// was making without the defect.
+			world.xyz -= vec3(0.0, 1.0, 0.0)
+				* (u_GrassHeight * along * shrink);
 
 			// **The wind here, not the wind everywhere.** Three layers, all
 			// advected with the mean so a gust is a thing that travels past
@@ -2057,6 +2112,14 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 
 		// Darker at the root than the tip -- see the fragment shader.
 		m_GrassMaterial->Set("u_Up", glm::vec3(0.0f, 1.0f, 0.0f));
+		m_GrassMaterial->Set("u_LodNear", m_LodNear);
+		m_GrassMaterial->Set("u_LodFar", m_LodFar);
+		m_GrassMaterial->Set("u_LodBand", m_LodBand);
+
+		// The shrink is a share of the blade's height, so without this it
+		// multiplies by zero and nothing ever thins -- which is how the
+		// streaks above were reached with the level of detail apparently off.
+		m_GrassMaterial->Set("u_GrassHeight", m_GrassHeight);
 		m_GrassMaterial->Set("u_Root", glm::vec3(0.14f, 0.22f, 0.09f));
 		m_GrassMaterial->Set("u_Tip", glm::vec3(0.44f, 0.64f, 0.26f));
 		m_GrassMaterial->Set("u_Dry", glm::vec3(0.62f, 0.55f, 0.28f));
@@ -2078,10 +2141,11 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 			// green by the same climate the grass grew from and already has a
 			// noise texture on it. The only thing lost past sixty metres is
 			// detail nobody can resolve.
-			float fade = glm::smoothstep(18.0f, 60.0f, away);
-
-			m_GrassMaterial->Set("u_Keep", 1.0f - fade);
-			m_GrassMaterial->Set("u_Fade", fade);
+			// The shading convergence is still per chunk -- it is a colour,
+			// and a colour changing in steps of sixteen metres is invisible
+			// where a *density* changing in the same steps was not.
+			m_GrassMaterial->Set("u_Fade",
+				glm::smoothstep(m_LodNear, m_LodFar, away));
 
 			// Straw or green, from the climate at this chunk's own centre.
 			// Per chunk rather than per blade because it is a colour and a
