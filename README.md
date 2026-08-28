@@ -1264,6 +1264,51 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-28 (trees in the lab, and a theory the lab disproved)
+
+Three tree shapes, scattered by biome, leaning in the same three-layer wind the
+grass does. Each shape is a different *habit* rather than a different seed — a
+tall narrow conifer, a broad open-grown hardwood, and one between — because
+three seeds of the same parameters give three trees that are recognisably the
+same tree.
+
+They want it wetter than grass does: grass will grow on a steppe and a tree will
+not, so the threshold sits well above the grass's, which is what puts the edge
+of a wood *inside* a biome transition rather than on it. Nothing grows within a
+metre and a half of the waterline either — a trunk half in the water looks like
+a mistake even when the shoreline is exactly right.
+
+The bend is the trunk's: height *squared*, because a trunk is a beam clamped at
+the ground, so the root stays vertical and the crown does the moving. The wind
+is sampled at the tree's own root rather than per vertex, so the whole tree
+agrees with itself — a trunk leaning one way while its own canopy leans another
+is the artefact that avoids. And because there is one draw per tree, the root is
+the transform's own translation: known exactly, with nothing to reconstruct.
+
+**The theory this was built to test is wrong, and the lab is what proved it.**
+The planet's trees currently draw as flat canopy slabs lying across the ground —
+buried to the crown. The standing guess was that the cause is *where* they are
+placed: the planet asks the generator for the surface radius along a direction,
+an analytic answer, while the ground you see is the isosurface a mesher found in
+a sampled field, and the two need not agree.
+
+So the lab scatters trees over the chunk's own triangles instead — a triangle of
+the mesh cannot disagree with the mesh — and then measured both, over 156 trees:
+
+| | worst |
+|---|---|
+| field distance at a trunk's foot (on the mesh) | **0.1159 m** |
+| gap between the mesh position and the analytic height | **0.1268 m** |
+
+They agree to about a tenth of a metre, which is the marching-cubes
+interpolation error and nothing more. **Whatever buries the planet's trees, it
+is not this.** The comment that had already been written into the file asserting
+that cause has been replaced with the disproof, because the next person to look
+will look there.
+
+Scattering off the mesh stays, on its own merits: it is exact by construction
+rather than by luck, and it needs no surface search at all.
+
 ### 2026-08-28 (wind as a field, a lake in a pit, and digging that stays put)
 
 **Wind is a field, not a vector.** A single direction and speed for the whole

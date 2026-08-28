@@ -1638,6 +1638,15 @@ look caught immediately.
   both gave a 1.6 K pole-to-equator range and no ice caps anywhere. See
   `Climate::Redistribution` and `Climate::Transport`.
 
+- **The planet's buried trees are not a placement-frame problem.** They draw
+  as flat canopy slabs lying across the ground. The obvious theory -- that
+  placing by analytic surface radius disagrees with the meshed isosurface -- was
+  tested in `TerrainLab`, which scatters trees over the mesh's own triangles:
+  over 156 trees the field distance at a trunk's foot is at worst 0.1159 m and
+  the gap to the analytic height 0.1268 m. They agree. Look elsewhere: the
+  instance transform (`UprightAt(plant.Up)`, the yaw, the scale), or the frame
+  `chunk.Origin + plant.Position - localOrigin` is composed in.
+
 - **A CPU-side count of what was submitted says nothing about what was
   drawn.** "656 tree instances drawn" was measured, reported and believed while
   `SolarSystemTrees` had been failing to compile for two commits -- the batch

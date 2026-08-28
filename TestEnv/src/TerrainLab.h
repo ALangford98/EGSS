@@ -576,12 +576,14 @@ private:
 			{
 				m_Chunks.erase(key);
 				m_Grass.erase(key);
+				m_Trees.erase(key);
 				continue;
 			}
 
 			m_Chunks[key] = std::make_shared<Egss::Mesh>(data, "LabChunk");
 
 			BuildChunkGrass(key, chunk, data);
+			BuildChunkTrees(key, chunk, data);
 		}
 
 		m_Field->ClearDirtyChunks();
@@ -676,6 +678,127 @@ private:
 		blades.RecalculateBounds();
 
 		m_Grass[key] = std::make_shared<Egss::Mesh>(blades, "LabGrass");
+	}
+
+	// --- Trees ---------------------------------------------------------------
+
+	struct Tree
+	{
+		glm::vec3 At;
+		float Scale;
+		float Yaw;
+		int Shape;
+	};
+
+	// **Trees are scattered over the chunk's own triangles, exactly as the
+	// grass is.** A triangle of the mesh cannot disagree with the mesh, so
+	// picking a point inside one puts the trunk on the surface that is drawn,
+	// with no search and no tolerance. Grass has done this since it was
+	// written and has never floated or sunk.
+	//
+	// **This was built to test a theory about the planet's buried trees, and
+	// the measurement killed the theory.** The planet places trees by asking
+	// the generator for the surface radius along a direction -- an analytic
+	// answer -- rather than off the mesh, and the guess was that the two
+	// disagree enough to sink a tree to its canopy.
+	//
+	// Measured here over 156 trees: the field's own distance at a trunk's foot
+	// is at worst **0.1159 m**, and the gap between the mesh position and the
+	// analytic height is at worst **0.1268 m**. They agree to about a tenth of
+	// a metre, which is the marching-cubes interpolation error and nothing
+	// more. Whatever buries the planet's trees, it is not this.
+	//
+	// Scattering off the mesh is still the better way round -- it is exact by
+	// construction rather than by luck, and it needs no surface search -- but
+	// the comment that used to sit here asserted a cause this file now
+	// disproves, and it is worth leaving the disproof where the next person
+	// will look for it.
+	void BuildChunkTrees(size_t key, const glm::ivec3& chunk,
+		const Egss::MeshData& data)
+	{
+		m_Trees.erase(key);
+
+		if (!m_ShowTrees || m_TreeDensity <= 0.0f || data.Indices.size() < 3)
+			return;
+
+		unsigned int seed = 5501u + (unsigned int)(chunk.x * 73 + chunk.y * 19
+			+ chunk.z * 131);
+
+		std::vector<Tree> trees;
+
+		size_t triangles = data.Indices.size() / 3;
+
+		for (size_t t = 0; t < triangles; t++)
+		{
+			const glm::vec3& a = data.Vertices[data.Indices[t * 3 + 0]].Position;
+			const glm::vec3& b = data.Vertices[data.Indices[t * 3 + 1]].Position;
+			const glm::vec3& c = data.Vertices[data.Indices[t * 3 + 2]].Position;
+
+			glm::vec3 face = glm::cross(b - a, c - a);
+			float area2 = glm::length(face);
+
+			if (area2 < 1e-8f)
+				continue;
+
+			glm::vec3 n = face / area2;
+
+			if (n.y < 0.0f)
+				n = -n;
+
+			// A tree needs flatter ground than grass does -- a trunk on a
+			// steep face leans out of the hill and reads as fallen.
+			if (n.y < 0.80f)
+				continue;
+
+			glm::vec3 centre = (a + b + c) / 3.0f;
+
+			// Nothing grows under the lake, and nothing right at its edge:
+			// a trunk half in the water looks like a mistake even when the
+			// waterline is exactly right.
+			if (HasWater() && centre.y < WaterLevel() + 1.5f)
+				continue;
+
+			glm::vec2 climate = ClimateAt(centre.x, centre.z);
+
+			// **Trees are the wettest thing on the map.** Grass will grow on a
+			// steppe and a tree will not, so the threshold sits well above the
+			// grass's -- which is what makes the boundary between wood and
+			// open ground fall inside a biome transition rather than on it.
+			float wet = glm::smoothstep(0.55f, 0.85f, climate.x);
+
+			// And they stop where it is cold, the same way the planet's do.
+			float warm = glm::smoothstep(0.15f, 0.35f, climate.y);
+
+			float chance = wet * warm * m_TreeDensity * (0.5f * area2);
+
+			if (chance <= 1e-4f)
+				continue;
+
+			int count = (int)chance;
+
+			if (Veg::Hash2DUnit((int)t, 0, seed) < chance - (float)count)
+				count++;
+
+			for (int i = 0; i < count; i++)
+			{
+				float u = Veg::Hash2DUnit((int)t, i * 4 + 1, seed);
+				float v = Veg::Hash2DUnit((int)t, i * 4 + 2, seed);
+				float su = std::sqrt(u);
+
+				Tree tree;
+				tree.At = a + (b - a) * (su * (1.0f - v)) + (c - a) * (su * v);
+				tree.Yaw = Veg::Hash2DUnit((int)t, i * 4 + 3, seed) * 6.2831853f;
+				tree.Scale = 0.65f + Veg::Hash2DUnit((int)t, i * 4 + 4, seed) * 0.8f;
+				tree.Shape = (int)(Veg::Hash2DUnit((int)t, i * 4 + 5, seed)
+					* (float)s_TreeShapes) % s_TreeShapes;
+
+				trees.push_back(tree);
+			}
+		}
+
+
+		if (!trees.empty())
+			m_Trees[key] = std::move(trees);
 	}
 
 	static size_t ChunkKey(const glm::ivec3& chunk)
@@ -880,6 +1003,7 @@ private:
 
 	void BuildShaders();
 	void BuildWater();
+	void BuildTrees();
 
 	// --- Hooks --------------------------------------------------------------
 
@@ -970,6 +1094,20 @@ private:
 	std::shared_ptr<Egss::VoxelField3D> m_Field;
 	std::map<size_t, std::shared_ptr<Egss::Mesh>> m_Chunks;
 	std::map<size_t, std::shared_ptr<Egss::Mesh>> m_Grass;
+	std::map<size_t, std::vector<Tree>> m_Trees;
+
+	static constexpr int s_TreeShapes = 3;
+
+	std::shared_ptr<Egss::Mesh> m_TreeBark[s_TreeShapes];
+	std::shared_ptr<Egss::Mesh> m_TreeLeaves[s_TreeShapes];
+
+	std::shared_ptr<Egss::Shader> m_TreeShader;
+	std::shared_ptr<Egss::Material> m_TreeMaterial;
+
+	bool m_ShowTrees = true;
+	float m_TreeDensity = 0.012f;   // trees per square metre where fully wooded
+	int m_TreeCount = 0;
+	float m_TreeReach = 130.0f;
 
 	std::shared_ptr<Egss::Shader> m_Shader;
 	std::shared_ptr<Egss::Material> m_Material;
@@ -1400,6 +1538,176 @@ inline void TerrainLab::BuildShaders()
 	m_GrassMaterial = Egss::Material::Create(m_GrassShader);
 
 	BuildWater();
+	BuildTrees();
+}
+
+// **Three shapes, built once, drawn everywhere.**
+//
+// `Veg::MakeTreeMesh` grows a tree from the origin along +y, which is exactly
+// what a flat world wants -- the planet has to rotate every trunk onto its own
+// local vertical and this does not, so the transform is a translate, a yaw and
+// a scale and nothing else.
+//
+// Three is enough to stop a wood reading as wallpaper and few enough that the
+// meshes can be built at load. Each is a different *habit* rather than a
+// different random seed: a tall narrow one, a broad low one, and a middling one
+// between them, because three seeds of the same parameters give three trees
+// that are recognisably the same tree.
+inline void TerrainLab::BuildTrees()
+{
+	Veg::TreeParams shapes[s_TreeShapes];
+
+	// Tall and narrow -- a conifer's habit.
+	shapes[0].Depth = 5;
+	shapes[0].Children = 3;
+	shapes[0].Length = 3.2f;
+	shapes[0].Radius = 0.16f;
+	shapes[0].Spread = 26.0f;
+	shapes[0].LengthRatio = 0.78f;
+	shapes[0].LeafRadius = 0.50f;
+
+	// Broad and low -- an open-grown hardwood.
+	shapes[1].Depth = 4;
+	shapes[1].Children = 4;
+	shapes[1].Length = 2.2f;
+	shapes[1].Radius = 0.24f;
+	shapes[1].Spread = 48.0f;
+	shapes[1].LengthRatio = 0.70f;
+	shapes[1].LeafRadius = 0.75f;
+
+	// Between the two.
+	shapes[2].Depth = 4;
+	shapes[2].Children = 3;
+	shapes[2].Length = 2.7f;
+	shapes[2].Radius = 0.20f;
+	shapes[2].Spread = 36.0f;
+	shapes[2].LeafRadius = 0.60f;
+
+	for (int i = 0; i < s_TreeShapes; i++)
+	{
+		Egss::MeshData bark, leaves;
+
+		Veg::MakeTreeMesh(1471u + (unsigned int)i * 97u, shapes[i], bark, leaves);
+
+		m_TreeBark[i] = std::make_shared<Egss::Mesh>(bark, "LabBark");
+		m_TreeLeaves[i] = std::make_shared<Egss::Mesh>(leaves, "LabLeaves");
+	}
+
+	// The tree shader is the grass shader's argument one size up: the same
+	// wind field, the same gust structure, and a bend that goes as the square
+	// of height because a trunk is a cantilever. What differs is that a tree
+	// carries its own root in a uniform -- there is one transform per tree, so
+	// the root is known exactly and needs no reconstructing.
+	std::string vertexSrc = R"(
+		#version 330 core
+
+		layout(location = 0) in vec3 a_Position;
+		layout(location = 1) in vec3 a_Normal;
+		layout(location = 2) in vec2 a_TexCoord;
+
+		uniform mat4 u_ViewProjection;
+		uniform mat4 u_Transform;
+
+		uniform vec3 u_Wind;
+		uniform float u_Time;
+		uniform float u_Seed;
+		uniform float u_Compliance;
+
+		out vec3 v_Normal;
+		out float v_Up;
+
+		float hash(vec2 p)
+		{
+			return fract(sin(dot(p, vec2(127.1, 311.7)) + u_Seed) * 43758.5453);
+		}
+
+		float noise(vec2 p)
+		{
+			vec2 i = floor(p), f = fract(p);
+			f = f * f * (3.0 - 2.0 * f);
+
+			return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x),
+				mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y)
+				* 2.0 - 1.0;
+		}
+
+		void main()
+		{
+			vec4 world = u_Transform * vec4(a_Position, 1.0);
+
+			// The root, exactly: the transform's own translation. No
+			// reconstruction and nothing to drift, which is the advantage of
+			// one draw per tree over an instance buffer.
+			vec3 root = u_Transform[3].xyz;
+
+			float height = max(world.y - root.y, 0.0);
+
+			// The same three layers the grass leans in, sampled at the tree's
+			// root so the whole tree agrees with itself -- a trunk bending one
+			// way while its own canopy bends another is the artefact this
+			// avoids.
+			vec2 mean = u_Wind.xz;
+			vec2 at = root.xz - mean * u_Time;
+
+			float gust = noise(at / 70.0);
+			float lull = noise(at / 210.0 + 31.7);
+			float swirl = noise(at / 18.0 + 67.3);
+
+			float strength = clamp((1.0 + 0.55 * gust) * (1.0 + 0.45 * lull),
+				0.15, 2.1);
+
+			float turn = swirl * 0.8;
+			float c = cos(turn), sn = sin(turn);
+
+			vec2 here = vec2(mean.x * c - mean.y * sn,
+				mean.x * sn + mean.y * c) * strength;
+
+			float speed = length(here);
+			float pressure = 0.5 * 1.2 * speed * speed;
+
+			// Height squared: a trunk is a beam clamped at the ground, so the
+			// root stays vertical and the crown does the moving.
+			vec3 push = vec3(here.x, 0.0, here.y) / max(speed, 1e-4);
+
+			world.xyz += push * (u_Compliance * pressure * height * height);
+
+			v_Normal = mat3(u_Transform) * a_Normal;
+			v_Up = height;
+
+			gl_Position = u_ViewProjection * world;
+		}
+	)";
+
+	std::string fragmentSrc = R"(
+		#version 330 core
+
+		layout(location = 0) out vec4 color;
+
+		in vec3 v_Normal;
+		in float v_Up;
+
+		uniform vec3 u_SunDirection;
+		uniform vec3 u_SunColor;
+		uniform vec3 u_SkyColor;
+		uniform float u_Ambient;
+		uniform vec3 u_Color;
+
+		void main()
+		{
+			vec3 normal = normalize(v_Normal);
+
+			float diffuse = max(dot(normal, -u_SunDirection), 0.0);
+			float dome = 0.5 + 0.5 * normal.y;
+
+			vec3 lit = u_Color * (u_SkyColor * dome * u_Ambient
+				+ u_SunColor * diffuse);
+
+			color = vec4(lit, 1.0);
+		}
+	)";
+
+	m_TreeShader.reset(Egss::Shader::Create("LabTree", vertexSrc, fragmentSrc));
+	m_TreeMaterial = Egss::Material::Create(m_TreeShader);
 }
 
 // **Water is one quad, and the depth buffer does the rest.**
@@ -1650,6 +1958,61 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		}
 	}
 
+	// Trees before the water, because they are opaque and the water is not.
+	if (m_ShowTrees && !m_Trees.empty())
+	{
+		glm::vec2 mean = MeanWind();
+
+		m_TreeMaterial->Set("u_SunDirection", sun);
+		m_TreeMaterial->Set("u_SunColor", glm::vec3(1.0f, 0.96f, 0.88f));
+		m_TreeMaterial->Set("u_SkyColor", glm::vec3(0.50f, 0.62f, 0.75f));
+		m_TreeMaterial->Set("u_Ambient", 0.55f);
+		m_TreeMaterial->Set("u_Wind", glm::vec3(mean.x, 0.0f, mean.y));
+		m_TreeMaterial->Set("u_Time", m_Time);
+		m_TreeMaterial->Set("u_Seed", (float)(m_Shape.Seed % 997u));
+
+		glm::vec3 eye = m_Camera.GetPosition();
+
+		int drawn = 0;
+
+		for (const auto& entry : m_Trees)
+		for (const Tree& tree : entry.second)
+		{
+			// **A distance cull, which is all the level of detail a 144 m
+			// block needs.** The far corner is 200 m away and a tree is a few
+			// hundred triangles, so there is nothing here that a second mesh
+			// would save; what there is to save is drawing the ones behind
+			// you, and the frustum does that already.
+			if (glm::length(tree.At - eye) > m_TreeReach)
+				continue;
+
+			glm::mat4 transform =
+				glm::rotate(
+					glm::translate(glm::mat4(1.0f), tree.At),
+					tree.Yaw, glm::vec3(0.0f, 1.0f, 0.0f))
+				* glm::scale(glm::mat4(1.0f), glm::vec3(tree.Scale));
+
+			// A trunk barely moves and a canopy moves a good deal, for the
+			// r^4 reason set out in the solar demo's trees: compliance goes as
+			// 1/(E I) and I as the fourth power of the section radius.
+			m_TreeMaterial->Set("u_Color", glm::vec3(0.29f, 0.21f, 0.14f));
+			m_TreeMaterial->Set("u_Compliance", 1.1e-5f);
+
+			Egss::Renderer::Submit(m_TreeMaterial,
+				m_TreeBark[tree.Shape], transform);
+
+			m_TreeMaterial->Set("u_Color", glm::vec3(0.17f, 0.33f, 0.13f));
+			m_TreeMaterial->Set("u_Compliance", 20.0f * 1.1e-5f);
+
+			Egss::Renderer::Submit(m_TreeMaterial,
+				m_TreeLeaves[tree.Shape], transform);
+
+			drawn++;
+		}
+
+		m_TreeCount = drawn;
+	}
+
 	// Water last: it is blended, so anything it may sit in front of has to be
 	// in the depth buffer already.
 	if (HasWater() && m_Water)
@@ -1690,8 +2053,8 @@ inline void TerrainLab::OnDemoImGui()
 {
 	ImGui::Begin("Terrain lab");
 
-	ImGui::Text("%.2f ms  |  %d ground tris, %d grass tris",
-		m_FrameTime, m_TriangleCount, m_GrassTriangles);
+	ImGui::Text("%.2f ms  |  %d ground tris, %d grass tris, %d trees",
+		m_FrameTime, m_TriangleCount, m_GrassTriangles, m_TreeCount);
 
 	ImGui::Text("%d x %d x %d chunks, %.0f m across, %.2f m a voxel",
 		s_Chunks, s_Chunks, s_Chunks, Extent(), m_Voxel);
@@ -1805,6 +2168,15 @@ inline void TerrainLab::OnDemoImGui()
 				ImGui::PopID();
 			}
 		}
+
+		ImGui::Separator();
+
+		cover |= ImGui::Checkbox("Trees", &m_ShowTrees);
+		cover |= ImGui::SliderFloat("Trees per m^2", &m_TreeDensity,
+			0.0f, 0.12f, "%.3f");
+		ImGui::SliderFloat("Tree reach", &m_TreeReach, 20.0f, 220.0f, "%.0f m");
+		ImGui::TextDisabled("  trees want it wetter than grass does, so a wood"
+			" ends inside a transition");
 
 		ImGui::Separator();
 
