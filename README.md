@@ -1264,6 +1264,93 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-29 (boulders that are a statement about the ground they are on)
+
+The rocks were grey spheres dropped from the sky at uniformly random points and
+left to the solver, which gives exactly what it sounds like: balls resting on
+hilltops, balls rolling downhill for ever, and nothing said about the terrain.
+They are placed now, and where they are placed is the whole point.
+
+**Scree collects at the foot of steep ground, not on it.** A site needs two
+things at once -- its own slope at or under the angle of repose so a block can
+rest, and steep ground *above* it to have supplied the block. That second half
+is what makes a boulder field mean something: it says there is a cliff up there.
+**Bedrock shows through where soil cannot stay**, so ground past about 34 degrees
+gets a few large blocks, mostly buried, part of the face rather than lying on it.
+And **soil buries stone**: a wood and a meadow have a soil profile and a litter
+layer and a surface stone is under both within a few centuries, while frost-
+shattered tundra, bare rock and stony desert have neither. In a desert the wind
+takes the fines and leaves the coarse, which is a lag deposit and is why a stony
+desert is stony. The biome does not decide whether rock exists; it decides
+whether you can see it.
+
+**Repose and the threshold hillslope angle are different numbers, and confusing
+them put two boulders on the entire map.** Repose (about 34 degrees) is where
+loose material *stops*. What decides whether a hillside delivers debris downhill
+is the threshold hillslope angle, near 30 degrees in soil-mantled country --
+lower, because a slope need not be bare to move rock down it, and every real
+landscape has far more ground above 30 degrees than above 34. Both are in the
+code as their own constants now.
+
+**Sizes follow a power law because fragmentation does**: N(>d) proportional to
+d^-b with b near 2.5, so a field is a great many cobbles with a handful of blocks
+in it and the handful is what you notice. Drawn by inverse transform, and fitted
+back off the placed stones:
+
+| | asked | measured |
+| --- | --- | --- |
+| fragmentation exponent | 2.500 | **2.534**, standard error 0.220, over 133 stones |
+| relief standing above a boulder | -- | 7.32 m, against 3.70 m at 1837 random points |
+| resting below repose / on faces too steep for soil | -- | 174 / 135 of 309 |
+| floating, or wholly buried | 0 | 0, 0 |
+
+The relief figure is the one worth having: it is not a rule the code contains.
+Nothing measures *height* anywhere -- the placement asks about slope, uphill --
+and yet a boulder ends up with twice as much ground standing over it as a point
+picked at random. That is what "at the foot of a slope" means, arrived at
+sideways.
+
+**The exponent read 2.679 first, and the measurement was wrong rather than the
+field.** `n / sum ln(d/lo)` is the maximum likelihood exponent for a Pareto with
+no upper bound, and the sample had one: everything above 2 m was discarded to
+keep clear of the size clamp. That throws away about one per cent of the sample,
+all of it from the far tail, which shortens every log and raises the estimate --
+by 0.18, which is the whole of the discrepancy. The doubly-truncated likelihood
+has the correction in it and is monotone in b, so a bisection settles it.
+
+Three smaller things, all of them the difference between a rock and a prop.
+**Six meshes rather than one**, because every boulder being the same jittered
+sphere is visible the moment two are near each other. **Three axes rather than
+one**, at the ratios river and scree gravels actually measure -- b/a about 0.7,
+c/a about 0.5 -- lying on the flattest face, which is where a loose clast comes
+to rest because it is the lowest centre of mass and is why a shingle beach is
+flat. And **bedded rather than balanced**: sunk by a third of the short axis,
+because frost heave and washed-in fines put a stone partly under within any time
+at all, and a stone sitting exactly on the surface reads as scenery dropped on
+the ground.
+
+**Fall sorting** puts the big blocks at the outside of a field: a block carries
+more momentum than a cobble and rolls further from the cliff, so the base of a
+talus slope is coarser than its head.
+
+Colour is one granite with two coatings on it. Desert varnish -- the dark
+manganese-and-iron film that takes millennia -- in hot dry country; lichen, the
+pale grey-green that makes an upland boulder field the colour it is, in cold wet
+country.
+
+**They collide, from a pool that is rewritten rather than rebuilt.**
+`PhysicsWorld3D` cannot remove a body and does not need to: a static body can be
+moved. The pool is allocated once at 512 and each rebuild writes the boulders
+that exist into the front of it and parks the rest a kilometre underneath the
+world. The same trick `Dig` uses on the ground body. One sphere on the short
+axis is a deliberate under-approximation -- being stopped early is a shape,
+being stopped by nothing is a bug.
+
+The dynamic bodies stay, but only as the buoyancy test they always were, and
+only in and around the lake: a log that floats and a cobble that does not, both
+settling under Archimedes rather than under a flag. They are the only rocks here
+that move.
+
 ### 2026-08-29 (the doorway becomes a window, and one map does the walking and the looking)
 
 The panel between the posts was a flat dark board, and a comment said so: what

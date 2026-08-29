@@ -35,6 +35,7 @@
 
 #include "Demo.h"
 #include "Grass.h"
+#include "Rocks.h"
 #include "Vegetation.h"
 
 class TerrainLab : public DemoLayer
@@ -614,6 +615,7 @@ private:
 				m_Chunks.erase(key);
 				m_Grass.erase(key);
 				m_Trees.erase(key);
+				m_Stones.erase(key);
 				continue;
 			}
 
@@ -621,9 +623,14 @@ private:
 
 			BuildChunkGrass(key, chunk, data);
 			BuildChunkTrees(key, chunk, data);
+			BuildChunkStones(key, chunk, data);
 		}
 
 		m_Field->ClearDirtyChunks();
+
+		// After every chunk, because the pool is filled in one pass over all
+		// of them and a per-chunk fill would keep overwriting the front.
+		SyncStoneBodies();
 
 		for (const auto& entry : m_Chunks)
 			m_TriangleCount += (int)entry.second->GetTriangleCount();
@@ -1045,6 +1052,379 @@ private:
 		RebuildDirtyMeshes();
 	}
 
+	// --- Boulders, where boulders actually end up -----------------------------
+	//
+	// **Rock is not scattered evenly and never has been.** The first pass here
+	// dropped grey spheres from the sky at uniformly random points and let the
+	// solver settle them, which produces exactly what it sounds like: balls
+	// resting on hilltops, balls rolling down slopes for ever, and none of it
+	// saying anything about the ground it is on. Boulders are placed now, not
+	// dropped, and where they are placed is a statement about the terrain.
+	//
+	// Three rules, all of them things you can go outside and check.
+	//
+	// **Scree collects at the foot of steep ground, not on it.** Loose rock
+	// on a slope steeper than the angle of repose keeps moving; below it, it
+	// stops. So a site needs two things at once -- its own slope at or under
+	// repose so a block can rest, and steep ground *above* it to have supplied
+	// the block in the first place. That second half is what makes a boulder
+	// field mean something: it says there is a cliff up there.
+	//
+	// **Bedrock shows through where soil cannot stay.** Ground steeper than
+	// about forty degrees keeps no soil, so what is on it is the rock itself:
+	// a few large blocks, mostly buried, part of the face rather than lying on
+	// it.
+	//
+	// **Soil buries stone and the lack of it does not.** A meadow and a wood
+	// have a soil profile and a litter layer over the top, and a surface stone
+	// is under both within a few centuries. Frost-shattered tundra, bare rock
+	// and stony desert have neither -- in a desert the wind takes the fines
+	// away and leaves the coarse behind, which is a lag deposit and is why a
+	// stony desert is stony. So the biome does not decide whether rock exists;
+	// it decides whether you can see it.
+	//
+	// The angle of repose for angular rock debris is about 34 degrees. That is
+	// a measured property of loose material and not a number anyone here
+	// chose, which is why it is the one written as an angle.
+	static constexpr float s_Repose = 0.6745f;    // tan 34 degrees
+
+	// And the threshold hillslope angle, which is the one that decides whether
+	// ground *supplies* debris rather than whether it holds it. Near 30
+	// degrees in soil-mantled country, and lower than repose on purpose.
+	static constexpr float s_Threshold = 0.5774f; // tan 30 degrees
+
+	// **Sizes follow a power law, because fragmentation does.** Broken rock
+	// has a fractal size distribution -- N(>d) proportional to d^-b with b
+	// near 2.5 -- so a boulder field is a great many cobbles with a handful of
+	// blocks in it, and the handful is what you notice. Drawing sizes from a
+	// uniform range instead gives a field of identical lumps, which is the
+	// other half of why the old rocks read as props.
+	static constexpr float s_Fragment = 2.5f;
+	static constexpr float s_StoneMin = 0.22f;    // metres, radius
+	static constexpr float s_StoneMax = 2.4f;
+
+	// How many can have a collider. Bodies cannot be removed from the world,
+	// only rewritten, so the pool is fixed and the unused ones are parked
+	// where nothing else ever goes. See `SyncStoneBodies`.
+	static constexpr int s_StoneBodies = 512;
+
+	struct Stone
+	{
+		glm::vec3 At;        // centre, already sunk into the ground
+		glm::vec3 Radii;     // three axes; a clast is not a ball
+
+		// The frame it came to rest in, as a basis rather than a quaternion:
+		// the only thing that reads it builds a matrix from it, and a basis
+		// is one `glm::mat4` cast away while a quaternion needs a GTX header
+		// for the shortest-arc constructor.
+		glm::mat3 Lie;
+		glm::vec3 Colour;
+		int Mesh = 0;
+	};
+
+	// **How much steep ground stands above a point**, which is where scree
+	// comes from. The gradient of the height field points uphill, so walk that
+	// way and ask how steep it is; a source further off contributes less,
+	// because a block has to get here.
+	float Supply(float x, float z) const
+	{
+		const float h = 2.0f;
+
+		glm::vec2 uphill(
+			(Height(x + h, z) - Height(x - h, z)) / (2.0f * h),
+			(Height(x, z + h) - Height(x, z - h)) / (2.0f * h));
+
+		float len = glm::length(uphill);
+
+		if (len < 1e-4f)
+			return 0.0f;
+
+		uphill /= len;
+
+		float best = 0.0f;
+
+		for (float away : { 5.0f, 11.0f, 19.0f, 29.0f })
+		{
+			float px = x + uphill.x * away;
+			float pz = z + uphill.y * away;
+
+			float sx = (Height(px + h, pz) - Height(px - h, pz)) / (2.0f * h);
+			float sz = (Height(px, pz + h) - Height(px, pz - h)) / (2.0f * h);
+
+			float slope = std::sqrt(sx * sx + sz * sz);
+
+			// **The shedding threshold is not the angle of repose**, and
+			// getting those two confused put two boulders on the whole map.
+			// Repose is the angle at which loose material *stops*; what
+			// decides whether a hillside delivers rock downhill is the
+			// threshold hillslope angle, which in soil-mantled country stands
+			// near 30 degrees -- lower, because a slope does not have to be
+			// bare to move debris down it, and every real landscape has far
+			// more ground above 30 degrees than above 34.
+			float sheds = glm::smoothstep(s_Threshold * 0.75f,
+				s_Threshold * 1.25f, slope);
+
+			best = glm::max(best, sheds * std::exp(-away / 18.0f));
+		}
+
+		return best;
+	}
+
+	void BuildChunkStones(size_t key, const glm::ivec3& chunk,
+		const Egss::MeshData& data)
+	{
+		m_Stones.erase(key);
+
+		if (!m_ShowStones || m_StoneDensity <= 0.0f || data.Indices.size() < 3)
+			return;
+
+		unsigned int seed = 9311u + (unsigned int)(chunk.x * 73 + chunk.y * 19
+			+ chunk.z * 131);
+
+		std::vector<Stone> stones;
+
+		size_t triangles = data.Indices.size() / 3;
+
+		for (size_t t = 0; t < triangles; t++)
+		{
+			const glm::vec3& a = data.Vertices[data.Indices[t * 3 + 0]].Position;
+			const glm::vec3& b = data.Vertices[data.Indices[t * 3 + 1]].Position;
+			const glm::vec3& c = data.Vertices[data.Indices[t * 3 + 2]].Position;
+
+			glm::vec3 face = glm::cross(b - a, c - a);
+			float area2 = glm::length(face);
+
+			if (area2 < 1e-8f)
+				continue;
+
+			glm::vec3 n = face / area2;
+
+			if (n.y < 0.0f)
+				n = -n;
+
+			glm::vec3 centre = (a + b + c) / 3.0f;
+
+			// Nothing on the lake bed: it would be under the water, where the
+			// only thing you could tell about it is that it is there.
+			if (HasWater() && centre.y < WaterLevel() - 0.3f)
+				continue;
+
+			// The face's own slope, as a tangent, so it compares directly with
+			// the angle of repose.
+			float level = glm::clamp(n.y, 1e-3f, 1.0f);
+			float slope = std::sqrt(glm::max(1.0f - level * level, 0.0f)) / level;
+
+			// **Talus** -- shallow enough to hold a block, with steep ground
+			// above to have delivered one.
+			float rests = 1.0f - glm::smoothstep(s_Repose * 0.85f,
+				s_Repose * 1.15f, slope);
+
+			float supply = Supply(centre.x, centre.z);
+
+			float talus = rests * supply;
+
+			// **Outcrop** -- too steep for soil, so what is there is rock.
+			float outcrop = glm::smoothstep(s_Repose, s_Repose * 1.5f, slope);
+
+			glm::vec2 climate = ClimateAt(centre.x, centre.z);
+
+			// Soil and litter bury a surface stone; where neither forms, it
+			// stays where the last cold winter or the last flood left it.
+			float soil = glm::smoothstep(0.15f, 0.55f, climate.x)
+				* glm::smoothstep(0.10f, 0.35f, climate.y);
+
+			float bare = 1.0f - 0.80f * soil;
+
+			// **Fields, not a sprinkle.** A boulder field has edges; rock
+			// scattered at one density over a whole landscape is a texture.
+			// One slow octave decides where the stony ground is.
+			float patch = glm::smoothstep(-0.15f, 0.35f,
+				Noise2D(centre.x / 47.0f, centre.z / 47.0f, m_Shape.Seed + 613u));
+
+			float weight = (talus * patch + outcrop * 0.55f) * bare;
+
+			float chance = weight * m_StoneDensity * (0.5f * area2);
+
+			if (chance <= 1e-4f)
+				continue;
+
+			int count = (int)chance;
+
+			if (Veg::Hash2DUnit((int)t, 0, seed) < chance - (float)count)
+				count++;
+
+			for (int i = 0; i < count; i++)
+			{
+				float u = Veg::Hash2DUnit((int)t, i * 6 + 1, seed);
+				float v = Veg::Hash2DUnit((int)t, i * 6 + 2, seed);
+				float su = std::sqrt(u);
+
+				glm::vec3 at = a + (b - a) * (su * (1.0f - v))
+					+ (c - a) * (su * v);
+
+				// The power law, by inverse transform: N(>d) goes as d^-b, so
+				// d = dmin * U^(-1/b). Most come out small; a few do not, and
+				// the few are the ones that make the field.
+				float lot = glm::max(Veg::Hash2DUnit((int)t, i * 6 + 3, seed),
+					1e-4f);
+
+				float size = s_StoneMin * std::pow(lot, -1.0f / s_Fragment)
+					* m_StoneSize;
+
+				// **Fall sorting.** A big block carries more momentum than a
+				// cobble and rolls further from the cliff, so the base of a
+				// talus slope is coarser than its head. `supply` is largest
+				// close to the source, so leaning against it puts the large
+				// blocks at the outside of the field.
+				size *= 0.75f + 0.5f * (1.0f - supply);
+
+				size = glm::clamp(size, s_StoneMin, s_StoneMax * m_StoneSize);
+
+				// A clast is not a ball. Axial ratios near the middle of what
+				// river and scree gravels actually measure: b/a about 0.7,
+				// c/a about 0.5.
+				float mid = 0.60f + Veg::Hash2DUnit((int)t, i * 6 + 4, seed) * 0.28f;
+				float shortest = 0.38f + Veg::Hash2DUnit((int)t, i * 6 + 5, seed) * 0.28f;
+
+				Stone stone;
+				stone.Radii = glm::vec3(size, size * shortest, size * mid);
+
+				// **Settled means lying on its flattest face.** Loose clasts
+				// come to rest with the short axis upright -- that is the
+				// lowest centre of mass, and it is why a shingle beach is flat
+				// and not a heap of edges. Tilted a little off the ground's
+				// normal so a field does not look combed.
+				float spin = Veg::Hash2DUnit((int)t, i * 6 + 6, seed) * 6.2831853f;
+				float tip = (Veg::Hash2DUnit((int)t, i * 6 + 7, seed) - 0.5f) * 0.5f;
+
+				// Part way toward the face's normal rather than all the way:
+				// a block wedged on a slope leans into it, but not as far as
+				// the slope, or a talus field looks like a comb.
+				glm::vec3 up = glm::normalize(glm::mix(
+					glm::vec3(0.0f, 1.0f, 0.0f), n, 0.65f));
+
+				// And tipped a little off that, so no two lie alike.
+				up = glm::normalize(up + glm::vec3(std::cos(spin) * tip, 0.0f,
+					std::sin(spin) * tip));
+
+				glm::vec3 reference = std::abs(up.y) < 0.9f
+					? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+
+				glm::vec3 east = glm::normalize(glm::cross(reference, up));
+				glm::vec3 north = glm::cross(up, east);
+
+				stone.Lie = glm::mat3(
+					east * std::cos(spin) + north * std::sin(spin),
+					up,
+					north * std::cos(spin) - east * std::sin(spin));
+
+				// **Bedded, not balanced.** A stone that has been there any
+				// time at all is part buried -- frost heave and washed-in
+				// fines see to it -- and a stone sitting exactly on the
+				// surface reads as scenery dropped on the ground, which is
+				// what these looked like. Sinking by a third of the short
+				// axis is enough for the eye and cheap enough to be free.
+				float buried = 0.30f + 0.25f
+					* Veg::Hash2DUnit((int)t, i * 6 + 8, seed);
+
+				stone.At = at + up * stone.Radii.y * (1.0f - 2.0f * buried);
+
+				stone.Mesh = (int)(Veg::Hash2DUnit((int)t, i * 6 + 9, seed)
+					* (float)s_StoneMeshes) % s_StoneMeshes;
+
+				stone.Colour = StoneColour(climate,
+					Veg::Hash2DUnit((int)t, i * 6 + 10, seed));
+
+				stones.push_back(stone);
+			}
+		}
+
+		if (!stones.empty())
+			m_Stones[key] = std::move(stones);
+	}
+
+	// **Rock is grey until the climate gets at it.**
+	//
+	// In a hot dry place a boulder acquires desert varnish -- a dark
+	// manganese-and-iron film that takes millennia and turns an exposed face
+	// nearly brown-black. In a cold wet one it acquires lichen, which is the
+	// pale grey-green that makes an upland boulder field look the colour it
+	// does. Both are coatings on the same granite, so this is a tint on one
+	// base rather than three rock types.
+	glm::vec3 StoneColour(const glm::vec2& climate, float jitter) const
+	{
+		glm::vec3 granite(0.44f, 0.42f, 0.40f);
+		glm::vec3 varnish(0.34f, 0.23f, 0.16f);
+		glm::vec3 lichen(0.46f, 0.50f, 0.42f);
+
+		float arid = glm::smoothstep(0.35f, 0.08f, climate.x)
+			* glm::smoothstep(0.45f, 0.75f, climate.y);
+
+		float damp = glm::smoothstep(0.40f, 0.80f, climate.x)
+			* glm::smoothstep(0.60f, 0.25f, climate.y);
+
+		glm::vec3 colour = glm::mix(granite, varnish, arid * 0.62f);
+
+		colour = glm::mix(colour, lichen, damp * 0.55f);
+
+		// Grain to grain, so two boulders side by side are not the same stone.
+		return colour * (0.82f + 0.36f * jitter);
+	}
+
+	// **The colliders, from a pool that is rewritten rather than rebuilt.**
+	//
+	// `PhysicsWorld3D` has no way to remove a body -- and it does not need one
+	// for this, because a static body can be *moved*. The pool is allocated
+	// once at the size of the cap; each rebuild writes the boulders that exist
+	// into the front of it and parks the rest a kilometre underneath the
+	// world, where nothing else ever goes. Exactly the trick `Dig` uses on the
+	// ground body, for exactly the same reason.
+	//
+	// One sphere for a three-axis boulder is a deliberate under-approximation:
+	// the sphere is the *short* axis, so you can walk right up to a big flat
+	// slab and never be stopped by air. Being stopped by nothing is a bug and
+	// being stopped early is a shape.
+	void SyncStoneBodies()
+	{
+		while ((int)m_StoneBodies.size() < s_StoneBodies)
+		{
+			Egss::RigidBody3D body = Egss::RigidBody3D::MakeStaticSphere(
+				glm::vec3(0.0f, -1000.0f, 0.0f), 0.1f);
+
+			body.Friction = 0.8f;
+			body.Restitution = 0.0f;
+
+			m_StoneBodies.push_back(m_World.AddBody(body));
+		}
+
+		int at = 0;
+
+		for (const auto& entry : m_Stones)
+		for (const Stone& stone : entry.second)
+		{
+			if (at >= s_StoneBodies)
+				break;
+
+			Egss::RigidBody3D& body = m_World.GetBody(m_StoneBodies[at++]);
+
+			body = Egss::RigidBody3D::MakeStaticSphere(stone.At,
+				glm::min(glm::min(stone.Radii.x, stone.Radii.y),
+					stone.Radii.z));
+
+			body.Friction = 0.8f;
+			body.Restitution = 0.0f;
+		}
+
+		m_StoneCount = at;
+
+		for (; at < s_StoneBodies; at++)
+		{
+			Egss::RigidBody3D& body = m_World.GetBody(m_StoneBodies[at]);
+
+			body.Position = glm::vec3(0.0f, -1000.0f, 0.0f);
+		}
+	}
+
 	// --- Loose bodies and buoyancy --------------------------------------------
 
 	struct Loose
@@ -1165,17 +1545,22 @@ private:
 
 		for (int i = 0; i < m_LooseCount; i++)
 		{
-			float u = Veg::Hash2DUnit(i, 1, seed);
-			float v = Veg::Hash2DUnit(i, 2, seed);
+			// **In and around the lake, not all over the map.** These are the
+			// buoyancy test and nothing else: a log that floats and a cobble
+			// that does not, both settling under Archimedes rather than under
+			// a flag. Scattering them over the whole block put loose spheres
+			// on every hillside, rolling, which is exactly what a boulder
+			// should never do -- the boulders are placed now and these are the
+			// only rocks here that move.
+			float angle = Veg::Hash2DUnit(i, 1, seed) * 6.2831853f;
+			float reach = std::sqrt(Veg::Hash2DUnit(i, 2, seed))
+				* glm::max(m_Shape.BasinSize * 0.8f, 6.0f);
 
-			float half = 0.5f * Extent();
+			glm::vec3 at(std::cos(angle) * reach, 0.0f,
+				std::sin(angle) * reach);
 
-			glm::vec3 at((u - 0.5f) * Extent() * 0.8f, 0.0f,
-				(v - 0.5f) * Extent() * 0.8f);
-
-			at.y = Height(at.x, at.z) + 6.0f + Veg::Hash2DUnit(i, 3, seed) * 8.0f;
-
-			(void)half;
+			at.y = glm::max(Height(at.x, at.z), HasWater() ? WaterLevel() : 0.0f)
+				+ 3.0f + Veg::Hash2DUnit(i, 3, seed) * 4.0f;
 
 			Loose loose;
 
@@ -1720,9 +2105,36 @@ private:
 	std::map<size_t, std::vector<Tree>> m_Trees;
 
 	std::vector<Loose> m_Loose;
+
+	// **A pool of shapes, not one shape.** Every rock being the same jittered
+	// sphere is visible the moment two of them are near each other, and the
+	// fix costs six meshes of four hundred triangles.
+	static constexpr int s_StoneMeshes = 6;
+
+	std::map<size_t, std::vector<Stone>> m_Stones;
+	std::vector<Egss::PhysicsWorld3D::BodyHandle> m_StoneBodies;
+	std::shared_ptr<Egss::Mesh> m_Boulders[s_StoneMeshes];
+
+	bool m_ShowStones = true;
+	float m_StoneDensity = 1.2f;     // per square metre of open scree
+	float m_StoneSize = 1.0f;
+	int m_StoneCount = 0;
+	int m_StoneDrawn = 0;
+	float m_StoneReach = 110.0f;
+
+	int CountStones() const
+	{
+		int total = 0;
+
+		for (const auto& entry : m_Stones)
+			total += (int)entry.second.size();
+
+		return total;
+	}
+
 	std::shared_ptr<Egss::Mesh> m_Boulder;
 	std::shared_ptr<Egss::Mesh> m_Cube;
-	int m_LooseCount = 26;
+	int m_LooseCount = 12;
 
 	static constexpr int s_TreeShapes = 6;
 
@@ -2778,6 +3190,10 @@ inline void TerrainLab::BuildTrees()
 	// honest enough for a buoyancy test.
 	m_Boulder = std::make_shared<Egss::Mesh>(Boulder::Build(4177u), "LabRock");
 
+	for (int i = 0; i < s_StoneMeshes; i++)
+		m_Boulders[i] = std::make_shared<Egss::Mesh>(
+			Boulder::Build(4177u + (unsigned int)i * 7919u), "LabStone");
+
 	// **The doorway's panel: a window, sampled in screen space.**
 	//
 	// Nothing here is projected or unprojected. The portal pass rendered the
@@ -3405,10 +3821,44 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 		m_TreeCount = drawn;
 	}
 
-	// Boulders and driftwood, through the tree shader with the sway switched
-	// off -- it is already lit by the same sun and sky, and a second shader
-	// that differed only in having no wind term would be a second thing to
-	// keep in step.
+	// **The bedded boulders**, which are terrain and not props: placed once
+	// where the ground would actually hold them, and never simulated.
+	if (m_ShowStones && !m_Stones.empty())
+	{
+		m_TreeMaterial->Set("u_Compliance", 0.0f);
+		m_TreeMaterial->Set("u_MaxLean", 0.0f);
+
+		glm::vec3 eye = camera.GetPosition();
+
+		int drawn = 0;
+
+		for (const auto& entry : m_Stones)
+		for (const Stone& stone : entry.second)
+		{
+			// A cobble at a hundred metres is a pixel; the same distance cull
+			// the trees use, and for the same reason.
+			if (glm::length(stone.At - eye) > m_StoneReach)
+				continue;
+
+			m_TreeMaterial->Set("u_Color", stone.Colour);
+
+			glm::mat4 transform =
+				glm::translate(glm::mat4(1.0f), stone.At)
+				* glm::mat4(stone.Lie)
+				* glm::scale(glm::mat4(1.0f), stone.Radii);
+
+			Egss::Renderer::Submit(m_TreeMaterial, m_Boulders[stone.Mesh],
+				transform);
+
+			drawn++;
+		}
+
+		if (pass == Pass::Main)
+			m_StoneDrawn = drawn;
+	}
+
+	// Driftwood and the odd cobble in the lake, which are the buoyancy test
+	// and are the only rocks here that move.
 	if (m_Boulder && !m_Loose.empty())
 	{
 		m_TreeMaterial->Set("u_Compliance", 0.0f);
@@ -3858,6 +4308,21 @@ inline void TerrainLab::OnDemoImGui()
 			0.0f, 200.0f, "%.0f");
 		cover |= ImGui::SliderFloat("Blade height", &m_GrassHeight,
 			0.1f, 1.5f, "%.2f m");
+
+		ImGui::Separator();
+
+		cover |= ImGui::Checkbox("Boulders", &m_ShowStones);
+		cover |= ImGui::SliderFloat("Stones per m^2", &m_StoneDensity,
+			0.0f, 5.0f, "%.2f");
+		cover |= ImGui::SliderFloat("Stone size", &m_StoneSize, 0.3f, 3.0f,
+			"%.2fx");
+		ImGui::SliderFloat("Stone reach", &m_StoneReach, 20.0f, 250.0f, "%.0f m");
+		ImGui::Text("%d placed, %d drawn, %d with a collider",
+			CountStones(), m_StoneDrawn, m_StoneCount);
+		ImGui::TextDisabled("  at the foot of steep ground and on faces too");
+		ImGui::TextDisabled("  steep for soil; buried where soil forms");
+
+		ImGui::Separator();
 
 		ImGui::SliderFloat("Wind", &m_WindSpeed, 0.0f, 30.0f, "%.1f m/s");
 		ImGui::SliderFloat("Wind from", &m_WindAngle, 0.0f, 360.0f, "%.0f deg");
