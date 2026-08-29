@@ -75,17 +75,28 @@ public:
 		// the first thing anyone wants of a day cycle.
 		const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
 
+		// `--spawn N` stands at the centre of cell N. The spawn buttons are
+		// the only way to be somewhere specific, and an unattended run has
+		// nobody to press one -- which made "does this look the same from the
+		// corner as from the middle" a question no capture could ask.
+		int spawn = 1;
+
 		for (size_t i = 1; i + 1 < arguments.size(); i++)
+		{
 			if (arguments[i] == "--time")
 				m_TimeOfDay = (float)std::atof(arguments[i + 1].c_str());
+
+			if (arguments[i] == "--spawn")
+				spawn = std::atoi(arguments[i + 1].c_str());
+		}
 
 		BuildShaders();
 		Generate();
 
-		// A rim cell rather than the middle one: the pit is centred, so cell 4
-		// is the bottom of the lake and opens you underwater. From the rim you
-		// are looking across it.
-		GoTo(1);
+		// A rim cell rather than the middle one: the pit is centred, so the
+		// middle cell is the bottom of the lake and opens you underwater.
+		// From the rim you are looking across it.
+		GoTo(spawn);
 	}
 
 private:
@@ -1758,8 +1769,26 @@ inline void TerrainLab::BuildShaders()
 		}
 	)";
 
-	std::string fragmentSrc = R"(
-		#version 330 core
+	// **The grid's size lives in one place and reaches the shader from it.**
+	//
+	// It did not, and that cost an afternoon. `s_Grid` went from three to four
+	// and this GLSL kept its hard-coded 3, so the ground read
+	// `u_Cells[j * 3 + i]` out of a nine-element array the CPU had already
+	// started filling as `j * 4 + i`. Seven of the sixteen writes landed past
+	// the end and went nowhere; the nine that landed were shuffled into the
+	// wrong squares.
+	//
+	// The symptom did not look like an indexing bug at all -- it looked like
+	// grass growing on sand. The *grass* asks `ClimateAt` on the CPU and the
+	// *ground* asked this scrambled copy of it, so the two stopped describing
+	// the same world: a cell painted desert was a cell the scatterer thought
+	// was meadow.
+	//
+	// A constant written out twice will eventually be wrong in one of the two
+	// places. Injecting it as a `#define` is three lines and closes the whole
+	// class of fault.
+	std::string fragmentSrc = "#version 330 core\n#define GRID "
+		+ std::to_string(s_Grid) + "\n" + R"(
 
 		layout(location = 0) out vec4 color;
 
@@ -1775,13 +1804,14 @@ inline void TerrainLab::BuildShaders()
 
 		// **The grid, and the blend done per pixel.**
 		//
-		// Nine cells of (moisture, warmth), read back bilinearly at the
+		// One (moisture, warmth) per cell, read back bilinearly at the
 		// fragment's own position -- the same expression `ClimateAt` uses on
 		// the CPU, because the grass has to agree with the ground it grows
-		// out of. Nine vec3s is cheaper than a texture and needs no upload
+		// out of. A few vec3s are cheaper than a texture and need no upload
 		// path; the third component is the cell's weight, which is zero for an
-		// unticked cell so a hole does not dry out its neighbours.
-		uniform vec3 u_Cells[9];
+		// unticked cell so a hole does not dry out its neighbours. `GRID`
+		// comes from `s_Grid` -- see the note where it is injected.
+		uniform vec3 u_Cells[GRID * GRID];
 		uniform float u_CellSize;
 		uniform float u_Half;
 
@@ -1821,9 +1851,10 @@ inline void TerrainLab::BuildShaders()
 			for (int dj = 0; dj <= 1; dj++)
 			for (int di = 0; di <= 1; di++)
 			{
-				ivec2 g = ivec2(clamp(base + vec2(di, dj), vec2(0.0), vec2(2.0)));
+				ivec2 g = ivec2(clamp(base + vec2(di, dj), vec2(0.0),
+					vec2(float(GRID - 1))));
 
-				vec3 cell = u_Cells[g.y * 3 + g.x];
+				vec3 cell = u_Cells[g.y * GRID + g.x];
 
 				float weight = (di == 1 ? f.x : 1.0 - f.x)
 					* (dj == 1 ? f.y : 1.0 - f.y) * cell.z;
@@ -1937,6 +1968,7 @@ inline void TerrainLab::BuildShaders()
 		// sixteen -- per chunk it would be one number for a whole gust front.
 		uniform vec3 u_Wind;
 		uniform float u_Time;
+		uniform vec3 u_Eye;
 		uniform float u_LodNear;
 		uniform float u_LodFar;
 		uniform float u_LodBand;
@@ -1999,7 +2031,21 @@ inline void TerrainLab::BuildShaders()
 			// to its base without knowing where its base is: each vertex moves
 			// by its own share of the height, so the root (share zero) does not
 			// move and the tip closes onto it.
-			float range = length(world.xyz);
+			// **Distance from the eye, and it has to be said out loud
+			// because it was not.** This read `length(world.xyz)` -- the
+			// distance from the world *origin*. The block is centred there,
+			// so the thinning was a fixed bullseye painted on the terrain:
+			// full-height blades in the middle of the map and collapsed ones
+			// at its corners, no matter where you were standing. Walking
+			// around changed nothing, which is exactly what "the culling is
+			// not in real time" looks like from inside it, and moving the
+			// sliders only resized a ring you were probably not in.
+			//
+			// The per-chunk `u_Fade` beside this was measured from the camera
+			// all along, so the shading converged with distance while the
+			// geometry thinned by map position -- two level-of-detail schemes
+			// disagreeing about where the viewer was.
+			float range = length(world.xyz - u_Eye);
 
 			float keep = 1.0 - smoothstep(u_LodNear, u_LodFar, range);
 
@@ -2966,7 +3012,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	// Ambient falls with the sun: the ground at night is lit by the sky and
 	// the sky at night is nearly black, so one number does both.
 	m_Material->Set("u_Haze", m_Haze);
-	// Nine elements, set one at a time: `Material` has no array setter, and
+	// One element at a time: `Material` has no array setter, and
 	// GLSL exposes `u_Cells[3]` as its own uniform name, so this needs no
 	// engine change to work.
 	for (int j = 0; j < s_Grid; j++)
@@ -3000,6 +3046,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	if (m_ShowGrass && !m_Grass.empty())
 	{
 		glm::vec3 wind(windMean.x, 0.0f, windMean.y);
+		glm::vec3 eye = m_Camera.GetPosition();
 
 		m_GrassMaterial->Set("u_SunDirection", sun);
 		m_GrassMaterial->Set("u_SunColor", sunColour);
@@ -3015,6 +3062,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 
 		// Darker at the root than the tip -- see the fragment shader.
 		m_GrassMaterial->Set("u_Up", glm::vec3(0.0f, 1.0f, 0.0f));
+		m_GrassMaterial->Set("u_Eye", eye);
 		m_GrassMaterial->Set("u_LodNear", m_LodNear);
 		m_GrassMaterial->Set("u_LodFar", m_LodFar);
 		m_GrassMaterial->Set("u_LodBand", m_LodBand);
@@ -3026,8 +3074,6 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		m_GrassMaterial->Set("u_Root", glm::vec3(0.14f, 0.22f, 0.09f));
 		m_GrassMaterial->Set("u_Tip", glm::vec3(0.44f, 0.64f, 0.26f));
 		m_GrassMaterial->Set("u_Dry", glm::vec3(0.62f, 0.55f, 0.28f));
-
-		glm::vec3 eye = m_Camera.GetPosition();
 
 		for (const auto& entry : m_Grass)
 		{

@@ -336,6 +336,28 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **A constant that reaches a shader as a literal will drift, and the symptom
+  will not look like the cause.** `TerrainLab`'s biome grid went from 3x3 to
+  4x4. `s_Grid` changed; the `9`, the `3` and the `2.0` written into the ground
+  fragment shader did not. The CPU then filled `u_Cells[j * 4 + i]` for sixteen
+  cells and the GLSL read `u_Cells[j * 3 + i]` out of a nine-element array --
+  seven writes silently discarded, because `glGetUniformLocation` returns -1
+  for a name that does not exist and `Material::Set` ignores it without a word.
+  What it *looked* like was a biome rule gone wrong: grass on sand, sand under
+  grass, because the grass asks `ClimateAt` on the CPU and only the ground was
+  reading the scrambled copy. The shader source is now assembled as
+  `"#version 330 core\n#define GRID " + std::to_string(s_Grid)`. Any constant
+  shared between C++ and GLSL wants the same treatment.
+
+- **Distance for a level-of-detail term must be from the eye, and it is easy to
+  write one that is not.** `TerrainLab`'s grass shrank by `length(world.xyz)` --
+  distance from the *world origin*. The block is centred there, so the thinning
+  was a bullseye painted on the map that did not move when you did, which reads
+  from inside as "the sliders do nothing". Three lines away, the per-chunk
+  `u_Fade` used the camera correctly, so the shading and the geometry were
+  converging about two different points. If a level-of-detail control seems
+  inert, check what it is measuring *from* before checking whether it is bound.
+
 - **`--land Mars` separates the player from the lander, and it is not the
   lander.** Reproduce with
   `./TestEnv --demo Solar --land Mars --lockstep --hide-ui --capture a.png

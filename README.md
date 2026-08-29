@@ -1264,6 +1264,70 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-29 (grass that thins around you, not around the map)
+
+The level-of-detail sliders looked dead. Moving them changed something, but not
+anything near where you were standing, and walking about did not move the effect
+at all.
+
+The distance the shrink is keyed to was `length(world.xyz)` -- **the distance
+from the world origin, not from the eye.** The block is centred on the origin,
+so the thinning was a fixed bullseye painted on the terrain: tall grass in the
+middle of the map, collapsed grass at the corners, whoever was looking and from
+wherever. `u_LodFar` is 75 m and a corner cell centre is 76.4 m out, so standing
+in one put *every* blade past the far end.
+
+Measured, standing at the corner cell and at the mid-edge cell, as mean
+|Laplacian| of luminance over the bottom quarter of the frame -- which is how
+much fine detail there is at your feet, and so whether there are blades there at
+all:
+
+| spawn | before | after |
+| --- | --- | --- |
+| corner cell (76.4 m from the map centre) | 2.284 | 6.804 |
+| mid-edge cell (56.9 m) | 7.573 | 10.998 |
+
+The per-chunk `u_Fade` sitting three lines away had been measured from the
+camera all along, so the *shading* converged with distance from the viewer while
+the *geometry* thinned by position on the map -- two level-of-detail schemes
+disagreeing about where the viewer was, one of them right.
+
+### 2026-08-29 (the ground was reading a nine-cell grid out of sixteen)
+
+Grass growing on sand, and sand under grass. The grid went from three by three
+to four by four; `s_Grid` changed, and the copy of it hard-coded in the ground
+shader's GLSL did not.
+
+So the CPU filled `u_Cells[j * 4 + i]` for sixteen cells and the shader read
+`u_Cells[j * 3 + i]` out of an array nine long. Seven of the sixteen writes
+landed past the end and went nowhere; the nine that landed were shuffled into
+the wrong squares. **The grass never took part in any of this** -- it asks
+`ClimateAt` on the CPU, which was right the whole time -- so what the change
+actually broke was the agreement between the ground and the things growing out
+of it.
+
+Standing in a cell the grid says is Desert, colour of the ground in the bottom
+quarter of the frame:
+
+| spawn | green before | sand before | green after | sand after |
+| --- | --- | --- | --- | --- |
+| cell 7 (Desert) | 100.00% | 0.00% | 0.00% | 97.45% |
+| cell 11 (Desert) | 100.00% | 0.00% | 0.00% | 100.00% |
+| cell 0 (Wetland, control) | 99.72% | 0.00% | 99.72% | 0.00% |
+
+Cell 0 is the control and index 0 maps to itself under both schemes, which is
+why it does not move.
+
+The fix is not the corrected index. It is that **the grid's size is now written
+once** and injected into the shader as `#define GRID` from `s_Grid`, so the two
+cannot drift apart again. A constant that has to be written out twice will
+eventually be wrong in one of the two places, and the symptom will not look like
+an indexing bug -- this one looked like a biome rule.
+
+`--spawn N` stands the camera at the centre of cell N, which is what let a
+capture ask the question at all. The spawn buttons were the only way to be
+somewhere specific and an unattended run has nobody to press one.
+
 ### 2026-08-29 (a door you can carry, and a room that is not where the door is)
 
 `E` plants a doorway in front of you and `E` again nearby pockets it. Walk
