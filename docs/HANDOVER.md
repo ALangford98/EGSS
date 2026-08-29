@@ -343,6 +343,20 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **Never seed scattered things on a triangle's index.** Marching cubes emits
+  triangles in lattice order, so editing the field anywhere in a chunk
+  renumbers every triangle after the edit and the entire chunk's grass, trees
+  and boulders reseed -- a 2 m dig moved instances 4.25 to 12.9 m away. Hash
+  the triangle's *position* (`Veg::ScatterKey`) and the scatter becomes a
+  property of the ground, so only what actually changed can move.
+
+- **Placement rules that read the mesh describe something the player can
+  edit.** `TerrainLab` put boulders where the surface is too steep to hold
+  soil, taken from the triangle's normal -- and the wall of a freshly dug hole
+  is exactly that, so every dig grew an outcrop round its rim. Rules about the
+  *landscape* want the generator's own height field; the mesh is only for what
+  a thing is bedded against.
+
 - **Buoyancy applied at the centre of mass can never tip anything**, and it
   looks completely right until something has to. A force through the centre of
   mass has no moment about it, so the model gets every draft right and every

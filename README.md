@@ -1264,6 +1264,51 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-29 (digging a hole stops rearranging the county)
+
+Reported: digging seems to re-run the terrain generation -- things shift well
+outside the dig radius, and rocks appear in the hole. Both are real, and they
+are two different faults with one measurement between them.
+
+**The scatter was keyed to the triangle's index.** Grass, trees and boulders are
+all placed by walking the terrain's triangles and hashing on the triangle's
+position *in the list*. Marching cubes emits triangles in lattice order, so
+removing a few near the start renumbers every triangle after them -- and the
+whole chunk reseeds. Measured, for one 2 m dig that changed fourteen voxels:
+
+| | before | after |
+| --- | --- | --- |
+| instances moved or gone | 6 | **0** |
+| nearest one, from the dig | 4.25 m | -- |
+| farthest | 12.9 m | -- |
+
+Hashing the triangle's own *position* instead makes the scatter a property of
+the ground. Ground that did not change gets the same triangles in the same
+places and so the same seed, whatever happened elsewhere in the chunk.
+
+**And the placement rules were reading the mesh rather than the landscape.** A
+boulder goes where the slope is too steep to hold soil -- and the wall of a hole
+two metres across is exactly that, so every dig sprouted an outcrop round its
+rim. Three of them, at 1.9 to 2.4 m from the centre. The slope now comes from
+the height field's own gradient, which says where the crags are and which no
+amount of digging changes. The mesh's normal is still what a stone is *bedded*
+against; it is only the rule that comes from the landscape.
+
+Surface scatter also asks whether it is on the surface at all, at the instance's
+own position rather than at its triangle's centre -- a big triangle on the rim
+of a hole can have its centre above the ground and its corners well under.
+
+With both in, a **6 m** dig on top of a boulder field:
+
+| | |
+| --- | --- |
+| moved or gone | 3, at 0.03 to 4.71 m -- all inside the hole |
+| appeared | 1, at 5.95 m -- on the rim |
+| anything beyond the hole | untouched |
+
+Which is the behaviour asked for: what you dug away goes, what you exposed can
+grow something, and nothing you did not touch moves.
+
 ### 2026-08-29 (buoyancy that has a shape, and planks that capsize when they should)
 
 There are five 2x4s floating in the lake and twelve concrete blocks on the

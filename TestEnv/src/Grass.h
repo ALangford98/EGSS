@@ -132,6 +132,12 @@ namespace Grass {
 			// the geometry, wherever it is.
 			float area = 0.5f * area2;
 
+			// **Keyed to where the ground is, not to where the triangle sits
+			// in the list.** See `Veg::ScatterKey`: editing the field
+			// renumbers every triangle after the edit, so an index reseeds a
+			// whole chunk for a hole two metres across.
+			int key = Veg::ScatterKey(centre.x, centre.y, centre.z);
+
 			float chance = allow(centre, n) * flatness * settings.Density * area;
 
 			if (chance <= 0.001f)
@@ -142,15 +148,15 @@ namespace Grass {
 			// three blades every ten triangles rather than none.
 			int count = (int)chance;
 
-			if (Veg::Hash2DUnit((int)t, 0, seed) < chance - (float)count)
+			if (Veg::Hash2DUnit(key, 0, seed) < chance - (float)count)
 				count++;
 
 			for (int i = 0; i < count; i++)
 			{
 				// Uniform inside the triangle: the sqrt is what stops the
 				// points bunching along one edge.
-				float u = Veg::Hash2DUnit((int)t, i * 3 + 1, seed);
-				float v = Veg::Hash2DUnit((int)t, i * 3 + 2, seed);
+				float u = Veg::Hash2DUnit(key, i * 3 + 1, seed);
+				float v = Veg::Hash2DUnit(key, i * 3 + 2, seed);
 				float su = std::sqrt(u);
 
 				glm::vec3 base = a + (b - a) * (su * (1.0f - v))
@@ -169,10 +175,10 @@ namespace Grass {
 				glm::vec3 east = glm::normalize(glm::cross(reference, vert));
 				glm::vec3 north = glm::cross(vert, east);
 
-				float angle = Veg::Hash2DUnit((int)t, i * 3 + 3, seed) * 6.2831853f;
+				float angle = Veg::Hash2DUnit(key, i * 3 + 3, seed) * 6.2831853f;
 
 				float height = settings.Height
-					* (0.65f + Veg::Hash2DUnit((int)t, i * 3 + 4, seed) * 0.7f);
+					* (0.65f + Veg::Hash2DUnit(key, i * 3 + 4, seed) * 0.7f);
 
 				glm::vec3 side = (east * std::cos(angle) + north * std::sin(angle))
 					* settings.Width;
@@ -244,7 +250,7 @@ namespace Grass {
 				// too -- which is why that one is a uniform per chunk rather
 				// than anything computed from a vertex. Both halves of that
 				// were learned the hard way; see the changelog.
-				float ticket = Veg::Hash2DUnit((int)t, i * 3 + 5, seed);
+				float ticket = Veg::Hash2DUnit(key, i * 3 + 5, seed);
 
 				grass.Vertices.push_back({ base - side,          bladeNormal, { ticket, 0.0f } });
 				grass.Vertices.push_back({ base + side,          bladeNormal, { ticket, 0.0f } });

@@ -666,6 +666,10 @@ private:
 		// instead of stopping on the chunk line.
 		auto allow = [this](const glm::vec3& at, const glm::vec3&)
 		{
+			// Nothing grows on the inside of a hole you dug.
+			if (!OnSurface(at))
+				return 0.0f;
+
 			glm::vec2 climate = ClimateAt(at.x, at.z);
 
 			// Dry ground grows less, and hot dry ground grows none -- the same
@@ -1087,6 +1091,10 @@ private:
 			// And they stop where it is cold, the same way the planet's do.
 			float warm = glm::smoothstep(0.15f, 0.35f, climate.y);
 
+			// Keyed to the ground rather than to the triangle's place in the
+			// list -- see `Veg::ScatterKey`.
+			int key = Veg::ScatterKey(centre.x, centre.y, centre.z);
+
 			float chance = wet * warm * m_TreeDensity * (0.5f * area2);
 
 			if (chance <= 1e-4f)
@@ -1094,24 +1102,30 @@ private:
 
 			int count = (int)chance;
 
-			if (Veg::Hash2DUnit((int)t, 0, seed) < chance - (float)count)
+			if (Veg::Hash2DUnit(key, 0, seed) < chance - (float)count)
 				count++;
 
 			for (int i = 0; i < count; i++)
 			{
-				float u = Veg::Hash2DUnit((int)t, i * 4 + 1, seed);
-				float v = Veg::Hash2DUnit((int)t, i * 4 + 2, seed);
+				float u = Veg::Hash2DUnit(key, i * 4 + 1, seed);
+				float v = Veg::Hash2DUnit(key, i * 4 + 2, seed);
 				float su = std::sqrt(u);
 
+				glm::vec3 root = a + (b - a) * (su * (1.0f - v))
+					+ (c - a) * (su * v);
+
+				if (!OnSurface(root))
+					continue;
+
 				Tree tree;
-				tree.At = a + (b - a) * (su * (1.0f - v)) + (c - a) * (su * v);
-				tree.Yaw = Veg::Hash2DUnit((int)t, i * 4 + 3, seed) * 6.2831853f;
+				tree.At = root;
+				tree.Yaw = Veg::Hash2DUnit(key, i * 4 + 3, seed) * 6.2831853f;
 
 				// Only a jitter now. The size classes carry the range, and
 				// they carry it with the trunk thickened to match -- which a
 				// uniform scale cannot do. See `BuildTrees`.
 				tree.Scale = 0.88f
-					+ Veg::Hash2DUnit((int)t, i * 4 + 4, seed) * 0.24f;
+					+ Veg::Hash2DUnit(key, i * 4 + 4, seed) * 0.24f;
 
 				// **Which habit grows here is a question about the climate.**
 				//
@@ -1137,7 +1151,7 @@ private:
 
 				if (total > 1e-5f)
 				{
-					float pick = Veg::Hash2DUnit((int)t, i * 4 + 5, seed) * total;
+					float pick = Veg::Hash2DUnit(key, i * 4 + 5, seed) * total;
 
 					for (int k = 0; k < s_TreeShapes; k++)
 					{
@@ -1155,7 +1169,7 @@ private:
 					continue;
 				}
 
-				float lot = Veg::Hash2DUnit((int)t, i * 4 + 6, seed);
+				float lot = Veg::Hash2DUnit(key, i * 4 + 6, seed);
 
 				tree.Size = 0;
 
@@ -1171,10 +1185,10 @@ private:
 				}
 
 				tree.Leaf = LeafColour(climate,
-					Veg::Hash2DUnit((int)t, i * 4 + 7, seed));
+					Veg::Hash2DUnit(key, i * 4 + 7, seed));
 
 				tree.Bark = BarkColour(climate,
-					Veg::Hash2DUnit((int)t, i * 4 + 8, seed));
+					Veg::Hash2DUnit(key, i * 4 + 8, seed));
 
 				trees.push_back(tree);
 			}
@@ -1409,6 +1423,25 @@ private:
 		return best;
 	}
 
+	// **Scatter belongs on the surface, and the inside of a hole is not one.**
+	//
+	// Digging exposes new triangles, and every one of them is ground as far as
+	// the scatterers are concerned -- so boulders appeared in the hole the
+	// moment it was dug, on faces that are steep because they are the *wall of
+	// a hole* rather than because they are a crag. Three of them turned up for
+	// a two-metre dig.
+	//
+	// The generator's own height function says where the outside is. A metre
+	// and a half of slack covers the mesher's interpolation and any ground the
+	// player has *added*, which should still grow things; anything well below
+	// the surface is an interior and gets nothing.
+	static constexpr float s_SurfaceSlack = 1.5f;
+
+	bool OnSurface(const glm::vec3& at) const
+	{
+		return at.y > Height(at.x, at.z) - s_SurfaceSlack;
+	}
+
 	void BuildChunkStones(size_t key, const glm::ivec3& chunk,
 		const Egss::MeshData& data)
 	{
@@ -1448,10 +1481,25 @@ private:
 			if (HasWater() && centre.y < WaterLevel() - 0.3f)
 				continue;
 
-			// The face's own slope, as a tangent, so it compares directly with
-			// the angle of repose.
-			float level = glm::clamp(n.y, 1e-3f, 1.0f);
-			float slope = std::sqrt(glm::max(1.0f - level * level, 0.0f)) / level;
+			// **The slope of the landscape, not the slope of the mesh.**
+			//
+			// Reading it off the triangle's normal makes the rules describe
+			// the *mesh*, which the player can edit -- so the wall of a hole
+			// two metres across counts as "too steep for soil" and sprouts an
+			// outcrop, and three boulders appeared round the rim of every dig.
+			// The height field says where the crags are, and no amount of
+			// digging changes it.
+			//
+			// The mesh's normal is still what a stone is bedded against; it is
+			// only the *rule* that comes from the landscape.
+			const float step = 2.0f;
+
+			float gx = (Height(centre.x + step, centre.z)
+				- Height(centre.x - step, centre.z)) / (2.0f * step);
+			float gz = (Height(centre.x, centre.z + step)
+				- Height(centre.x, centre.z - step)) / (2.0f * step);
+
+			float slope = std::sqrt(gx * gx + gz * gz);
 
 			// **Talus** -- shallow enough to hold a block, with steep ground
 			// above to have delivered one.
@@ -1482,6 +1530,8 @@ private:
 
 			float weight = (talus * patch + outcrop * 0.55f) * bare;
 
+			int key = Veg::ScatterKey(centre.x, centre.y, centre.z);
+
 			float chance = weight * m_StoneDensity * (0.5f * area2);
 
 			if (chance <= 1e-4f)
@@ -1489,22 +1539,28 @@ private:
 
 			int count = (int)chance;
 
-			if (Veg::Hash2DUnit((int)t, 0, seed) < chance - (float)count)
+			if (Veg::Hash2DUnit(key, 0, seed) < chance - (float)count)
 				count++;
 
 			for (int i = 0; i < count; i++)
 			{
-				float u = Veg::Hash2DUnit((int)t, i * 6 + 1, seed);
-				float v = Veg::Hash2DUnit((int)t, i * 6 + 2, seed);
+				float u = Veg::Hash2DUnit(key, i * 6 + 1, seed);
+				float v = Veg::Hash2DUnit(key, i * 6 + 2, seed);
 				float su = std::sqrt(u);
 
 				glm::vec3 at = a + (b - a) * (su * (1.0f - v))
 					+ (c - a) * (su * v);
 
+				// Asked at the stone's own place rather than at the triangle's
+				// centre: a big triangle on the rim of a hole can have its
+				// centre above the surface and its corners well under.
+				if (!OnSurface(at))
+					continue;
+
 				// The power law, by inverse transform: N(>d) goes as d^-b, so
 				// d = dmin * U^(-1/b). Most come out small; a few do not, and
 				// the few are the ones that make the field.
-				float lot = glm::max(Veg::Hash2DUnit((int)t, i * 6 + 3, seed),
+				float lot = glm::max(Veg::Hash2DUnit(key, i * 6 + 3, seed),
 					1e-4f);
 
 				float size = s_StoneMin * std::pow(lot, -1.0f / s_Fragment)
@@ -1522,8 +1578,8 @@ private:
 				// A clast is not a ball. Axial ratios near the middle of what
 				// river and scree gravels actually measure: b/a about 0.7,
 				// c/a about 0.5.
-				float mid = 0.60f + Veg::Hash2DUnit((int)t, i * 6 + 4, seed) * 0.28f;
-				float shortest = 0.38f + Veg::Hash2DUnit((int)t, i * 6 + 5, seed) * 0.28f;
+				float mid = 0.60f + Veg::Hash2DUnit(key, i * 6 + 4, seed) * 0.28f;
+				float shortest = 0.38f + Veg::Hash2DUnit(key, i * 6 + 5, seed) * 0.28f;
 
 				Stone stone;
 				stone.Radii = glm::vec3(size, size * shortest, size * mid);
@@ -1533,8 +1589,8 @@ private:
 				// lowest centre of mass, and it is why a shingle beach is flat
 				// and not a heap of edges. Tilted a little off the ground's
 				// normal so a field does not look combed.
-				float spin = Veg::Hash2DUnit((int)t, i * 6 + 6, seed) * 6.2831853f;
-				float tip = (Veg::Hash2DUnit((int)t, i * 6 + 7, seed) - 0.5f) * 0.5f;
+				float spin = Veg::Hash2DUnit(key, i * 6 + 6, seed) * 6.2831853f;
+				float tip = (Veg::Hash2DUnit(key, i * 6 + 7, seed) - 0.5f) * 0.5f;
 
 				// Part way toward the face's normal rather than all the way:
 				// a block wedged on a slope leans into it, but not as far as
@@ -1578,15 +1634,15 @@ private:
 				// what these looked like. Sinking by a third of the short
 				// axis is enough for the eye and cheap enough to be free.
 				float buried = 0.30f + 0.25f
-					* Veg::Hash2DUnit((int)t, i * 6 + 8, seed);
+					* Veg::Hash2DUnit(key, i * 6 + 8, seed);
 
 				stone.At = at + up * stone.Radii.y * (1.0f - 2.0f * buried);
 
-				stone.Mesh = (int)(Veg::Hash2DUnit((int)t, i * 6 + 9, seed)
+				stone.Mesh = (int)(Veg::Hash2DUnit(key, i * 6 + 9, seed)
 					* (float)s_StoneMeshes) % s_StoneMeshes;
 
 				stone.Colour = StoneColour(climate,
-					Veg::Hash2DUnit((int)t, i * 6 + 10, seed));
+					Veg::Hash2DUnit(key, i * 6 + 10, seed));
 
 				stones.push_back(stone);
 			}
