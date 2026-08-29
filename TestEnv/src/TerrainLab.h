@@ -819,6 +819,35 @@ private:
 		int Size;
 		glm::vec3 Leaf;
 		glm::vec3 Bark;
+
+		// The cut, in the tree's own frame: how far up its axis, which way the
+		// axe is going in, and how far through. Zero depth is an untouched
+		// tree. Cuts are lost when the chunk is remeshed -- digging under a
+		// wood rebuilds its trees -- which is honest for a lab and would not
+		// be for a game.
+		float CutY = 0.0f;
+		float CutDepth = 0.0f;
+		glm::vec2 CutSide = glm::vec2(1.0f, 0.0f);
+		bool Severed = false;
+	};
+
+	// **The crown, once it is no longer attached.**
+	//
+	// A felled top is a rigid body and the same mesh drawn from the other side
+	// of the cut, so nothing is built and nothing is thrown away -- the stump
+	// keeps the fragments below the cut height and this keeps the ones above.
+	// A pool, for the same reason the boulders use one: bodies can be
+	// rewritten but not removed.
+	struct Felled
+	{
+		Egss::PhysicsWorld3D::BodyHandle Body = 0;
+		bool Active = false;
+		int Shape = 0;
+		int Size = 0;
+		float Scale = 1.0f;
+		float CutY = 0.0f;
+		glm::vec3 Leaf = glm::vec3(0.2f);
+		glm::vec3 Bark = glm::vec3(0.2f);
 	};
 
 	// **Trees are scattered over the chunk's own triangles, exactly as the
@@ -1833,6 +1862,322 @@ private:
 		}
 	}
 
+	// --- The axe --------------------------------------------------------------
+
+	// Where the axe hangs when it is not in your hands. On the wall opposite
+	// the shed's door, so you can see it as you walk in.
+	glm::vec3 AxeRack() const
+	{
+		return ShedCentre() + glm::vec3(0.0f, 1.55f, s_ShedHalf - 0.32f);
+	}
+
+	void ToggleAxe()
+	{
+		const Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+
+		// Taken and returned at the rack, so the axe cannot be dropped in a
+		// field and lost. There is one of it, the way there is one portal.
+		if (glm::length(body.Position - AxeRack()) < 2.6f)
+			m_HasAxe = !m_HasAxe;
+	}
+
+	// **A tree's frame, from world space.** The instance transform is
+	// `translate(At) * rotate(Yaw about +Y) * scale(Scale)`, so undoing it is
+	// the same three steps backwards. Written out rather than inverting a
+	// matrix because the tree's own coordinates are what the cut is stored in
+	// and it is worth being able to read the conversion.
+	static glm::vec3 IntoTree(const Tree& tree, const glm::vec3& at)
+	{
+		glm::vec3 offset = at - tree.At;
+
+		float c = std::cos(tree.Yaw), sn = std::sin(tree.Yaw);
+
+		// `rotate(+Yaw)` sends (x, z) to (x c + z s, -x s + z c), so the
+		// inverse sends it back the other way.
+		return glm::vec3(offset.x * c - offset.z * sn, offset.y,
+			offset.x * sn + offset.z * c) / glm::max(tree.Scale, 1e-4f);
+	}
+
+	// **Which tree the axe is lined up on, and where on it.**
+	//
+	// A ray against an upright cylinder round the trunk, which is what the
+	// lower part of every one of these habits is. Twice the trunk's radius, so
+	// aiming is a matter of looking at the tree rather than at a particular
+	// column of pixels, and only the bottom half of the tree -- swinging an
+	// axe at a canopy eight metres up should find nothing.
+	void AimAxe()
+	{
+		m_AimTree = -1;
+
+		if (!m_HasAxe)
+			return;
+
+		glm::vec3 origin = m_Camera.GetPosition();
+		glm::vec3 direction = m_Camera.GetForward();
+
+		float best = s_AxeReach;
+
+		for (auto& entry : m_Trees)
+		for (size_t i = 0; i < entry.second.size(); i++)
+		{
+			Tree& tree = entry.second[i];
+
+			if (tree.Severed)
+				continue;
+
+			float radius = m_TreeTrunk[tree.Shape][tree.Size] * tree.Scale * 2.0f;
+			float top = m_TreeTop[tree.Shape][tree.Size] * tree.Scale * 0.5f;
+
+			// The circle, in the ground plane. `t` is along the ray.
+			glm::vec2 to(origin.x - tree.At.x, origin.z - tree.At.z);
+			glm::vec2 along(direction.x, direction.z);
+
+			float a = glm::dot(along, along);
+
+			if (a < 1e-6f)
+				continue;
+
+			float b = 2.0f * glm::dot(to, along);
+			float c = glm::dot(to, to) - radius * radius;
+
+			float discriminant = b * b - 4.0f * a * c;
+
+			if (discriminant < 0.0f)
+				continue;
+
+			float t = (-b - std::sqrt(discriminant)) / (2.0f * a);
+
+			// Inside the cylinder already: take the exit rather than a
+			// negative entry, so standing against a trunk still aims at it.
+			if (t < 0.0f)
+				t = (-b + std::sqrt(discriminant)) / (2.0f * a);
+
+			if (t < 0.0f || t > best)
+				continue;
+
+			glm::vec3 hit = origin + direction * t;
+
+			float height = hit.y - tree.At.y;
+
+			if (height < 0.05f || height > top)
+				continue;
+
+			best = t;
+
+			m_AimKey = entry.first;
+			m_AimTree = (int)i;
+			m_AimY = height / glm::max(tree.Scale, 1e-4f);
+
+			glm::vec3 local = IntoTree(tree, hit);
+
+			glm::vec2 side(local.x, local.z);
+
+			float span = glm::length(side);
+
+			m_AimSide = span > 1e-4f ? side / span : glm::vec2(1.0f, 0.0f);
+		}
+	}
+
+	// One stroke. The wedge deepens where you were aiming; when it is through,
+	// the top comes off.
+	void Swing()
+	{
+		m_Swing = 1.0f;
+
+		if (m_AimTree < 0)
+			return;
+
+		auto found = m_Trees.find(m_AimKey);
+
+		if (found == m_Trees.end() || m_AimTree >= (int)found->second.size())
+			return;
+
+		Tree& tree = found->second[(size_t)m_AimTree];
+
+		// A fresh cut, or the same one deepened. Moving the aim more than a
+		// notch's width away starts again, which is what happens if you do it
+		// with a real axe as well.
+		float radius = m_TreeTrunk[tree.Shape][tree.Size] * tree.Scale;
+
+		if (tree.CutDepth <= 0.0f
+			|| std::abs(m_AimY - tree.CutY) * tree.Scale > radius * s_AxeKerf)
+		{
+			tree.CutY = m_AimY;
+			tree.CutSide = m_AimSide;
+			tree.CutDepth = 0.0f;
+		}
+
+		m_Chopped++;
+
+		// **A stroke takes a fixed bite of wood, so a thick trunk takes more
+		// of them.** Hit points would be a second rule that could disagree
+		// with the one the notch is drawn from; this is the same number twice.
+		tree.CutDepth += s_AxeBite / glm::max(2.0f * radius, 0.05f);
+
+		if (tree.CutDepth >= 1.0f)
+		{
+			tree.CutDepth = 1.0f;
+			Sever(tree);
+		}
+	}
+
+	// The top comes off and becomes a body. The stump keeps standing, drawn
+	// from the same mesh with everything above the cut discarded.
+	void Sever(Tree& tree)
+	{
+		tree.Severed = true;
+		m_Felled++;
+
+		while ((int)m_Fell.size() < s_FelledMax)
+		{
+			Felled spare;
+
+			Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(
+				glm::vec3(0.0f, -1000.0f, 0.0f), glm::vec3(0.5f), 1.0f);
+
+			body.Type = Egss::BodyType::Static;
+
+			spare.Body = m_World.AddBody(body);
+
+			m_Fell.push_back(spare);
+		}
+
+		// Oldest first, so felling a seventeenth tree retires the first.
+		Felled& slot = m_Fell[(size_t)(m_Felled - 1) % (size_t)s_FelledMax];
+
+		slot.Active = true;
+		slot.Shape = tree.Shape;
+		slot.Size = tree.Size;
+		slot.Scale = tree.Scale;
+		slot.CutY = tree.CutY;
+		slot.Leaf = tree.Leaf;
+		slot.Bark = tree.Bark;
+
+		float scale = tree.Scale;
+
+		float above = glm::max(m_TreeTop[tree.Shape][tree.Size] - tree.CutY,
+			0.2f) * scale;
+
+		// **A capsule along the trunk, not a box round the canopy.**
+		//
+		// The box was the obvious choice and it was wrong by four metres: its
+		// half-extents have to cover the crown, so a wide top rests on a cube
+		// four metres across and the whole tree floats above the ground on a
+		// collider nothing can see. A felled tree is a long cylinder that
+		// happens to have twigs on it, and the twigs are not what it lies on.
+		//
+		// The radius is a couple of trunk-widths, which is about what a fallen
+		// trunk with its branch stubs actually rests on.
+		float radius = glm::max(m_TreeTrunk[tree.Shape][tree.Size] * scale
+			* 2.5f, 0.22f);
+
+		float halfHeight = glm::max(above * 0.5f - radius, 0.05f);
+
+		// **Mass from the wood, not from the collider.** A crown is mostly
+		// air, so filling anything its size with timber gives a five-metre top
+		// the mass of a small car and it lands like one. A trunk of this
+		// radius plus a share for the branches is nearer the truth.
+		float timber = 3.14159265f * radius * radius * (2.0f * halfHeight);
+
+		float mass = 700.0f * 0.55f * timber;
+
+		glm::vec3 root = tree.At + glm::vec3(0.0f, tree.CutY * scale, 0.0f);
+
+		glm::vec3 centre = root + glm::vec3(0.0f, above * 0.5f, 0.0f);
+
+		Egss::RigidBody3D body = Egss::RigidBody3D::MakeCapsule(centre, radius,
+			halfHeight, glm::max(mass, 20.0f));
+
+		body.Friction = 0.85f;
+		body.Restitution = 0.0f;
+
+		// A little viscous damping for the tumble through the air; what stops
+		// it on the ground is `StepFelled`, which is a different mechanism and
+		// has to be.
+		body.AngularDamping = 0.15f;
+		body.LinearDamping = 0.05f;
+
+		// **It falls the way it was cut.** A hinge on the uncut side is what
+		// makes a felled tree go where the cutter meant it to; the wedge is
+		// on `CutSide`, so the tree tips that way. A nudge rather than a
+		// throw -- gravity does the rest, and a tree that leaps off its stump
+		// looks like a spring.
+		float c = std::cos(tree.Yaw), sn = std::sin(tree.Yaw);
+
+		glm::vec3 fall(tree.CutSide.x * c + tree.CutSide.y * sn, 0.0f,
+			-tree.CutSide.x * sn + tree.CutSide.y * c);
+
+		body.AngularVelocity = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), fall)
+			* -0.7f;
+
+		body.Velocity = fall * 0.25f;
+		body.Awake = true;
+
+		m_World.GetBody(slot.Body) = body;
+	}
+
+	// **Rolling resistance, which the solver has not got and a log needs.**
+	//
+	// A capsule is a cylinder and a cylinder rolls. The first felled top went
+	// fourteen metres down the hill and was still doing six metres a second
+	// ten seconds later -- the same fault the loose stones had as spheres, and
+	// this time the shape cannot be blamed, because a felled trunk really is a
+	// cylinder.
+	//
+	// Turning up the angular damping does not fix it either, and the reason is
+	// worth stating: **viscous damping gives a terminal speed, not a stop.**
+	// Set against gravity on a slope it settles at whatever speed the two
+	// balance at and stays there. Raising it far enough to look stopped also
+	// makes the tree fall as though through treacle.
+	//
+	// What stops a real log is rolling resistance, which is Coulomb: the
+	// ground deforms under the load, the contact patch sits ahead of the axis,
+	// and the couple that results is set by the **weight**, not by the speed.
+	//
+	//     torque = mu_r N R
+	//
+	// with mu_r near a quarter for timber on soil, against a hundredth for a
+	// tyre on tarmac. That is why a log does not roll away and a wheel does.
+	// It also gives a clean prediction: a cylinder rolls only where the slope
+	// exceeds `atan(mu_r)`, about 14 degrees, and stops everywhere else.
+	//
+	// Capped so it can only bring the spin to zero and never reverse it --
+	// friction does not drive things.
+	static constexpr float s_RollResistance = 0.25f;
+
+	void StepFelled(float dt)
+	{
+		for (Felled& fell : m_Fell)
+		{
+			if (!fell.Active)
+				continue;
+
+			Egss::RigidBody3D& body = m_World.GetBody(fell.Body);
+
+			if (!body.Awake || body.InverseMass <= 0.0f)
+				continue;
+
+			// Nothing to roll on in mid-air.
+			if (body.Position.y - Height(body.Position.x, body.Position.z)
+				> body.Radius * 1.8f)
+				continue;
+
+			float spin = glm::length(body.AngularVelocity);
+
+			if (spin < 1e-4f)
+				continue;
+
+			float torque = s_RollResistance * body.GetMass() * 9.81f
+				* body.Radius;
+
+			glm::vec3 change = body.InverseInertiaWorld
+				* (-body.AngularVelocity / spin * torque) * dt;
+
+			body.AngularVelocity = glm::length(change) >= spin
+				? glm::vec3(0.0f) : body.AngularVelocity + change;
+		}
+	}
+
 	// --- The portal and the toolshed ------------------------------------------
 	//
 	// **A door you can carry, and a room that is not where the door is.**
@@ -2250,6 +2595,21 @@ private:
 
 		m_WasPortal = portal;
 
+		// **F rather than E.** E is the portal, and a key that does one thing
+		// beside a doorway and another beside a rack is a key nobody trusts.
+		bool axe = Egss::Input::IsKeyPressed(EGSS_KEY_F);
+
+		if (axe && !m_WasAxe)
+			ToggleAxe();
+
+		m_WasAxe = axe;
+
+		AimAxe();
+
+		// The stroke is a wind-up and a fall, so it wants to be visible for
+		// about a third of a second whether or not it connected.
+		m_Swing = glm::max(m_Swing - (float)step * 3.2f, 0.0f);
+
 		bool clip = Egss::Input::IsKeyPressed(EGSS_KEY_V);
 
 		if (clip && !m_WasClipping)
@@ -2275,13 +2635,25 @@ private:
 		bool dig = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
 		bool add = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_RIGHT);
 
+		// An axe in your hands is not a shovel. Swinging where the dig would
+		// have gone means there is one button for "use what you are holding",
+		// which is also why picking the axe up has to be deliberate.
 		if (dig && !m_WasDigging)
-			Dig(false);
-		else if (add && !m_WasAdding)
+		{
+			if (m_HasAxe)
+				Swing();
+			else
+				Dig(false);
+		}
+		else if (add && !m_WasAdding && !m_HasAxe)
+		{
 			Dig(true);
+		}
 
 		m_WasDigging = dig;
 		m_WasAdding = add;
+
+		StepFelled((float)step);
 
 		ApplyBuoyancy();
 
@@ -2308,6 +2680,7 @@ private:
 	void DrawScene(const Egss::PerspectiveCamera& camera, Pass pass);
 	void DrawPortalView();
 	void DrawShed();
+	void DrawHeldAxe(const Egss::PerspectiveCamera& camera);
 	void DrawDoorFrame();
 
 	// The unit cube, placed and coloured. The doorway, its frame and the whole
@@ -2387,6 +2760,47 @@ private:
 	// -3/2 self-thinning law, which needs a stand history this does not have,
 	// but the same shape.
 	static constexpr float s_TreeShare[s_TreeSizes] = { 0.46f, 0.36f, 0.18f };
+
+	// The trunk's radius at the base and the finished height, per habit and
+	// size, measured off the mesh as it is built. The axe needs both: the
+	// radius says how many strokes a trunk is worth and how wide the notch is,
+	// the height says how big a body the crown becomes.
+	float m_TreeTrunk[s_TreeShapes][s_TreeSizes] = {};
+	float m_TreeTop[s_TreeShapes][s_TreeSizes] = {};
+	float m_TreeSpan[s_TreeShapes][s_TreeSizes] = {};
+
+	// --- The axe ------------------------------------------------------------
+	//
+	// **Not a felling animation.** A stroke lands where you were aiming, takes
+	// a wedge out of the trunk at that exact height, and the tree comes down
+	// when the wedge is through -- so a tree cut high leaves a tall stump and
+	// a tree cut low leaves a low one, because the cut is a place and not an
+	// event. The same idea as breaking a rock in the open-world demo: damage
+	// where it landed rather than a state machine.
+	static constexpr float s_AxeReach = 3.6f;
+
+	// Metres of trunk a stroke takes. A stroke is a stroke whatever it hits,
+	// so a thick trunk simply takes more of them -- which is the right way
+	// round and needs no hit points.
+	static constexpr float s_AxeBite = 0.055f;
+
+	// How tall the notch is, as a share of the trunk's radius.
+	static constexpr float s_AxeKerf = 1.1f;
+
+	static constexpr int s_FelledMax = 16;
+
+	bool m_HasAxe = false;
+	float m_Swing = 0.0f;          // 1 at the top of the stroke, 0 at rest
+	int m_Chopped = 0;
+	int m_Felled = 0;
+
+	// What the axe is lined up on this frame, and where a stroke would land.
+	size_t m_AimKey = 0;
+	int m_AimTree = -1;
+	float m_AimY = 0.0f;
+	glm::vec2 m_AimSide = glm::vec2(1.0f, 0.0f);
+
+	std::vector<Felled> m_Fell;
 
 	std::shared_ptr<Egss::Mesh> m_TreeBark[s_TreeShapes][s_TreeSizes];
 	std::shared_ptr<Egss::Mesh> m_TreeLeaves[s_TreeShapes][s_TreeSizes];
@@ -2491,6 +2905,7 @@ private:
 	bool m_WasAdding = false;
 	bool m_WasSpawning[s_Grid * s_Grid] = {};
 	bool m_WasPortal = false;
+	bool m_WasAxe = false;
 
 	bool m_PortalOn = false;
 	bool m_InShed = false;
@@ -3296,6 +3711,18 @@ inline void TerrainLab::BuildTrees()
 		Veg::MakeTreeMesh(1471u + (unsigned int)(i * s_TreeSizes + j) * 97u,
 			params, bark, leaves);
 
+		bark.RecalculateBounds();
+		leaves.RecalculateBounds();
+
+		// Measured off the finished mesh rather than taken from the
+		// parameters, because what the axe has to cut is the trunk that is
+		// actually there.
+		m_TreeTrunk[i][j] = params.Radius;
+		m_TreeTop[i][j] = glm::max(bark.BoundsMax.y, leaves.BoundsMax.y);
+		m_TreeSpan[i][j] = glm::max(
+			glm::max(leaves.BoundsMax.x, -leaves.BoundsMin.x),
+			glm::max(leaves.BoundsMax.z, -leaves.BoundsMin.z));
+
 		m_TreeBark[i][j] = std::make_shared<Egss::Mesh>(bark, "LabBark");
 		m_TreeLeaves[i][j] = std::make_shared<Egss::Mesh>(leaves, "LabLeaves");
 	}
@@ -3323,6 +3750,15 @@ inline void TerrainLab::BuildTrees()
 
 		out vec3 v_Normal;
 		out float v_Up;
+
+		// **The tree's own coordinates, untouched by the wind.**
+		//
+		// The cut is a fact about the tree, not about where the wind has bent
+		// it to this frame -- a notch that swam about the trunk as it swayed
+		// would be worse than no notch. So this is `a_Position` straight
+		// through: y is height up the tree from its root and xz is across it,
+		// both in metres before the instance scale.
+		out vec3 v_Object;
 
 		float hash(vec2 p)
 		{
@@ -3400,6 +3836,7 @@ inline void TerrainLab::BuildTrees()
 
 			world.xyz += lean;
 
+			v_Object = a_Position;
 			v_Normal = mat3(u_Transform) * a_Normal;
 			v_Up = height;
 
@@ -3444,9 +3881,88 @@ inline void TerrainLab::BuildTrees()
 		// through. Zero for a boulder, which does not.
 		uniform float u_Through;
 
+		in vec3 v_Object;
+
+		// **Cutting a tree is removing material, not swapping a model.**
+		//
+		// An axe takes a wedge out of one side of the trunk at the height it
+		// landed, and the tree comes down when the wedge has gone through. So
+		// the cut is described where it happens -- a height on the tree's own
+		// axis, a direction it is cut from, and how far through it is -- and
+		// the fragments inside that wedge are discarded. Nothing is remeshed
+		// and nothing is pre-authored, so the notch is where the swing landed
+		// rather than where somebody put it.
+		//
+		// `u_CutPart` says which half of a severed tree this draw is: -1 the
+		// stump, +1 the crown on its way down, 0 a tree still standing.
+		uniform float u_CutY;
+		uniform float u_CutDepth;
+		// A vec3 because `Material` has no vec2 setter; z is unused.
+		uniform vec3 u_CutSide;
+		uniform float u_CutRadius;
+		uniform float u_CutKerf;
+		uniform float u_CutPart;
+
+		// Where the next swing would land, drawn as a line round the trunk so
+		// the player is aiming at something rather than guessing. Set a long
+		// way off the tree when this is not the tree being aimed at.
+		uniform float u_AimY;
+
 		void main()
 		{
+			if (u_CutPart < -0.5 && v_Object.y > u_CutY)
+				discard;
+
+			if (u_CutPart > 0.5 && v_Object.y < u_CutY)
+				discard;
+
+			// **Both the cut and the line are about the trunk, and only the
+			// trunk.**
+			//
+			// Left out, the aim line ran along the *foliage* as well: this
+			// habit's leaf clusters hang to a metre off the ground and six
+			// metres out, so a line at chest height painted a bright band
+			// across the canopy thirty metres away. It looked as though the
+			// line was leaking onto other trees. It was not -- it was on the
+			// right tree, on the parts of it nobody thinks of as being at
+			// chest height. The notch had the same reach and was quietly
+			// taking a disc out of the leaves at the same time.
+			float axis = length(v_Object.xz);
+
+			bool trunk = axis < u_CutRadius * 3.0;
+
+			if (u_CutDepth > 0.0 && trunk)
+			{
+				// **A wedge, not a slot.** An axe cut is widest at the face
+				// and closes to a point, because each stroke lands at an angle
+				// and the chips come out of a V. Letting the depth fall off
+				// with distance from the centre line costs one multiply and is
+				// the difference between a cut tree and a tree with a slice
+				// missing.
+				float across = abs(v_Object.y - u_CutY) / max(u_CutKerf, 1e-4);
+
+				float into = dot(v_Object.xz, u_CutSide.xy);
+
+				// Full depth reaches `-radius`, which is right through.
+				float reach = u_CutRadius * (1.0 - 2.0 * u_CutDepth)
+					+ across * u_CutRadius;
+
+				if (across < 1.0 && into > reach)
+					discard;
+			}
+
 			vec3 normal = normalize(v_Normal);
+
+			// **Two-sided, because a cut trunk is an open tube.**
+			//
+			// Take a wedge out of one side and the far wall's *inside* is what
+			// faces you -- so with culling on there is nothing there and you
+			// see straight through the tree, and without the flip the wall
+			// that is there is lit as though it faced the other way. One line
+			// fixes both. It is right for the leaves as well: a leaf is a
+			// sheet, and the underside of one is not unlit.
+			if (!gl_FrontFacing)
+				normal = -normal;
 
 			float front = max(dot(normal, -u_SunDirection), 0.0);
 			float back = max(dot(-normal, -u_SunDirection), 0.0);
@@ -3455,8 +3971,20 @@ inline void TerrainLab::BuildTrees()
 
 			float dome = mix(u_Bounce, 1.0, 0.5 + 0.5 * normal.y);
 
-			vec3 lit = u_Color * (u_SkyColor * dome * u_Ambient
+			// The inside of a trunk is not bark. Sapwood is pale, and seeing
+			// it is the whole point of having cut into the tree.
+			vec3 tone = (!gl_FrontFacing && trunk)
+				? vec3(0.74, 0.62, 0.44) : u_Color;
+
+			vec3 lit = tone * (u_SkyColor * dome * u_Ambient
 				+ u_SunColor * diffuse);
+
+			// The aim line, added rather than mixed so it reads on bark and on
+			// leaves alike and cannot be mistaken for either.
+			if (trunk)
+				lit += vec3(0.9, 0.5, 0.15)
+					* (1.0 - smoothstep(0.0, 0.035,
+						abs(v_Object.y - u_AimY)));
 
 			color = vec4(lit, 1.0);
 		}
@@ -4070,8 +4598,10 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 		int drawn = 0;
 
 		for (const auto& entry : m_Trees)
-		for (const Tree& tree : entry.second)
+		for (size_t index = 0; index < entry.second.size(); index++)
 		{
+			const Tree& tree = entry.second[index];
+
 			// **A distance cull, which is all the level of detail a 144 m
 			// block needs.** The far corner is 200 m away and a tree is a few
 			// hundred triangles, so there is nothing here that a second mesh
@@ -4089,6 +4619,32 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 			// A trunk barely moves and a canopy moves a good deal, for the
 			// r^4 reason set out in the solar demo's trees: compliance goes as
 			// 1/(E I) and I as the fourth power of the section radius.
+			// The cut, in the tree's own coordinates. A tree nobody has
+			// touched sets a depth of zero and the shader skips the whole
+			// test; a severed one draws as its stump.
+			bool aimed = pass == Pass::Main && m_AimTree >= 0
+				&& entry.first == m_AimKey
+				&& (size_t)m_AimTree == index;
+
+			m_TreeMaterial->Set("u_CutY", tree.CutY);
+			m_TreeMaterial->Set("u_CutDepth", tree.CutDepth);
+			m_TreeMaterial->Set("u_CutSide",
+				glm::vec3(tree.CutSide.x, tree.CutSide.y, 0.0f));
+			m_TreeMaterial->Set("u_CutRadius",
+				m_TreeTrunk[tree.Shape][tree.Size]);
+			m_TreeMaterial->Set("u_CutKerf",
+				m_TreeTrunk[tree.Shape][tree.Size] * s_AxeKerf);
+			m_TreeMaterial->Set("u_CutPart", tree.Severed ? -1.0f : 0.0f);
+			m_TreeMaterial->Set("u_AimY", aimed ? m_AimY : 1.0e9f);
+
+			// A cut tree has an open face, so it needs its far wall drawn.
+			// Only the cut ones, so this is a state change per felled tree
+			// rather than per tree.
+			bool open = tree.CutDepth > 0.0f || tree.Severed;
+
+			if (open)
+				Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+
 			m_TreeMaterial->Set("u_Color", tree.Bark);
 			m_TreeMaterial->Set("u_Compliance", 1.1e-5f);
 			m_TreeMaterial->Set("u_Through", 0.0f);
@@ -4108,11 +4664,68 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 			Egss::Renderer::Submit(m_TreeMaterial,
 				m_TreeLeaves[tree.Shape][tree.Size], transform);
 
+			if (open)
+				Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+
 			drawn++;
 		}
 
 		m_TreeCount = drawn;
 	}
+
+	// **The tops that have come off**, drawn from the same mesh as the stump
+	// they left, with the other half of the cut discarded. Nothing was built
+	// when the tree came down and nothing is thrown away when it lands.
+	if (m_ShowTrees && !m_Fell.empty())
+	{
+		m_TreeMaterial->Set("u_MaxLean", m_TreeMaxLean);
+		m_TreeMaterial->Set("u_AimY", 1.0e9f);
+		m_TreeMaterial->Set("u_CutDepth", 0.0f);
+		m_TreeMaterial->Set("u_CutPart", 1.0f);
+
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+
+		for (const Felled& fell : m_Fell)
+		{
+			if (!fell.Active)
+				continue;
+
+			const Egss::RigidBody3D& body = m_World.GetBody(fell.Body);
+
+			// **The mesh is drawn about the cut, not about its own root.**
+			// The body's origin is where the trunk parted, so the mesh has to
+			// be slid down by the cut height *inside* the scale -- which is
+			// what the last translate does, and why it is last.
+			glm::mat4 transform =
+				glm::translate(glm::mat4(1.0f), body.Position)
+				* glm::mat4_cast(body.Orientation)
+				* glm::scale(glm::mat4(1.0f), glm::vec3(fell.Scale))
+				* glm::translate(glm::mat4(1.0f),
+					glm::vec3(0.0f, -fell.CutY, 0.0f));
+
+			m_TreeMaterial->Set("u_CutY", fell.CutY);
+
+			m_TreeMaterial->Set("u_Color", fell.Bark);
+			m_TreeMaterial->Set("u_Compliance", 0.0f);
+			m_TreeMaterial->Set("u_Through", 0.0f);
+
+			Egss::Renderer::Submit(m_TreeMaterial,
+				m_TreeBark[fell.Shape][fell.Size], transform);
+
+			m_TreeMaterial->Set("u_Color", fell.Leaf);
+			m_TreeMaterial->Set("u_Through", 0.30f);
+
+			Egss::Renderer::Submit(m_TreeMaterial,
+				m_TreeLeaves[fell.Shape][fell.Size], transform);
+		}
+
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+	}
+
+	// Everything from here draws no cut.
+	m_TreeMaterial->Set("u_CutDepth", 0.0f);
+	m_TreeMaterial->Set("u_CutPart", 0.0f);
+	m_TreeMaterial->Set("u_AimY", 1.0e9f);
 
 	// **The bedded boulders**, which are terrain and not props: placed once
 	// where the ground would actually hold them, and never simulated.
@@ -4237,6 +4850,12 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 		}
 	}
 
+	// The tool is in front of your face, so it is drawn before the water and
+	// after everything solid -- and only in the main pass, because the second
+	// camera is not the one holding it.
+	if (pass == Pass::Main)
+		DrawHeldAxe(camera);
+
 	// Water last: it is blended, so anything it may sit in front of has to be
 	// in the depth buffer already.
 	if (HasWater() && m_Water)
@@ -4331,6 +4950,75 @@ inline void TerrainLab::DrawShed()
 		{ side, 1.75f, 0.25f }, 0.0f, plank);
 	DrawBox(centre + glm::vec3(0.0f, s_DoorTop + lintel, -h),
 		{ s_DoorHalf, lintel, 0.25f }, 0.0f, plank);
+
+	// **The rack, on the wall you face as you walk in.** Two pegs and, when it
+	// is not in your hands, the axe on them -- so the wall tells you both that
+	// there is a tool and where it goes back.
+	glm::vec3 rack = AxeRack();
+
+	glm::vec3 iron(0.30f, 0.31f, 0.33f);
+	glm::vec3 haft(0.52f, 0.38f, 0.22f);
+
+	DrawBox(rack + glm::vec3(-0.30f, -0.05f, 0.06f), { 0.035f, 0.035f, 0.09f },
+		0.0f, glm::vec3(0.20f, 0.15f, 0.10f));
+	DrawBox(rack + glm::vec3(0.30f, -0.05f, 0.06f), { 0.035f, 0.035f, 0.09f },
+		0.0f, glm::vec3(0.20f, 0.15f, 0.10f));
+
+	if (!m_HasAxe)
+	{
+		DrawBox(rack, { 0.36f, 0.028f, 0.028f }, 0.0f, haft);
+		DrawBox(rack + glm::vec3(0.34f, 0.0f, 0.0f),
+			{ 0.06f, 0.10f, 0.02f }, 0.0f, iron);
+	}
+}
+
+// **The axe in your hands, drawn in the camera's frame.**
+//
+// Not a world object with a transform chased every frame: it is fixed relative
+// to the eye, so the only honest place to put it is the camera's own space and
+// the only matrix needed is the inverse of the view. The stroke is one rotation
+// about the axis across the view, eased so it goes over quickly and comes back
+// slowly -- which is what a swing does and what a linear ramp never looks like.
+inline void TerrainLab::DrawHeldAxe(const Egss::PerspectiveCamera& camera)
+{
+	if (!m_HasAxe)
+		return;
+
+	m_TreeMaterial->Set("u_SunDirection", -SunDirection());
+	m_TreeMaterial->Set("u_SunColor", SunColour());
+	m_TreeMaterial->Set("u_SkyColor", SkyColour());
+	m_TreeMaterial->Set("u_Ambient", 0.75f);
+	m_TreeMaterial->Set("u_Bounce", 0.35f);
+	m_TreeMaterial->Set("u_Through", 0.0f);
+	m_TreeMaterial->Set("u_Compliance", 0.0f);
+	m_TreeMaterial->Set("u_MaxLean", 0.0f);
+	m_TreeMaterial->Set("u_CutDepth", 0.0f);
+	m_TreeMaterial->Set("u_CutPart", 0.0f);
+	m_TreeMaterial->Set("u_AimY", 1.0e9f);
+
+	// The stroke: up and back at the start, down and through at the end.
+	float swing = m_Swing * m_Swing;
+
+	float angle = glm::radians(-20.0f + 115.0f * (1.0f - swing));
+
+	glm::mat4 eye = glm::inverse(camera.GetViewMatrix());
+
+	glm::mat4 hand = glm::translate(eye, glm::vec3(0.38f, -0.34f, -0.75f));
+
+	hand = glm::rotate(hand, angle, glm::vec3(1.0f, 0.0f, 0.0f));
+	hand = glm::rotate(hand, glm::radians(-18.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+
+	m_TreeMaterial->Set("u_Color", glm::vec3(0.52f, 0.38f, 0.22f));
+
+	Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+		glm::scale(glm::translate(hand, glm::vec3(0.0f, 0.20f, 0.0f)),
+			glm::vec3(0.022f, 0.24f, 0.022f)));
+
+	m_TreeMaterial->Set("u_Color", glm::vec3(0.30f, 0.31f, 0.33f));
+
+	Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+		glm::scale(glm::translate(hand, glm::vec3(0.0f, 0.44f, 0.0f)),
+			glm::vec3(0.05f, 0.075f, 0.016f)));
 }
 
 inline void TerrainLab::DrawDoorFrame()
@@ -4553,6 +5241,14 @@ inline void TerrainLab::OnDemoImGui()
 		ImGui::TextDisabled("  E to plant it in front of you, E again nearby");
 		ImGui::TextDisabled("  to pick it up; walk through to reach the shed");
 
+		ImGui::Separator();
+		ImGui::Text("Axe: %s", m_HasAxe ? "in hand" : "on the shed wall");
+		ImGui::TextDisabled("  F at the rack to take it or hang it back;");
+		ImGui::TextDisabled("  left mouse swings, and the line on the trunk");
+		ImGui::TextDisabled("  is where the stroke will land");
+		ImGui::Text("%d strokes, %d trees down", m_Chopped, m_Felled);
+
+		ImGui::Separator();
 		ImGui::Checkbox("See through it", &m_SeeThrough);
 		ImGui::TextDisabled("  a second camera, so the doorway is a window;");
 		ImGui::TextDisabled("  costs one extra pass while a door is up");

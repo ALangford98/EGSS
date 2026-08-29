@@ -1264,6 +1264,75 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-29 (an axe, and a cut where the axe landed)
+
+There is an axe on the wall of the toolshed. `F` at the rack takes it or hangs
+it back; left mouse swings it; a line round the trunk says where the stroke will
+land. **The cut is a place, not an event** -- a tree cut high leaves a tall
+stump and a tree cut low leaves a low one, because what a stroke does is take a
+wedge out of the trunk at the height it hit, and the tree comes down when the
+wedge is through. The same shape of idea as breaking a rock in the open-world
+demo: damage where it landed, rather than a felling animation.
+
+**No mesh is rebuilt and nothing is pre-authored.** The cut is three numbers in
+the tree's own frame -- a height on its axis, the direction the axe is going in,
+how far through it is -- and the fragments inside that wedge are discarded. A
+severed tree is the *same mesh drawn twice*: the stump keeps everything below
+the cut, and the top keeps everything above it and rides a rigid body down.
+
+Checked against the geometry rather than against itself. The camera stood
+1.99 m out and 1.81 m above the base of a trunk of radius 0.1615 m, looking down
+12 degrees; solving the ray against the aim cylinder by hand puts the strike at
+**1.3978721 m** up the trunk, and the stump came out at **1.3978717 m** -- four
+ten-thousandths of a millimetre. Six strokes felled it, against `2r/bite` =
+2 x 0.1615 / 0.055 = 5.87, so six.
+
+Four things went wrong and three of them are about geometry nobody was thinking
+about.
+
+**The aim line ran along the foliage as well as the trunk.** It painted a bright
+band right across a canopy thirty metres off, which looked exactly like the line
+leaking onto other trees. It was not: it was on the right tree, and this habit's
+leaf clusters hang down to **1.015 m** off the ground and out to **six metres**
+sideways, so they really are at chest height. The notch had the same reach and
+was quietly taking a disc out of the leaves at the same time. Both are limited
+to the trunk now.
+
+**A cut trunk is an open tube.** Take a wedge out of one side and the far wall's
+*inside* is what faces you -- with back-face culling on there is nothing there
+and you see through the tree. Cut trees are drawn two-sided, the normal flips on
+back faces, and the exposed face is sapwood rather than bark, which is the whole
+point of having cut into it.
+
+**A box round the canopy left the felled top four metres in the air.** Its
+half-extents have to cover the crown, so a wide top rests on a cube four metres
+across and the tree floats on a collider nothing can see. A felled tree is a
+long cylinder that happens to have twigs on it, and the twigs are not what it
+lies on -- so it is a capsule along the trunk.
+
+**And then it rolled.** Fourteen metres downhill, still doing six metres a
+second ten seconds later. Turning up the angular damping does not fix that, and
+the reason is worth keeping: **viscous damping gives a terminal speed, not a
+stop.** Against gravity on a slope it settles wherever the two balance and stays
+there, and raising it far enough to look stopped makes the tree fall as though
+through treacle.
+
+What stops a real log is rolling resistance, which is **Coulomb, not viscous**:
+the ground deforms under the load, the contact patch sits ahead of the axis, and
+the couple that results is set by the *weight* rather than by the speed --
+`torque = mu_r N R`, with mu_r near a quarter for timber on soil against a
+hundredth for a tyre on tarmac. That is why a log does not roll away and a wheel
+does, and it gives a prediction: a cylinder rolls only where the slope exceeds
+`atan(mu_r)`, about 14 degrees.
+
+Measured: the top now stops **3.17 m** from the stump -- about right for a
+6.6 m trunk toppling -- and is bit-identical at ticks 400, 700 and 1150, on
+ground of slope **0.087** against the 0.25 the model says it would still be
+rolling above.
+
+Cuts are lost when a chunk is remeshed, which digging under a wood does. Honest
+for a lab and not for a game.
+
 ### 2026-08-29 (the doorway's near plane, and boulders drawn inside out)
 
 **Every boulder was mirrored.** The frame each one comes to rest in was built

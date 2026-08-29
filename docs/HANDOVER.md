@@ -343,6 +343,24 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **Viscous damping gives a terminal speed, not a stop.** Twice now something
+  round has been left rolling downhill for ever, and turning up
+  `AngularDamping` does not fix it -- set against gravity on a slope it settles
+  wherever the two balance. What stops a real cylinder is rolling resistance,
+  which is *Coulomb*: `torque = mu_r N R`, set by the weight and not by the
+  speed, with mu_r near 0.25 for timber or rock on soil. `TerrainLab::
+  StepFelled` has it, capped so it can only bring the spin to zero and never
+  reverse it. The prediction to check against is that a cylinder rolls only
+  where the slope exceeds `atan(mu_r)`.
+
+- **A tree's foliage is at chest height, and anything keyed to a height on the
+  tree will find it there.** The lab's habits put leaf clusters down to 1.0 m
+  off the ground and out to 6 m sideways, so the axe's aim line -- a band at a
+  given height in the tree's own frame -- painted itself across a canopy thirty
+  metres away and looked for all the world like a uniform leaking between
+  trees. It was the right tree. Anything indexed by height on a tree wants
+  `length(object.xz) < trunkRadius * k` as well.
+
 - **A basis matrix built from `cross` twice is left-handed as often as not, and
   a left-handed transform draws the mesh inside out.** `mat3(east, up, north)`
   with `east = cross(reference, up)` and `north = cross(up, east)` has
