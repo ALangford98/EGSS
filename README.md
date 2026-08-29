@@ -1264,6 +1264,72 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-29 (the doorway becomes a window, and one map does the walking and the looking)
+
+The panel between the posts was a flat dark board, and a comment said so: what
+made the door work was the plane test, not the picture. It is a picture now --
+the scene rendered from a second camera on the far side, into an off-screen
+target, and sampled by the panel at its own place on the screen.
+
+**Screen-space sampling is what makes the angle right, and it is right for
+free.** Both cameras share a projection, so the fragment of the panel at pixel
+(x, y) wants the pixel at (x, y) of that target -- the same ray, seen from the
+other end of the doorway. There is no quad to project, no matrix to get subtly
+wrong, and walking sideways slides the view the way a view through a window
+slides, because it is one.
+
+**Verified against the shed's own dimensions.** Where the far wall meets the
+floor is 7.75 m behind the doorway and 0 m above its base, so its elevation from
+the eye follows from the room, the eye's offset from the door, the 60 degree
+field of view and the camera's 12 degree downward pitch -- none of which the
+portal code puts together anywhere. Predicted image row against measured, at two
+eye heights:
+
+| eye above the door base | predicted row | measured | error |
+| --- | --- | --- | --- |
+| 2.799 m | 400.47 | 400 | -0.47 px |
+| 1.715 m | 335.81 | 336 | +0.19 px |
+
+Half a pixel on a 720-line frame, at a feature ten metres away through a
+1.1 m opening. The angle is right.
+
+**A doorway is a place and a heading, and a portal is one rigid map between two
+of them.** Turn a point by the difference between the two doors' headings and
+set it down beside the other one. That is written once and used twice -- the
+player's teleport and the second camera are the *same* transform -- so the
+picture in the doorway cannot disagree with where you end up.
+
+Writing it once is also what fixed the complaint that started this: walking out
+of the shed left you facing the door and you walked straight back in. The
+position went through the map and **the view did not**, so you were set down a
+metre in front of the doorway still looking whichever way you had been looking
+inside, which is usually back at it. The heading of a crossing is the direction
+you are travelling, so the way out is the inverse of the way in and you come out
+walking away. Checked: out 1.1 m on the side you went in from, forward dotted
+with the direction back to the door, -1.0.
+
+The heading following the crossing also fixes something that was never noticed:
+the world door is a free-standing frame you can walk round, and a pure rigid map
+sends anyone who approaches it from behind out into four hundred metres of empty
+air on the wrong side of the shed. Both faces land you inside the room now.
+
+`s_DoorTop` is one constant for both openings. They were 2.50 m and 2.45 m, and
+the difference showed as a strip of the shed's lintel hanging above the frame.
+
+**`SetSmooth(true)` on a framebuffer attachment makes it sample black.** It sets
+the minifying filter to `GL_LINEAR_MIPMAP_LINEAR`, an attachment has no mip
+chain, and an incomplete texture reads as black with no error anywhere. The
+doorway came out a solid black board -- which is exactly what it looked like
+*before* any of this was written, so it read as the second camera never having
+run. The framebuffer already gives its colour attachment `GL_LINEAR` both ways.
+
+Cost: **0.24 ms a frame** with a door up (7.85 s against 7.755 s over 400
+frames, two runs each) -- the pass that draws the room draws eight boxes and
+nothing else, because eight boxes is all that is on the far side. Standing
+*inside* the shed the far side is the world, and that pass draws it a second
+time; the checkbox is there for that. `--portal` plants a door on the first
+step, which is the only way a capture can look through one.
+
 ### 2026-08-29 (grass that thins around you, not around the map)
 
 The level-of-detail sliders looked dead. Moving them changed something, but not

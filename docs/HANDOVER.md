@@ -336,6 +336,16 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **`Texture2D::SetSmooth(true)` on a framebuffer attachment makes it sample
+  black.** It sets `GL_TEXTURE_MIN_FILTER` to `GL_LINEAR_MIPMAP_LINEAR`; an
+  attachment has no mip chain; an incomplete texture reads as black, with no GL
+  error and nothing in the log. The portal's doorway came out a solid black
+  board, which is precisely what it looked like before the feature existed --
+  so it read as the second camera never having run, and the search went looking
+  at the render pass rather than at one line of setup. `OpenGLFramebuffer`
+  already sets `GL_LINEAR` both ways on its colour attachments. Do not touch
+  the filters on a borrowed handle.
+
 - **A constant that reaches a shader as a literal will drift, and the symptom
   will not look like the cause.** `TerrainLab`'s biome grid went from 3x3 to
   4x4. `s_Grid` changed; the `9`, the `3` and the `2.0` written into the ground

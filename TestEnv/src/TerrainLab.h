@@ -90,6 +90,13 @@ public:
 				spawn = std::atoi(arguments[i + 1].c_str());
 		}
 
+		// `--portal` plants the doorway on the first step, so a capture can
+		// look through one. It is the only way to: deploying is a key press,
+		// and an unattended run has nobody to press it.
+		for (const std::string& argument : arguments)
+			if (argument == "--portal")
+				m_DeployOnStart = true;
+
 		BuildShaders();
 		Generate();
 
@@ -1241,6 +1248,12 @@ private:
 	static constexpr float s_ShedHalf = 4.0f;     // the room is 8 m square
 	static constexpr float s_DoorHalf = 1.1f;     // half the doorway's width
 
+	// **The two openings are the same size, and they have to be.** The panel
+	// in the world frame is a window onto the shed's own doorway, so if one is
+	// taller than the other the difference shows as a strip of the shed's
+	// lintel hanging in mid-air above the frame. One constant for both.
+	static constexpr float s_DoorTop = 2.45f;
+
 	glm::vec3 ShedCentre() const
 	{
 		return glm::vec3(0.0f, -s_ShedDrop, 0.0f);
@@ -1287,26 +1300,84 @@ private:
 		wall(centre + glm::vec3(0.0f, 2.85f, -h), { s_DoorHalf, 0.4f, 0.25f });
 	}
 
+	// **A doorway is a place and a heading, and a portal is one rigid map
+	// between two of them.**
+	//
+	// Take a point relative to the door you are leaving, turn it by the
+	// difference between the two doors' headings, and set it down beside the
+	// door you are arriving at. That is the whole of it, and writing it once
+	// is the point: the player's teleport and the second camera that draws
+	// what is on the other side are *the same transform*, so the picture in
+	// the doorway cannot disagree with where you end up. A portal where those
+	// two differ reads as a trick rather than as a place.
+	struct Doorway
+	{
+		glm::vec3 At;
+		float Yaw;
+	};
+
+	// The heading is the direction you are *travelling* when you go through,
+	// not some fixed front. That matters, because the world door is a free-
+	// standing frame you can walk round and the shed's door is a hole in a
+	// wall: a pure rigid map from one to the other sends anyone who approaches
+	// the frame from behind out into four hundred metres of empty air on the
+	// wrong side of the shed. Choosing the heading to match the crossing means
+	// you always arrive *inside the room*, whichever face of the frame you
+	// walked at -- and the return trip inverts the same map, so you come back
+	// out walking the way you came in, which is what a door does.
+	static glm::vec3 Facing(float yaw)
+	{
+		return glm::vec3(std::sin(yaw), 0.0f, std::cos(yaw));
+	}
+
+	static glm::mat3 DoorTurn(const Doorway& from, const Doorway& to)
+	{
+		return glm::mat3(glm::rotate(glm::mat4(1.0f), to.Yaw - from.Yaw,
+			glm::vec3(0.0f, 1.0f, 0.0f)));
+	}
+
 	// Which side of a doorway a point is on. The doorway faces +z in its own
 	// frame; `yaw` turns it.
 	static float DoorSide(const glm::vec3& at, const glm::vec3& door, float yaw)
 	{
-		glm::vec3 facing(std::sin(yaw), 0.0f, std::cos(yaw));
-
-		return glm::dot(at - door, facing);
+		return glm::dot(at - door, Facing(yaw));
 	}
 
 	// True if the point is within the doorway's opening, ignoring which side.
 	static bool ThroughOpening(const glm::vec3& at, const glm::vec3& door,
 		float yaw)
 	{
-		glm::vec3 facing(std::sin(yaw), 0.0f, std::cos(yaw));
+		glm::vec3 facing = Facing(yaw);
 		glm::vec3 across(facing.z, 0.0f, -facing.x);
 
 		glm::vec3 offset = at - door;
 
 		return std::abs(glm::dot(offset, across)) < s_DoorHalf
-			&& offset.y > -0.4f && offset.y < 2.6f;
+			&& offset.y > -0.4f && offset.y < s_DoorTop + 0.15f;
+	}
+
+	// The doorway you would leave by, given which side of the world door you
+	// are on: its heading is the way you would be walking if you crossed.
+	Doorway WorldSideDoor(const glm::vec3& at) const
+	{
+		float side = DoorSide(at, m_PortalAt, m_PortalYaw);
+
+		return { m_PortalAt, side < 0.0f ? m_PortalYaw
+			: m_PortalYaw + glm::pi<float>() };
+	}
+
+	// Inside the room there is one way out, so the heading is fixed: the door
+	// is in the -z wall and you leave through it going -z.
+	Doorway ShedSideDoor() const
+	{
+		return { ShedDoor(), glm::pi<float>() };
+	}
+
+	// Where the world door puts you back down, which is the reverse of the
+	// crossing that brought you in.
+	Doorway ReturnDoor() const
+	{
+		return { m_PortalAt, m_EntryYaw + glm::pi<float>() };
 	}
 
 	void TogglePortal()
@@ -1344,6 +1415,37 @@ private:
 		m_PortalSide = DoorSide(body.Position, m_PortalAt, m_PortalYaw);
 	}
 
+	// Put the player through, by the same map the camera looks through. The
+	// step past the plane is along the destination's own heading, so it is
+	// always *onward* rather than a fixed offset that could land behind the
+	// door and re-trigger on the next step.
+	void StepThrough(const Doorway& from, const Doorway& to)
+	{
+		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+
+		glm::mat3 turn = DoorTurn(from, to);
+
+		body.Position = to.At + turn * (body.Position - from.At)
+			+ Facing(to.Yaw) * 1.1f;
+
+		body.Velocity = glm::vec3(0.0f);
+		body.Awake = true;
+
+		// **And the head turns with the body.** Leaving this out is what made
+		// the shed hard to get out of: you were set down a metre in front of
+		// the doorway still looking whichever way you had been looking inside,
+		// which is usually straight back at the door -- so a step forward put
+		// you back in the room, over and over. The view has to go through the
+		// same rotation as the position or the two describe different portals.
+		glm::vec3 forward = turn * m_Camera.GetForward();
+
+		m_Yaw = glm::degrees(std::atan2(forward.z, forward.x));
+
+		m_Camera.SetRotation(m_Yaw, m_Pitch);
+		m_Camera.SetPosition(body.Position
+			+ glm::vec3(0.0f, s_EyeHeight, 0.0f));
+	}
+
 	// Called every fixed step, after the walker has moved.
 	void StepPortal()
 	{
@@ -1366,14 +1468,15 @@ private:
 			if ((m_PortalSide > 0.0f) != (side > 0.0f)
 				&& ThroughOpening(body.Position, m_PortalAt, m_PortalYaw))
 			{
-				// Arrive just inside the shed, past its own door, so you are
-				// not standing in the doorway you would immediately re-cross.
-				body.Position = ShedDoor()
-					+ glm::vec3(0.0f, s_WalkerHalfHeight + s_WalkerRadius + 0.3f,
-						1.2f);
+				// The heading is the way you were going: from behind the
+				// frame that is `m_PortalYaw`, from in front of it the
+				// opposite. Either way it maps to walking into the room.
+				Doorway from{ m_PortalAt, m_PortalSide < 0.0f ? m_PortalYaw
+					: m_PortalYaw + glm::pi<float>() };
 
-				body.Velocity = glm::vec3(0.0f);
-				body.Awake = true;
+				m_EntryYaw = from.Yaw;
+
+				StepThrough(from, { ShedDoor(), 0.0f });
 
 				m_InShed = true;
 				m_ShedSide = DoorSide(body.Position, ShedDoor(), 0.0f);
@@ -1389,14 +1492,7 @@ private:
 		if ((m_ShedSide > 0.0f) != (side > 0.0f)
 			&& ThroughOpening(body.Position, ShedDoor(), 0.0f))
 		{
-			glm::vec3 facing(std::sin(m_PortalYaw), 0.0f, std::cos(m_PortalYaw));
-
-			body.Position = m_PortalAt + facing * 1.6f
-				+ glm::vec3(0.0f, s_WalkerHalfHeight + s_WalkerRadius + 0.3f,
-					0.0f);
-
-			body.Velocity = glm::vec3(0.0f);
-			body.Awake = true;
+			StepThrough(ShedSideDoor(), ReturnDoor());
 
 			m_InShed = false;
 			m_PortalSide = DoorSide(body.Position, m_PortalAt, m_PortalYaw);
@@ -1572,6 +1668,12 @@ private:
 		MoveWalker(step);
 		m_World.Step(step);
 
+		if (m_DeployOnStart)
+		{
+			m_DeployOnStart = false;
+			TogglePortal();
+		}
+
 		StepPortal();
 
 		m_Time += (float)step;
@@ -1579,6 +1681,19 @@ private:
 
 	void OnDemoUpdate(Egss::Timestep ts) override;
 	void OnDemoImGui() override;
+
+	// Which side of the doorway is being drawn. See the note on `DrawScene`.
+	enum class Pass { Main, ToShed, ToWorld };
+
+	void DrawScene(const Egss::PerspectiveCamera& camera, Pass pass);
+	void DrawPortalView();
+	void DrawShed();
+	void DrawDoorFrame();
+
+	// The unit cube, placed and coloured. The doorway, its frame and the whole
+	// shed are boxes, and none of them is worth a mesh of its own.
+	void DrawBox(const glm::vec3& at, const glm::vec3& half, float yaw,
+		const glm::vec3& colour);
 
 	void SetMouseLook(bool on)
 	{
@@ -1721,6 +1836,24 @@ private:
 	float m_PortalYaw = 0.0f;
 	float m_PortalSide = 0.0f;
 	float m_ShedSide = 0.0f;
+
+	// The heading of the crossing that took you in, kept so the way out is the
+	// inverse of the way in rather than a second guess at it.
+	float m_EntryYaw = 0.0f;
+
+	// The second camera. Off is the old flat board, which is worth keeping
+	// because it costs nothing and the portal pass draws the scene twice.
+	bool m_SeeThrough = true;
+
+	// Set by `--portal`; acted on at the first fixed step, because deploying
+	// wants the camera to be pointing somewhere and it is not until then.
+	bool m_DeployOnStart = false;
+
+	std::shared_ptr<Egss::Framebuffer> m_PortalTarget;
+	std::shared_ptr<Egss::Texture2D> m_PortalTexture;
+	std::shared_ptr<Egss::Shader> m_PortalShader;
+	std::shared_ptr<Egss::Material> m_PortalMaterial;
+	glm::vec2 m_PortalSize = glm::vec2(0.0f);
 	float m_LastMouseX = 0.0f;
 	float m_LastMouseY = 0.0f;
 };
@@ -2645,6 +2778,58 @@ inline void TerrainLab::BuildTrees()
 	// honest enough for a buoyancy test.
 	m_Boulder = std::make_shared<Egss::Mesh>(Boulder::Build(4177u), "LabRock");
 
+	// **The doorway's panel: a window, sampled in screen space.**
+	//
+	// Nothing here is projected or unprojected. The portal pass rendered the
+	// far side with this frame's own projection into a target the size of the
+	// framebuffer, so the fragment at pixel (x, y) on the panel wants the
+	// pixel at (x, y) of that target -- the same ray, seen from the other end
+	// of the doorway. `gl_FragCoord` gives the pixel and the division gives
+	// the coordinate, and that is the entire shader.
+	//
+	// Getting the angle right is therefore not something this does; it is
+	// something it cannot fail to do. Walk sideways past the door and the view
+	// slides the way a view through a window slides, because it is one.
+	{
+		std::string portalVertex = R"(
+			#version 330 core
+
+			layout(location = 0) in vec3 a_Position;
+
+			uniform mat4 u_ViewProjection;
+			uniform mat4 u_Transform;
+
+			void main()
+			{
+				gl_Position = u_ViewProjection * u_Transform
+					* vec4(a_Position, 1.0);
+			}
+		)";
+
+		std::string portalFragment = R"(
+			#version 330 core
+
+			layout(location = 0) out vec4 color;
+
+			uniform sampler2D u_View;
+
+			// `Material` has no vec2 setter and this needed no engine change
+			// to work; zw are unused.
+			uniform vec4 u_Resolution;
+
+			void main()
+			{
+				color = vec4(texture(u_View,
+					gl_FragCoord.xy / u_Resolution.xy).rgb, 1.0);
+			}
+		)";
+
+		m_PortalShader.reset(Egss::Shader::Create("LabPortal", portalVertex,
+			portalFragment));
+
+		m_PortalMaterial = Egss::Material::Create(m_PortalShader);
+	}
+
 	// A unit cube, scaled by whatever draws it. The doorway and the shed are
 	// both made of boxes and neither is worth a mesh of its own.
 	{
@@ -2958,14 +3143,38 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	// zero is how you compare two shots of the same scene.
 	m_TimeOfDay = glm::fract(m_TimeOfDay + m_DayLength * (float)ts);
 
+	// **The other side of the doorway, drawn first.**
+	//
+	// A second camera, placed by the same rigid map that moves the player, and
+	// rendered into an off-screen target. The doorway then samples that target
+	// at its own screen position -- which is what makes the angle right for
+	// free: both cameras share a projection, so the pixel behind the doorway
+	// in the portal view *is* the pixel that belongs there.
+	if (m_SeeThrough && (m_PortalOn || m_InShed))
+		DrawPortalView();
+
+	DrawScene(m_Camera, Pass::Main);
+}
+
+// **Everything in the world, from whichever camera is asked for.**
+//
+// Split out of `OnDemoUpdate` so the portal can render the scene a second
+// time from somewhere else. The pass says which side of the doorway is being
+// drawn, and that is the only thing that differs between the three:
+//
+//   Main     -- the world, plus the shed if you are standing in it.
+//   ToShed   -- the room alone, which is all that is on the far side of a
+//               doorway planted in a field. No sky, no ground: there is none
+//               there, and drawing the terrain again to have it fall outside
+//               the frustum would cost the whole scene for nothing.
+//   ToWorld  -- the world without the room, which is what is on the far side
+//               of the shed's own door.
+//
+// The doorway's panel is drawn only in `Main`, which is what stops a portal
+// from recursing into itself.
+inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pass)
+{
 	glm::vec3 skyColour = SkyColour();
-
-	Egss::RenderCommand::SetClearColor(
-		{ skyColour.r, skyColour.g, skyColour.b, 1.0f });
-
-	Egss::RenderCommand::Clear();
-
-	Egss::Renderer::BeginScene(m_Camera);
 
 	// `u_SunDirection` is the direction light *travels*, which is the opposite
 	// of the direction to the sun. Getting that backwards lights the world from
@@ -2974,6 +3183,33 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 
 	glm::vec3 sunColour = SunColour();
 	glm::vec2 windMean = MeanWind();
+
+	// **The room, and nothing else.** A doorway planted in a field has a shed
+	// on the other side of it and no sky, no ground and no weather -- so the
+	// pass that draws what is through it draws six boxes and stops. Rendering
+	// the terrain again to have all of it fall outside the frustum would cost
+	// the whole scene for nothing, and the frustum is the only thing that
+	// would have thrown it away.
+	if (pass == Pass::ToShed)
+	{
+		Egss::RenderCommand::SetClearColor({ 0.015f, 0.014f, 0.02f, 1.0f });
+		Egss::RenderCommand::Clear();
+
+		Egss::Renderer::BeginScene(camera);
+
+		DrawShed();
+
+		Egss::Renderer::EndScene();
+
+		return;
+	}
+
+	Egss::RenderCommand::SetClearColor(
+		{ skyColour.r, skyColour.g, skyColour.b, 1.0f });
+
+	Egss::RenderCommand::Clear();
+
+	Egss::Renderer::BeginScene(camera);
 
 	if (m_ShowSky && m_Sky)
 	{
@@ -2996,7 +3232,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
 
 		Egss::Renderer::Submit(m_SkyMaterial, m_Sky,
-			glm::scale(glm::translate(glm::mat4(1.0f), m_Camera.GetPosition()),
+			glm::scale(glm::translate(glm::mat4(1.0f), camera.GetPosition()),
 				glm::vec3(400.0f)));
 
 		Egss::RenderCommand::SetDepthWrite(true);
@@ -3007,7 +3243,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	m_Material->Set("u_SunColor", sunColour);
 	m_Material->Set("u_SkyColor", skyColour);
 	m_Material->Set("u_Ambient", 0.55f);
-	m_Material->Set("u_Eye", m_Camera.GetPosition());
+	m_Material->Set("u_Eye", camera.GetPosition());
 
 	// Ambient falls with the sun: the ground at night is lit by the sky and
 	// the sky at night is nearly black, so one number does both.
@@ -3046,7 +3282,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	if (m_ShowGrass && !m_Grass.empty())
 	{
 		glm::vec3 wind(windMean.x, 0.0f, windMean.y);
-		glm::vec3 eye = m_Camera.GetPosition();
+		glm::vec3 eye = camera.GetPosition();
 
 		m_GrassMaterial->Set("u_SunDirection", sun);
 		m_GrassMaterial->Set("u_SunColor", sunColour);
@@ -3127,7 +3363,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		// flat and a tree really does not.
 		m_TreeMaterial->Set("u_MaxLean", m_TreeMaxLean);
 
-		glm::vec3 eye = m_Camera.GetPosition();
+		glm::vec3 eye = camera.GetPosition();
 
 		int drawn = 0;
 
@@ -3195,77 +3431,57 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 		}
 	}
 
-	// **The doorway, and the shed if you are in it.** Both are drawn from the
-	// same unit cube through the tree shader with the sway off -- a frame is
-	// three boxes and a room is six, and neither is worth its own mesh or its
-	// own shader while the point is to test that walking through works.
-	if (m_PortalOn || m_InShed)
+	// **The doorway, the room if you are in it, and the picture in the
+	// doorway.**
+	//
+	// The panel between the posts used to be a flat dark board, and it said so
+	// in a comment: what made the door work was the plane test, not the
+	// picture. It is a picture now -- the scene rendered a moment ago from the
+	// far side, sampled at this fragment's own place on the screen.
+	//
+	// **Screen-space sampling is what makes the angle right, and it is right
+	// for free.** The second camera shares this one's projection, so a
+	// fragment of the panel at pixel (x, y) shows what the far camera drew at
+	// pixel (x, y) -- which is exactly the ray that would have gone through
+	// the doorway. There is nothing to line up by hand, no projected quad and
+	// no matrix to get subtly wrong; walk sideways and the view slides the way
+	// a view through a window slides, because it is one.
+	if (pass != Pass::ToWorld && m_InShed)
+		DrawShed();
+
+	if (m_PortalOn)
+		DrawDoorFrame();
+
+	if (pass == Pass::Main)
 	{
-		m_TreeMaterial->Set("u_Compliance", 0.0f);
-		m_TreeMaterial->Set("u_MaxLean", 0.0f);
+		bool through = m_SeeThrough && m_PortalTexture
+			&& (m_InShed || m_PortalOn);
 
-		auto box = [&](const glm::vec3& at, const glm::vec3& half,
-			float yaw, const glm::vec3& colour)
+		glm::vec3 at = m_InShed ? ShedDoor() : m_PortalAt;
+		float yaw = m_InShed ? 0.0f : m_PortalYaw;
+
+		if (m_InShed || m_PortalOn)
 		{
-			m_TreeMaterial->Set("u_Color", colour);
+			if (through)
+			{
+				m_PortalMaterial->SetTexture("u_View", m_PortalTexture);
+				m_PortalMaterial->Set("u_Resolution", glm::vec4(
+					m_PortalSize.x, m_PortalSize.y, 0.0f, 0.0f));
 
-			glm::mat4 transform =
-				glm::scale(
-					glm::rotate(glm::translate(glm::mat4(1.0f), at),
+				glm::mat4 transform = glm::scale(
+					glm::rotate(glm::translate(glm::mat4(1.0f),
+						at + glm::vec3(0.0f, 0.5f * s_DoorTop, 0.0f)),
 						yaw, glm::vec3(0.0f, 1.0f, 0.0f)),
-					half);
+					glm::vec3(s_DoorHalf, 0.5f * s_DoorTop, 0.02f));
 
-			Egss::Renderer::Submit(m_TreeMaterial, m_Cube, transform);
-		};
-
-		glm::vec3 timber(0.36f, 0.24f, 0.14f);
-
-		if (m_PortalOn)
-		{
-			glm::vec3 across(std::cos(m_PortalYaw), 0.0f, -std::sin(m_PortalYaw));
-
-			// Two posts and a lintel, standing on the ground where it was
-			// planted. The dark panel between them is not a rendered portal --
-			// it is a flat quad, and it is honest about that: what makes the
-			// door work is the plane test, not the picture.
-			box(m_PortalAt + across * (s_DoorHalf + 0.12f)
-				+ glm::vec3(0.0f, 1.25f, 0.0f), { 0.12f, 1.25f, 0.12f },
-				m_PortalYaw, timber);
-
-			box(m_PortalAt - across * (s_DoorHalf + 0.12f)
-				+ glm::vec3(0.0f, 1.25f, 0.0f), { 0.12f, 1.25f, 0.12f },
-				m_PortalYaw, timber);
-
-			box(m_PortalAt + glm::vec3(0.0f, 2.62f, 0.0f),
-				{ s_DoorHalf + 0.24f, 0.12f, 0.14f }, m_PortalYaw, timber);
-
-			box(m_PortalAt + glm::vec3(0.0f, 1.25f, 0.0f),
-				{ s_DoorHalf, 1.25f, 0.02f }, m_PortalYaw,
-				glm::vec3(0.03f, 0.03f, 0.05f));
-		}
-
-		if (m_InShed)
-		{
-			glm::vec3 centre = ShedCentre();
-			const float h = s_ShedHalf;
-
-			glm::vec3 plank(0.30f, 0.22f, 0.15f);
-
-			box(centre + glm::vec3(0.0f, -0.25f, 0.0f), { h, 0.25f, h }, 0.0f,
-				glm::vec3(0.24f, 0.18f, 0.12f));
-			box(centre + glm::vec3(0.0f, 3.25f, 0.0f), { h, 0.25f, h }, 0.0f, plank);
-			box(centre + glm::vec3(-h, 1.5f, 0.0f), { 0.25f, 1.75f, h }, 0.0f, plank);
-			box(centre + glm::vec3(h, 1.5f, 0.0f), { 0.25f, 1.75f, h }, 0.0f, plank);
-			box(centre + glm::vec3(0.0f, 1.5f, h), { h, 1.75f, 0.25f }, 0.0f, plank);
-
-			float side = 0.5f * (h - s_DoorHalf);
-
-			box(centre + glm::vec3(-(s_DoorHalf + side), 1.5f, -h),
-				{ side, 1.75f, 0.25f }, 0.0f, plank);
-			box(centre + glm::vec3(s_DoorHalf + side, 1.5f, -h),
-				{ side, 1.75f, 0.25f }, 0.0f, plank);
-			box(centre + glm::vec3(0.0f, 2.85f, -h),
-				{ s_DoorHalf, 0.4f, 0.25f }, 0.0f, plank);
+				Egss::Renderer::Submit(m_PortalMaterial, m_Cube, transform);
+			}
+			else if (!m_InShed)
+			{
+				DrawBox(at + glm::vec3(0.0f, 0.5f * s_DoorTop, 0.0f),
+					{ s_DoorHalf, 0.5f * s_DoorTop, 0.02f }, yaw,
+					glm::vec3(0.03f, 0.03f, 0.05f));
+			}
 		}
 	}
 
@@ -3275,7 +3491,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	{
 		glm::vec2 mean = windMean;
 
-		m_WaterMaterial->Set("u_Eye", m_Camera.GetPosition());
+		m_WaterMaterial->Set("u_Eye", camera.GetPosition());
 		m_WaterMaterial->Set("u_SunDirection", sun);
 		m_WaterMaterial->Set("u_SunColor", sunColour);
 		m_WaterMaterial->Set("u_SkyColor", skyColour);
@@ -3307,6 +3523,175 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	Egss::Renderer::EndScene();
 }
 
+// The unit cube, placed and coloured, through the tree shader with the sway
+// switched off. It is already lit by the same sun and sky, and a second shader
+// that differed only in having no wind term would be a second thing to keep in
+// step.
+inline void TerrainLab::DrawBox(const glm::vec3& at, const glm::vec3& half,
+	float yaw, const glm::vec3& colour)
+{
+	m_TreeMaterial->Set("u_Color", colour);
+
+	glm::mat4 transform = glm::scale(
+		glm::rotate(glm::translate(glm::mat4(1.0f), at),
+			yaw, glm::vec3(0.0f, 1.0f, 0.0f)),
+		half);
+
+	Egss::Renderer::Submit(m_TreeMaterial, m_Cube, transform);
+}
+
+// **The lighting has to be set here as well as in the main pass.** The pass
+// that draws the room returns before the trees are reached, so on the first
+// frame the tree material would carry whatever it was created with -- a black
+// room, which reads as the portal failing rather than as an unset uniform.
+inline void TerrainLab::DrawShed()
+{
+	m_TreeMaterial->Set("u_SunDirection", -SunDirection());
+	m_TreeMaterial->Set("u_SunColor", SunColour());
+	m_TreeMaterial->Set("u_SkyColor", SkyColour());
+	m_TreeMaterial->Set("u_Ambient", 0.55f);
+	m_TreeMaterial->Set("u_Compliance", 0.0f);
+	m_TreeMaterial->Set("u_MaxLean", 0.0f);
+	m_TreeMaterial->Set("u_Time", m_Time);
+
+	glm::vec3 centre = ShedCentre();
+	const float h = s_ShedHalf;
+
+	glm::vec3 plank(0.30f, 0.22f, 0.15f);
+
+	DrawBox(centre + glm::vec3(0.0f, -0.25f, 0.0f), { h, 0.25f, h }, 0.0f,
+		glm::vec3(0.24f, 0.18f, 0.12f));
+	DrawBox(centre + glm::vec3(0.0f, 3.25f, 0.0f), { h, 0.25f, h }, 0.0f, plank);
+	DrawBox(centre + glm::vec3(-h, 1.5f, 0.0f), { 0.25f, 1.75f, h }, 0.0f, plank);
+	DrawBox(centre + glm::vec3(h, 1.5f, 0.0f), { 0.25f, 1.75f, h }, 0.0f, plank);
+	DrawBox(centre + glm::vec3(0.0f, 1.5f, h), { h, 1.75f, 0.25f }, 0.0f, plank);
+
+	// The wall with the door in it: two posts and a lintel, and the lintel
+	// sits at `s_DoorTop` so the opening matches the panel in the field.
+	float side = 0.5f * (h - s_DoorHalf);
+	float lintel = 0.5f * (3.0f - s_DoorTop);
+
+	DrawBox(centre + glm::vec3(-(s_DoorHalf + side), 1.5f, -h),
+		{ side, 1.75f, 0.25f }, 0.0f, plank);
+	DrawBox(centre + glm::vec3(s_DoorHalf + side, 1.5f, -h),
+		{ side, 1.75f, 0.25f }, 0.0f, plank);
+	DrawBox(centre + glm::vec3(0.0f, s_DoorTop + lintel, -h),
+		{ s_DoorHalf, lintel, 0.25f }, 0.0f, plank);
+}
+
+inline void TerrainLab::DrawDoorFrame()
+{
+	m_TreeMaterial->Set("u_SunDirection", -SunDirection());
+	m_TreeMaterial->Set("u_SunColor", SunColour());
+	m_TreeMaterial->Set("u_SkyColor", SkyColour());
+	m_TreeMaterial->Set("u_Ambient", 0.55f);
+	m_TreeMaterial->Set("u_Compliance", 0.0f);
+	m_TreeMaterial->Set("u_MaxLean", 0.0f);
+	m_TreeMaterial->Set("u_Time", m_Time);
+
+	glm::vec3 across(std::cos(m_PortalYaw), 0.0f, -std::sin(m_PortalYaw));
+	glm::vec3 timber(0.36f, 0.24f, 0.14f);
+
+	float post = 0.5f * s_DoorTop;
+
+	DrawBox(m_PortalAt + across * (s_DoorHalf + 0.12f)
+		+ glm::vec3(0.0f, post, 0.0f), { 0.12f, post, 0.12f },
+		m_PortalYaw, timber);
+
+	DrawBox(m_PortalAt - across * (s_DoorHalf + 0.12f)
+		+ glm::vec3(0.0f, post, 0.0f), { 0.12f, post, 0.12f },
+		m_PortalYaw, timber);
+
+	DrawBox(m_PortalAt + glm::vec3(0.0f, s_DoorTop + 0.12f, 0.0f),
+		{ s_DoorHalf + 0.24f, 0.12f, 0.14f }, m_PortalYaw, timber);
+}
+
+// **The far side, rendered from a second camera placed by the same map that
+// moves the player.**
+//
+// One pass, not two: only one doorway is ever in front of you, so standing in
+// the field this draws the room and standing in the room it draws the field.
+inline void TerrainLab::DrawPortalView()
+{
+	Egss::Window& window = Egss::Application::Get().GetWindow();
+
+	unsigned int width = glm::max(window.GetWidth(), 1u);
+	unsigned int height = glm::max(window.GetHeight(), 1u);
+
+	// **Window-sized, not pane-sized, and rendered into the same sub-rect.**
+	// The panel samples this at `gl_FragCoord.xy / resolution`, and
+	// `gl_FragCoord` is measured from the corner of the *framebuffer*. Match
+	// the framebuffer and the viewport to the main pass and the two agree
+	// exactly, with no origin to carry about.
+	if (!m_PortalTarget || (unsigned int)m_PortalSize.x != width
+		|| (unsigned int)m_PortalSize.y != height)
+	{
+		Egss::FramebufferSpecification spec;
+		spec.Width = width;
+		spec.Height = height;
+		spec.Attachments = { Egss::FramebufferTextureFormat::RGBA8,
+			Egss::FramebufferTextureFormat::DEPTH24STENCIL8 };
+
+		m_PortalTarget.reset(Egss::Framebuffer::Create(spec));
+
+		// The wrapper does not own the handle, and the handle changes with
+		// the framebuffer -- so it is rebuilt here and nowhere else.
+		m_PortalTexture.reset(Egss::Texture2D::CreateFromHandle(
+			m_PortalTarget->GetColorAttachmentRendererID(), width, height));
+
+		// **Do not call `SetSmooth` on this.** It sets the minifying filter to
+		// `GL_LINEAR_MIPMAP_LINEAR`, and a framebuffer attachment has no mip
+		// chain -- which makes the texture *incomplete*, and an incomplete
+		// texture samples black with no error anywhere. The doorway came out a
+		// solid black board, which is exactly what it looked like before any
+		// of this was written, so it read as the second camera never having
+		// run. The framebuffer already gives its colour attachment
+		// GL_LINEAR both ways; there was nothing to improve.
+
+		m_PortalSize = glm::vec2((float)width, (float)height);
+	}
+
+	Doorway from = m_InShed ? ShedSideDoor()
+		: WorldSideDoor(m_Camera.GetPosition());
+
+	Doorway to = m_InShed ? ReturnDoor() : Doorway{ ShedDoor(), 0.0f };
+
+	Pass pass = m_InShed ? Pass::ToWorld : Pass::ToShed;
+
+	glm::mat3 turn = DoorTurn(from, to);
+
+	// Copied, so it keeps the field of view, the aspect and the clip planes
+	// the main camera is using this frame -- which is what the screen-space
+	// sampling depends on.
+	Egss::PerspectiveCamera other = m_Camera;
+
+	other.SetPosition(to.At + turn * (m_Camera.GetPosition() - from.At));
+	other.SetOrientation(turn * m_Camera.GetForward(),
+		glm::vec3(0.0f, 1.0f, 0.0f));
+
+	m_PortalTarget->Bind();
+
+	// `Bind` sets the viewport to the whole target; the demo owns only the
+	// editor's central pane, and the two passes must cover the same pixels.
+	if (g_Viewport.Valid())
+		Egss::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
+			(unsigned int)g_Viewport.Y, (unsigned int)g_Viewport.Width,
+			(unsigned int)g_Viewport.Height);
+
+	DrawScene(other, pass);
+
+	m_PortalTarget->Unbind();
+
+	// `Unbind` restores the default target and not the viewport, so this has
+	// to go back by hand or the main pass draws into the whole window.
+	if (g_Viewport.Valid())
+		Egss::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
+			(unsigned int)g_Viewport.Y, (unsigned int)g_Viewport.Width,
+			(unsigned int)g_Viewport.Height);
+	else
+		Egss::RenderCommand::SetViewport(0, 0, width, height);
+}
+
 inline void TerrainLab::OnDemoImGui()
 {
 	ImGui::Begin("Terrain lab");
@@ -3331,6 +3716,10 @@ inline void TerrainLab::OnDemoImGui()
 			m_InShed ? " (you are in the shed)" : "");
 		ImGui::TextDisabled("  E to plant it in front of you, E again nearby");
 		ImGui::TextDisabled("  to pick it up; walk through to reach the shed");
+
+		ImGui::Checkbox("See through it", &m_SeeThrough);
+		ImGui::TextDisabled("  a second camera, so the doorway is a window;");
+		ImGui::TextDisabled("  costs one extra pass while a door is up");
 	}
 
 	// --- The biome grid -----------------------------------------------------
