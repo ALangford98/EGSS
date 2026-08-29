@@ -546,17 +546,23 @@ def sanitize_sweep(config, jobs, steps, mode="address", allow_fetch=True,
         # sweep has classified as somebody else's. That is not a crash.
         expected_exit = (0, 66) if mode == "thread" else (0,)
 
+        # The exit code is only worth reporting when it is not the one this
+        # mode expects -- TSan exits 66 whenever it reported anything at all,
+        # ours or somebody else's, so printing it every line trains the eye to
+        # ignore the one time it means something.
+        #
+        # **This has to be computed before it is read.** It was assigned at the
+        # bottom of the loop and read at the top, so the sweep raised
+        # UnboundLocalError on its first demo and never ran a second -- and the
+        # traceback goes to stdout with an exit code of zero, so it looked from
+        # outside like a sweep that had passed quietly.
+        unexpected_exit = result.returncode not in expected_exit
+
         if unique or unexpected_exit:
             findings += len(unique)
             status = "\033[31mFAIL\033[0m"
         else:
             status = "\033[32m ok \033[0m"
-
-        # The exit code is only worth printing when it is not the one this mode
-        # expects -- TSan exits 66 whenever it reported anything at all, our
-        # findings or somebody else's, so printing it every line trains the eye
-        # to ignore the one time it means something.
-        unexpected_exit = result.returncode not in expected_exit
 
         print(f"  [{status}] {name}"
               + (f"  ({noise} third-party)" if noise else "")

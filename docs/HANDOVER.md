@@ -317,6 +317,13 @@ came from a measured failure rather than a guess:
 - **`--hide-ui`** drops the panels, which print milliseconds and so differ
   every run however deterministic the simulation is.
 
+**The terrain lab takes three flags of its own**, because everything
+interesting about it is behind a key press and an unattended run has nobody to
+press one. `--time 0.5` puts the sun overhead; `--spawn N` stands the camera at
+the centre of biome cell N, which is what makes "does this look the same from
+the corner as from the middle" a question a capture can ask; `--portal` plants
+the doorway on the first step so a capture can look through one.
+
 **If a test needs input, record it.** `--record <file>` writes a replay while
 you play; `--play <file>` reproduces it exactly, and the file names its own
 scene. Input is sampled per fixed step, so the frame rate it was recorded at
@@ -335,6 +342,26 @@ look caught immediately.
 ---
 
 ## Traps that have bitten more than once
+
+- **`0.5 + 0.5 * n.y` is not an ambient term, it is half of one.** It is the
+  share of the *sky* a surface can see, and it is zero for anything facing
+  down -- so a canopy from beneath, a lintel's underside, the roof of a hole
+  you dug, all come out pure black with no error anywhere. It stayed hidden in
+  `TerrainLab` for as long as every tree was small enough to look down on, and
+  the moment a large size class arrived you could stand under one and half the
+  screen went black. The missing term is the ground, which returns roughly its
+  albedo -- about a fifth for grass and soil. `mix(0.22, 1.0, 0.5 + 0.5*n.y)`.
+  Leaves want a transmission term on top of that; a leaf is thin and a wood in
+  summer is green twilight, not a dark room.
+
+- **A sphere on a slope never stops, and no amount of friction changes that.**
+  The lab's loose stones were spheres and were still travelling at three to ten
+  metres a second five seconds after they landed, wandering off across the
+  block. Rolling resistance is not in the solver and adding linear damping to
+  fake it slows them in the air too. The fix is the shape: angular rock is a
+  box, a box tumbles and settles on a face, and that is also why a real scree
+  slope stays where it is. `Rocks.h` guarantees the boulder mesh fits inside the
+  unit box, so the mesh and a box collider agree exactly.
 
 - **`Texture2D::SetSmooth(true)` on a framebuffer attachment makes it sample
   black.** It sets `GL_TEXTURE_MIN_FILTER` to `GL_LINEAR_MIPMAP_LINEAR`; an
