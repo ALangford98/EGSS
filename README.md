@@ -1264,6 +1264,71 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-29 (buoyancy that has a shape, and planks that capsize when they should)
+
+There are five 2x4s floating in the lake and twelve concrete blocks on the
+shore. `G` puts one where you are looking. The point of them is the thing the
+old buoyancy could not do.
+
+**Archimedes gives the force; it does not give the moment.** A force applied
+through the centre of mass has no moment about the centre of mass, whatever the
+shape is doing, so the old model could get the *draft* of anything right and the
+*attitude* of nothing. What produces the moment is that the displaced volume is
+not centred on the body: heel a plank and more of one side goes under, the
+centre of buoyancy shifts that way, and the upward force through the new
+centroid is a couple. That is metacentric stability, and it is a property of the
+*shape* of the submerged part rather than of its size.
+
+So the submerged volume is sampled -- a 4x4x4 lattice through each body, each
+cell carrying its share of the volume, asking how much of *itself* is under the
+surface and pushing up there. The share is a smooth fraction rather than
+in-or-out; a 38 mm plank three cells thick would otherwise float in visible
+steps.
+
+**Real timber, because the numbers are the point.** A 2x4 is 38 x 89 mm; at
+2.4 m that is 8.117 litres, so pine at 500 kg/m^3 makes it 4.058 kg with 4.058 kg
+of reserve. Each block is a 70 mm cube of concrete at 2400, which is 823 g.
+
+Everything below follows from those sizes and appears nowhere in the code, which
+is the whole reason it is worth measuring. `GM = KB + BM - KG`, with
+`BM = I/displacement` and `I = L w^3 / 12` the second moment of the waterplane:
+
+| blocks | GM predicted | draft predicted | draft measured | roll | still aboard |
+| --- | --- | --- | --- | --- | --- |
+| 0 | +25.2 mm | 0.000 mm | 0.074 mm | -0.01 deg | -- |
+| 1 | +12.2 mm | 3.854 mm | **3.852 mm** | -0.18 deg | 1 |
+| 2 | +3.5 mm | 7.708 mm | 7.969 mm | +2.20 deg | 2 |
+| 3 | **-2.6 mm** | -- | capsized | -- | **0** |
+| 4 | **-6.8 mm** | -- | capsized | -- | **0** |
+| 5 | sinks: 8.174 kg against 8.117 kg of displacement | -- | -- | -- | 0 |
+
+**The sign change in GM falls exactly where the plank stops keeping its load.**
+Nothing in the demo computes a metacentric height; it has densities and a
+lattice, and the stability is whatever comes out of the two. One block is right
+to three microns. Two is 0.26 mm out and sitting over at 2.2 degrees, which is
+what a GM of three and a half millimetres looks like -- marginal, and heeled.
+
+And where the load goes matters as much as how much it is. One block a metre off
+centre trims the plank by a measured **0.475 degrees** against
+`m g d / (rho g I)` = **0.460**, with the draft unchanged, as it must be, because
+moving a load does not change what it displaces.
+
+**Four substeps, because a 2x4 is 38 mm thick.** A discrete solver moves a body
+`v dt` between collision tests, and a block settling at a metre and a half a
+second covers 25 mm in a sixtieth -- comparable with the plank it is meant to
+land on. The blocks went straight through: four sat correctly for a moment and
+were three metres below two seconds later. There is no continuous collision here
+and no speculative contact, so the honest fix is a shorter step, and buoyancy is
+applied inside the loop because a force belongs to the step it acts over.
+
+That is not what was making three blocks fall off, though -- **three blocks
+genuinely capsize the plank**, and the substepping is what let the difference
+between the two failures be seen at all.
+
+Cost: 8.79 s against 8.43 s over 400 frames, which is 0.9 ms a frame for four
+times the physics and a 64-sample lattice on every floating body. Captures are
+still bit-reproducible.
+
 ### 2026-08-29 (an axe, and a cut where the axe landed)
 
 There is an axe on the wall of the toolshed. `F` at the rack takes it or hangs

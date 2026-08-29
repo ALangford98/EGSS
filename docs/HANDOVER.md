@@ -343,6 +343,24 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **Buoyancy applied at the centre of mass can never tip anything**, and it
+  looks completely right until something has to. A force through the centre of
+  mass has no moment about it, so the model gets every draft right and every
+  attitude wrong -- and there is no symptom at all until a load goes on one end
+  of something. The fix is to sample the submerged volume rather than compute
+  it: a lattice through the body, each cell pushing up at its own position, so
+  the centre of buoyancy moves as the body heels. `TerrainLab::ApplyBuoyancy`.
+  The check worth keeping is `GM = KB + BM - KG` with `BM = I/displacement`:
+  its sign change predicted exactly which loadings the plank kept and which it
+  threw off.
+
+- **A 38 mm plank is thinner than a body moves in one step.** At 1.5 m/s a
+  sixtieth of a second is 25 mm, so anything landing on thin geometry tunnels
+  through it -- there is no continuous collision and no speculative contact in
+  `PhysicsWorld3D`. Substepping the world (four slices in `TerrainLab`) is the
+  fix, and forces that belong to the step -- buoyancy, rolling resistance --
+  have to be applied inside the loop rather than once outside it.
+
 - **Viscous damping gives a terminal speed, not a stop.** Twice now something
   round has been left rolling downhill for ever, and turning up
   `AngularDamping` does not fix it -- set against gravity on a slope it settles
