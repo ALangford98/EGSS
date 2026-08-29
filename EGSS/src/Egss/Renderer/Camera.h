@@ -22,6 +22,26 @@ namespace Egss {
 		const glm::mat4& GetViewMatrix() const { return m_ViewMatrix; }
 		// Cached so the shader upload is one matrix rather than two.
 		const glm::mat4& GetViewProjectionMatrix() const { return m_ViewProjectionMatrix; }
+
+		// **An arbitrary projection, for the cases the lens parameters cannot
+		// describe.**
+		//
+		// Everything a `PerspectiveCamera` builds from a field of view has its
+		// near plane square to the view direction, and there is one job that
+		// needs it *not* to be: rendering through a portal, where the near
+		// plane has to lie in the plane of the doorway so that whatever is
+		// between the far camera and the doorway is never drawn. That is an
+		// oblique frustum, and no combination of fov, aspect and clip
+		// distances produces one.
+		//
+		// Whatever set the projection from a lens is free to overwrite this --
+		// `SetAspectRatio` will -- so set it last.
+		void SetProjectionMatrix(const glm::mat4& projection)
+		{
+			m_ProjectionMatrix = projection;
+
+			RecalculateViewProjection();
+		}
 	protected:
 		// Subclasses call this after changing either half.
 		void RecalculateViewProjection()

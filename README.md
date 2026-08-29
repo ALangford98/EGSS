@@ -1264,6 +1264,60 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-29 (the doorway's near plane, and boulders drawn inside out)
+
+**Every boulder was mirrored.** The frame each one comes to rest in was built
+as `mat3(east, up, north)` with `north = cross(up, east)`, which is
+*left*-handed -- so the transform had determinant -1, every triangle's winding
+was reversed, and back-face culling showed you the inside of the rock. Measured
+-1.0000 at every spin angle. The third column has to be `cross(X, Y)`.
+
+From a distance a rock is a rock either way, which is why this survived a
+capture and a set of numbers; up close you are standing inside it looking at the
+far wall. The check that settles it is that **back-face culling should make no
+difference at all**: with the winding corrected the frame is byte-identical to
+one rendered with culling disabled, and with the old winding 4066 pixels differ.
+
+`Grass.h` builds `east` and `north` the same way and is fine -- it only uses
+them as offset directions. Handedness starts mattering the moment they become
+the columns of a transform.
+
+**And the portal drew things that were between the second camera and the
+doorway.** Plant it in front of a boulder, walk through, look back from inside
+the shed, and the boulder is in the doorway blocking a view it cannot possibly
+be in. The second camera was an ordinary camera standing a couple of metres
+behind the door, so it drew everything an ordinary camera there would.
+
+This is a known problem with a known answer, and the answer is not to sort or to
+cull: **move the near plane off the axis so it lies exactly in the plane of the
+doorway**, and let the hardware clip against it as against any near plane. The
+projection matrix that does it is Eric Lengyel's oblique frustum, from *Oblique
+View Frustum Depth Projection and Clipping* (Journal of Game Development 1(2),
+2005) -- the standard construction, and what every portal renderer since Portal
+has used.
+
+The trick is that a projection matrix's third row *is* its near plane up to a
+scale, because a vertex survives clipping when `z_clip > -w_clip` and both come
+out of rows two and three. Replace row two with the plane you want, scaled so
+the opposite corner of the frustum still lands at w, and you have a frustum with
+that plane as its near plane and the four sides and the far plane untouched. The
+cost is that depth precision now varies across the frame, which is the accepted
+price and has not been visible here.
+
+With a boulder planted between the far camera and the doorway: **21811 pixels of
+it visible before, 0 after.**
+
+`Camera::SetProjectionMatrix` is the one engine change -- no combination of
+field of view, aspect and clip distances can describe an oblique frustum, so
+there had to be a way to hand one over. Set it last; setting the lens overwrites
+it.
+
+**`./egss.py sanitize` had not run since some earlier edit**: `unexpected_exit`
+was assigned at the bottom of the sweep's loop and read at the top, so the first
+demo raised `UnboundLocalError`, and the traceback goes to stdout with an exit
+code of zero -- so from outside it looked like a sweep that passed quietly. It
+runs now: **17 demos, 0 sanitizer reports.**
+
 ### 2026-08-29 (a big tree is not a small tree made bigger)
 
 Every tree was one mesh per habit with a uniform scale on it, which says a

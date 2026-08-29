@@ -1523,10 +1523,24 @@ private:
 				glm::vec3 east = glm::normalize(glm::cross(reference, up));
 				glm::vec3 north = glm::cross(up, east);
 
-				stone.Lie = glm::mat3(
-					east * std::cos(spin) + north * std::sin(spin),
-					up,
-					north * std::cos(spin) - east * std::sin(spin));
+				glm::vec3 across = east * std::cos(spin) + north * std::sin(spin);
+
+				// **The third column is `cross(X, Y)` and it has to be.**
+				//
+				// This was `north * cos - east * sin`, which is the same
+				// direction *negated* -- so the basis was left-handed, the
+				// matrix had determinant -1, and every boulder was drawn
+				// inside out. Back-face culling then showed the inside of the
+				// mesh: from a distance a rock is a rock either way, and close
+				// up you are standing inside it looking at the far wall.
+				//
+				// Measured -1.0000 at every spin angle, +1.0000 with this.
+				//
+				// `Grass.h` builds `east`/`north` the same way and is fine,
+				// because it only ever uses them as offset directions. The
+				// handedness matters the moment they become the columns of a
+				// transform.
+				stone.Lie = glm::mat3(across, up, glm::cross(across, up));
 
 				// **Bedded, not balanced.** A stone that has been there any
 				// time at all is part buried -- frost heave and washed-in
@@ -4348,6 +4362,79 @@ inline void TerrainLab::DrawDoorFrame()
 		{ s_DoorHalf + 0.24f, 0.12f, 0.14f }, m_PortalYaw, timber);
 }
 
+// **The near plane has to be the doorway, and there is a known way to make it
+// one.**
+//
+// Without this the second camera is an ordinary camera standing in the world a
+// couple of metres behind the door, so it draws everything an ordinary camera
+// there would -- including whatever happens to be *between* it and the doorway.
+// Plant the portal in front of a boulder and the boulder appears in the
+// doorway, blocking a view it could not possibly be in.
+//
+// The fix is not to sort or to cull. It is to move the near plane off the axis
+// so that it lies exactly in the plane of the doorway, and let the hardware
+// clip against it as it clips against any near plane. The projection matrix
+// that does this is **Eric Lengyel's oblique frustum**, from *Oblique View
+// Frustum Depth Projection and Clipping* (Journal of Game Development 1(2),
+// 2005) -- the standard answer, and the one every portal renderer since Portal
+// has used.
+//
+// The trick is that a projection matrix's third row *is* the near plane, up to
+// a scale: a vertex survives clipping when `z_clip > -w_clip`, and both come
+// from rows 2 and 3. So replacing row 2 with the wanted plane, scaled so the
+// far corner of the frustum still lands at w, gives a frustum with that plane
+// as its near plane and everything else -- the four sides and the far plane --
+// left alone. `Q` below is that opposite corner, found by asking which corner
+// of the unit clip cube is furthest from the plane.
+//
+// The cost is depth precision: the near plane is no longer at a constant
+// distance, so the depth buffer's resolution varies across the frame. It has
+// not been visible here, and it is the accepted price.
+//
+// The plane is given in world space as a point and a normal, with the normal
+// pointing into the half you want to keep.
+inline glm::mat4 ObliqueNearPlane(const glm::mat4& projection,
+	const glm::mat4& view, const glm::vec3& at, const glm::vec3& normal)
+{
+	// A plane transforms by the inverse transpose, not by the matrix.
+	glm::vec4 world(normal, -glm::dot(normal, at));
+
+	glm::vec4 plane = glm::transpose(glm::inverse(view)) * world;
+
+	float length = glm::length(glm::vec3(plane));
+
+	if (length < 1e-6f)
+		return projection;
+
+	plane /= length;
+
+	// Behind the camera, or so close to it that the maths is meaningless. An
+	// oblique plane through the eye is a degenerate frustum.
+	if (plane.w > -1e-3f)
+		return projection;
+
+	auto sign = [](float v) { return v < 0.0f ? -1.0f : (v > 0.0f ? 1.0f : 0.0f); };
+
+	// The clip-space corner furthest from the plane. `projection` is GLM's
+	// column-major, so `p[column][row]`.
+	glm::vec4 corner(
+		(sign(plane.x) + projection[2][0]) / projection[0][0],
+		(sign(plane.y) + projection[2][1]) / projection[1][1],
+		-1.0f,
+		(1.0f + projection[2][2]) / projection[3][2]);
+
+	glm::vec4 scaled = plane * (2.0f / glm::dot(plane, corner));
+
+	glm::mat4 oblique = projection;
+
+	oblique[0][2] = scaled.x;
+	oblique[1][2] = scaled.y;
+	oblique[2][2] = scaled.z + 1.0f;
+	oblique[3][2] = scaled.w;
+
+	return oblique;
+}
+
 // **The far side, rendered from a second camera placed by the same map that
 // moves the player.**
 //
@@ -4410,6 +4497,13 @@ inline void TerrainLab::DrawPortalView()
 	other.SetPosition(to.At + turn * (m_Camera.GetPosition() - from.At));
 	other.SetOrientation(turn * m_Camera.GetForward(),
 		glm::vec3(0.0f, 1.0f, 0.0f));
+
+	// **Last, because setting the lens would overwrite it.** The kept half is
+	// the far side of the destination doorway, which is where its heading
+	// points -- and the heading is chosen so the camera is always on the other
+	// one, so the plane is always in front of the camera.
+	other.SetProjectionMatrix(ObliqueNearPlane(other.GetProjectionMatrix(),
+		other.GetViewMatrix(), to.At, Facing(to.Yaw)));
 
 	m_PortalTarget->Bind();
 

@@ -343,6 +343,28 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **A basis matrix built from `cross` twice is left-handed as often as not, and
+  a left-handed transform draws the mesh inside out.** `mat3(east, up, north)`
+  with `east = cross(reference, up)` and `north = cross(up, east)` has
+  determinant **-1**: the winding of every triangle is reversed, back-face
+  culling keeps the far surface, and from any distance the object still looks
+  broadly right. The third column must be `cross(column0, column1)`. The test
+  that settles it in one run: **back-face culling should change nothing** --
+  render once with `CullFace::Back` and once with `CullFace::None` and compare
+  the files, because every visible face being a front face is exactly what
+  correct winding means. Byte-identical when right; 4066 pixels apart when not.
+
+- **A portal's second camera needs its near plane in the plane of the doorway,
+  or it draws what is between it and the door.** Nothing else fixes it -- not
+  sorting, not culling, not a shorter near clip. The construction is Eric
+  Lengyel's oblique frustum (*Oblique View Frustum Depth Projection and
+  Clipping*, Journal of Game Development 1(2), 2005): replace the projection's
+  third row with the wanted plane, scaled by the frustum corner furthest from
+  it. `TerrainLab::ObliqueNearPlane` has it with the derivation. The
+  alternative, a `gl_ClipDistance[0]` user clip plane, needs every vertex
+  shader in the pass to write it; the oblique projection needs none of them to
+  change.
+
 - **`0.5 + 0.5 * n.y` is not an ambient term, it is half of one.** It is the
   share of the *sky* a surface can see, and it is zero for anything facing
   down -- so a canopy from beneath, a lintel's underside, the roof of a hole
