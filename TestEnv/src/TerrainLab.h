@@ -816,6 +816,9 @@ private:
 		float Scale;
 		float Yaw;
 		int Shape;
+		int Size;
+		glm::vec3 Leaf;
+		glm::vec3 Bark;
 	};
 
 	// **Trees are scattered over the chunk's own triangles, exactly as the
@@ -841,6 +844,158 @@ private:
 	// the comment that used to sit here asserted a cause this file now
 	// disproves, and it is worth leaving the disproof where the next person
 	// will look for it.
+	// The six habits, in one place, because the tree meshes and anything that
+	// wants to check them both need the same table.
+	static void TreeShapes(Veg::TreeParams* shapes)
+	{
+		// 0: spire. Narrow, steep branching, long leader -- a conifer.
+		shapes[0].Depth = 5;
+		shapes[0].Children = 3;
+		shapes[0].Length = 3.4f;
+		shapes[0].Radius = 0.15f;
+		shapes[0].Spread = 22.0f;
+		shapes[0].LengthRatio = 0.80f;
+		shapes[0].RadiusRatio = 0.58f;
+		shapes[0].LeafRadius = 0.42f;
+
+		// 1: vase. Few children, wide angle, short leader -- an open-grown oak.
+		shapes[1].Depth = 4;
+		shapes[1].Children = 3;
+		shapes[1].Length = 2.4f;
+		shapes[1].Radius = 0.26f;
+		shapes[1].Spread = 52.0f;
+		shapes[1].LengthRatio = 0.72f;
+		shapes[1].RadiusRatio = 0.66f;
+		shapes[1].LeafRadius = 0.80f;
+
+		// 2: mop. Many short children off a stout trunk.
+		shapes[2].Depth = 4;
+		shapes[2].Children = 5;
+		shapes[2].Length = 1.9f;
+		shapes[2].Radius = 0.22f;
+		shapes[2].Spread = 44.0f;
+		shapes[2].LengthRatio = 0.64f;
+		shapes[2].LeafRadius = 0.62f;
+
+		// 3: sapling. Small, sparse, and the thing that makes a wood look grown
+		// rather than planted -- a stand of one size reads as an orchard.
+		shapes[3].Depth = 3;
+		shapes[3].Children = 3;
+		shapes[3].Length = 1.6f;
+		shapes[3].Radius = 0.09f;
+		shapes[3].Spread = 34.0f;
+		shapes[3].LengthRatio = 0.70f;
+		shapes[3].LeafRadius = 0.40f;
+
+		// 4: parasol. A bare trunk carrying a flat wide crown, which is what an
+		// isolated tree on open ground grows into.
+		shapes[4].Depth = 4;
+		shapes[4].Children = 4;
+		shapes[4].Length = 2.9f;
+		shapes[4].Radius = 0.20f;
+		shapes[4].Spread = 68.0f;
+		shapes[4].LengthRatio = 0.58f;
+		shapes[4].LeafRadius = 0.72f;
+
+		// 5: scrub. Low, many-stemmed, barely a tree -- the thing that belongs at
+		// the dry edge of a wood where the others give out.
+		shapes[5].Depth = 3;
+		shapes[5].Children = 5;
+		shapes[5].Length = 1.2f;
+		shapes[5].Radius = 0.08f;
+		shapes[5].Spread = 62.0f;
+		shapes[5].LengthRatio = 0.66f;
+		shapes[5].LeafRadius = 0.45f;
+	}
+
+	// **Where each habit belongs.** Not a classification of real forests --
+	// two numbers cannot carry one -- but the same two numbers the rest of the
+	// demo runs on, used to say something rather than nothing.
+	float HabitWeight(int habit, const glm::vec2& climate) const
+	{
+		float wet = climate.x;
+		float warm = climate.y;
+
+		// Mild: neither cold nor hot. A ridge rather than a ramp, because
+		// broadleaves give out at both ends and a ramp only knows one.
+		float mild = glm::smoothstep(0.20f, 0.45f, warm)
+			* glm::smoothstep(0.95f, 0.60f, warm);
+
+		switch (habit)
+		{
+			// Spire: a conifer, and conifers win where the season is short.
+			case 0: return 0.15f + 1.5f * glm::smoothstep(0.55f, 0.15f, warm);
+
+			// Vase: an open-grown broadleaf, wanting mild and wet.
+			case 1: return 1.4f * mild * glm::smoothstep(0.55f, 0.85f, wet);
+
+			// Mop: the same country, denser canopy.
+			case 2: return 1.1f * mild * glm::smoothstep(0.60f, 0.90f, wet);
+
+			// Sapling: everywhere, in small numbers. A wood with no young
+			// trees in it is a plantation.
+			case 3: return 0.35f;
+
+			// Parasol: a flat wide crown over a bare trunk, which is what an
+			// isolated tree on warm open ground grows into.
+			case 4: return 1.2f * glm::smoothstep(0.50f, 0.85f, warm)
+				* glm::smoothstep(0.85f, 0.45f, wet);
+
+			// Scrub: the dry edge, where the others give out.
+			case 5: return 1.6f * glm::smoothstep(0.80f, 0.45f, wet);
+		}
+
+		return 0.0f;
+	}
+
+	// **Leaves are not one green.**
+	//
+	// The differences are real and they follow the climate. A leaf in a hot
+	// dry place is small, thick, waxy and pale -- that is sclerophylly, and
+	// the wax is there to keep water in, which is also why it looks grey-green
+	// rather than green. A conifer needle is dark, nearly blue-green, because
+	// a leaf that has to work in a short cool season packs in chlorophyll and
+	// keeps it all winter. A broadleaf in mild wet country is the yellow-green
+	// everyone means by "green" because it can afford a thin cheap leaf and
+	// throw it away each autumn.
+	glm::vec3 LeafColour(const glm::vec2& climate, float jitter) const
+	{
+		glm::vec3 broadleaf(0.19f, 0.38f, 0.12f);
+		glm::vec3 needle(0.11f, 0.24f, 0.17f);
+		glm::vec3 sclerophyll(0.36f, 0.38f, 0.21f);
+
+		float cold = glm::smoothstep(0.50f, 0.15f, climate.y);
+
+		float arid = glm::smoothstep(0.60f, 0.22f, climate.x)
+			* glm::smoothstep(0.35f, 0.70f, climate.y);
+
+		glm::vec3 colour = glm::mix(broadleaf, needle, cold);
+
+		colour = glm::mix(colour, sclerophyll, arid);
+
+		// Crown to crown, so a wood is not one flat colour. Hue as well as
+		// value, for the same reason the grass gets both.
+		colour *= 0.84f + 0.32f * jitter;
+
+		// Rotating the channels is a hue shift with no maths in it. GLM's
+		// swizzles are off in this build, so it is written out.
+		glm::vec3 shifted(colour.g, colour.b, colour.r);
+
+		return glm::mix(colour, shifted, 0.10f * jitter);
+	}
+
+	// Bark goes the other way: pale and smooth where it is dry and bright,
+	// dark and wet-looking under a closed canopy.
+	glm::vec3 BarkColour(const glm::vec2& climate, float jitter) const
+	{
+		glm::vec3 dark(0.22f, 0.16f, 0.11f);
+		glm::vec3 pale(0.46f, 0.40f, 0.31f);
+
+		float open = glm::smoothstep(0.75f, 0.30f, climate.x);
+
+		return glm::mix(dark, pale, open) * (0.86f + 0.28f * jitter);
+	}
+
 	void BuildChunkTrees(size_t key, const glm::ivec3& chunk,
 		const Egss::MeshData& data)
 	{
@@ -922,20 +1077,75 @@ private:
 				Tree tree;
 				tree.At = a + (b - a) * (su * (1.0f - v)) + (c - a) * (su * v);
 				tree.Yaw = Veg::Hash2DUnit((int)t, i * 4 + 3, seed) * 6.2831853f;
-				tree.Scale = 0.65f + Veg::Hash2DUnit((int)t, i * 4 + 4, seed) * 0.8f;
-				// Chosen from the shapes that are switched on, so the panel
-				// can isolate one habit and look at a wood made only of it.
-				int wanted = (int)(Veg::Hash2DUnit((int)t, i * 4 + 5, seed)
-					* (float)m_ShapesOn) % glm::max(m_ShapesOn, 1);
+
+				// Only a jitter now. The size classes carry the range, and
+				// they carry it with the trunk thickened to match -- which a
+				// uniform scale cannot do. See `BuildTrees`.
+				tree.Scale = 0.88f
+					+ Veg::Hash2DUnit((int)t, i * 4 + 4, seed) * 0.24f;
+
+				// **Which habit grows here is a question about the climate.**
+				//
+				// A wood of six architectures mixed evenly is a botanical
+				// garden. Weighting them by where they belong -- conifers
+				// where it is cold, broadleaves where it is mild and wet,
+				// a flat-crowned tree on warm open ground, scrub at the dry
+				// edge -- is what makes the change from one biome to the next
+				// read as a different *country* rather than as a colour
+				// change. The panel's checkboxes still hold: a habit switched
+				// off has no weight anywhere, so a wood of one habit is still
+				// one checkbox away.
+				float total = 0.0f;
+				float weight[s_TreeShapes];
+
+				for (int k = 0; k < s_TreeShapes; k++)
+				{
+					weight[k] = m_ShapeOn[k] ? HabitWeight(k, climate) : 0.0f;
+					total += weight[k];
+				}
 
 				tree.Shape = 0;
 
-				for (int k = 0, seen = 0; k < s_TreeShapes; k++)
-					if (m_ShapeOn[k] && seen++ == wanted)
+				if (total > 1e-5f)
+				{
+					float pick = Veg::Hash2DUnit((int)t, i * 4 + 5, seed) * total;
+
+					for (int k = 0; k < s_TreeShapes; k++)
 					{
-						tree.Shape = k;
+						pick -= weight[k];
+
+						if (pick <= 0.0f)
+						{
+							tree.Shape = k;
+							break;
+						}
+					}
+				}
+				else
+				{
+					continue;
+				}
+
+				float lot = Veg::Hash2DUnit((int)t, i * 4 + 6, seed);
+
+				tree.Size = 0;
+
+				for (int k = 0; k < s_TreeSizes; k++)
+				{
+					lot -= s_TreeShare[k];
+
+					if (lot <= 0.0f)
+					{
+						tree.Size = k;
 						break;
 					}
+				}
+
+				tree.Leaf = LeafColour(climate,
+					Veg::Hash2DUnit((int)t, i * 4 + 7, seed));
+
+				tree.Bark = BarkColour(climate,
+					Veg::Hash2DUnit((int)t, i * 4 + 8, seed));
 
 				trees.push_back(tree);
 			}
@@ -1554,7 +1764,7 @@ private:
 			// only rocks here that move.
 			float angle = Veg::Hash2DUnit(i, 1, seed) * 6.2831853f;
 			float reach = std::sqrt(Veg::Hash2DUnit(i, 2, seed))
-				* glm::max(m_Shape.BasinSize * 0.8f, 6.0f);
+				* glm::max(m_Shape.BasinSize * 0.55f, 6.0f);
 
 			glm::vec3 at(std::cos(angle) * reach, 0.0f,
 				std::sin(angle) * reach);
@@ -1569,7 +1779,18 @@ private:
 			// at 2650 and do not.
 			loose.Floats = Veg::Hash2DUnit(i, 4, seed) < 0.34f;
 			loose.Size = 0.5f + Veg::Hash2DUnit(i, 5, seed) * 0.9f;
-			loose.Shape = loose.Floats ? 1 : 0;
+
+			// **Both are boxes, and the stone used to be a sphere.**
+			//
+			// A sphere on a slope rolls, and having started it never stops:
+			// these were still travelling at three to ten metres a second five
+			// seconds in, wandering off across the block, which is the whole
+			// of the complaint that rocks "roll around". A box tumbles a
+			// little and settles on a face, which is what angular rock does
+			// and why a scree slope stays where it is. The mesh drawn for a
+			// stone is the boulder, whose radius never exceeds one -- so it
+			// sits exactly inscribed in the box that collides for it.
+			loose.Shape = 1;
 
 			float density = loose.Floats ? 500.0f : 2650.0f;
 
@@ -2138,8 +2359,23 @@ private:
 
 	static constexpr int s_TreeShapes = 6;
 
-	std::shared_ptr<Egss::Mesh> m_TreeBark[s_TreeShapes];
-	std::shared_ptr<Egss::Mesh> m_TreeLeaves[s_TreeShapes];
+	// **Three size classes per habit, because a big tree is not a small tree
+	// made bigger.** See `BuildTrees` for the allometry; the short version is
+	// that a trunk has to thicken faster than the tree grows tall or the tree
+	// buckles under its own weight, so the same habit at three sizes needs
+	// three meshes and cannot be one mesh scaled.
+	static constexpr int s_TreeSizes = 3;
+
+	static constexpr float s_TreeScale[s_TreeSizes] = { 0.5f, 1.0f, 1.8f };
+
+	// Small trees outnumber large ones in any stand that has been left alone:
+	// a great many seedlings, fewer poles, a handful of standards. Not the
+	// -3/2 self-thinning law, which needs a stand history this does not have,
+	// but the same shape.
+	static constexpr float s_TreeShare[s_TreeSizes] = { 0.46f, 0.36f, 0.18f };
+
+	std::shared_ptr<Egss::Mesh> m_TreeBark[s_TreeShapes][s_TreeSizes];
+	std::shared_ptr<Egss::Mesh> m_TreeLeaves[s_TreeShapes][s_TreeSizes];
 
 	std::shared_ptr<Egss::Shader> m_TreeShader;
 	std::shared_ptr<Egss::Material> m_TreeMaterial;
@@ -2470,7 +2706,12 @@ inline void TerrainLab::BuildShaders()
 				smoothstep(0.45, 0.80, level));
 
 			float diffuse = max(dot(normal, -u_SunDirection), 0.0);
-			float dome = 0.5 + 0.5 * normal.y;
+
+			// The same ground bounce the trees get: `0.5 + 0.5 * n.y` alone
+			// makes anything facing down pure black, which is invisible on a
+			// heightfield and very visible the moment you dig a roof over
+			// yourself.
+			float dome = mix(0.22, 1.0, 0.5 + 0.5 * normal.y);
 
 			vec3 lit = base * (u_SkyColor * dome * u_Ambient
 				+ u_SunColor * diffuse);
@@ -2965,6 +3206,7 @@ inline void TerrainLab::BuildSky()
 inline void TerrainLab::BuildTrees()
 {
 	Veg::TreeParams shapes[s_TreeShapes];
+	TreeShapes(shapes);
 
 	// **Six habits, not six seeds.** Three seeds of the same parameters give
 	// three trees that are recognisably the same tree; what makes a wood look
@@ -2975,75 +3217,73 @@ inline void TerrainLab::BuildTrees()
 	//
 	// They are laid out here as a set to choose from rather than tuned to one
 	// answer, because which of them reads best is a question for looking at
-	// them, and the panel can turn each on and off for exactly that.
+	// them, and the panel can turn each on and off for exactly that. The table
+	// itself is `TreeShapes`, so anything that wants to check the trees reads
+	// the same one the meshes are built from.
 
-	// 0: spire. Narrow, steep branching, long leader -- a conifer.
-	shapes[0].Depth = 5;
-	shapes[0].Children = 3;
-	shapes[0].Length = 3.4f;
-	shapes[0].Radius = 0.15f;
-	shapes[0].Spread = 22.0f;
-	shapes[0].LengthRatio = 0.80f;
-	shapes[0].RadiusRatio = 0.58f;
-	shapes[0].LeafRadius = 0.42f;
-
-	// 1: vase. Few children, wide angle, short leader -- an open-grown oak.
-	shapes[1].Depth = 4;
-	shapes[1].Children = 3;
-	shapes[1].Length = 2.4f;
-	shapes[1].Radius = 0.26f;
-	shapes[1].Spread = 52.0f;
-	shapes[1].LengthRatio = 0.72f;
-	shapes[1].RadiusRatio = 0.66f;
-	shapes[1].LeafRadius = 0.80f;
-
-	// 2: mop. Many short children off a stout trunk.
-	shapes[2].Depth = 4;
-	shapes[2].Children = 5;
-	shapes[2].Length = 1.9f;
-	shapes[2].Radius = 0.22f;
-	shapes[2].Spread = 44.0f;
-	shapes[2].LengthRatio = 0.64f;
-	shapes[2].LeafRadius = 0.62f;
-
-	// 3: sapling. Small, sparse, and the thing that makes a wood look grown
-	// rather than planted -- a stand of one size reads as an orchard.
-	shapes[3].Depth = 3;
-	shapes[3].Children = 3;
-	shapes[3].Length = 1.6f;
-	shapes[3].Radius = 0.09f;
-	shapes[3].Spread = 34.0f;
-	shapes[3].LengthRatio = 0.70f;
-	shapes[3].LeafRadius = 0.40f;
-
-	// 4: parasol. A bare trunk carrying a flat wide crown, which is what an
-	// isolated tree on open ground grows into.
-	shapes[4].Depth = 4;
-	shapes[4].Children = 4;
-	shapes[4].Length = 2.9f;
-	shapes[4].Radius = 0.20f;
-	shapes[4].Spread = 68.0f;
-	shapes[4].LengthRatio = 0.58f;
-	shapes[4].LeafRadius = 0.72f;
-
-	// 5: scrub. Low, many-stemmed, barely a tree -- the thing that belongs at
-	// the dry edge of a wood where the others give out.
-	shapes[5].Depth = 3;
-	shapes[5].Children = 5;
-	shapes[5].Length = 1.2f;
-	shapes[5].Radius = 0.08f;
-	shapes[5].Spread = 62.0f;
-	shapes[5].LengthRatio = 0.66f;
-	shapes[5].LeafRadius = 0.45f;
+	// **A big tree is not a small tree made bigger, and the reason is
+	// buckling.**
+	//
+	// A column of height H and radius r standing under its own weight buckles
+	// at Greenhill's limit,
+	//
+	//     H_crit = (7.8373 E I / (rho g A))^(1/3) = (7.8373 E r^2 / (4 rho g))^(1/3)
+	//
+	// so the safe height goes as r^(2/3), and a trunk that keeps up with a
+	// tree getting taller has to thicken as **H^(3/2)**. That is elastic
+	// similarity, and it is why a sapling is a wand and an oak is a barrel:
+	// double the height and the trunk is nearly three times as thick. Scaling
+	// one mesh uniformly says the opposite -- that a forty-metre tree is a
+	// four-metre tree seen closer -- and it is the reason the big ones here
+	// looked like models.
+	//
+	// The constant comes out of the same formula. McMahon measured that trees
+	// stand at about a quarter of their buckling height, so with green wood at
+	// E = 10 GPa and rho = 800 kg/m^3,
+	//
+	//     r = H^(3/2) sqrt(256 rho g / (7.8373 E)) = 0.00506 H^(3/2)
+	//
+	// which puts a 6 m tree on a 15 cm trunk. The old parameters gave that
+	// same tree a **52 cm** trunk, seven times the section it needs, which is
+	// most of why they read as stubby.
+	//
+	// It is set from `Length` rather than from the finished height on purpose:
+	// how tall a habit ends up for a given first segment depends on its whole
+	// branching architecture, so leaving that out means the check afterwards
+	// is measuring something the code did not assume.
+	const float slenderness = 0.00506f;
 
 	for (int i = 0; i < s_TreeShapes; i++)
+	for (int j = 0; j < s_TreeSizes; j++)
 	{
+		Veg::TreeParams params = shapes[i];
+
+		float scale = s_TreeScale[j];
+
+		params.Length *= scale;
+		params.LeafRadius *= scale;
+
+		// The first segment is about a third of the finished height across
+		// these habits, so the height this is aiming at is a few times the
+		// length. The factor is folded into `slenderness` having been fitted
+		// once; what matters is the exponent.
+		params.Radius = slenderness
+			* std::pow(params.Length * 3.0f, 1.5f);
+
+		// A larger tree carries more orders of branching, which is not a
+		// scaling law but is true of every tree anyone has counted.
+		if (j == 2 && params.Depth < 5)
+			params.Depth += 1;
+		else if (j == 0 && params.Depth > 3)
+			params.Depth -= 1;
+
 		Egss::MeshData bark, leaves;
 
-		Veg::MakeTreeMesh(1471u + (unsigned int)i * 97u, shapes[i], bark, leaves);
+		Veg::MakeTreeMesh(1471u + (unsigned int)(i * s_TreeSizes + j) * 97u,
+			params, bark, leaves);
 
-		m_TreeBark[i] = std::make_shared<Egss::Mesh>(bark, "LabBark");
-		m_TreeLeaves[i] = std::make_shared<Egss::Mesh>(leaves, "LabLeaves");
+		m_TreeBark[i][j] = std::make_shared<Egss::Mesh>(bark, "LabBark");
+		m_TreeLeaves[i][j] = std::make_shared<Egss::Mesh>(leaves, "LabLeaves");
 	}
 
 	// The tree shader is the grass shader's argument one size up: the same
@@ -3167,12 +3407,39 @@ inline void TerrainLab::BuildTrees()
 		uniform float u_Ambient;
 		uniform vec3 u_Color;
 
+		// **Nothing in the world is lit only from above.**
+		//
+		// `0.5 + 0.5 * n.y` is the share of the sky a surface can see, and it
+		// is zero for anything facing down -- so the underside of a canopy, of
+		// a lintel, of a boulder, came out pure black. That was invisible
+		// while every tree was small enough to look down on, and the moment
+		// the big size class arrived you could stand under one and the whole
+		// screen went black.
+		//
+		// The missing term is the ground. A surface facing down sees the
+		// ground, and the ground is not black -- it returns whatever its
+		// albedo is, about a fifth for grass and soil. So the ambient is a
+		// bright hemisphere above and a dimmer one below rather than a
+		// hemisphere and a void.
+		uniform float u_Bounce;
+
+		// And a leaf is thin. It **transmits** -- a canopy lit from above
+		// glows from underneath, which is why a wood in summer is green
+		// twilight rather than a dark room. One extra term, the diffuse
+		// computed against the *back* of the surface, scaled by how much gets
+		// through. Zero for a boulder, which does not.
+		uniform float u_Through;
+
 		void main()
 		{
 			vec3 normal = normalize(v_Normal);
 
-			float diffuse = max(dot(normal, -u_SunDirection), 0.0);
-			float dome = 0.5 + 0.5 * normal.y;
+			float front = max(dot(normal, -u_SunDirection), 0.0);
+			float back = max(dot(-normal, -u_SunDirection), 0.0);
+
+			float diffuse = front + u_Through * back;
+
+			float dome = mix(u_Bounce, 1.0, 0.5 + 0.5 * normal.y);
 
 			vec3 lit = u_Color * (u_SkyColor * dome * u_Ambient
 				+ u_SunColor * diffuse);
@@ -3770,6 +4037,11 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 		m_TreeMaterial->Set("u_SunColor", sunColour);
 		m_TreeMaterial->Set("u_SkyColor", skyColour);
 		m_TreeMaterial->Set("u_Ambient", 0.55f);
+
+		// The albedo of grass and soil, near enough. Everything drawn through
+		// this shader gets it; only leaves get the transmission below.
+		m_TreeMaterial->Set("u_Bounce", 0.22f);
+		m_TreeMaterial->Set("u_Through", 0.0f);
 		m_TreeMaterial->Set("u_Wind", glm::vec3(mean.x, 0.0f, mean.y));
 		m_TreeMaterial->Set("u_Time", m_Time);
 		m_TreeMaterial->Set("u_Seed", (float)(m_Shape.Seed % 997u));
@@ -3803,17 +4075,24 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 			// A trunk barely moves and a canopy moves a good deal, for the
 			// r^4 reason set out in the solar demo's trees: compliance goes as
 			// 1/(E I) and I as the fourth power of the section radius.
-			m_TreeMaterial->Set("u_Color", glm::vec3(0.29f, 0.21f, 0.14f));
+			m_TreeMaterial->Set("u_Color", tree.Bark);
 			m_TreeMaterial->Set("u_Compliance", 1.1e-5f);
+			m_TreeMaterial->Set("u_Through", 0.0f);
 
 			Egss::Renderer::Submit(m_TreeMaterial,
-				m_TreeBark[tree.Shape], transform);
+				m_TreeBark[tree.Shape][tree.Size], transform);
 
-			m_TreeMaterial->Set("u_Color", glm::vec3(0.17f, 0.33f, 0.13f));
+			m_TreeMaterial->Set("u_Color", tree.Leaf);
 			m_TreeMaterial->Set("u_Compliance", 20.0f * 1.1e-5f);
 
+			// A leaf passes a good deal of what falls on it; a trunk passes
+			// none. Measured leaf transmittance is nearer a tenth, but a leaf
+			// cluster here stands in for a few hundred leaves and light that
+			// has been through two of them is still light.
+			m_TreeMaterial->Set("u_Through", 0.30f);
+
 			Egss::Renderer::Submit(m_TreeMaterial,
-				m_TreeLeaves[tree.Shape], transform);
+				m_TreeLeaves[tree.Shape][tree.Size], transform);
 
 			drawn++;
 		}
@@ -3827,6 +4106,9 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 	{
 		m_TreeMaterial->Set("u_Compliance", 0.0f);
 		m_TreeMaterial->Set("u_MaxLean", 0.0f);
+
+		// The trees left this at a leaf's value and a rock does not transmit.
+		m_TreeMaterial->Set("u_Through", 0.0f);
 
 		glm::vec3 eye = camera.GetPosition();
 
@@ -3863,6 +4145,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 	{
 		m_TreeMaterial->Set("u_Compliance", 0.0f);
 		m_TreeMaterial->Set("u_MaxLean", 0.0f);
+		m_TreeMaterial->Set("u_Through", 0.0f);
 
 		for (const Loose& loose : m_Loose)
 		{
@@ -3872,12 +4155,17 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 				? glm::vec3(0.42f, 0.30f, 0.18f)
 				: glm::vec3(0.40f, 0.39f, 0.37f));
 
+			// A beam for the driftwood, a rock for the rock. Both are box
+			// colliders; the boulder mesh fits inside the box exactly.
+			const std::shared_ptr<Egss::Mesh>& mesh = loose.Floats
+				? m_Cube : m_Boulder;
+
 			glm::mat4 transform =
 				glm::translate(glm::mat4(1.0f), body.Position)
 				* glm::mat4_cast(body.Orientation)
 				* glm::scale(glm::mat4(1.0f), glm::vec3(loose.Size));
 
-			Egss::Renderer::Submit(m_TreeMaterial, m_Boulder, transform);
+			Egss::Renderer::Submit(m_TreeMaterial, mesh, transform);
 		}
 	}
 
@@ -4000,6 +4288,8 @@ inline void TerrainLab::DrawShed()
 	m_TreeMaterial->Set("u_SunColor", SunColour());
 	m_TreeMaterial->Set("u_SkyColor", SkyColour());
 	m_TreeMaterial->Set("u_Ambient", 0.55f);
+	m_TreeMaterial->Set("u_Bounce", 0.22f);
+	m_TreeMaterial->Set("u_Through", 0.0f);
 	m_TreeMaterial->Set("u_Compliance", 0.0f);
 	m_TreeMaterial->Set("u_MaxLean", 0.0f);
 	m_TreeMaterial->Set("u_Time", m_Time);
@@ -4035,6 +4325,8 @@ inline void TerrainLab::DrawDoorFrame()
 	m_TreeMaterial->Set("u_SunColor", SunColour());
 	m_TreeMaterial->Set("u_SkyColor", SkyColour());
 	m_TreeMaterial->Set("u_Ambient", 0.55f);
+	m_TreeMaterial->Set("u_Bounce", 0.22f);
+	m_TreeMaterial->Set("u_Through", 0.0f);
 	m_TreeMaterial->Set("u_Compliance", 0.0f);
 	m_TreeMaterial->Set("u_MaxLean", 0.0f);
 	m_TreeMaterial->Set("u_Time", m_Time);

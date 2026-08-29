@@ -1264,6 +1264,86 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-29 (a big tree is not a small tree made bigger)
+
+Every tree was one mesh per habit with a uniform scale on it, which says a
+forty-metre tree is a four-metre tree seen from closer. It is not, and the
+reason is buckling.
+
+A column of height H and radius r standing under its own weight goes at
+Greenhill's limit,
+
+    H_crit = (7.8373 E I / (rho g A))^(1/3) = (7.8373 E r^2 / (4 rho g))^(1/3)
+
+so the safe height grows only as r^(2/3), and a trunk keeping up with a tree
+getting taller must thicken as **H^(3/2)**. That is elastic similarity, and it is
+why a sapling is a wand and an oak is a barrel: double the height and the trunk
+is nearly three times as thick.
+
+So there are **three size classes per habit**, each its own mesh with its own
+trunk, and the per-instance scale is only a twelve per cent jitter. Small trees
+outnumber large ones, the way a stand left alone has a great many seedlings, a
+few poles and a handful of standards.
+
+**Verified against Greenhill, which appears nowhere in the generator.** The
+radius is set from the habit's `Length`; the height is then whatever the
+branching happens to produce, and is read off the finished mesh's bounds. McMahon
+measured that real trees stand at about a quarter of their buckling height:
+
+| habit | small | middling | large | tallest |
+| --- | --- | --- | --- | --- |
+| spire | 0.269 | 0.301 | 0.299 | 22.0 m on a 80 cm trunk |
+| vase | 0.192 | 0.216 | 0.231 | 12.0 m on a 47 cm trunk |
+| mop | 0.180 | 0.189 | 0.201 | 8.2 m on a 33 cm trunk |
+| sapling | 0.201 | 0.203 | 0.219 | 7.6 m on a 26 cm trunk |
+| parasol | 0.148 | 0.153 | 0.157 | 9.8 m on a 63 cm trunk |
+| scrub | 0.177 | 0.165 | 0.189 | 4.9 m on a 17 cm trunk |
+
+Two things fall out of that table. Every habit is **flat across its three
+sizes** -- which is the whole content of the 3/2 exponent, since H/H_crit goes as
+H/r^(2/3) and is constant only if the exponent is right. And all six sit in the
+band real trees occupy, 0.15 to 0.30, with the conifer at the top and the
+flat-crowned parasol stoutest, which is the order they come in outdoors.
+
+The old parameters gave a 6 m tree a **52 cm** trunk. It wants 15 cm. Seven times
+the section it needs is most of why they read as stubby.
+
+**Which habit grows where is now a question about the climate**: conifers where
+it is cold, broadleaves where it is mild and wet, a flat wide crown on warm open
+ground, scrub at the dry edge, saplings everywhere in small numbers because a
+wood with no young trees in it is a plantation. A wood of six architectures mixed
+evenly is a botanical garden. The panel's checkboxes still hold -- a habit
+switched off has no weight anywhere.
+
+**And leaves are not one green.** A leaf in a hot dry place is small, thick, waxy
+and pale, which is sclerophylly and reads grey-olive. A conifer needle is nearly
+blue-green, because a leaf that must work in a short cool season packs in
+chlorophyll and keeps it all winter. A broadleaf in mild wet country is the
+yellow-green everyone means by "green". Bark goes the other way: dark under a
+closed canopy, pale in the open.
+
+**Nothing in the world is lit only from above, and the big trees are what made
+that obvious.** `0.5 + 0.5 * n.y` is the share of the sky a surface can see and
+it is zero for anything facing down, so the underside of a canopy came out pure
+black -- invisible while every tree was small enough to look down on, and half
+the screen the moment you could stand under one. The missing term is the ground,
+which returns about a fifth of what falls on it. And a leaf is thin: it
+transmits, which is why a wood in summer is green twilight and not a dark room.
+One extra diffuse term against the back of the surface, at 0.30 for leaves and
+zero for bark and rock. The terrain gets the ground bounce too, so a roof you dig
+over yourself is dim rather than black.
+
+**The loose stones were spheres, and a sphere on a slope never stops.** They were
+still travelling at three to ten metres a second five seconds in. They are boxes
+now -- a box tumbles and settles on a face, which is what angular rock does and
+why a scree slope stays where it is. All six are at rest by fifteen seconds
+(under 1.5e-9 m/s). The driftwood is unchanged and still floats at 0.480 of its
+depth against a predicted 0.500.
+
+Cost of the boulders and the bigger trees together: 8.43 s against 7.755 s over
+400 frames, which is 1.7 ms a frame for 309 bedded boulders and three size
+classes of tree.
+
 ### 2026-08-29 (boulders that are a statement about the ground they are on)
 
 The rocks were grey spheres dropped from the sky at uniformly random points and
