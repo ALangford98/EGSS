@@ -48,6 +48,25 @@ namespace Egss {
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
 		glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+		// **Four samples, because this engine draws a great deal of geometry
+		// that is thinner than a pixel.**
+		//
+		// A blade of grass is six millimetres across and a tree's twigs are
+		// finer, so past a couple of metres their coverage of a pixel is a
+		// coin-flip: either the sample point is inside the triangle or it is
+		// not, and there is no partial answer. That is the grainy sparkle over
+		// a grass field and the crawling on a distant branch, and no amount of
+		// smoothing the shading removes it -- it is the *sampling* that is too
+		// coarse.
+		//
+		// Multisampling is the direct fix: four coverage samples a pixel
+		// instead of one, resolved at the end. It costs memory bandwidth on
+		// the colour buffer and nothing in the shaders, since the fragment
+		// still runs once per pixel. Four rather than eight because the return
+		// falls off sharply -- four already turns a binary edge into five
+		// levels -- and because this has to run on integrated graphics.
+		glfwWindowHint(GLFW_SAMPLES, 4);
 #ifdef EGSS_DEBUG
 		// Required for glDebugMessageCallback to receive anything.
 		glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);

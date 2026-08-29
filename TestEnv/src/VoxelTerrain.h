@@ -91,7 +91,9 @@ private:
 		m_Field->Create({ s_SideX, s_SideY, s_SideZ }, s_Voxel,
 			{ -0.5f * (s_SideX - 1) * s_Voxel, 0.0f, -0.5f * (s_SideZ - 1) * s_Voxel });
 
-		m_Field->Fill([this](const glm::vec3& p) { return Density(p); });
+		// The double is for planet-sized fields (see `PositionOfFixed`);
+		// this one is 256 m across and loses nothing by dropping it.
+		m_Field->Fill([this](const glm::dvec3& p) { return Density(glm::vec3(p)); });
 		m_Field->MarkAllDirty();
 
 		BuildWorld();

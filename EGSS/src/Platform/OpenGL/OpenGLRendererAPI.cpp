@@ -37,6 +37,22 @@ namespace Egss {
 		// copy of it here that could drift from the first.
 		ResetState();
 
+		// **The window hint asks for the samples; this decides they are used.**
+		// Both halves are needed and neither reports the other missing: a
+		// context created with four samples and multisampling disabled draws
+		// exactly as it did before, silently. Reported below so the log says
+		// which of the two failed if a driver refuses the hint.
+		glEnable(GL_MULTISAMPLE);
+
+		GLint samples = 0;
+		glGetIntegerv(GL_SAMPLES, &samples);
+
+		if (samples > 1)
+			EGSS_CORE_INFO("GL: multisampling on, {0} samples a pixel", samples);
+		else
+			EGSS_CORE_WARN("GL: no multisampling -- the driver gave {0} samples",
+				samples);
+
 		// GL_MAX_TEXTURE_IMAGE_UNITS, not GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS.
 		// The combined figure sums every stage, so on a driver reporting 16 per
 		// stage it comes back as 80 -- and a fragment shader declaring 80

@@ -21,6 +21,7 @@
 #include <Egss.h>
 
 #include "DemoRegistry.h"
+#include "EditorShell.h"
 #include "DemoSelector.h"
 #include "DemoWarmup.h"
 #include "ProfilerPanel.h"
@@ -35,6 +36,14 @@ public:
 		// hands over *to* is already the active one when the demos are walked.
 		// Pushed unconditionally; without --warmup it does nothing at all.
 		PushLayer(new DemoWarmup());
+
+		// **Before the demos, because ImGui runs in layer order.** The shell
+		// publishes the dock a demo's panel should open into, and a demo that
+		// opened its window first would already have been placed by the time
+		// the shell said where -- and `FirstUseEver` only fires once. It
+		// handles no events, so sitting at the bottom of the stack costs
+		// nothing.
+		PushLayer(new EditorShell());
 
 		// Every demo in DemoRegistry.h, pushed and numbered. Adding one needs
 		// no change here.

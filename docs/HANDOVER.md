@@ -317,6 +317,13 @@ came from a measured failure rather than a guess:
 - **`--hide-ui`** drops the panels, which print milliseconds and so differ
   every run however deterministic the simulation is.
 
+**The terrain lab takes three flags of its own**, because everything
+interesting about it is behind a key press and an unattended run has nobody to
+press one. `--time 0.5` puts the sun overhead; `--spawn N` stands the camera at
+the centre of biome cell N, which is what makes "does this look the same from
+the corner as from the middle" a question a capture can ask; `--portal` plants
+the doorway on the first step so a capture can look through one.
+
 **If a test needs input, record it.** `--record <file>` writes a replay while
 you play; `--play <file>` reproduces it exactly, and the file names its own
 scene. Input is sampled per fixed step, so the frame rate it was recorded at
@@ -335,6 +342,58 @@ look caught immediately.
 ---
 
 ## Traps that have bitten more than once
+
+- **`0.5 + 0.5 * n.y` is not an ambient term, it is half of one.** It is the
+  share of the *sky* a surface can see, and it is zero for anything facing
+  down -- so a canopy from beneath, a lintel's underside, the roof of a hole
+  you dug, all come out pure black with no error anywhere. It stayed hidden in
+  `TerrainLab` for as long as every tree was small enough to look down on, and
+  the moment a large size class arrived you could stand under one and half the
+  screen went black. The missing term is the ground, which returns roughly its
+  albedo -- about a fifth for grass and soil. `mix(0.22, 1.0, 0.5 + 0.5*n.y)`.
+  Leaves want a transmission term on top of that; a leaf is thin and a wood in
+  summer is green twilight, not a dark room.
+
+- **A sphere on a slope never stops, and no amount of friction changes that.**
+  The lab's loose stones were spheres and were still travelling at three to ten
+  metres a second five seconds after they landed, wandering off across the
+  block. Rolling resistance is not in the solver and adding linear damping to
+  fake it slows them in the air too. The fix is the shape: angular rock is a
+  box, a box tumbles and settles on a face, and that is also why a real scree
+  slope stays where it is. `Rocks.h` guarantees the boulder mesh fits inside the
+  unit box, so the mesh and a box collider agree exactly.
+
+- **`Texture2D::SetSmooth(true)` on a framebuffer attachment makes it sample
+  black.** It sets `GL_TEXTURE_MIN_FILTER` to `GL_LINEAR_MIPMAP_LINEAR`; an
+  attachment has no mip chain; an incomplete texture reads as black, with no GL
+  error and nothing in the log. The portal's doorway came out a solid black
+  board, which is precisely what it looked like before the feature existed --
+  so it read as the second camera never having run, and the search went looking
+  at the render pass rather than at one line of setup. `OpenGLFramebuffer`
+  already sets `GL_LINEAR` both ways on its colour attachments. Do not touch
+  the filters on a borrowed handle.
+
+- **A constant that reaches a shader as a literal will drift, and the symptom
+  will not look like the cause.** `TerrainLab`'s biome grid went from 3x3 to
+  4x4. `s_Grid` changed; the `9`, the `3` and the `2.0` written into the ground
+  fragment shader did not. The CPU then filled `u_Cells[j * 4 + i]` for sixteen
+  cells and the GLSL read `u_Cells[j * 3 + i]` out of a nine-element array --
+  seven writes silently discarded, because `glGetUniformLocation` returns -1
+  for a name that does not exist and `Material::Set` ignores it without a word.
+  What it *looked* like was a biome rule gone wrong: grass on sand, sand under
+  grass, because the grass asks `ClimateAt` on the CPU and only the ground was
+  reading the scrambled copy. The shader source is now assembled as
+  `"#version 330 core\n#define GRID " + std::to_string(s_Grid)`. Any constant
+  shared between C++ and GLSL wants the same treatment.
+
+- **Distance for a level-of-detail term must be from the eye, and it is easy to
+  write one that is not.** `TerrainLab`'s grass shrank by `length(world.xyz)` --
+  distance from the *world origin*. The block is centred there, so the thinning
+  was a bullseye painted on the map that did not move when you did, which reads
+  from inside as "the sliders do nothing". Three lines away, the per-chunk
+  `u_Fade` used the camera correctly, so the shading and the geometry were
+  converging about two different points. If a level-of-detail control seems
+  inert, check what it is measuring *from* before checking whether it is bound.
 
 - **`--land Mars` separates the player from the lander, and it is not the
   lander.** Reproduce with
@@ -1542,6 +1601,246 @@ look caught immediately.
   seconds to check and would have saved most of a session's worth of guessing
   at the transform math instead.
 
+- **A pixel count only means something if the pixels came from the shader you
+  are measuring.** Counting distinct height levels over "the lower half of the
+  frame" gave 195 where the float format predicted 2, and the extra 193 were the
+  trees, the lander and the water, each drawn by its own shader. Pinning an
+  unused channel to a known value in the debug output (`green = 1`, and check
+  `g == 255` when reading back) marks exactly the fragments the shader under test
+  produced, and the count came back as the predicted 2. **When a frame
+  measurement disagrees with a prediction, ask what else drew into those pixels
+  before doubting the prediction.**
+
+- **Check a debug encoding's range before believing what it says.** Painting a
+  height into a channel as `clamp(0.5 + height/32.0, 0, 1)` reported "0 pixels
+  in the beach band" — which was true of the encoding and not of the frame: at
+  the default site every terrain pixel was more than 16 m below the reference
+  and the channel had saturated to a single value at one end. The tell was that
+  `min == max` over half a million pixels. A predicate evaluated *in the shader*
+  (`height > 0.0 && height < u_Beach ? 1.0 : 0.0`) has no range to get wrong and
+  is what the answer eventually came from.
+
+- **A cache keyed by "what the generator does" has to sample the code path the
+  cache actually stores, not something next to it.** `VoxelPlanet::Fingerprint`
+  hashes 64 evaluations of the density so that changing the terrain function
+  throws away every stored chunk instead of handing back a world that no longer
+  exists -- and for two days it sampled `Density` at a float position while
+  `FillChunk` stored `DensityFixed` at a lattice point. The moment the fill
+  changed, every `.site` and `.edits` file on disk described a different planet
+  and the hash did not move by a bit. It samples the fill's own function at a
+  lattice point now. If you change *anything* about how a voxel's value is
+  produced, check that the fingerprint moves -- print it, do not assume it.
+
+- **`memcpy` of four bytes into an eight-byte variable hashes four bytes of the
+  stack, and neither ASan nor UBSan will tell you.** That was the same
+  fingerprint, since it was written: `unsigned long long bits;` (uninitialised),
+  `memcpy(&bits, &single, sizeof(float))`, then all sixty-four bits mixed. The
+  symptom was the site cache rebuilding on runs where nothing had changed --
+  which looks exactly like a cache doing its job, so it survived a long time.
+  The tell, once the hash was printed at both call sites three lines apart, was
+  **two different values agreeing exactly in the low thirty-two bits**. If a
+  hash disagrees only in one half, look at the width of what went into it.
+
+- **A constant tuned at one scale is wrong at every other scale, and an
+  `exp(-x)` hides it by saturating quietly.** The terrain's haze was
+  `1 - exp(-camDist * u_HazeDensity)` with `u_HazeDensity` at 9.9e-3 per metre
+  for Earth -- a half-hazed distance of 70 m, correct for standing in a
+  landscape and tuned against a landed capture. From orbit `camDist` is
+  750,000 m, so the exponent is 7425 and `haze` is 1.0 to the bit: every land
+  pixel on the planet came out exactly `u_Sky` and the continents were never
+  drawn. Nothing errors, nothing looks obviously broken -- a saturated
+  exponential just returns a plausible colour. **If a term has a tuned length
+  constant in it, check what it does at the other end of the range the camera
+  can actually reach.** The fix was to weight the path by the air density at
+  the midpoint of the segment, which is 1 on the ground and underflows from
+  orbit.
+
+- **This bug was invisible because two other bugs were compensating for it.**
+  The shell was 55% transparent and the terrain painted itself blue below sea
+  level, so a disc made entirely of sky colour still read as a water world.
+  Fixing either one alone would have made the planet look *worse*, which is a
+  good reason to distrust "it looked fine before" as evidence.
+
+- **`atan`-built sphere UVs collapse the mip chain along the seam.** `u` wraps
+  from 1 to 0 on one meridian; the value is right either side but the
+  screen-space derivative there is a whole texture wide, so the hardware picks
+  the top of the mip chain, where a texel is the average of the entire map.
+  That drew a two-pixel line down the planet from orbit -- the wet mask averages
+  to about the ocean fraction, so the shell painted sea over the land the
+  meridian crossed. Fix is `SampleSphere` in `SolarSystem.h`: subtract the
+  nearest whole turn from `dFdx`/`dFdy` and use `textureGrad`. **Three shaders
+  had it** (terrain, water, cloud) -- if one sphere map has this, they all do.
+
+- **A circle standing back for a square leaves a ring.** The ocean shell
+  discards inside a cone of `SurfaceWater::Reach()`, but `BuildMesh` draws a
+  square of half-width `0.9055 * Reach` (it drops `s_SeedMargin` = 6 of 128
+  columns each edge). 6.87% of the local water disc was drawn by neither --
+  four bites at the edge midpoints. Use `DrawnReach()`, which derives the
+  radius from the same constants the mesh loop uses. **Whenever one surface
+  stands back for another, check the two boundaries are the same shape**, not
+  just the same nominal size.
+
+- **The Solar demo's rocks roll downhill for ever, and it is not the wind.**
+  They are spheres with no rolling resistance and both damping terms zeroed
+  (deliberately, for orbits -- see the spawn comment), on a site with 233 m of
+  relief inside 400 m. With air drag disabled they reach 150 m/s and keep
+  going; with it they settle at 8-13 m/s, which is terminal velocity on a 32
+  degree slope. So the drag is the only thing bounding them. If loose bodies
+  ever need to *stay* put, the missing physics is rolling resistance, not
+  anything to do with the weather. They are also 40 kg where a real rock of
+  that radius is eleven tonnes.
+
+- **One factor cannot do both kinds of heat redistribution.** Evening out a
+  day (thermal inertia) and evening out a hemisphere (transport by air and
+  ocean) are different physics and differ by a lot: Earth's day/night swing is
+  nearly abolished and its equator-to-pole range is 44 K. Using one number for
+  both gave a 1.6 K pole-to-equator range and no ice caps anywhere. See
+  `Climate::Redistribution` and `Climate::Transport`.
+
+- **Below a voxel field, an SDF collider reads solid for ever.** The field is
+  only defined across its own block; queries under it come back negative, so the
+  solver pushes bodies upward without limit. A toolshed placed 400 m underground
+  threw the player out at ninety-five metres a step, and the placement was
+  correct the whole time. Above the field the same query reads as air, so
+  anything that needs to live off the block belongs *up*.
+
+- **The editor viewport is a `glViewport` call, not a framebuffer, and that
+  is deliberate.** `EditorShell` publishes the central dock node's rect and
+  `DemoLayer` sets the viewport to it before `OnDemoUpdate`. An off-screen
+  target would have broken every capture, because `--hide-ui` draws no panels
+  and there would be nothing to blit the texture with. The rect is invalid
+  under `--hide-ui` and `--no-editor`, in which case nothing fires and the demo
+  owns the whole framebuffer as before.
+
+- **ImGui runs in layer order.** Anything that publishes state for other layers'
+  ImGui to read must be pushed *before* them. `EditorShell` sat after the demos
+  at first and published its dock id a frame too late, and `FirstUseEver` only
+  fires once, so demo panels floated for ever.
+
+- **MSAA is on now: four samples**, hinted at window creation *and* enabled in
+  `OpenGLRendererAPI::Init`. Both halves are needed and neither reports the
+  other missing. The sample count is logged at startup.
+
+- ~~**There is no MSAA in this engine.**~~ Fixed 2026-08-29; see above. Left
+  here because the *reasoning* still applies: sub-pixel geometry aliases hard,
+  and multisampling is the half of the answer that edge coverage needs.
+
+- **Sub-pixel geometry aliases in its *shading*, not its silhouette.** The fix
+  that worked for grass was not smoothing or more triangles: it was converging
+  each blade's normal, colour and gradient toward the ground's with distance, so
+  that a pixel landing on a blade and one landing beside it shade the same and
+  the coverage coin-flip stops showing. Measured as mean Laplacian of luminance:
+  -58% on the far band, -0.2% near, which is the shape you want.
+
+- **Flat normals are why anything built as a jittered low-poly sphere looks
+  blocky.** `Veg::LeafCluster` gave each triangle its own face normal; radial
+  normals from the cluster centre cost nothing and turn the same geometry into a
+  blob. Check this before adding triangles.
+
+- **Put input that edits or teleports on the fixed step, not on events.**
+  Events are not in the replay stream and `Egss::Input` is, so a digging session
+  polled on the fixed step records and replays and one handled from events does
+  not -- and an event can be consumed before a demo layer sees it, which is how
+  it presents. `VoxelTerrain` has always done this; `TerrainLab` did not, and
+  digging looked broken while every part of the dig path measured clean.
+
+- **The planet's buried trees are not a placement-frame problem.** They draw
+  as flat canopy slabs lying across the ground. The obvious theory -- that
+  placing by analytic surface radius disagrees with the meshed isosurface -- was
+  tested in `TerrainLab`, which scatters trees over the mesh's own triangles:
+  over 156 trees the field distance at a trunk's foot is at worst 0.1159 m and
+  the gap to the analytic height 0.1268 m. They agree. Look elsewhere: the
+  instance transform (`UprightAt(plant.Up)`, the yaw, the scale), or the frame
+  `chunk.Origin + plant.Position - localOrigin` is composed in.
+
+- **A CPU-side count of what was submitted says nothing about what was
+  drawn.** "656 tree instances drawn" was measured, reported and believed while
+  `SolarSystemTrees` had been failing to compile for two commits -- the batch
+  was built, the buffer uploaded and the draw issued into a dead program. **Grep
+  the log for `compilation failed`, not for `error`**; the shader failure
+  message does not contain the word.
+
+- **A `.replace` across a file that holds five shaders will hit more than one
+  of them.** The grass and tree vertex shaders share a `u_Compliance` line, and
+  an edit meant for one declared `u_GustOffset` twice in the other. When editing
+  one shader in `SolarSystem.h`, bound the edit to that shader's line range.
+
+- **`flat` is a GLSL interpolation qualifier**, so `float flat = ...` is a
+  syntax error, and the compiler reports it as "unexpected FLAT" without
+  mentioning that it is a keyword. Same family as `half` and `near`/`far`.
+
+- **Both sides of a stochastic LOD test must be constant across the
+  primitive.** Grass drops whole blades past a distance by comparing a
+  per-blade ticket against a keep-fraction. Computing that fraction from the
+  *vertex* position tore about two per cent of blades in half and drew long
+  black slivers to the collapse point. The fraction is a uniform set per chunk
+  now. Related: a derivative normal (`cross(dFdx, dFdy)`) is noise on geometry
+  a few millimetres wide -- it is only valid where a triangle covers several
+  pixels.
+
+- **When something in the near field looks like a "geometry artifact", check
+  the scale of the small props before suspecting the terrain.** Flat angular
+  slabs through a hillside turned out to be grass blades 9 cm wide. Two
+  measured hypotheses (the horizon mesh bridging valleys -- it stands 0.08 m
+  proud; terrain LOD -- 5.6% of pixels and all in the right places) died first.
+
+- **"World space" in the Solar demo is camera-relative, and anything that
+  wants a *fixed* position must say so.** Everything is drawn camera-relative to
+  keep planet-sized coordinates off the GPU, so a shader that reads a phase, a
+  seed or a hash off `world.xyz` gets a value that changes as the player walks.
+  Both the tree and the grass gust did exactly that, and the forest swayed in
+  time with walking speed. The pattern that works: take the small local offset
+  from the vertex, and have the CPU add the large origin's share in double,
+  folded into one turn before it is narrowed to a float. Measured swing over a
+  400 m walk: 1.63 before, 0.0000274 after.
+
+- **The default landing site is a hard-coded direction, and any change to
+  `Relief` invalidates it.** `SolarSystem::DefaultSite()` was surveyed once
+  against terrain that has since changed twice. When it goes stale the demo
+  opens underwater or inside a cliff, and it reads as a broken camera rather
+  than a moved site. The survey that picks a new one is written out in the
+  2026-08-28 changelog; it is temporary code each time, run once and deleted.
+
+- **`1 - |n|` doubles the frequency, and every band limit has to know.**
+  A ridge field of wavelength L carries detail at L/2, so a cap that cuts
+  octaves at "the finest wavelength this sampler can represent" keeps one that
+  aliases. The planet map did exactly that for months: a 4 km ridge field on a
+  1.5 km texel became per-texel salt and pepper, and because the *drainage pass
+  runs on that grid* it reported a quarter of all land under a lake. **When a
+  height field looks like noise, dump the map before touching the shader** --
+  two minutes with the baked texture said more than three rendering sessions.
+
+- **Anything quoted as a fraction of the relief is suspect.**
+  `smoothstep(0.45, 0.75, height/top)` for the rock line assumes land heights
+  are spread evenly from sea level to the summit. That was true while the
+  hypsometry was unimodal and false the moment the continents became plateaus,
+  and it painted every landmass grey. Same trap as the snow line and `Warmth`
+  below. Prefer an absolute quantity -- a temperature, a depth in metres.
+
+- **A snow line quoted as a fraction of the relief is the wrong invariant.**
+  It reads as scale-independence and is not: a snow line is an altitude in
+  metres set by `g/c_p`, so a planet of 600 m hills should have *no* snow and
+  was getting a cap on its tallest one. Same trap in `Warmth`, which carried
+  its own altitude term for the same stated reason. Anything quoted "relative
+  to this planet's own mountains" is worth a second look.
+
+- **`Colour` in the body table is not an albedo.** Its luminance puts Earth at
+  0.46 against a real Bond albedo of 0.306, which is 17 K of equilibrium
+  temperature. `BondAlbedo` is the measured column; use it for anything
+  energetic.
+
+- **`AtmosphereFraction * AtmosphereDensity` are render depths, not weights of
+  gas.** They were sized to make a sky look right. Read as a pressure they put
+  Mars at 15.9% of Earth's against a real 0.6%. Fine for optical depth, wrong
+  for anything that weighs the atmosphere.
+
+- **`./egss.py sanitize` reports 16 of 16 demos FAIL and it means nothing.**
+  Every one is LeakSanitizer inside system ALSA, reached through vendored
+  miniaudio's `ma_context_open_pcm__alsa`; it hits demos nothing has touched in
+  weeks because every demo opens audio. A real regression would be invisible in
+  that noise. Run with `ASAN_OPTIONS=detect_leaks=0` to see ASan and UBSan
+  reports, which is what the sweep is actually for.
+
 ---
 
 ## Conventions
@@ -1582,12 +1881,22 @@ from the code.
    landed frame is now about 12.2 ms of GPU against a 16.67 budget. The
    residual is the two-faces-at-once transition, which a sphere hits three
    times harder than a flat field; see the roadmap.
-2. ~~**A local origin for the surface.**~~ **Done 2026-08-25.** Placing a mesh
-   vertex at 1:1 went from 0.571 m of error to a micrometre, and
-   `--earth-radius 6371000` streams, renders and can be walked on. The half
-   that remains is *sampling* the density in double — `FillChunk` still asks
-   the generator at `PositionOf` — which displaces the terrain at 1:1 rather
-   than breaking it. See the roadmap.
+2. ~~**A local origin for the surface.**~~ **Done 2026-08-25**, and the
+   sampling half **done 2026-08-27**. Placing a mesh vertex at 1:1 went from
+   0.571 m of error to a micrometre, and `--earth-radius 6371000` streams,
+   renders and can be walked on. `FillChunk` now hands the generator a `dvec3`
+   from `PositionOfFixed`, and `VoxelPlanet::DensityFixed` takes `|p| - Radius`
+   in double: the surface error at 1:1 fell from 0.8509 m worst to 0.1247 m,
+   against a hand-computed 0.866 m bound. What is left is the *GPU* half —
+   the terrain shader's `length(v_Position) - u_SeaRadius` in float32 — which
+   is done too, on 2026-08-27: each draw carries a reference point near its
+   own geometry, so the shader forms a small exact offset instead of a
+   planet-centred `length`. Predicted from the float format that
+   `fract(height)` could take exactly 2 values at 1:1 and 64 at 250 km, and
+   counted exactly that; the height had been carrying 1.145 m of error at 1:1.
+   **It is worth 1,520 pixels at one 8-bit level**, because the only shading
+   band narrow enough to notice a metre is the 4.78 m beach and neither
+   captured view has a single shoreline pixel in it.
 3. ~~**Biomes — with the drainage pass inside them, not after.**~~ **Done
    2026-08-26**, and the drainage was indeed inside them: `BuildHydrology` is
    Priority-Flood plus flow accumulation on the height map's own grid, checked
@@ -1775,8 +2084,10 @@ whenever that is wanted.
 is 250 km with a 3.92 km atmosphere and 2,216 m/s of escape velocity, and the
 planets are points of light because that is what they are. Getting there needed a
 sparse chunk store in `VoxelField3D` (the dense one wanted 1.1e10 GB), a wider
-chunk key, and distance proxies for drawing. What is left is a local origin for
-the surface, which is what 1:1 needs, and terrain LOD. The landing approach picks
+chunk key, and distance proxies for drawing. A local origin for the surface,
+terrain LOD, and **sampling the density in double** have all landed since; see
+the 2026-08-27 changelog entry for the surface-error table and for the two
+cache-fingerprint bugs that fix turned up. The landing approach picks
 dry ground; the gas giants have air deep enough to have no ground under
 it, which needed a premultiplied blend in the engine and a multiple-scattering
 term in the shader; Saturn and Uranus have rings; a day is an hour and a year is
@@ -2421,6 +2732,15 @@ inside a box gets a hit at distance zero, so a source in a single-box room never
 gets anywhere.
 
 ### Known approximations, stated so they are not mistaken for bugs
+
+- **The sea radius is a `float`, so at 1:1 the waterline sits on a 0.5 m grid.**
+  `VoxelPlanet::Settings::OceanRadius` is a float member, and 6.37e6 as a float
+  is a multiple of 0.5. This is a *uniform offset* in where the shore is, not a
+  per-pixel quantisation — the terrain shader and the water shell read the same
+  value, so the sea surface and the drawn shoreline agree with each other, which
+  is the thing that would actually be visible. Widening it means widening the
+  bisection that finds it and the water material with it. The per-pixel half of
+  this was the shading height, and that is fixed — see the 2026-08-27 entry.
 
 - **Trees are culled against a cone, not a frustum.** 75 degrees against a
   camera half-angle of about 50, tested per chunk and widened by the chunk's own

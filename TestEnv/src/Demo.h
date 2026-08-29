@@ -23,11 +23,33 @@
 // Index into the registry. Deliberately not an enum: the registry is the one
 // source of truth for what exists, and numbering it separately only created a
 // second thing to keep in step.
+// Where a demo should draw. Filled by `EditorShell`; invalid means "the whole
+// window", which is what `--hide-ui` and `--no-editor` leave it as.
+struct ViewportRect
+{
+	int X = 0;
+	int Y = 0;
+	int Width = 0;
+	int Height = 0;
+
+	bool Valid() const { return Width > 0 && Height > 0; }
+};
+
+inline ViewportRect g_Viewport;
+
+// Set by `EditorShell`; zero means there is no editor layout.
+inline unsigned int g_DemoDock = 0;
+
 using DemoId = int;
 constexpr DemoId InvalidDemo = -1;
 
 // Index into s_Demos. Change to whichever demo you are working on.
-inline DemoId g_ActiveDemo = 5;
+//
+// **16 is the terrain lab**, which is where the ground, the weather and the
+// vegetation are being worked on. It is the last entry because the array's
+// order is the recording file format -- see the note in `DemoRegistry.h` --
+// so a new demo is appended and never inserted, whatever it is for.
+inline DemoId g_ActiveDemo = 16;
 
 // Base for every demo layer.
 //
@@ -133,13 +155,56 @@ public:
 		if (!active)
 			return;
 
+		// **The demo draws into the editor's central pane, not the window.**
+		//
+		// Setting the viewport is all it takes, and it is done here rather
+		// than in each demo so that none of them had to change -- and so that
+		// a demo written later gets it without knowing the shell exists.
+		//
+		// It degrades to the old behaviour on its own: `g_Viewport` is invalid
+		// until the shell has laid the panels out, and stays invalid under
+		// `--hide-ui` and `--no-editor`, in which case nothing here fires and
+		// the demo owns the whole framebuffer exactly as before. That is what
+		// keeps every existing capture byte-comparable.
+		//
+		// The camera's aspect ratio is *not* touched. A demo that built its
+		// projection for 16:9 keeps it, so a narrow pane letterboxes rather
+		// than distorting -- which is the right failure, because a stretched
+		// scene is the kind of wrong that is easy to look at and not notice.
+		if (g_Viewport.Valid())
+			Egss::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
+				(unsigned int)g_Viewport.Y, (unsigned int)g_Viewport.Width,
+				(unsigned int)g_Viewport.Height);
+
 		OnDemoUpdate(ts);
+
+		// Put it back, or ImGui draws its panels into the demo's pane.
+		if (g_Viewport.Valid())
+		{
+			Egss::Window& window = Egss::Application::Get().GetWindow();
+
+			Egss::RenderCommand::SetViewport(0, 0, window.GetWidth(),
+				window.GetHeight());
+		}
 	}
 
 	void OnImGuiRender() final
 	{
 		if (!IsActive())
 			return;
+
+		// **Put the demo's panel in the editor's left column.**
+		//
+		// `FirstUseEver` rather than `Always`: this is where a panel starts,
+		// not where it is held. Dragging it somewhere better is the point of
+		// having docking at all, and `imgui.ini` remembers the choice.
+		//
+		// Set here rather than in the shell because only this line runs
+		// immediately before the demo opens its window, and `SetNextWindow*`
+		// applies to whichever `Begin` comes next.
+		if (g_DemoDock != 0)
+			ImGui::SetNextWindowDockID((ImGuiID)g_DemoDock,
+				ImGuiCond_FirstUseEver);
 
 		OnDemoImGui();
 	}

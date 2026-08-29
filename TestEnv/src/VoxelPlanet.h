@@ -26,6 +26,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include "ChunkCache.h"
+#include "Grass.h"
 
 #include <queue>
 #include <algorithm>
@@ -94,6 +95,49 @@ public:
 		// keeps.
 		float ContinentShare = 0.0f;
 		float ContinentSize = 0.0f;    // metres; the rises, not the ridges
+
+		// **How sharp the edge of a continent is**, as a share of the broad
+		// noise's range. Zero leaves the old smooth rise; small values squash
+		// the noise into two plateaus -- a continental platform and an abyssal
+		// basin -- joined by a slope that narrow.
+		//
+		// This is the difference between a coastline and a filigree, and the
+		// reason is worth stating because it is not obvious. Sea level is
+		// solved for a target land fraction, so it lands wherever it must. If
+		// the broad shape is a smooth unimodal rise, that level cuts through
+		// ground that is *nearly flat*, and the hundred metres of ridge and
+		// landscape detail added on top then decide the coastline: every dip
+		// becomes a lake and every bump an island, and the map comes out a
+		// spidery lace with no landmass anywhere in it. Measured on Earth
+		// here: 129 land/sea crossings per row of 1024 texels, where a
+		// handful of continents would give five or six.
+		//
+		// Put the same level on a *slope* and the same detail noise only
+		// shifts the coast a little way along it. That is why Earth's
+		// coastlines are crisp: its hypsometry is strongly bimodal -- a
+		// continental platform, an abyssal plain four kilometres down, and sea
+		// level sitting in the gap between them -- and almost no land area
+		// sits at exactly zero.
+		float ContinentEdge = 0.0f;
+
+		// **The climate band, in kelvin, so plants and paint agree.**
+		//
+		// The terrain shader decides where bare rock starts from a real
+		// temperature -- a tree line is an isotherm, not a height. Tree
+		// *placement* was still using `height / (Amplitude/2 - sea)`, a
+		// fraction of the relief, which on this planet stopped trees 87 m
+		// above sea level while the shader painted green forest floor for
+		// another five hundred. Filled by the demo from the same model the
+		// shader gets, so the two cannot drift apart.
+		float TempEquator = 0.0f;   // K at sea level, annual mean
+		float TempPole = 0.0f;      // K at sea level, annual mean
+		float LapseRate = 0.0f;     // K per metre
+		float Freeze = 273.15f;
+
+		// Grass: blades per qualifying terrain triangle, and how tall they
+		// stand. Zero is no grass, which is every body without vegetation.
+		float GrassDensity = 0.0f;
+		float GrassHeight = 0.45f;
 
 		// **Landscape: the relief you can actually stand in.**
 		//
@@ -307,6 +351,19 @@ public:
 		return SampleHydrology(m_Water.Level, direction);
 	}
 
+	// **The ground the map thinks is here**, in the same metres-above-sea-level
+	// that `WaterHeightAt` reports. The pair is what makes a *depth* available
+	// to a caller, and a depth is the one thing a 1.5 km texel knows well: it
+	// can be 116 m out about where the surface is and still right that there
+	// are forty metres of water standing on it.
+	float LandHeightAt(const glm::vec3& direction) const
+	{
+		if (!m_Water.Valid())
+			return 0.0f;
+
+		return SampleHydrology(m_Water.Land, direction);
+	}
+
 	// 1 where there is standing water, 0 where there is not, bilinear between.
 	// The soft edge does not matter: the shoreline a viewer sees comes from
 	// the ground occluding the water surface, at whatever resolution the
@@ -321,6 +378,10 @@ public:
 
 	// The two axes of the Whittaker square, where the plant scatter and the
 	// fragment shader both read them.
+	// The area-weighted mean moisture over this body's land. See where it is
+	// set for why the climate wants a single number rather than a field.
+	float MeanMoisture() const { return m_MeanMoisture; }
+
 	float MoistureAt(const glm::vec3& direction) const
 	{
 		return m_Water.Valid() ? SampleHydrology(m_Water.Moisture, direction) : 0.0f;
@@ -707,24 +768,47 @@ public:
 	{
 		unsigned long long hash = 1469598103934665603ull;
 
+		// **Four bytes in, eight bytes hashed, and four of them were the
+		// stack's.** This copied a float into an uninitialised
+		// `unsigned long long` and mixed all sixty-four bits, so half of
+		// every sample was whatever happened to be in that slot. Found by
+		// printing the hash at its two call sites -- `OpenEdits` and
+		// `OpenSiteCache`, three lines apart with nothing in between -- and
+		// getting two different numbers that agreed in the low thirty-two
+		// bits. It is why the site cache rebuilt itself on runs where the
+		// world had not changed: a fingerprint that is partly garbage
+		// sometimes reproduces and sometimes does not, and the failure looks
+		// exactly like a cache doing its job.
+		//
+		// ASan and UBSan do not catch this; the trace did.
 		auto mix = [&hash](double value)
 		{
-			unsigned long long bits;
+			unsigned int bits = 0;
 			float single = (float)value;
 			std::memcpy(&bits, &single, sizeof(single));
 
-			hash = (hash ^ bits) * 1099511628211ull;
+			hash = (hash ^ (unsigned long long)bits) * 1099511628211ull;
 		};
 
 		mix(m_Settings.Radius);
 		mix(m_Settings.VoxelSize);
 		mix((double)m_Settings.Seed);
 
+		// **At a lattice point, through the function the fill actually calls.**
+		//
+		// This sampled `Density` at a float position, which is not where a
+		// voxel is and not the arithmetic that computes one -- so the day the
+		// fill moved to `PositionOfFixed` and `DensityFixed`, every stored
+		// chunk started describing a planet the generator no longer makes and
+		// this hash did not change by a bit. Snapping to the lattice and
+		// going through the same function closes that: the fingerprint now
+		// samples the fill rather than something adjacent to it.
 		for (int i = 0; i < 64; i++)
 		{
-			glm::vec3 direction = SpiralDirection(i, 64, 0.17f);
+			glm::dvec3 at = glm::dvec3(SpiralDirection(i, 64, 0.17f))
+				* ((double)m_Settings.Radius + (double)(i % 5) * 3.0);
 
-			mix(Density(direction * (m_Settings.Radius + (float)(i % 5) * 3.0f)));
+			mix(DensityFixed(LatticePosition(LatticeNear(at))));
 		}
 
 		return hash;
@@ -854,6 +938,31 @@ public:
 
 	// --- Generation ---------------------------------------------------------
 
+	// **The same field, asked at a point that is exactly where it says.**
+	//
+	// `Density` takes a float position, and at 6,371 km a float position is
+	// already rounded to half a metre before this function sees it -- and
+	// then `length(p) - Radius` cancels two numbers of that size, so the
+	// answer lands on the same coarse grid. Both halves are fixed by doing
+	// the length and the subtraction in double: the result is small, so it
+	// goes back to float the moment the cancellation is behind it, and the
+	// direction is a unit vector that never had a magnitude problem.
+	//
+	// This is what `FillChunk` calls now. `Density` stays for the callers
+	// that are asking about a body-sized number in the first place -- the
+	// fingerprint, the surface bisection's own float ray -- and for the small
+	// bodies where the two agree to the last bit.
+	float DensityFixed(const glm::dvec3& p) const
+	{
+		double distance = glm::length(p);
+
+		if (distance < 1e-4)
+			return -m_Settings.Radius;
+
+		return (float)(distance - (double)m_Settings.Radius)
+			- Relief(glm::vec3(p / distance));
+	}
+
 	// Signed distance to the surface: negative inside the planet.
 	float Density(const glm::vec3& p) const
 	{
@@ -907,6 +1016,11 @@ public:
 		float ridged = 1.0f - std::abs(unit);
 		float shape = ridged - 0.5f;
 
+		// 1 well inside a continent, 0 out on the abyssal plain, with the
+		// transition on the continental slope. Hoisted out of the block below
+		// because the landscape layer needs it too -- see where it is added.
+		float platform = 1.0f;
+
 		if (m_Settings.ContinentShare > 0.0f && m_Settings.ContinentSize > 0.0f)
 		{
 			float f = m_Settings.Radius / m_Settings.ContinentSize;
@@ -914,12 +1028,53 @@ public:
 			float broad = Noise3D(direction * f, m_Settings.Seed + 101u)
 				+ Noise3D(direction * f * 2.0f, m_Settings.Seed + 102u) * 0.5f;
 
-			shape = glm::mix(shape, broad / 3.0f, m_Settings.ContinentShare);
+			// Into roughly -1..1 before it is shaped, so `ContinentEdge` means
+			// the same thing whatever the noise happens to be scaled to.
+			float mask = glm::clamp(broad / 1.5f, -1.0f, 1.0f);
+
+			// A plateau, a slope, a plateau. See `ContinentEdge`: without this
+			// the coastline is cut across flat ground and the detail noise
+			// shreds it. `smoothstep` rather than a hard step because the
+			// slope is the whole point -- a cliff would put the coast back on
+			// flat ground, just a shorter way down.
+			if (m_Settings.ContinentEdge > 0.0f)
+			{
+				float edge = m_Settings.ContinentEdge;
+
+				mask = glm::smoothstep(-edge, edge, mask) * 2.0f - 1.0f;
+			}
+
+			platform = mask * 0.5f + 0.5f;
+
+			shape = glm::mix(shape, mask * 0.5f, m_Settings.ContinentShare);
 		}
 
 		float relief = shape * m_Settings.Amplitude - m_ReliefBias;
 
-		relief += Landscape(direction, maxOctaves);
+		// **Mountains are built on continents, and coastal plains are flat.**
+		//
+		// This was added at full strength everywhere, and on this planet it is
+		// the larger of the two: up to 700 m of ridge and range on a
+		// continental step of about 270 m. So the shape that was supposed to
+		// decide where the land is was being outvoted by the shape that
+		// decides what the land looks like, and sea level -- solved for a land
+		// fraction, so it goes wherever it must -- ended up cutting through
+		// the *landscape* rather than through the continental slope. Every dip
+		// became a lake and every rise an island.
+		//
+		// Weighting it by the platform fixes that and is what the real thing
+		// does anyway. Ocean floor is smooth because nothing is uplifting it;
+		// coastal plains are flat because they are the drowned edge of the
+		// platform; ranges are inland. `smoothstep` rather than the raw mask
+		// so the shore itself gets almost none of it -- which is the part that
+		// stops the coastline being shredded -- and a floor of 0.12 rather
+		// than zero so the seabed has some shape to it for anyone who goes
+		// looking.
+		float uplift = m_Settings.ContinentEdge > 0.0f
+			? glm::mix(0.12f, 1.0f, glm::smoothstep(0.10f, 0.80f, platform))
+			: 1.0f;
+
+		relief += Landscape(direction, maxOctaves) * uplift;
 
 		// The local layer, added rather than mixed: it is small next to the
 		// planetary relief by construction, so it cannot push the surface
@@ -979,10 +1134,37 @@ public:
 			float finest = m_Settings.FeatureSize
 				/ (float)(1 << glm::max(maxOctaves - 1, 0));
 
+			// **The ridge fold doubles the frequency, and the cap has to know.**
+			//
+			// `1 - |n|` puts a corner wherever the noise crosses zero, so a
+			// ridge field of wavelength L carries detail at L/2. Cutting at
+			// `finest` therefore kept octaves whose *folded* content was below
+			// what the sampler could represent, and one of them was always
+			// kept -- the loop floors at a single octave -- so this layer
+			// aliased into the map no matter what the cap said.
+			//
+			// On Earth here that was the whole of the artifact: a 4 km ridge
+			// field with 700 m of rise, sampled on a 1.5 km texel, came out as
+			// per-texel salt and pepper across every continent. It did not
+			// merely look wrong. The drainage pass runs on this grid, believed
+			// the noise, and reported **a quarter of all land under a lake**
+			// against about two per cent for the real thing -- so the planet
+			// from orbit was a reticulated net of water inside every landmass.
+			//
+			// If even the coarsest landscape octave is below the line, this
+			// layer has nothing the caller can represent and contributes
+			// nothing but aliasing, so it contributes nothing at all. The
+			// ground you actually walk on is meshed at 1.5 m and passes no
+			// cap, so it keeps every octave; this only ever trims the map.
+			float coarsest = 2.0f * finest;
+
+			if (m_Settings.LandscapeSize < coarsest)
+				return 0.0f;
+
 			octaves = 1;
 
 			while (octaves < m_Settings.LandscapeOctaves
-				&& m_Settings.LandscapeSize / (float)(1 << octaves) > finest)
+				&& m_Settings.LandscapeSize / (float)(1 << octaves) >= coarsest)
 				octaves++;
 		}
 
@@ -1026,7 +1208,27 @@ public:
 		float share = m_Settings.LandscapeFloor
 			+ (1.0f - m_Settings.LandscapeFloor) * uplift;
 
-		return m_Settings.Landscape * share * (ridge - 0.35f);
+		// **Uplift builds up; erosion only cuts down to a base level.**
+		//
+		// `ridge - 0.35` is centred so the mean stays near the mean radius,
+		// which the volume check wants -- but it also let this layer cut 245 m
+		// *below* the continental platform, and the platform only stands about
+		// a hundred metres above sea level. So continental interiors flooded:
+		// a quarter of all land came out under a lake, against about two per
+		// cent for the real thing, and the map from orbit was a reticulated
+		// net of water inside every landmass.
+		//
+		// The asymmetry is the physics. A mountain range has no ceiling -- it
+		// rises until it is eroded as fast as it lifts -- but a valley between
+		// two ranges cuts down toward a base level and stops, because below
+		// that there is nothing left to carry the sediment away. So the same
+		// ridge field is worth four times as much upward as downward.
+		float lift = ridge - 0.35f;
+
+		if (lift < 0.0f)
+			lift *= 0.25f;
+
+		return m_Settings.Landscape * share * lift;
 	}
 
 	// --- The height map -----------------------------------------------------
@@ -1515,21 +1717,30 @@ public:
 			// less arbitrary than a noise field called humidity.
 			float band = 0.5f + 0.5f * std::cos(latitude * 6.0f);
 
-			// Warmth is the cosine of the latitude with a lapse rate on top.
-			// Quoted against the relief rather than in kelvin per kilometre so
-			// that a planet with more relief has a snow line in the same place
-			// relative to its own mountains.
+			// **Warmth is latitude, and only latitude.**
+			//
+			// It used to carry an altitude term as well -- `0.55 * altitude`
+			// over half the relief -- quoted against the relief rather than in
+			// kelvin per kilometre "so that a planet with more relief has a
+			// snow line in the same place relative to its own mountains".
+			// That is precisely the wrong invariant: a snow line is where the
+			// air reaches freezing, which is an altitude in metres set by
+			// `g/c_p`, and has nothing to do with how tall the tallest
+			// mountain on the planet happens to be. A 600 m hill on a world of
+			// 600 m hills was getting a snow cap.
+			//
+			// So altitude now enters as a real lapse rate, once, in the
+			// terrain shader, where it is subtracted from a temperature in
+			// kelvin -- see `Climate::LapseRate` and `u_LapseRate`. This field
+			// stays the latitude index the Whittaker square wants and stops
+			// being two things at once.
 			float sun = glm::clamp(std::cos(latitude) * 1.12f - 0.06f, 0.0f, 1.0f);
 
 			for (int x = 0; x < width; x++)
 			{
 				size_t at = m_Water.At(x, y);
 
-				float altitude = glm::max(m_Water.Land[at], 0.0f);
-
-				m_Water.Warmth[at] = glm::clamp(
-					sun - 0.55f * altitude / glm::max(m_Settings.Amplitude * 0.5f, 1.0f),
-					0.0f, 1.0f);
+				m_Water.Warmth[at] = sun;
 
 				// **Flow as a multiple of the cell's own catchment**, in
 				// decades. A cell that only ever collects its own rain reads
@@ -1546,6 +1757,29 @@ public:
 					0.40f * band + 0.35f * coastal + 0.45f * drained, 0.0f, 1.0f);
 			}
 		}
+
+		// **One moisture for the whole body**, area-weighted over its land.
+		// The climate model wants it because the lapse rate and the
+		// equator-to-pole heat transport are statements about a planet: a lake
+		// under the camera is not entitled to move the pole. Weighted by cell
+		// area because a row near the pole is a great deal narrower than one
+		// at the equator, and counting cells instead would make every planet
+		// look like its own ice caps.
+		double wet = 0.0, land = 0.0;
+
+		for (int y = 0; y < height; y++)
+			for (int x = 0; x < width; x++)
+			{
+				size_t at = m_Water.At(x, y);
+
+				if (m_Water.Land[at] <= 0.0f)
+					continue;
+
+				wet += (double)m_Water.Moisture[at] * (double)area[y];
+				land += (double)area[y];
+			}
+
+		m_MeanMoisture = land > 0.0 ? (float)(wet / land) : 0.0f;
 	}
 
 	// The wet mask: sea, or a basin whose spill height is above the ground.
@@ -1924,8 +2158,6 @@ public:
 		glm::dvec3 high = low + glm::dvec3(m_ChunkWorld);
 
 		float sea = m_Settings.OceanRadius;
-		float top = std::max(m_Settings.Amplitude * 0.5f
-			- (sea - m_Settings.Radius), 1.0f);
 
 		for (int i = 0; i < m_Settings.PlantsPerChunk; i++)
 		{
@@ -1952,7 +2184,7 @@ public:
 			// green does rather than marching up a snowfield.
 			float height = (float)(radius - (double)sea);
 
-			if (height < 0.8f || height / top > 0.62f)
+			if (height < 0.8f)
 				continue;
 
 			// **Off the ice, and out of the desert.**
@@ -1965,6 +2197,23 @@ public:
 			// and moisture puts the edge of the forest where the water stops.
 			float wet = SampleHydrology(m_Water.Moisture, direction);
 			float warm = SampleHydrology(m_Water.Warmth, direction);
+
+			// **The tree line, as the isotherm the shader paints it at.**
+			// The old cut was `height / top > 0.62` with `top` half the
+			// relief -- an altitude expressed as a fraction of the tallest
+			// hill, which stopped trees 87 m up on a planet whose forest floor
+			// the shader was still drawing green at 500 m. Nothing grows where
+			// the ground is too cold for wood, and that is a temperature.
+			if (m_Settings.TempEquator > 0.0f)
+			{
+				float seaLevel = glm::mix(m_Settings.TempPole,
+					m_Settings.TempEquator, warm);
+
+				float here = seaLevel - m_Settings.LapseRate * height;
+
+				if (here < m_Settings.Freeze + 6.0f)
+					continue;
+			}
 
 			if (warm < 0.22f || wet < 0.42f)
 				continue;
@@ -2139,6 +2388,8 @@ public:
 		entry.MeshPtr = std::make_shared<Egss::Mesh>(data, "PlanetChunk");
 		entry.Centre = ChunkCentreFixed(chunk);
 		entry.Origin = ChunkOriginFixed(chunk);
+
+		entry.GrassPtr = ChunkGrass(data, chunk, stride, entry.Origin);
 		entry.Triangles = data.Indices.size() / 3;
 		entry.Stride = stride;
 		entry.Coord = chunk;
@@ -2158,6 +2409,75 @@ public:
 			PlantChunk(chunk, entry.Plants);
 
 		m_Chunks[key] = std::move(entry);
+	}
+
+	// **Grass over one chunk's triangles.** The scattering itself is
+	// `Grass::Build`, shared with the flat-world demo; everything here is the
+	// two things that are specific to a planet.
+	//
+	// The first is which way is up, and it is not a constant. A chunk's mesh
+	// is measured from its own lattice origin -- a few tens of metres of float
+	// -- while that origin is a planet radius from the centre, so the vertical
+	// has to be recovered by adding the two back together **in double**. That
+	// is the same split the whole chunk system is built on, and getting it
+	// wrong here would tilt every blade by the angle the chunk subtends.
+	//
+	// The second is where grass belongs. It is asked of the same fields the
+	// surface is coloured from, so a blade never stands on a seabed, on rock
+	// above the tree line, or in a desert.
+	std::shared_ptr<Egss::Mesh> ChunkGrass(const Egss::MeshData& data,
+		const glm::ivec3& chunk, int stride, const glm::dvec3& origin) const
+	{
+		if (!m_Settings.Vegetated || stride != 1 || m_Settings.GrassDensity <= 0.0f)
+			return nullptr;
+
+		Grass::Settings settings;
+		settings.Density = m_Settings.GrassDensity;
+		settings.Height = m_Settings.GrassHeight;
+		// A blade is millimetres across whatever its height. Tying the width
+		// to the height gave 9 cm blades and a field of green shards.
+		settings.Width = 0.006f;
+
+		float sea = m_Settings.OceanRadius;
+		float top = m_Settings.Radius + ReliefReach();
+
+		auto direction = [origin](const glm::vec3& local)
+		{
+			return glm::normalize(origin + glm::dvec3(local));
+		};
+
+		Egss::MeshData blades = Grass::Build(data, settings,
+			(unsigned int)(chunk.x * 73 + chunk.y * 19 + chunk.z * 131),
+			[&direction](const glm::vec3& local)
+			{
+				return glm::vec3(direction(local));
+			},
+			[&, this](const glm::vec3& local, const glm::vec3&)
+			{
+				glm::dvec3 out = origin + glm::dvec3(local);
+
+				double radius = glm::length(out);
+				glm::vec3 where = glm::vec3(out / radius);
+
+				// Above the waterline, with a metre of margin so the beach
+				// itself stays sand.
+				float above = (float)(radius - (double)sea);
+
+				if (above < 1.0f || radius > (double)top)
+					return 0.0f;
+
+				// Dry ground grows less of it. The hydrology's own field, so
+				// the grass line and the biome colour cannot disagree.
+				float wet = MoistureAt(where);
+
+				return glm::smoothstep(1.0f, 4.0f, above)
+					* glm::smoothstep(0.25f, 0.55f, wet);
+			});
+
+		if (blades.Indices.empty())
+			return nullptr;
+
+		return std::make_shared<Egss::Mesh>(blades, "PlanetGrass");
 	}
 
 	// `MeshChunk`, plus the neighbours that meshing it just invalidated.
@@ -2684,6 +3004,12 @@ public:
 	{
 		std::shared_ptr<Egss::Mesh> MeshPtr;
 
+		// **Grass, on stride-1 chunks only.** Not a special case bolted on: a
+		// stride-2 chunk is the streamer saying this is far enough away to
+		// halve its detail, and grass is the first thing that should go. Null
+		// on every other chunk, and on every body with no vegetation.
+		std::shared_ptr<Egss::Mesh> GrassPtr;
+
 		// **In the planet's frame, in double, and the mesh is not.** The
 		// vertices in `MeshPtr` are measured from this chunk's own lattice
 		// origin and are never more than 24 m from it; this is where that
@@ -2712,6 +3038,31 @@ public:
 	bool HasChunkMesh(const glm::ivec3& chunk) const
 	{
 		return m_Chunks.count(Key(chunk)) != 0;
+	}
+
+	// Is every voxel a trilinear read at `about` will touch actually filled?
+	// A read runs from `about - 1` to `about + 1`, and a chunk that was never
+	// generated reads as a uniform far value rather than as an error -- which
+	// would show up in a measurement as terrain that is perfectly wrong.
+	bool ResidentAround(const glm::ivec3& about) const
+	{
+		const int size = Egss::VoxelField3D::ChunkSize;
+
+		// In double: a lattice index at 1:1 is about 4e6, which a float still
+		// holds exactly, but only just -- and this is the one file where
+		// "still exact today" has already been the wrong answer twice.
+		glm::ivec3 low = glm::ivec3(glm::floor(
+			glm::dvec3(about - glm::ivec3(1)) / (double)size));
+		glm::ivec3 high = glm::ivec3(glm::floor(
+			glm::dvec3(about + glm::ivec3(1)) / (double)size));
+
+		for (int z = low.z; z <= high.z; z++)
+		for (int y = low.y; y <= high.y; y++)
+		for (int x = low.x; x <= high.x; x++)
+			if (!m_Filled.count(Key(glm::ivec3(x, y, z))))
+				return false;
+
+		return true;
 	}
 
 	const Chunk* ChunkMesh(const glm::ivec3& chunk) const
@@ -2791,6 +3142,9 @@ public:
 	}
 
 private:
+	// Area-weighted over land, filled by BuildHydrology.
+	float m_MeanMoisture = 0.0f;
+
 	// **Twenty-one bits an axis, not sixteen.**
 	//
 	// Sixteen tops out at 65,535 chunks, which is a body 25 km across at
@@ -2920,7 +3274,12 @@ private:
 		// the small part is formed from the offset and the large part is
 		// carried alongside it rather than through it.
 		double CentreTangent = 0.0, CentreBitangent = 0.0, CentreNormal = 1.0;
-		glm::vec3 Centre { 0.0f };
+
+		// In double for the same reason the dot products are. A chunk centre
+		// at Earth's radius rounds to half a metre as a float, and the whole
+		// job of this member is to be subtracted from a nearby point -- so
+		// its rounding lands undiminished in an offset that is metres long.
+		glm::dvec3 Centre { 0.0 };
 
 		float Low = 0.0f;      // the (u, v) the grid starts at
 		float InverseStep = 1.0f;
@@ -3041,7 +3400,7 @@ private:
 		patch.Tangent = glm::normalize(glm::cross(pick, n));
 		patch.Bitangent = glm::cross(n, patch.Tangent);
 
-		patch.Centre = glm::vec3(centre);
+		patch.Centre = centre;
 		patch.CentreTangent = glm::dot(centre, glm::dvec3(patch.Tangent));
 		patch.CentreBitangent = glm::dot(centre, glm::dvec3(patch.Bitangent));
 		patch.CentreNormal = glm::dot(centre, glm::dvec3(patch.Normal));
@@ -3142,7 +3501,7 @@ public:
 				glm::dvec3 p = ChunkOriginFixed(chunk)
 					+ glm::dvec3(i2, j, k) * (double)m_Settings.VoxelSize;
 
-				glm::vec3 e = glm::vec3(p) - patch.Centre;
+				glm::vec3 e = glm::vec3(p - patch.Centre);
 
 				double normal = patch.CentreNormal
 					+ (double)glm::dot(e, patch.Normal);
@@ -3176,6 +3535,83 @@ public:
 			samples, 100.0 * worst / (double)m_Settings.VoxelSize);
 	}
 
+	// **Where the ground is, against where the generator says it is.**
+	//
+	// `Density` has an exact zero and it is one line of arithmetic: along a
+	// direction `d` the surface sits at radius `Radius + Relief(d)`. Nothing
+	// in the path being measured computes that -- not the chunk store, not
+	// the sparse encoding, not the trilinear reconstruction, and not the
+	// relief patch the fill actually interpolates. So stand on that point and
+	// ask the field how far it thinks it is from the surface. A field holding
+	// what it claims to hold answers zero; what it answers instead is how far
+	// the terrain has moved, in metres, because the field's gradient here is
+	// one by construction.
+	//
+	// This is the measurement for sampling the density in double. `FillChunk`
+	// used to evaluate the generator at `PositionOf` -- a float, and at a real
+	// planet's radius a *different point* by up to half a voxel -- while every
+	// reader of the field addressed the lattice exactly. The surface arrived
+	// displaced by the difference.
+	void ReportSurfaceError(const glm::dvec3& focus, float reach = 600.0f,
+		int samples = 8192) const
+	{
+		double length = glm::length(focus);
+
+		if (length < 1e-3 || !m_Field)
+			return;
+
+		glm::dvec3 n = focus / length;
+
+		glm::dvec3 pick = std::abs(n.y) < 0.9
+			? glm::dvec3(0.0, 1.0, 0.0) : glm::dvec3(1.0, 0.0, 0.0);
+
+		glm::dvec3 tangent = glm::normalize(glm::cross(pick, n));
+		glm::dvec3 bitangent = glm::cross(n, tangent);
+
+		double worst = 0.0, sum = 0.0;
+		long counted = 0, skipped = 0;
+
+		for (int i = 0; i < samples; i++)
+		{
+			// A sunflower spiral over the patch: equal area per sample, and
+			// no lattice of its own to line up with the voxel lattice and
+			// hide exactly the error being looked for.
+			double radius = (double)reach
+				* std::sqrt(((double)i + 0.5) / (double)samples);
+
+			double angle = (double)i * 2.399963229728653;
+
+			glm::dvec3 direction = glm::normalize(n
+				+ (tangent * std::cos(angle) + bitangent * std::sin(angle))
+					* (radius / (double)m_Settings.Radius));
+
+			// The exact surface, from the generator's own definition.
+			glm::dvec3 point = direction * ((double)m_Settings.Radius
+				+ (double)Relief(glm::vec3(direction)));
+
+			glm::ivec3 about = LatticeNear(point);
+
+			if (!ResidentAround(about))
+			{
+				skipped++;
+				continue;
+			}
+
+			double error = std::abs((double)m_Field->SampleDistanceFrom(
+				glm::vec3(point - LatticePosition(about)), about));
+
+			worst = glm::max(worst, error);
+			sum += error;
+			counted++;
+		}
+
+		EGSS_TRACE("Surface error: mean {0:.4f} m worst {1:.4f} m over {2} points "
+			"({3:.2f}% / {4:.2f}% of a {5:.2f} m voxel), {6} outside the streamed shell",
+			counted ? sum / (double)counted : 0.0, worst, counted,
+			100.0 * (counted ? sum / (double)counted : 0.0) / (double)m_Settings.VoxelSize,
+			100.0 * worst / (double)m_Settings.VoxelSize, m_Settings.VoxelSize, skipped);
+	}
+
 private:
 	// Fills one chunk through the patch, falling back to the exact generator
 	// when a patch would not pay for itself.
@@ -3186,20 +3622,21 @@ private:
 		if (!BuildReliefPatch(ChunkCentreFixed(chunk), patch))
 		{
 			m_Field->FillChunk(chunk,
-				[this](const glm::vec3& p) { return Density(p); }, 1);
+				[this](const glm::dvec3& p) { return DensityFixed(p); }, 1);
 
 			return;
 		}
 
 		float radius = m_Settings.Radius;
 
-		m_Field->FillChunk(chunk, [&patch, radius](const glm::vec3& p)
+		m_Field->FillChunk(chunk, [&patch, radius](const glm::dvec3& p)
 		{
-			// The offset is formed in float and is exact: `p` and the chunk
-			// centre are within a chunk of each other, so the subtraction
-			// itself loses nothing. The large half of each dot product was
-			// taken in double when the patch was built.
-			glm::vec3 e = p - patch.Centre;
+			// **Subtract first, then narrow.** The offset is a chunk long and
+			// is a float once it exists; what it must not be is the
+			// difference of two floats that were each rounded to half a metre
+			// on the way in. The large half of each dot product was taken in
+			// double when the patch was built.
+			glm::vec3 e = glm::vec3(p - patch.Centre);
 
 			double normal = patch.CentreNormal + (double)glm::dot(e, patch.Normal);
 
@@ -3211,7 +3648,11 @@ private:
 			float v = (float)((patch.CentreBitangent
 				+ (double)glm::dot(e, patch.Bitangent)) / normal);
 
-			return glm::length(p) - radius - patch.At(u, v);
+			// The one cancellation left, and the one that has to be in
+			// double: at Earth's radius `length(p)` and `radius` agree to six
+			// figures and everything the terrain is made of lives in what is
+			// left over.
+			return (float)(glm::length(p) - (double)radius) - patch.At(u, v);
 		}, 1);
 	}
 

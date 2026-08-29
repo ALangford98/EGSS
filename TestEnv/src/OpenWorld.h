@@ -57,6 +57,8 @@
 #include "Demo.h"
 #include "FirstPersonController.h"
 #include "ChunkCache.h"
+#include "Grass.h"
+#include "Rocks.h"
 
 #include <unordered_set>
 #include <unordered_map>
@@ -1563,7 +1565,9 @@ public:
 
 		int reach = (int)std::ceil(radius / s_ChunkWorld) + 1;
 
-		auto sdf = [this](const glm::vec3& p) { return Density(p); };
+		// Double in, float out: the field hands out an exact lattice
+		// position for planet-scale callers, and this world is 512 m wide.
+		auto sdf = [this](const glm::dvec3& p) { return Density(glm::vec3(p)); };
 
 		// **Nearest first.** This used to walk dz then dx, which fills a disc
 		// in scan-line order: the far edge of the first row arrives before the
@@ -1870,110 +1874,34 @@ public:
 		m_Chunks[key] = entry;
 	}
 
-	// Blades of grass, as geometry, built from the chunk's own triangles.
-	//
-	// One triangle a blade: a base edge across the slope and a point above it.
-	// A quad would be two triangles for a shape nobody can distinguish at the
-	// size these are drawn, and grass is the one thing here where the count is
-	// the cost.
-	//
-	// Placed on the terrain surface rather than on a grid, so blades follow
-	// the ground exactly and inherit the mesh's own density -- more triangles
-	// where the surface is busier is also where more grass looks right.
+	// Blades of grass, from the shared module. Everything specific to this
+	// world is in the two callbacks: up is +Y because this world is flat, and
+	// grass grows above the sand line. See `Grass.h` for why they are template
+	// parameters rather than `std::function`s.
 	//
 	// Only stride-1 chunks get grass. That is not a special case bolted on: a
 	// stride-2 chunk is already the renderer saying this is far enough away to
 	// halve its detail, and grass is the first thing that should go.
 	Egss::MeshData BuildGrass(const Egss::MeshData& terrain, const glm::ivec3& chunk) const
 	{
-		Egss::MeshData grass;
+		Grass::Settings settings;
+		settings.Density = m_GrassDensity;
+		settings.Height = m_GrassHeight;
+		settings.Width = m_GrassWidth;
 
-		if (m_GrassDensity <= 0.0f)
-			return grass;
+		unsigned int chunkSeed = (unsigned int)(chunk.x * 73 + chunk.y * 19
+			+ chunk.z * 131);
 
-		size_t triangles = terrain.Indices.size() / 3;
-		unsigned int seed = 977u + (unsigned int)(chunk.x * 73 + chunk.y * 19 + chunk.z * 131);
+		float low = m_GrassLow, high = m_GrassHigh;
 
-		for (size_t t = 0; t < triangles; t++)
-		{
-			const glm::vec3& a = terrain.Vertices[terrain.Indices[t * 3 + 0]].Position;
-			const glm::vec3& b = terrain.Vertices[terrain.Indices[t * 3 + 1]].Position;
-			const glm::vec3& c = terrain.Vertices[terrain.Indices[t * 3 + 2]].Position;
-
-			glm::vec3 centre = (a + b + c) / 3.0f;
-
-			glm::vec3 face = glm::cross(b - a, c - a);
-			float area2 = glm::length(face);
-			if (area2 < 1e-8f)
-				continue;
-
-			glm::vec3 n = face / area2;
-
-			// The same test the shader shades with, so a blade never appears on
-			// bare sand or on a face too steep to be green.
-			float high = glm::smoothstep(m_GrassLow, m_GrassHigh, centre.y);
-			float flatness = glm::smoothstep(0.55f, 0.88f, n.y);
-			float chance = high * flatness * m_GrassDensity;
-
-			if (chance <= 0.001f)
-				continue;
-
-			// Fractional density done honestly: the whole part is a guaranteed
-			// count and the remainder is a threshold, so 0.3 gives roughly
-			// three blades every ten triangles rather than none.
-			int count = (int)chance;
-			if (Hash2DUnit((int)t, 0, seed) < chance - (float)count)
-				count++;
-
-			for (int i = 0; i < count; i++)
+		return Grass::Build(terrain, settings, chunkSeed,
+			[](const glm::vec3&) { return glm::vec3(0.0f, 1.0f, 0.0f); },
+			[low, high](const glm::vec3& at, const glm::vec3&)
 			{
-				// Uniform inside the triangle: the sqrt is what stops the
-				// points bunching along one edge.
-				float u = Hash2DUnit((int)t, i * 3 + 1, seed);
-				float v = Hash2DUnit((int)t, i * 3 + 2, seed);
-				float su = std::sqrt(u);
-
-				glm::vec3 base = a + (b - a) * (su * (1.0f - v)) + (c - a) * (su * v);
-
-				float angle = Hash2DUnit((int)t, i * 3 + 3, seed) * 6.2831853f;
-				float height = m_GrassHeight * (0.65f + Hash2DUnit((int)t, i * 3 + 4, seed) * 0.7f);
-
-				glm::vec3 side(std::cos(angle) * m_GrassWidth, 0.0f, std::sin(angle) * m_GrassWidth);
-
-				// Leaning, and leaning the same way per blade: upright blades
-				// read as spikes, and a whole field of them looks like a bed of
-				// nails rather than grass.
-				glm::vec3 lean = glm::vec3(std::cos(angle + 1.57f), 0.0f, std::sin(angle + 1.57f))
-					* (height * 0.35f);
-
-				glm::vec3 tip = base + n * height + lean;
-
-				// Facing the lean, so a blade catches the light on its face
-				// rather than edge-on.
-				glm::vec3 bladeNormal = glm::normalize(glm::cross(side * 2.0f, tip - (base - side)));
-				if (glm::dot(bladeNormal, glm::vec3(0.0f, 1.0f, 0.0f)) < 0.0f)
-					bladeNormal = -bladeNormal;
-
-				unsigned int at = (unsigned int)grass.Vertices.size();
-				grass.Vertices.push_back({ base - side, bladeNormal, { 0.0f, 0.0f } });
-				grass.Vertices.push_back({ base + side, bladeNormal, { 1.0f, 0.0f } });
-				grass.Vertices.push_back({ tip,         bladeNormal, { 0.5f, 1.0f } });
-
-				grass.Indices.push_back(at);
-				grass.Indices.push_back(at + 1);
-				grass.Indices.push_back(at + 2);
-			}
-		}
-
-		if (grass.Indices.empty())
-			return grass;
-
-		Egss::Submesh all;
-		all.IndexCount = (unsigned int)grass.Indices.size();
-		grass.Submeshes.push_back(all);
-		grass.RecalculateBounds();
-
-		return grass;
+				// The same test the shader shades with, so a blade never
+				// appears on bare sand.
+				return glm::smoothstep(low, high, at.y);
+			});
 	}
 
 	// --- Level of detail --------------------------------------------------
@@ -2276,71 +2204,11 @@ public:
 	// soft gradient with a couple of bands crossing it; a faceted one is a set
 	// of flat plates, each a single shade, which is what makes it read as
 	// stone in this style at all.
+	// The boulder mesh moved to `Rocks.h` so the terrain lab could have it
+	// too. Kept as a one-line forward here rather than renaming every call.
 	static Egss::MeshData MakeRockMesh(unsigned int seed)
 	{
-		const int segments = 16, rings = 10;
-
-		auto point = [&](int i, int j)
-		{
-			// Wrap the seam so the last column is literally the first.
-			int wrapped = i % segments;
-
-			float u = (float)wrapped / (float)segments * 6.2831853f;
-			float v = (float)j / (float)rings * 3.14159265f;
-
-			// 0.84..1.0. Was 0.68..1.0 on a 9x6 lattice, which read as a lump
-			// of coal -- more facets and a shallower jitter give a boulder that
-			// is still faceted but no longer jagged. The ceiling stays at 1.0
-			// so the blob cannot leave the box that collides for it.
-			float radius = 0.84f + Hash2DUnit(wrapped, j, seed) * 0.16f;
-
-			// Poles pulled in a little, or a jittered pole spikes.
-			if (j == 0 || j == rings)
-				radius = 0.86f + Hash2DUnit(0, j, seed) * 0.10f;
-
-			return glm::vec3(
-				std::sin(v) * std::cos(u), std::cos(v), std::sin(v) * std::sin(u)) * radius;
-		};
-
-		Egss::MeshData data;
-
-		auto face = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
-		{
-			glm::vec3 n = glm::cross(b - a, c - a);
-			if (glm::length(n) < 1e-8f)
-				return;
-
-			n = glm::normalize(n);
-
-			unsigned int base = (unsigned int)data.Vertices.size();
-			data.Vertices.push_back({ a, n, { 0.0f, 0.0f } });
-			data.Vertices.push_back({ b, n, { 1.0f, 0.0f } });
-			data.Vertices.push_back({ c, n, { 0.5f, 1.0f } });
-			data.Indices.push_back(base);
-			data.Indices.push_back(base + 1);
-			data.Indices.push_back(base + 2);
-		};
-
-		for (int j = 0; j < rings; j++)
-		{
-			for (int i = 0; i < segments; i++)
-			{
-				glm::vec3 a = point(i, j), b = point(i + 1, j);
-				glm::vec3 c = point(i + 1, j + 1), d = point(i, j + 1);
-
-				// Degenerate at the poles, where the whole ring is one point --
-				// `face` drops those on the zero-area test.
-				face(a, b, c);
-				face(a, c, d);
-			}
-		}
-
-		Egss::Submesh all;
-		all.IndexCount = (unsigned int)data.Indices.size();
-		data.Submeshes.push_back(all);
-		data.RecalculateBounds();
-
-		return data;
+		return Boulder::Build(seed);
 	}
 
 	// Cuts a mesh with an axis-aligned plane and caps the hole, so the piece
@@ -3638,9 +3506,9 @@ public:
 
 	// --- Grass as geometry ---
 	bool m_Grass = true;
-	float m_GrassDensity = 0.6f;    // blades per qualifying terrain triangle
+	float m_GrassDensity = 55.0f;    // blades per qualifying terrain triangle
 	float m_GrassHeight = 0.42f;
-	float m_GrassWidth = 0.045f;
+	float m_GrassWidth = 0.007f;
 	int m_GrassDrawn = 0;
 	glm::vec4 m_BladeColour{ 0.26f, 0.44f, 0.15f, 1.0f };
 	float m_GrassLow = 1.1f;

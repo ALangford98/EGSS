@@ -70,6 +70,7 @@
 #include <imgui.h>
 
 #include <chrono>
+#include <set>
 
 #include "Demo.h"
 #include "Vegetation.h"
@@ -77,6 +78,53 @@
 #include "SurfaceWater.h"
 #include "HorizonMesh.h"
 #include "PocketDimension.h"
+#include "Climate.h"
+#include "WindStreaks.h"
+
+// **Sampling a sphere map across the seam it necessarily has.**
+//
+// Every one of these shaders builds its texture coordinate with `atan`, so `u`
+// runs 0..1 round the equator and wraps from 1 straight back to 0 along one
+// meridian. The value is right on both sides of that line; the *derivative* is
+// not. The hardware picks a mip level from the screen-space derivative of the
+// coordinate, and across the wrap that derivative is a whole texture wide --
+// so it selects the very top of the chain, where a texel is the average of the
+// entire map.
+//
+// From orbit that drew a two-pixel bright blue line down the middle of the
+// planet. At the top of the mip chain the wet mask averages to roughly the
+// ocean fraction, so along the seam the shell decided there was sea and
+// painted it over whatever land the meridian happened to cross.
+//
+// No sane sampling of a sphere moves half a texture in one pixel, so a
+// derivative that claims to has wrapped, and subtracting the nearest whole
+// turn recovers the true one. `textureGrad` is then given the gradient the
+// surface actually has and picks the level it would have picked anywhere else
+// along that meridian.
+static const char* s_SphereSample = R"(
+	vec4 SampleSphere(sampler2D map, vec2 uv)
+	{
+		vec2 dx = dFdx(uv);
+		vec2 dy = dFdy(uv);
+
+		dx.x -= round(dx.x);
+		dy.x -= round(dy.x);
+
+		return textureGrad(map, uv, dx, dy);
+	}
+)";
+
+// `#version` has to be the first thing in a shader, so the shared function
+// goes in immediately after it rather than at the front.
+static std::string WithSphereSample(std::string source)
+{
+	const std::string version = "#version 330 core";
+
+	size_t at = source.find(version);
+	EGSS_CORE_ASSERT(at != std::string::npos, "shader has no #version line");
+
+	return source.insert(at + version.size(), std::string("\n") + s_SphereSample);
+}
 
 class SolarSystem : public DemoLayer
 {
@@ -172,6 +220,16 @@ public:
 		float RingInner;
 		float RingOuter;
 		glm::vec3 RingColour;
+
+		// **Bond albedo: the fraction of all incident sunlight reflected back
+		// to space**, which is the one that belongs in an energy budget. Not
+		// the geometric albedo (how bright the disc looks face-on) and not
+		// `Colour`, which was picked to render well -- its luminance puts
+		// Earth at 0.46 and would make the equilibrium temperature 17 K too
+		// cold. Real measured values: Venus reflects three quarters of what
+		// reaches it at 0.76 and still has the hottest surface in the system,
+		// which is the greenhouse doing all of the work.
+		float BondAlbedo;
 	};
 
 	// Real numbers, because they cost nothing and the check at the bottom of
@@ -186,24 +244,24 @@ public:
 	{
 		static const std::vector<BodyDescription> table =
 		{
-			{ "Sun",      -1, 0.0,       696000.0, 1.0, 609.0,     0.0f,     { 1.00f, 0.86f, 0.42f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Sun",      -1, 0.0,       696000.0, 1.0, 609.0,     0.0f,     { 1.00f, 0.86f, 0.42f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.000f },
 
-			{ "Mercury",   0, 0.387,       2440.0, 1.660e-7, 1407.6, 0.034f,   { 0.62f, 0.58f, 0.54f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Venus",     0, 0.723,       6052.0, 2.448e-6, 5832.5, 177.4f,   { 0.92f, 0.80f, 0.55f }, 0.0410f, 22.5f, 1.0f, { 0.85f, 0.62f, 0.25f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Earth",     0, 1.000,       6371.0, 3.003e-6, 23.934, 23.4392911f, { 0.28f, 0.48f, 0.85f }, 0.0157f, 3.0f, 0.0f, { 0.22f, 0.45f, 1.00f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Mars",      0, 1.524,       3390.0, 3.227e-7, 24.623, 25.19f,   { 0.80f, 0.38f, 0.24f }, 0.0150f, 0.5f, 0.0f, { 0.80f, 0.45f, 0.30f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Jupiter",   0, 5.203,      69911.0, 9.545e-4, 9.925,  3.13f,    { 0.80f, 0.68f, 0.52f }, 0.0700f, 11.0f, 1.0f, { 0.75f, 0.62f, 0.45f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Saturn",    0, 9.537,      58232.0, 2.858e-4, 10.656, 26.73f,   { 0.88f, 0.80f, 0.60f }, 0.0800f, 9.6f, 1.0f, { 0.80f, 0.72f, 0.50f }, 1.24f, 2.27f, { 0.94f, 0.88f, 0.76f } },
-			{ "Uranus",    0, 19.191,     25362.0, 4.366e-5, 17.24,  97.77f,   { 0.60f, 0.85f, 0.88f }, 0.0700f, 11.0f, 1.0f, { 0.40f, 0.80f, 0.85f }, 1.60f, 2.01f, { 0.34f, 0.34f, 0.36f } },
-			{ "Neptune",   0, 30.070,     24622.0, 5.151e-5, 16.11,  28.32f,   { 0.30f, 0.44f, 0.86f }, 0.0700f, 11.0f, 1.0f, { 0.25f, 0.42f, 0.95f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Mercury",   0, 0.387,       2440.0, 1.660e-7, 1407.6, 0.034f,   { 0.62f, 0.58f, 0.54f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.088f },
+			{ "Venus",     0, 0.723,       6052.0, 2.448e-6, 5832.5, 177.4f,   { 0.92f, 0.80f, 0.55f }, 0.0410f, 22.5f, 1.0f, { 0.85f, 0.62f, 0.25f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.760f },
+			{ "Earth",     0, 1.000,       6371.0, 3.003e-6, 23.934, 23.4392911f, { 0.28f, 0.48f, 0.85f }, 0.0157f, 3.0f, 0.0f, { 0.22f, 0.45f, 1.00f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.306f },
+			{ "Mars",      0, 1.524,       3390.0, 3.227e-7, 24.623, 25.19f,   { 0.80f, 0.38f, 0.24f }, 0.0150f, 0.5f, 0.0f, { 0.80f, 0.45f, 0.30f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.250f },
+			{ "Jupiter",   0, 5.203,      69911.0, 9.545e-4, 9.925,  3.13f,    { 0.80f, 0.68f, 0.52f }, 0.0700f, 11.0f, 1.0f, { 0.75f, 0.62f, 0.45f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.503f },
+			{ "Saturn",    0, 9.537,      58232.0, 2.858e-4, 10.656, 26.73f,   { 0.88f, 0.80f, 0.60f }, 0.0800f, 9.6f, 1.0f, { 0.80f, 0.72f, 0.50f }, 1.24f, 2.27f, { 0.94f, 0.88f, 0.76f }, 0.342f },
+			{ "Uranus",    0, 19.191,     25362.0, 4.366e-5, 17.24,  97.77f,   { 0.60f, 0.85f, 0.88f }, 0.0700f, 11.0f, 1.0f, { 0.40f, 0.80f, 0.85f }, 1.60f, 2.01f, { 0.34f, 0.34f, 0.36f }, 0.300f },
+			{ "Neptune",   0, 30.070,     24622.0, 5.151e-5, 16.11,  28.32f,   { 0.30f, 0.44f, 0.86f }, 0.0700f, 11.0f, 1.0f, { 0.25f, 0.42f, 0.95f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.290f },
 
-			{ "Moon",      3, 0.002570,    1737.0, 3.694e-8, 655.7, 0.0f,     { 0.72f, 0.71f, 0.68f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Phobos",    4, 0.0000627,     11.3, 5.0e-15, 7.65,  0.0f,     { 0.55f, 0.50f, 0.46f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Io",        5, 0.002819,    1822.0, 4.490e-8, 42.46, 0.0f,     { 0.88f, 0.82f, 0.45f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Europa",    5, 0.004486,    1561.0, 2.413e-8, 85.2,  0.0f,     { 0.80f, 0.78f, 0.72f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Ganymede",  5, 0.007155,    2634.0, 7.450e-8, 171.7, 0.0f,     { 0.66f, 0.62f, 0.58f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Callisto",  5, 0.012585,    2410.0, 5.410e-8, 400.5, 0.0f,     { 0.48f, 0.45f, 0.44f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
-			{ "Titan",     6, 0.008168,    2575.0, 6.766e-8, 382.7, 0.0f,     { 0.85f, 0.65f, 0.30f }, 0.2300f, 2.7f, 0.8f, { 0.90f, 0.60f, 0.25f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f } },
+			{ "Moon",      3, 0.002570,    1737.0, 3.694e-8, 655.7, 0.0f,     { 0.72f, 0.71f, 0.68f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.110f },
+			{ "Phobos",    4, 0.0000627,     11.3, 5.0e-15, 7.65,  0.0f,     { 0.55f, 0.50f, 0.46f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.071f },
+			{ "Io",        5, 0.002819,    1822.0, 4.490e-8, 42.46, 0.0f,     { 0.88f, 0.82f, 0.45f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.630f },
+			{ "Europa",    5, 0.004486,    1561.0, 2.413e-8, 85.2,  0.0f,     { 0.80f, 0.78f, 0.72f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.680f },
+			{ "Ganymede",  5, 0.007155,    2634.0, 7.450e-8, 171.7, 0.0f,     { 0.66f, 0.62f, 0.58f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.430f },
+			{ "Callisto",  5, 0.012585,    2410.0, 5.410e-8, 400.5, 0.0f,     { 0.48f, 0.45f, 0.44f }, 0.0f, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.220f },
+			{ "Titan",     6, 0.008168,    2575.0, 6.766e-8, 382.7, 0.0f,     { 0.85f, 0.65f, 0.30f }, 0.2300f, 2.7f, 0.8f, { 0.90f, 0.60f, 0.25f }, 0.0f, 0.0f, { 0.0f, 0.0f, 0.0f }, 0.265f },
 		};
 
 		return table;
@@ -279,15 +337,22 @@ public:
 	// ground, standable slope, relief close enough to see, high ground within
 	// six kilometres, and water within walking distance. This one measured:
 	//
-	//     21 m above sea level, slope 0.103 where the lander stands,
-	//     233 m of relief inside 400 m, 187 m of high ground within 6 km,
-	//     and the shore 150 m away.
+	//     54.8 m above sea level, slope 0.066 where the lander stands,
+	//     138 m of relief inside 400 m, and the shore 240 m away.
+	//
+	// **Re-surveyed on 2026-08-28**, because it had to be: the continental
+	// shelf and the map's band limit changed the terrain everywhere, and a
+	// direction chosen against the old relief is a direction chosen against
+	// nothing. The old one -- (-0.660266340, -0.232047454, 0.714284480), 21 m
+	// up with the shore 150 m away -- came out underwater. **Anything that
+	// changes `Relief` invalidates this constant**, and the failure looks like
+	// a broken camera rather than a moved site.
 	//
 	// A shore at the foot of a mountain, which is about as much as one place
 	// can be asked to show.
 	static glm::vec3 DefaultSite()
 	{
-		return glm::vec3(-0.660266340f, -0.232047454f, 0.714284480f);
+		return glm::vec3(-0.851041138f, 0.153262675f, 0.502234519f);
 	}
 
 	// The planet-fixed heading from a site toward the highest ground within a
@@ -1013,12 +1078,54 @@ public:
 			glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
 	}
 
+	// **The wind a body's circulation actually reaches**, taken at 45 degrees
+	// because that is where the mid-latitude westerlies peak. The equator
+	// would give zero -- it is a cell boundary -- and the peak is the number
+	// that decides how fast a cloud band crosses a coastline.
+	float ReferenceWind(size_t index) const
+	{
+		if (index >= m_Bodies.size())
+			return 0.0f;
+
+		const Body& body = m_Bodies[index];
+
+		Climate::Site site;
+		site.StarDistanceAu = (float)StarDistanceAu(index);
+		site.Albedo = body.BondAlbedo;
+		site.AirColumn = body.AtmosphereFraction * body.AtmosphereDensity;
+		site.Gravity = (float)RealSurfaceGravity(index);
+		site.RotationHours = (float)body.RotationHours;
+		site.ObliquityDegrees = body.AxialTiltDegrees;
+		site.LatitudeDegrees = 45.0f;
+		site.CosZenith = 0.25f;
+
+		return Climate::At(site).WindSpeed;
+	}
+
 	// The cloud shell's own rotation: the same axis the body itself spins
-	// about, but at its own drift rate, so a cloud band does not stay glued
+	// about, but drifting relative to it, so a cloud band does not stay glued
 	// to the coastline under it.
+	//
+	// **The drift rate is a wind, not a constant.** It used to be
+	// `2 pi * 365.25 / 9` radians a year for every body in the system, which
+	// says a cloud goes round Jupiter in the same nine days it goes round the
+	// Moon -- and since Jupiter is forty times wider, that is a cloud moving
+	// forty times faster for no reason anyone could point at.
+	//
+	// Clouds move at the speed of the air they are in. So the accumulator
+	// counts *seconds* and each body converts them itself, at `v/R`: the
+	// angular rate of something travelling at wind speed round a sphere of
+	// that radius. A small body's clouds go round quickly because it is small.
+	// One accumulator still serves every body, because each rate is constant
+	// and the conversion is a multiplication.
 	glm::mat4 CloudMatrix(size_t index) const
 	{
-		return RotationMatrix(glm::vec3(SpinAxis(index)), SpinAngle(index) + m_CloudDrift);
+		double radius = glm::max(DrawnRadius(index), 1.0);
+
+		double drift = m_CloudSeconds * (double)ReferenceWind(index) / radius;
+
+		return RotationMatrix(glm::vec3(SpinAxis(index)),
+			SpinAngle(index) + drift);
 	}
 
 	// --- Planets ------------------------------------------------------------
@@ -1086,9 +1193,46 @@ public:
 			// Continents rather than ridge filaments -- see the note on
 			// `ContinentShare`. Roughly a planet-radius across, which is a
 			// handful of landmasses.
-			settings.ContinentShare = 0.62f;
+			settings.ContinentShare = 0.85f;
 			settings.ContinentSize = radius * 0.45f;
+
+			// The continental slope, as a share of the broad noise's range.
+			// See `Settings::ContinentEdge` -- this is what makes the
+			// coastline a coastline instead of a lace.
+			settings.ContinentEdge = 0.15f;
 			settings.PlantsPerChunk = 14;
+			settings.GrassDensity = 60.0f;
+			settings.GrassHeight = 0.75f;
+
+			// The tree line, from the same model the terrain shader is given.
+			// `ClimateBand` needs a generated planet to read a mean moisture
+			// off, and this runs before there is one, so the moisture here is
+			// the whole-planet default; the band moves by under a kelvin for
+			// it and the tree line by a few metres.
+			{
+				const Body& body = m_Bodies[index];
+
+				Climate::Site band;
+				band.StarDistanceAu = (float)StarDistanceAu(index);
+				band.Albedo = body.BondAlbedo;
+				band.AirColumn = body.AtmosphereFraction * body.AtmosphereDensity;
+				band.Gravity = (float)RealSurfaceGravity(index);
+				band.RotationHours = (float)body.RotationHours;
+				band.ObliquityDegrees = body.AxialTiltDegrees;
+				band.Moisture = 0.58f;
+				band.Altitude = 0.0f;
+
+				band.LatitudeDegrees = 0.0f;
+				band.CosZenith = Climate::MeanCosZenith(0.0f, band.ObliquityDegrees);
+				settings.TempEquator = Climate::At(band).Temperature;
+
+				band.LatitudeDegrees = 90.0f;
+				band.CosZenith = Climate::MeanCosZenith(90.0f, band.ObliquityDegrees);
+				settings.TempPole = Climate::At(band).Temperature;
+
+				settings.LapseRate = 0.001f * Climate::LapseRate(
+					band.Gravity, band.Moisture);
+			}
 
 			// Finer ridges than the other bodies get, because the continents
 			// are already carrying the large shapes here -- without this the
@@ -1669,6 +1813,13 @@ public:
 		// in the log beside the timing every time a site is prepared.
 		planet.ReportReliefError(focus);
 
+		// And what the whole fill path costs end to end, against the one
+		// line of arithmetic that says where the ground is. The patch
+		// error above is one contributor to this number; sampling the
+		// density at a float lattice position used to be the other, and
+		// at `--earth-radius 6371000` it was much the larger of the two.
+		planet.ReportSurfaceError(focus, m_LoadRadius * scale * 0.8f);
+
 		planet.SetPrefilling(false);
 
 		EGSS_TRACE("  site cache: {0} chunks read, {1} written",
@@ -1771,6 +1922,253 @@ public:
 		return m_SiteFixed + glm::dvec3(local);
 	}
 
+	// --- Weather ------------------------------------------------------------
+	//
+	// **A moon is as far from the star as its planet is.** Io's own orbit is
+	// 0.0028 AU across, which is inside the width of the line on any plot of
+	// where Jupiter is. Walking up to the body that orbits the star directly
+	// is both simpler and more nearly true than summing the chain.
+	double StarDistanceAu(size_t index) const
+	{
+		size_t at = index;
+
+		while (m_Bodies[at].Parent > 0)
+			at = (size_t)m_Bodies[at].Parent;
+
+		return m_Bodies[at].SemiMajorAu;
+	}
+
+	// Fills in everything `Climate::At` needs about one point on one body.
+	// `sceneDirection` is the outward unit normal in scene coordinates;
+	// `altitude` is metres above that body's sea level.
+	Climate::Site SiteWeather(size_t index, const glm::dvec3& sceneDirection,
+		float altitude) const
+	{
+		Climate::Site site;
+
+		const Body& body = m_Bodies[index];
+
+		site.StarDistanceAu = (float)StarDistanceAu(index);
+		site.Albedo = body.BondAlbedo;
+		site.AirColumn = body.AtmosphereFraction * body.AtmosphereDensity;
+		site.Gravity = (float)RealSurfaceGravity(index);
+		site.RotationHours = (float)body.RotationHours;
+		site.ObliquityDegrees = body.AxialTiltDegrees;
+		site.Altitude = altitude;
+
+		glm::dvec3 up = glm::normalize(sceneDirection);
+
+		// Both of these are in scene coordinates already, so the axial tilt
+		// and the time of day are in them without either being mentioned
+		// here: the sun moves because the body turns, and the seasons happen
+		// because the axis it turns about is not the orbit's.
+		site.CosZenith = (float)glm::dot(up, glm::dvec3(SunDirection(index)));
+
+		site.LatitudeDegrees = glm::degrees((float)std::asin(
+			glm::clamp(glm::dot(up, SpinAxis(index)), -1.0, 1.0)));
+
+		// Moisture is a property of the ground, so it is asked for in the
+		// frame the ground is fixed in rather than the one it is drawn in.
+		auto it = m_Planets.find(index);
+
+		site.Moisture = it != m_Planets.end()
+			? it->second.MoistureAt(glm::vec3(ToFixed(index, up)))
+			: 0.0f;
+
+		return site;
+	}
+
+	// **The two ends of a body's climate, which is all the terrain needs.**
+	//
+	// Annual-mean sea-level temperature at the equator and at the pole. The
+	// shader has the latitude already (the map's warmth channel is a cosine of
+	// it) and the altitude already (it computes the shading height anyway), so
+	// interpolating between these two and subtracting a lapse rate puts a
+	// temperature on every fragment for the price of three uniforms.
+	//
+	// Setting `CosZenith` to the latitude's own annual mean is what makes
+	// these annual rather than instantaneous: the model blends the sun's
+	// current angle toward the daily mean, and when the two are equal the
+	// blend has nothing left to do. So the snow line does not slide up and
+	// down the mountain as the sun crosses the sky, which is right -- snow
+	// takes a season to melt, not an afternoon.
+	//
+	// **This is meaningless on an airless body, and deliberately not fixed.**
+	// Temperature goes as the fourth root of flux, which is concave, so the
+	// temperature of the mean flux is not the mean of the temperature -- and
+	// on a body with nothing to carry heat through the night the two are
+	// hundreds of degrees apart. Asked for the Moon's equator this returns
+	// 26 C, where the real annual mean is about -20. It does not matter,
+	// because `Biome` takes its airless branch and returns before it reaches
+	// the snow line at all, and computing the integral properly would be
+	// arithmetic nothing reads. If something ever does read it for an airless
+	// body, this is the thing that is wrong.
+	//
+	// On a body with air the objection nearly vanishes: `Redistribution` is
+	// 0.97 for Earth, so the flux being averaged is already almost constant
+	// over the day and there is very little concavity left to bite.
+	void ClimateBand(size_t index, float& equator, float& pole) const
+	{
+		Climate::Site site;
+
+		const Body& body = m_Bodies[index];
+
+		site.StarDistanceAu = (float)StarDistanceAu(index);
+		site.Albedo = body.BondAlbedo;
+		site.AirColumn = body.AtmosphereFraction * body.AtmosphereDensity;
+		site.Gravity = (float)RealSurfaceGravity(index);
+		site.RotationHours = (float)body.RotationHours;
+		site.ObliquityDegrees = body.AxialTiltDegrees;
+		site.Altitude = 0.0f;
+
+		auto it = m_Planets.find(index);
+
+		// The body's own mean, rather than a point's: this is a statement
+		// about the whole planet's climate, and a lake under the camera is
+		// not entitled to move the pole.
+		site.Moisture = it != m_Planets.end() ? it->second.MeanMoisture() : 0.0f;
+
+		site.LatitudeDegrees = 0.0f;
+		site.CosZenith = Climate::MeanCosZenith(0.0f, site.ObliquityDegrees);
+		equator = Climate::At(site).Temperature;
+
+		site.LatitudeDegrees = 90.0f;
+		site.CosZenith = Climate::MeanCosZenith(90.0f, site.ObliquityDegrees);
+		pole = Climate::At(site).Temperature;
+	}
+
+	// **Every line of this is derived, and the panel says which.** A number
+	// on a HUD that someone typed into a slider teaches nothing; the same
+	// number with the flux it came from beside it is the model showing its
+	// working. So the insolation is printed next to the temperature it
+	// produced, and the equilibrium next to the greenhouse that is the
+	// difference between it and the ground.
+	void WeatherPanel()
+	{
+		if (!m_HasWeather)
+		{
+			ImGui::TextDisabled("no weather here -- vacuum");
+			return;
+		}
+
+		const Climate::Weather& w = m_Weather;
+		const Climate::Site& site = m_WeatherSite;
+
+		// Kelvin is the physics and Celsius is what a person reads.
+		ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.5f, 1.0f),
+			"%.1f C  (%.1f K)", w.Temperature - 273.15f, w.Temperature);
+
+		bool day = site.CosZenith > 0.0f;
+
+		ImGui::Text("  sun %.0f deg %s the horizon, %s",
+			glm::degrees(std::asin(glm::clamp(site.CosZenith, -1.0f, 1.0f))),
+			day ? "above" : "below", day ? "day" : "night");
+
+		ImGui::Text("  %.0f W/m^2 in, %.0f W/m^2 arriving at the top",
+			w.Insolation, w.SolarConstant);
+
+		ImGui::Text("  equilibrium %.1f K, greenhouse +%.1f K",
+			w.Equilibrium, w.Greenhouse);
+
+		ImGui::Text("  lapse %.2f K/km over %.0f m of altitude",
+			w.LapseRate, site.Altitude);
+
+		ImGui::Text("  %.1f kPa, scale height %.0f m, air %.3f kg/m^3",
+			w.Pressure * 0.001f, w.ScaleHeight, w.AirDensity);
+
+		// Which way the wind is going, said as a bearing, because "north-east
+		// at 4 m/s" is a sentence and a vector is not.
+		if (w.WindSpeed < 0.05f)
+		{
+			ImGui::Text("  calm");
+		}
+		else
+		{
+			static const char* points[8] = {
+				"N", "NE", "E", "SE", "S", "SW", "W", "NW" };
+
+			// Bearing of the direction the wind is blowing *towards*,
+			// clockwise from north. `Wind.x` is east and `Wind.y` is north.
+			float bearing = glm::degrees(std::atan2(w.Wind.x, w.Wind.y));
+
+			if (bearing < 0.0f)
+				bearing += 360.0f;
+
+			int point = ((int)std::lround(bearing / 45.0f)) % 8;
+
+			ImGui::Text("  wind %.1f m/s toward %s (%.0f deg), lat %.1f",
+				w.WindSpeed, points[point], bearing, site.LatitudeDegrees);
+		}
+
+		ImGui::Text("  moisture %.2f, albedo %.3f, air column %.4f",
+			site.Moisture, site.Albedo, site.AirColumn);
+	}
+
+	// The weather where the camera is, recomputed every fixed step so a
+	// replay sees the same numbers. Airless bodies and deep space both come
+	// back as the default `Weather`, which is all zeros and no wind.
+	void StepWeather()
+	{
+		m_Weather = Climate::Weather();
+		m_HasWeather = false;
+		m_WindFixed = glm::vec3(0.0f);
+		m_WindScene = glm::vec3(0.0f);
+
+		size_t index = m_Walking ? (size_t)m_Ground : m_Frame;
+
+		if (index == 0 || index >= m_Bodies.size() || m_Pocket.InPocket())
+			return;
+
+		glm::dvec3 fixedAt = m_Walking
+			? SiteFixed(m_World.GetBody(m_Player).Position)
+			: ToFixed(index, m_Local);
+
+		double distance = glm::length(fixedAt);
+
+		if (distance < 1.0)
+			return;
+
+		glm::dvec3 up = fixedAt / distance;
+
+		auto it = m_Planets.find(index);
+
+		double sea = it != m_Planets.end()
+			? (double)it->second.Get().OceanRadius
+			: DrawnRadius(index);
+
+		m_WeatherSite = SiteWeather(index, ToScene(index, up),
+			(float)(distance - sea));
+
+		m_Weather = Climate::At(m_WeatherSite);
+		m_HasWeather = true;
+
+		// **The wind as a vector, worked out once.** The model answers in east
+		// and north because that is what a circulation is described in; the
+		// physics wants a push and the trees want a direction to lean. Doing
+		// the conversion here rather than at each call site is what stops a
+		// gust shoving the player one way and the grass beside them another.
+		//
+		// The site frame is a pure translation of the body's fixed frame, so a
+		// direction built here is usable in the physics without rotation, and
+		// `ToScene` puts the same vector in the frame things are drawn in.
+		glm::dvec3 east = glm::cross(SpinAxis(index), up);
+		double span = glm::length(east);
+
+		// On the pole east has no direction -- and no wind either, since 90
+		// degrees is a cell boundary, so there is nothing to special-case.
+		if (span < 1e-9)
+			return;
+
+		east /= span;
+
+		glm::dvec3 north = glm::cross(up, east);
+
+		m_WindFixed = glm::vec3(east * (double)m_Weather.Wind.x
+			+ north * (double)m_Weather.Wind.y);
+
+		m_WindScene = glm::vec3(ToScene(index, glm::dvec3(m_WindFixed)));
+	}
+
 	void ApplyGravity()
 	{
 		// A pocket dimension is not on any planet, so it does not get a
@@ -1809,6 +2207,126 @@ public:
 			float mass = 1.0f / body.InverseMass;
 
 			m_World.ApplyForce(BodyHandleOf(body), toCentre * acceleration * mass);
+		}
+	}
+
+	// **The mean area a shape presents to a wind that can come from
+	// anywhere**, which is a theorem rather than a choice.
+	//
+	// Cauchy's formula: averaged over every orientation, the projected area of
+	// any convex body is a quarter of its surface area. So there is no
+	// per-shape guess and no "pick the biggest face" -- one rule covers the
+	// sphere, the capsule and the box, and it reduces correctly: a sphere's
+	// 4 pi r^2 over four is pi r^2, which is exactly the disc it presents from
+	// every direction anyway.
+	//
+	// The alternative was orienting each collider against the wind every step,
+	// which for a tumbling rock is a more precise answer to a question nobody
+	// asked -- the rock is tumbling, so the average is the honest number.
+	static float CrossSection(const Egss::RigidBody3D& body)
+	{
+		const float pi = glm::pi<float>();
+
+		switch (body.Shape)
+		{
+			case Egss::ColliderShape3D::Sphere:
+				return pi * body.Radius * body.Radius;
+
+			case Egss::ColliderShape3D::Capsule:
+			{
+				// A cylinder's side plus two hemispheres making one sphere.
+				float side = 2.0f * pi * body.Radius * (2.0f * body.HalfHeight);
+				float caps = 4.0f * pi * body.Radius * body.Radius;
+
+				return (side + caps) * 0.25f;
+			}
+
+			case Egss::ColliderShape3D::Box:
+			{
+				const glm::vec3& h = body.HalfExtents;
+
+				return 2.0f * (h.x * h.y + h.y * h.z + h.z * h.x);
+			}
+
+			default:
+				return pi * body.Radius * body.Radius;
+		}
+	}
+
+	// **Drag is the only way air touches anything.**
+	//
+	// `F = 1/2 rho Cd A |v| v`, with rho out of the weather, A off the
+	// collider, and v the wind *relative to the body*. That last part is what
+	// makes it drag rather than a push: standing still in a gale is shoved
+	// hardest, moving downwind is barely touched, and something already
+	// travelling at wind speed feels nothing at all. It also means the same
+	// expression is what slows a thrown rock down, with no wind at all.
+	//
+	// 0.8 is the measured drag coefficient of a rounded body -- a sphere is
+	// 0.47, a person about 1.0, a car 0.3. One number for everything here,
+	// because the shapes are spheres, capsules and boxes and the difference
+	// between them is smaller than the difference between this model and a
+	// real boundary layer.
+	//
+	// The magnitudes are worth knowing before looking for the effect, and
+	// these are measured rather than estimated. The player is a capsule of
+	// radius 0.4 and half-height 0.9, so Cauchy gives it 1.6336 m^2, and it
+	// weighs 78 kg. The default site's 3.9 m/s breeze then puts
+	// 0.5 * 1.2078 * 0.8 * 1.6336 * 3.91^2 = **12.07 N** on it, which is
+	// 0.155 m/s^2 and is *meant* to be nearly imperceptible -- that is what a
+	// light breeze does to a person. The same line at 30 m/s gives 720 N and
+	// 9.2 m/s^2, which is more than this planet's gravity and would take you
+	// off your feet. One expression, four orders of magnitude apart.
+	void ApplyWind()
+	{
+		if (!m_HasWeather || m_Pocket.InPocket() || m_Ground < 0)
+			return;
+
+		float density = m_Weather.AirDensity;
+
+		if (density <= 1e-6f || m_Weather.WindSpeed < 1e-4f)
+			return;
+
+		auto it = m_Planets.find((size_t)m_Ground);
+
+		for (Egss::RigidBody3D& body : m_World.GetBodies())
+		{
+			if (body.Type != Egss::BodyType::Dynamic || body.InverseMass <= 0.0f)
+				continue;
+
+			// **How much of the ten-metre wind reaches this body**, which for
+			// anything lying on the ground is not much. See
+			// `Climate::WindFraction`: without it a 3.9 m/s breeze rolls
+			// boulders across the landscape, because a boulder was being given
+			// the wind measured a storey above it.
+			glm::vec3 wind = m_WindFixed;
+
+			if (it != m_Planets.end())
+			{
+				glm::dvec3 at = SiteFixed(body.Position);
+				double distance = glm::length(at);
+
+				if (distance > 1.0)
+				{
+					glm::vec3 direction = glm::vec3(at / distance);
+
+					float above = (float)(distance
+						- (double)it->second.SurfaceRadius(direction));
+
+					wind *= Climate::WindFraction(above);
+				}
+			}
+
+			glm::vec3 relative = wind - body.Velocity;
+			float speed = glm::length(relative);
+
+			if (speed < 1e-4f)
+				continue;
+
+			float force = 0.5f * density * s_DragCoefficient
+				* CrossSection(body) * speed;
+
+			m_World.ApplyForce(BodyHandleOf(body), relative * force);
 		}
 	}
 
@@ -2192,6 +2710,7 @@ public:
 		}
 
 		ApplyGravity();
+		ApplyWind();
 		ApplyBuoyancy();
 		m_World.Step(dt);
 
@@ -2265,6 +2784,9 @@ public:
 
 		StreamTerrain();
 
+		// After the frame is chosen and before anything reads the weather.
+		StepWeather();
+
 		// **The clock has to follow the camera, not the other way round.**
 		// A day on Earth is 1/365 of a year, so at a time scale that makes
 		// orbits visible it passes in a fiftieth of a second and the surface
@@ -2307,7 +2829,10 @@ public:
 		// Once a call, not once a substep: this is a slow visual drift, not
 		// an orbit, so it carries none of the aliasing risk TrackPeriods is
 		// guarding against above.
-		m_CloudDrift += dt * m_CloudDriftRate;
+		//
+		// Seconds, because `CloudMatrix` turns them into an angle per body at
+		// that body's own wind speed and radius. See the note there.
+		m_CloudSeconds += dt * s_SecondsPerYear;
 
 		CarryWithTheAir(dt);
 
@@ -2819,6 +3344,39 @@ public:
 		material->Set("u_Unspin", glm::transpose(SpinMatrix(index)));
 		material->Set("u_HazeDensity", m_Bodies[index].AtmosphereDensity * m_HazeScale);
 
+		// The same scale height the shell marches with -- a quarter of the
+		// shell's thickness -- because the two are describing one atmosphere
+		// and a fragment sits under both of them. Drifting them apart would
+		// put a step in the haze exactly where the shell takes over, which is
+		// the horizon, which is the one place it would be seen.
+		{
+			float equator = 0.0f, pole = 0.0f;
+			ClimateBand(index, equator, pole);
+
+			material->Set("u_TempEquator", equator);
+			material->Set("u_TempPole", pole);
+
+			// Per metre, because the shader's height is in metres. The
+			// moisture is the body's mean for the same reason the band is.
+			auto plant = m_Planets.find(index);
+
+			float moisture = plant != m_Planets.end()
+				? plant->second.MeanMoisture() : 0.0f;
+
+			material->Set("u_LapseRate", 0.001f * Climate::LapseRate(
+				(float)RealSurfaceGravity(index), moisture));
+
+			// Water melts at 273.15 K. It is a uniform rather than a constant
+			// because the thing that freezes on a body need not be water --
+			// Titan's lakes are methane at 91 K -- and this is where that
+			// would be said.
+			material->Set("u_Freeze", 273.15f);
+		}
+
+		material->Set("u_AirScaleHeight",
+			(float)(radius * (double)m_Bodies[index].AtmosphereFraction
+				* (double)m_AirScale * 0.25));
+
 		// A planet with no sea gets a waterline below its deepest valley, so
 		// every point on it is "land" and the altitude ramp is all that runs.
 		SetBiome(material, index, generated
@@ -2832,6 +3390,13 @@ public:
 		if (generated)
 			material->SetTexture("u_Map", it->second.Map(), 0);
 
+		// **The sphere has no reference point and does not need one.** It is a
+		// body-sized ball, so an offset from anything on it is body-sized too
+		// and the identity in the shader would be computing `e.e` at 1e14.
+		// When it is drawn at all you are far enough away that half a metre of
+		// shading height is a fraction of a pixel. See `u_ReferenceAltitude`.
+		material->Set("u_HasReference", 0.0f);
+
 		Egss::Renderer::Submit(material, m_Sphere,
 			glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(centre)),
 				glm::vec3(drawn)));
@@ -2840,6 +3405,18 @@ public:
 			return;
 
 		material->Set("u_HasMap", 0.0f);
+		material->Set("u_HasReference", 1.0f);
+
+		// The waterline this body's chunks are measured against, in double, so
+		// that each chunk's reference altitude is the small number it should
+		// be rather than a difference taken on the GPU.
+		//
+		// **Unscaled, and it is allowed to be**: `meshed` implies `isNear`,
+		// and `BodyPlacement` returns a scale of exactly 1 for the body you
+		// are standing on. Everything else the shader compares this against --
+		// `u_SeaDepth`, `u_Beach` -- carries the scale, so if a compressed
+		// body ever grew chunks this would need it too.
+		double sea = SeaRadiusOf(index, it->second.Get());
 
 		// **A transform per chunk, and the sum inside it done in double.**
 		//
@@ -2853,12 +3430,62 @@ public:
 		// all in [-1, 1] and lose nothing.
 		glm::mat4 spin = SpinMatrix(index);
 
+		// Built on first use: most bodies have no grass at all, and a material
+		// instance per frame for a body that never draws one is pure waste.
+		std::shared_ptr<Egss::Material> grass;
+
+		// **The gust travels in the planet's frame, so its axis lives there.**
+		// The lean itself still uses the scene-frame wind, because the
+		// vertices it displaces are in that frame -- the two are the same
+		// vector seen from two places, and keeping them apart is what stops
+		// the ripple moving when the camera does.
+		glm::vec3 gustAxis = glm::length(m_WindFixed) > 1e-5f
+			? glm::normalize(m_WindFixed) : glm::vec3(1.0f, 0.0f, 0.0f);
+
 		for (const auto& [key, chunk] : it->second.Chunks())
 		{
-			glm::vec3 placed = glm::vec3(centre + ToScene(index, chunk.Origin));
+			glm::dvec3 turned = ToScene(index, chunk.Origin);
+			glm::vec3 placed = glm::vec3(centre + turned);
+
+			// **The chunk's own origin is the reference.** It is already the
+			// point every vertex in this mesh is measured from, so the offset
+			// the shader forms is exactly `a_Position` up to the spin -- a few
+			// tens of metres, and exact as a float. The radius is
+			// rotation-invariant, so it comes from the unturned original.
+			SetReference(material, placed, turned,
+				glm::length(chunk.Origin), sea);
 
 			Egss::Renderer::Submit(material, chunk.MeshPtr,
 				glm::translate(glm::mat4(1.0f), placed) * spin);
+
+			// Grass rides the same transform: it was scattered over this
+			// chunk's own triangles, so it is in the chunk's frame already.
+			if (chunk.GrassPtr)
+			{
+				if (!grass)
+				{
+					grass = Egss::Material::CreateInstance(m_GrassMaterial);
+					DressGrass(grass, index);
+				}
+
+				// Per chunk, because it is where the chunk sits along the
+				// wind. Cheap: the material is bound per draw anyway, so this
+				// rides along with uniforms that were already being sent.
+				grass->Set("u_GustOffset",
+					GustPhase(chunk.Origin, glm::dvec3(gustAxis)));
+
+				// **How much of this chunk's grass to draw.** Full inside
+				// 20 m, a fifth by the edge of the stride-1 radius. The
+				// distance is the chunk's, so every blade in it agrees -- see
+				// the note in the shader for why that matters.
+				float away = glm::length(placed);
+
+				grass->Set("u_Keep", glm::mix(1.0f, 0.20f,
+					glm::smoothstep(20.0f, 52.0f, away)));
+
+				Egss::Renderer::Submit(grass, chunk.GrassPtr,
+					glm::translate(glm::mat4(1.0f), placed) * spin);
+			}
 		}
 
 		// **And the world past the chunks.** The same material with the same
@@ -2869,12 +3496,23 @@ public:
 		// is no reason to make the driver work for it.
 		if (m_Horizon.Valid() && m_Walking && (size_t)m_Ground == index)
 		{
+			glm::dvec3 turned = ToScene(index, m_Horizon.Site());
+			glm::vec3 placed = glm::vec3(centre + turned);
+
+			// The same treatment, and the reason the shader's identity is
+			// written without a small-`e` assumption: this mesh reaches
+			// fourteen kilometres from its site, where a Taylor expansion
+			// would be carrying a 15 m second-order term.
+			SetReference(material, placed, turned,
+				glm::length(m_Horizon.Site()), sea);
+
 			Egss::Renderer::Submit(material, m_Horizon.Mesh(),
-				glm::translate(glm::mat4(1.0f),
-					glm::vec3(centre + ToScene(index, m_Horizon.Site()))) * spin);
+				glm::translate(glm::mat4(1.0f), placed) * spin);
 		}
 
 		DrawPlants(index, it->second, centre, spin);
+
+		DrawWindStreaks(index);
 	}
 
 	// **What the sky over this body is worth as a light.**
@@ -2929,16 +3567,39 @@ public:
 		return m_SunLight * m_StarBrightness * tint * (0.55f * air * elevation);
 	}
 
+	// **What one draw needs so the shader never forms a planet-sized float.**
+	//
+	// `placed` is the reference in camera-relative coordinates, which is what
+	// the vertex stage subtracts; `turned` is the same point measured from the
+	// planet's centre in the scene's orientation, which is what gives the
+	// radial direction; `radius` is its distance from the centre, taken from
+	// the *unturned* original because a spin is a rotation and cannot change
+	// it. `altitude` is the only one that had to be a subtraction, and it
+	// happens here in double.
+	static void SetReference(const std::shared_ptr<Egss::Material>& material,
+		const glm::vec3& placed, const glm::dvec3& turned, double radius,
+		double sea)
+	{
+		material->Set("u_Reference", placed);
+		material->Set("u_ReferenceNormal",
+			glm::vec3(turned / glm::max(radius, 1e-9)));
+		material->Set("u_ReferenceRadius", (float)radius);
+		material->Set("u_ReferenceAltitude", (float)(radius - sea));
+	}
+
 	// The palette and the waterline, which the terrain and the sea both need
 	// and neither owns.
 	void SetBiome(const std::shared_ptr<Egss::Material>& material, size_t index,
 		const VoxelPlanet::Settings& settings, float scale = 1.0f) const
 	{
-		float radius = (float)DrawnRadius(index);
+		double sea = SeaRadiusOf(index, settings);
 
 		material->Set("u_Vegetated", settings.Vegetated ? 1.0f : 0.0f);
-		material->Set("u_SeaRadius", scale * (settings.HasOcean
-			? settings.OceanRadius : radius - ReliefOf(settings, radius)));
+		material->Set("u_SeaRadius", (float)((double)scale * sea));
+
+		// The one the shader actually shades from. See `SeaRadiusOf`.
+		material->Set("u_SeaDepth",
+			(float)((double)scale * (sea - DrawnRadius(index))));
 
 		material->Set("u_Shallow", settings.Shallow);
 		material->Set("u_Deep", settings.Deep);
@@ -2957,11 +3618,26 @@ public:
 		// Three voxels of shore: enough to read as a beach from a distance and
 		// not so much that it becomes the landscape.
 		material->Set("u_Beach", scale * 3.0f * glm::max(settings.VoxelSize, 0.1f));
+
 	}
 
 	static float ReliefOf(const VoxelPlanet::Settings& settings, float radius)
 	{
 		return settings.Amplitude > 0.0f ? settings.Amplitude : radius * 0.085f;
+	}
+
+	// **The waterline, in double, because everything that wants it wants the
+	// difference from the radius rather than the number itself.** Both are
+	// about 6.4e6 at 1:1 and the answer is a few hundred metres, so whoever
+	// takes that subtraction decides how well the shore is known -- and the
+	// GPU, in float, knew it to half a metre. Taken here instead, and the
+	// small result is what crosses.
+	double SeaRadiusOf(size_t index, const VoxelPlanet::Settings& settings) const
+	{
+		double radius = DrawnRadius(index);
+
+		return settings.HasOcean ? (double)settings.OceanRadius
+			: radius - (double)ReliefOf(settings, (float)radius);
 	}
 
 	// --- Trees ---------------------------------------------------------------
@@ -3176,6 +3852,113 @@ public:
 			triangles / (s_TreeShapes * s_TreeLods));
 	}
 
+	// **The wind, as something you can see.** See `WindStreaks.h` for what
+	// these are and are not.
+	//
+	// Only from the ground, and only in air: from orbit there is nothing to
+	// draw streaks *in*, and the same field seen from 750 km would be a haze
+	// of specks over the whole disc. The strength goes as the wind speed
+	// itself, so a calm day draws nothing at all rather than drawing a still
+	// field of strokes -- which would be worse than drawing none.
+	void DrawWindStreaks(size_t index)
+	{
+		if (!m_Walking || (size_t)m_Ground != index || m_Pocket.InPocket())
+			return;
+
+		if (!m_HasWeather || !m_StreakMesh || m_Weather.AirDensity <= 1e-4f)
+			return;
+
+		float speed = m_Weather.WindSpeed;
+
+		if (speed < 0.3f)
+			return;
+
+		auto material = Egss::Material::CreateInstance(m_StreakMaterial);
+
+		material->Set("u_Wind", m_WindScene);
+		material->Set("u_Extent", s_StreakExtent);
+
+		// Seconds, so the drift really is metres per second of wind. The
+		// clock is in years, and near a surface it runs at `SecondsPerDay`.
+		material->Set("u_Time", (float)(m_Time * 365.25 * 24.0 * 3600.0));
+
+		// Normalised against a brisk wind, so the field thickens as it picks
+		// up and is gone when it drops.
+		material->Set("u_Speed", glm::clamp(speed / 12.0f, 0.0f, 1.4f));
+
+		material->Set("u_Colour", glm::mix(glm::vec3(0.86f, 0.90f, 0.95f),
+			SkyLight(index) * 3.0f + glm::vec3(0.35f), 0.5f));
+
+		material->Set("u_Strength", 0.035f);
+
+		// Premultiplied and no depth write: these are air, so they add light
+		// to what is behind them and never hide it. No culling, because a
+		// stroke is a flat quad and half of them face away.
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Premultiplied);
+		Egss::RenderCommand::SetDepthWrite(false);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+
+		Egss::Renderer::Submit(material, m_StreakMesh, glm::mat4(1.0f));
+
+		Egss::RenderCommand::SetDepthWrite(true);
+		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
+		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+	}
+
+	// **A planet-sized dot product that still fits in a float.**
+	//
+	// The gust phase is `dot(fixedPosition, axis)`, and a fixed position is a
+	// planet radius long -- 250 km here and 6,371 km at 1:1. Cast that to a
+	// float and the phase lands on a grid coarser than the wave it is feeding.
+	// But a phase only means anything modulo a turn, so the sum is done in
+	// double and folded into `[0, 2pi)` before it is narrowed, which is exact
+	// enough for anything.
+	static float GustPhase(const glm::dvec3& at, const glm::dvec3& axis)
+	{
+		const double turn = 2.0 * 3.14159265358979323846;
+
+		double raw = glm::dot(at, axis);
+
+		return (float)(raw - std::floor(raw / turn) * turn);
+	}
+
+	// Everything the grass shader needs about this body, now.
+	void DressGrass(const std::shared_ptr<Egss::Material>& grass, size_t index)
+	{
+		grass->Set("u_LightDirection", SunDirection(index));
+		grass->Set("u_LightColor", m_SunLight * m_StarBrightness);
+		grass->Set("u_Sky", SkyLight(index));
+		grass->Set("u_Up", m_Up);
+		grass->Set("u_Wind", m_WindScene);
+		grass->Set("u_AirDensity", m_Weather.AirDensity);
+		grass->Set("u_Time", (float)m_Time * 8766.0f);
+
+		// Far more compliant than a trunk and more than a canopy: a blade of
+		// grass is a few millimetres thick, and compliance goes as the fourth
+		// power of that. This is the number that makes a light breeze visible
+		// at ground level, which is where a person standing in it looks.
+		grass->Set("u_Compliance", 260.0f * 1.25e-5f);
+
+		// The blade length the bend is measured against. Nominal -- the
+		// scatterer varies each blade between 0.65 and 1.35 of it -- which is
+		// close enough for a limit that only has to stop a blade stretching.
+		auto plant = m_Planets.find(index);
+
+		grass->Set("u_GrassHeight", plant != m_Planets.end()
+			? plant->second.Get().GrassHeight : 0.45f);
+
+		// One radian per 55 m: a swell you walk through rather than a ripple
+		// you outrun. See the note by `gust` in the shader.
+		grass->Set("u_GustScale", 1.0f / 55.0f);
+		grass->Set("u_WindSpeed", m_Weather.WindSpeed);
+
+		grass->Set("u_GustAxis", glm::length(m_WindFixed) > 1e-5f
+			? glm::normalize(m_WindFixed) : glm::vec3(1.0f, 0.0f, 0.0f));
+
+		grass->Set("u_Root", glm::vec3(0.09f, 0.17f, 0.07f));
+		grass->Set("u_Tip", glm::vec3(0.34f, 0.55f, 0.22f));
+	}
+
 	// One planet's trees, in the frame the chunks are already drawn in.
 	void DrawPlants(size_t index, const VoxelPlanet& planet,
 		const glm::dvec3& centre, const glm::mat4& spin)
@@ -3196,19 +3979,41 @@ public:
 		glm::mat4 frame = glm::translate(glm::mat4(1.0f),
 			glm::vec3(centre + ToScene(index, localOrigin))) * spin;
 
+		// The forest origin's share of every tree's gust phase. See the note
+		// by `phase` in the tree shader.
+		float gustOffset = GustPhase(localOrigin, glm::dvec3(0.7, 1.3, 0.9));
+
 		auto bark = Egss::Material::CreateInstance(m_TreeMaterial);
+		bark->Set("u_GustOffset", gustOffset);
 		bark->Set("u_Color", glm::vec4(0.30f, 0.22f, 0.15f, 1.0f));
 		bark->Set("u_Emissive", 0.0f);
 		bark->Set("u_Sky", SkyLight(index));
 		bark->Set("u_Up", m_Up);
 		bark->Set("u_LightColor", m_SunLight * m_StarBrightness);
+		bark->Set("u_Wind", m_WindScene);
+		bark->Set("u_AirDensity", m_Weather.AirDensity);
+		bark->Set("u_Time", (float)m_Time * 8766.0f);
+
+		// The trunk, which in any wind worth standing in barely moves:
+		// a ten-metre tree leans 1.1 cm in the default site's 3.9 m/s.
+		bark->Set("u_Compliance", 1.25e-5f);
 
 		auto leaves = Egss::Material::CreateInstance(m_TreeMaterial);
+		leaves->Set("u_GustOffset", gustOffset);
 		leaves->Set("u_Color", glm::vec4(0.16f, 0.34f, 0.13f, 1.0f));
 		leaves->Set("u_Emissive", 0.0f);
 		leaves->Set("u_Sky", SkyLight(index));
 		leaves->Set("u_Up", m_Up);
 		leaves->Set("u_LightColor", m_SunLight * m_StarBrightness);
+		leaves->Set("u_Wind", m_WindScene);
+		leaves->Set("u_AirDensity", m_Weather.AirDensity);
+		leaves->Set("u_Time", (float)m_Time * 8766.0f);
+
+		// Twenty times, standing in for the r^4 between a trunk and the
+		// twigs the leaves are actually on. That puts the same breeze at
+		// 22 cm at the top of the same tree, which is a canopy stirring
+		// over a trunk that is not.
+		leaves->Set("u_Compliance", 20.0f * 1.25e-5f);
 
 		// **A directional light faked as a very distant point.** The shader
 		// this shares with the rocks and the star takes a position and
@@ -4231,8 +5036,19 @@ public:
 			water->SetTexture("u_Map", it->second.Map(), 0);
 			water->Set("u_Unspin", glm::transpose(SpinMatrix(index)));
 			water->Set("u_Radius", settings.Radius * scale);
-			water->Set("u_Relief", settings.Amplitude * scale);
+
+			// **The relief the map was baked with, not the body's amplitude.**
+			// The shell decodes the map's red channel to find how deep the
+			// water over it is, and a decode has to use the same scale the
+			// encode did -- which is the terrain shader's `u_Relief`, and that
+			// is `ReliefReach() * 2`. This said `Amplitude` while nothing read
+			// it, and would have been quietly wrong by the ratio between them
+			// the moment something did.
+			water->Set("u_Relief", it->second.ReliefReach() * 2.0f * scale);
 			water->Set("u_SeaRadius", settings.OceanRadius * scale);
+			water->Set("u_SeaDepth",
+				(float)((double)scale * (SeaRadiusOf(index, settings)
+					- DrawnRadius(index))));
 			water->Set("u_LightDirection", SunDirection(index));
 			water->Set("u_LightColor", m_SunLight * m_StarBrightness);
 			water->Set("u_Origin", centre);
@@ -4246,6 +5062,16 @@ public:
 			// lake water is a few; the open sea is more, but the sea here is
 			// deep enough everywhere that it saturates either way.
 			water->Set("u_Clarity", 3.5f);
+
+			// The same band the terrain gets, so the ice edge and the snow
+			// line are one answer rather than two.
+			float equator = 0.0f, pole = 0.0f;
+			ClimateBand(index, equator, pole);
+
+			water->Set("u_TempEquator", equator);
+			water->Set("u_TempPole", pole);
+			water->Set("u_Freeze", 273.15f);
+			water->Set("u_Ice", glm::vec3(0.86f, 0.90f, 0.94f));
 			water->Set("u_HasDepth", 0.0f);
 			water->Set("u_NearCentre", glm::vec3(0.0f, 1.0f, 0.0f));
 			water->Set("u_NearCos", 2.0f);
@@ -4269,8 +5095,13 @@ public:
 		{
 			material->Set("u_NearCentre",
 				glm::vec3(glm::normalize(m_Water.Site())));
+
+			// **`DrawnReach`, not `Reach`.** The mesh leaves a margin off each
+			// edge and the cone did not, so the shell stood back over a disc
+			// 10% wider than anything that replaced it -- a ring of missing
+			// sea at the far edge of the local sheet. See `DrawnReach`.
 			material->Set("u_NearCos", std::cos(std::atan(
-				m_Water.Reach() / glm::max(settings.Radius, 1.0f))));
+				m_Water.DrawnReach() / glm::max(settings.Radius, 1.0f))));
 		}
 
 		Egss::Renderer::Submit(material, m_Sphere,
@@ -4448,6 +5279,7 @@ private:
 		float AtmosphereFraction = 0.0f;
 		float AtmosphereDensity = 1.0f;
 		float AtmosphereGlow = 0.0f;
+		float BondAlbedo = 0.3f;
 		glm::vec3 Scatter = glm::vec3(0.0f);
 		float RingInner = 0.0f;
 		float RingOuter = 0.0f;
@@ -4495,6 +5327,7 @@ private:
 			body.AxialTiltDegrees = description.AxialTiltDegrees;
 			body.AtmosphereFraction = description.AtmosphereFraction;
 			body.AtmosphereDensity = description.AtmosphereDensity;
+			body.BondAlbedo = description.BondAlbedo;
 			body.AtmosphereGlow = description.AtmosphereGlow;
 			body.RingInner = description.RingInner;
 			body.RingOuter = description.RingOuter;
@@ -4807,6 +5640,38 @@ private:
 			uniform mat4 u_ViewProjection;
 			uniform mat4 u_Transform;
 
+			// The wind where this forest is, in the frame the trees are drawn
+			// in, metres per second. Length is the speed; a calm day is zero
+			// and the whole term below vanishes with it.
+			uniform vec3 u_Wind;
+			uniform vec3 u_Up;
+			uniform float u_AirDensity;
+			uniform float u_Time;
+
+			// The forest origin's own contribution to the gust phase, summed
+			// in double on the CPU and wrapped into one turn. See the note by
+			// `phase` for why this cannot just be read off the world position.
+			uniform float u_GustOffset;
+
+			// **How far this part of the tree bends for a given load.**
+			//
+			// A beam's compliance goes as 1/(E I), and the second moment I of
+			// a round section goes as the fourth power of its radius. So a
+			// twig a tenth the thickness of the trunk is ten thousand times
+			// easier to bend, which is the whole reason a tree in a light
+			// breeze is still at the bottom and moving at the top -- the
+			// trunk genuinely is not going anywhere, and the leaves genuinely
+			// are.
+			//
+			// The mesh has one trunk radius and no twigs, so the r^4 cannot be
+			// computed from anything here; the ratio between the two values
+			// bound below stands in for it. It is the one number in this
+			// shader that is a stand-in rather than a derivation, and it is
+			// worth one, because the alternative is a forest that is either
+			// rigid in every wind you will actually stand in or waving like
+			// seaweed in a calm.
+			uniform float u_Compliance;
+
 			out vec3 v_WorldPosition;
 			out vec3 v_Normal;
 
@@ -4815,6 +5680,63 @@ private:
 				mat4 model = u_Transform * a_Model;
 
 				vec4 world = model * vec4(a_Position, 1.0);
+
+				// **A tree bends like a cantilever, so the top moves and the
+				// roots do not.**
+				//
+				// Two parts of this are physics and one is a calibration, and
+				// it is worth being clear which is which. The load is wind
+				// pressure, `1/2 rho v^2`, which is why a wind twice as fast
+				// bends a tree four times as far and why there is no bending
+				// at all in a vacuum. The *shape* is the first bending mode of
+				// a beam clamped at one end, which goes as the square of the
+				// height above the clamp -- that is what keeps the trunk
+				// planted while the crown swings, and it is why this is
+				// height-squared rather than linear.
+				//
+				// The compliance is the calibration: the trunk's 1.25e-5 m
+				// per pascal per square metre is the number that makes a
+				// ten-metre tree lean about 30 cm in a 20 m/s wind. That is an
+				// observation about trees rather than a derivation, because
+				// deriving it needs the trunk taper and the elastic modulus
+				// of wood, and this mesh has neither. See `u_Compliance` for
+				// why the canopy gets a larger one.
+				vec3 root = (model * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+
+				float height = max(dot(world.xyz - root, u_Up), 0.0);
+
+				float pressure = 0.5 * u_AirDensity * dot(u_Wind, u_Wind);
+
+				// Gusting, so a forest does not lean like one rigid object,
+				// with the phase off each tree's own position so neighbours
+				// are out of step and each tree is in step with itself.
+				//
+				// **In the planet's frame, not this one.** The comment here
+				// used to say the root position "is fixed for the life of the
+				// tree", and in a frame fixed to the planet it is -- but
+				// `root` is `model * origin`, and `u_Transform` is built
+				// camera-relative, so it changed every time the player took a
+				// step. The whole forest then swayed in time with how fast you
+				// were walking, which is a strange enough thing to see that it
+				// gets reported as the wind being tied to the camera.
+				//
+				// `a_Model`'s translation is the tree's offset from the
+				// forest's origin, and that origin follows the camera -- so
+				// the two move by equal and opposite amounts and their sum is
+				// exactly the planet-fixed position. The CPU adds the origin's
+				// half in double and hands it over already wrapped into a
+				// turn, which is why this is a uniform and not a vec3.
+				float phase = u_GustOffset + dot(a_Model[3].xyz, vec3(0.7, 1.3, 0.9));
+				float gust = 1.0 + 0.3 * sin(u_Time * 1.7 + phase);
+
+				vec3 lean = u_Wind * (u_Compliance * pressure * height * height * gust);
+
+				// Along the ground, not into it: the wind pushes sideways and
+				// a tree that sank into the hill would be worse than one that
+				// did not move.
+				lean -= u_Up * dot(lean, u_Up);
+
+				world.xyz += lean;
 
 				v_WorldPosition = world.xyz;
 				v_Normal = mat3(model) * a_Normal;
@@ -4827,6 +5749,225 @@ private:
 			Egss::Shader::Create("SolarSystemTrees", treeVertexSrc, fragmentSrc));
 
 		m_TreeMaterial = Egss::Material::Create(m_TreeShader);
+
+		// **Grass, which is the same idea as the trees one dimension smaller.**
+		//
+		// A blade carries how far up itself each vertex is, in `a_TexCoord.y`:
+		// zero at the two root corners and one at the tip. That is all the
+		// bend needs -- the root stays planted because its coordinate is zero,
+		// and nothing has to know where the root is in world space.
+		//
+		// The trees use height *squared* because a trunk is a cantilever and
+		// that is the first bending mode of one. A blade of grass is not a
+		// cantilever; it is closer to a hinge at the ground, so it goes as the
+		// first power. The difference is visible: trunks bow, grass lies over.
+		std::string grassVertexSrc = R"(
+			#version 330 core
+
+			layout(location = 0) in vec3 a_Position;
+			layout(location = 1) in vec3 a_Normal;
+			layout(location = 2) in vec2 a_TexCoord;
+
+			uniform mat4 u_ViewProjection;
+			uniform mat4 u_Transform;
+			uniform vec3 u_Wind;
+			uniform vec3 u_Up;
+			uniform float u_AirDensity;
+			uniform float u_Time;
+			uniform float u_Compliance;
+			uniform float u_GrassHeight;
+
+			// The gust's direction and this chunk's place along it, both in
+			// the planet's fixed frame. See the note by `travel`.
+			uniform vec3 u_GustAxis;
+			uniform float u_GustOffset;
+			uniform float u_GustScale;
+			uniform float u_WindSpeed;
+			uniform float u_Keep;
+
+			out vec3 v_WorldPosition;
+			out vec3 v_Normal;
+			out float v_Up;
+
+			void main()
+			{
+				vec4 world = u_Transform * vec4(a_Position, 1.0);
+
+				float along = a_TexCoord.y;
+
+				// **LOD: drop a share of the blades, decided per chunk.**
+				//
+				// Six-millimetre blades only read as grass if there are a very
+				// great many, and rasterising all of them out to the edge of
+				// the stride-1 radius costs more than everything else in the
+				// frame put together -- 28.5 ms a step against 12.4.
+				//
+				// `u_Keep` is the fraction to keep and is a **uniform**, set
+				// per chunk from that chunk's own distance. `a_TexCoord.x` is
+				// a per-blade ticket. Both sides of the comparison are
+				// therefore constant across a blade, which is the whole point:
+				// an earlier version computed the distance per vertex, so
+				// blades near the threshold had some vertices collapse and
+				// some not, and the field filled with long black slivers
+				// stretched to the collapse point.
+				//
+				// Chunk granularity means the density steps at chunk edges
+				// rather than fading continuously. At 24 m a chunk and a band
+				// from 20 to 55 m that is two or three steps, on grass that is
+				// already small -- and the ground beneath is coloured by the
+				// same biome rule, so what shows between blades is the green
+				// they are standing in.
+				if (a_TexCoord.x > u_Keep)
+				{
+					// Every vertex of this blade takes this branch, so the
+					// triangle is degenerate rather than stretched.
+					gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
+					v_WorldPosition = world.xyz;
+					v_Normal = vec3(0.0, 1.0, 0.0);
+					v_Up = 0.0;
+					return;
+				}
+
+
+
+				// The same wind pressure the trees feel, and the same reason:
+				// twice the wind lies the grass over four times as far.
+				float pressure = 0.5 * u_AirDensity * dot(u_Wind, u_Wind);
+
+				// A gust that travels. Phase from position *along the wind*
+				// rather than from position alone, so the ripple moves across
+				// the field the way a gust actually does instead of the whole
+				// meadow breathing in and out together.
+				//
+				// **Measured in the planet's frame**, for the same reason the
+				// trees are -- `world.xyz` is camera-relative, so taking the
+				// phase from it made the ripple travel at walking pace
+				// whenever the player moved. `a_Position` is this chunk's own
+				// lattice frame, which does not move at all, and the chunk
+				// origin's share of the dot product arrives as a uniform
+				// already summed in double.
+				float travel = u_GustOffset + dot(a_Position, u_GustAxis);
+				// **The gust travels at the wind's own speed, over a swell
+				// long enough that walking through it barely registers.**
+				//
+				// This was `travel * 0.35 - u_Time * 3.1`: an 18 m wavelength
+				// moving at 8.9 m/s. Walking at 6 m/s through an 18 m pattern
+				// changes the rate you meet it by most of itself, so the
+				// ripple still sped up when the player did -- the phase was
+				// camera-independent by then, but the *wavelength* was short
+				// enough that moving through space did the same job.
+				//
+				// A real gust front is tens of metres across and travels with
+				// the air. Both of those are the fix: `u_GustScale` is one
+				// radian per 55 m, and the time term is that same scale times
+				// the wind speed, so the pattern advects at exactly the speed
+				// the air is moving and nothing else.
+				float gust = 1.0 + 0.45 * sin(u_GustScale
+					* (travel - u_WindSpeed * u_Time));
+
+				// **Squared, so the blade curves instead of pivoting.** A
+				// hinge at the root displaces every point in proportion to its
+				// height and leaves the blade dead straight; a beam bending
+				// under a load along its length goes as the square, which
+				// leaves the root vertical and the tip lying over. The
+				// scatterer already builds its static lean the same way, so
+				// the two agree and a blade in still air is the same shape as
+				// a blade in a light wind, only less of it.
+				vec3 lean = u_Wind
+					* (u_Compliance * pressure * along * along * gust);
+
+				lean -= u_Up * dot(lean, u_Up);
+
+				// **Bending preserves length, and leaving that out is
+				// immediately obvious.**
+				//
+				// The first version just displaced the tip sideways. At this
+				// site's 8 m/s that is 0.45 m of lean on a 0.5 m blade, and
+				// because nothing pulled the tip back down the blade simply
+				// got longer -- the meadow came out as a field of long dark
+				// streaks lying across the ground rather than grass bent over
+				// by a wind.
+				//
+				// A blade does not stretch. It pivots, so the tip travels on
+				// an arc of its own length: displace it by `d` sideways and it
+				// must drop by `h - sqrt(h^2 - d^2)`. That also caps the lean
+				// on its own, since `d` can never exceed `h` -- which is the
+				// right behaviour, because grass flat on the ground is what
+				// grass in a gale actually does.
+				float blade = u_GrassHeight * along;
+
+				float reach = length(lean);
+				float limit = blade * 0.92;
+
+				if (reach > limit && reach > 1e-6)
+					lean *= limit / reach;
+
+				float drop = blade - sqrt(max(blade * blade
+					- dot(lean, lean), 0.0));
+
+				world.xyz += lean - u_Up * drop;
+
+				v_WorldPosition = world.xyz;
+				v_Normal = mat3(u_Transform) * a_Normal;
+				v_Up = along;
+
+				gl_Position = u_ViewProjection * world;
+			}
+		)";
+
+		std::string grassFragmentSrc = R"(
+			#version 330 core
+
+			layout(location = 0) out vec4 color;
+
+			in vec3 v_WorldPosition;
+			in vec3 v_Normal;
+			in float v_Up;
+
+			uniform vec3 u_LightDirection;
+			uniform vec3 u_LightColor;
+			uniform vec3 u_Sky;
+			uniform vec3 u_Up;
+			uniform vec3 u_Root;
+			uniform vec3 u_Tip;
+
+			void main()
+			{
+				vec3 normal = normalize(v_Normal);
+
+				// Either face of a blade can be toward the eye, and a blade
+				// lit from behind should not be black -- it is a thin leaf.
+				if (dot(normal, u_Up) < 0.0)
+					normal = -normal;
+
+				float diffuse = max(dot(normal, u_LightDirection), 0.0);
+				float dome = 0.5 + 0.5 * dot(normal, u_Up);
+
+				// **Darker at the root than at the tip**, which is the one
+				// thing that makes a field of blades read as depth rather than
+				// as a green rug. It is ambient occlusion, and a real one: a
+				// blade near the ground is surrounded by other blades and sees
+				// almost none of the sky.
+				vec3 base = mix(u_Root, u_Tip, v_Up);
+
+				vec3 lit = base * (u_Sky * dome + u_LightColor * diffuse);
+
+				color = vec4(lit, 1.0);
+			}
+		)";
+
+		m_GrassShader.reset(Egss::Shader::Create("PlanetGrass",
+			grassVertexSrc, grassFragmentSrc));
+
+		m_GrassMaterial = Egss::Material::Create(m_GrassShader);
+
+		m_StreakShader.reset(Egss::Shader::Create("WindStreaks",
+			WindStreaks::VertexSource(), WindStreaks::FragmentSource()));
+
+		m_StreakMaterial = Egss::Material::Create(m_StreakShader);
+
+		m_StreakMesh = std::make_shared<Egss::Mesh>(
+			WindStreaks::BuildMesh(s_StreakCount, s_StreakExtent), "WindStreaks");
 		m_Material = Egss::Material::Create(m_Shader);
 
 		BuildTerrainShader();
@@ -4856,7 +5997,26 @@ private:
 			uniform mat4 u_Transform;
 			uniform vec3 u_Origin;
 
+			// **A point on this draw's own ground, and the offset from it.**
+			//
+			// `v_Position` is planet-centred, which at 1:1 is about 6.4e6 --
+			// and `float` has 24 bits, so it arrives on a 0.5 m grid and
+			// `length(v_Position)` lands on one too. Every shading height in
+			// this shader is that length minus a sea radius of the same size,
+			// so the whole of what the terrain is made of is computed in the
+			// bits that were thrown away.
+			//
+			// The fix is the one the CPU side already uses: keep the large
+			// part off the GPU entirely. `u_Reference` is a point near this
+			// draw in camera-relative coordinates -- a chunk's own origin --
+			// so `world.xyz - u_Reference` is a difference of two small
+			// numbers and is exact. The fragment stage rebuilds the height
+			// from that offset plus a reference altitude the CPU computed in
+			// double. See `u_ReferenceAltitude`.
+			uniform vec3 u_Reference;
+
 			out vec3 v_Position;
+			out vec3 v_Offset;
 			out vec3 v_Normal;
 
 			void main()
@@ -4868,6 +6028,7 @@ private:
 				// scaled), so the subtraction has to happen after the
 				// transform rather than before it.
 				v_Position = world.xyz - u_Origin;
+				v_Offset = world.xyz - u_Reference;
 				v_Normal = mat3(u_Transform) * a_Normal;
 
 				gl_Position = u_ViewProjection * world;
@@ -4880,6 +6041,7 @@ private:
 			layout(location = 0) out vec4 color;
 
 			in vec3 v_Position;
+			in vec3 v_Offset;
 			in vec3 v_Normal;
 
 			uniform vec3 u_LightDirection;
@@ -4891,12 +6053,61 @@ private:
 			uniform float u_Relief;
 			uniform float u_SeaRadius;
 
+			// **The waterline as a small number, because it never was one.**
+			// `u_SeaRadius - u_Radius` is a few hundred metres taken as the
+			// difference of two values near 6.4e6, so on the GPU it was a few
+			// hundred metres known to half a metre. The CPU knows both in
+			// double and can just send the answer.
+			uniform float u_SeaDepth;
+
+			// **The height, without ever forming a planet-sized number.**
+			//
+			// `u_ReferenceRadius` is `|C|` for a reference point `C` near this
+			// draw, and `u_ReferenceAltitude` is `|C| - seaRadius` computed on
+			// the CPU in double. What is left for the GPU is `|C + e| - |C|`
+			// for the small offset `e = v_Offset`, and that is written as the
+			// difference of the squares over the sum:
+			//
+			//     |C+e| - |C| = (2 |C| (n.e) + e.e) / (|C+e| + |C|)
+			//
+			// which is an identity, not an expansion -- there is no small-`e`
+			// assumption in it, which matters because the horizon mesh's `e`
+			// reaches fourteen kilometres. Every term is either small or only
+			// needs relative precision: the numerator is about 1e7 with an ulp
+			// of 1, the denominator about 1.3e7, so the quotient is good to
+			// about 1e-7 m. The subtraction that used to destroy the answer
+			// has been done in double before the value ever arrived.
+			//
+			// `u_HasReference` is 0 for the stand-in sphere, which has no
+			// nearby point to measure from and is a body-sized ball seen from
+			// space when it is drawn at all.
+			uniform vec3 u_ReferenceNormal;
+			uniform float u_ReferenceRadius;
+			uniform float u_ReferenceAltitude;
+			uniform float u_HasReference;
+
 			// Camera distance, for the haze mix below -- v_Position is already
 			// planet-centred, and u_Origin (also bound in the vertex stage) is
 			// the planet's own centre relative to the camera, so their sum is
 			// camera-relative again, which is what a distance wants.
 			uniform vec3 u_Origin;
 			uniform float u_HazeDensity;
+
+			// The height at which the air thins by 1/e. The shell shader uses
+			// the same number to march its density; see `u_AirScaleHeight`
+			// where it is bound for why the two have to agree.
+			uniform float u_AirScaleHeight;
+
+			// **The climate band, in kelvin.** Annual-mean sea-level
+			// temperature at this body's equator and at its pole, and the
+			// lapse rate that gets from sea level to here. Three numbers is
+			// all the shader needs to put a temperature on every fragment,
+			// because latitude is already carried by the map's warmth channel
+			// and altitude is already the height this shader computes.
+			uniform float u_TempEquator;
+			uniform float u_TempPole;
+			uniform float u_LapseRate;     // K per metre
+			uniform float u_Freeze;        // K, water's melting point here
 
 			uniform sampler2D u_Map;
 			uniform float u_HasMap;
@@ -4951,7 +6162,7 @@ private:
 			// ice cap is an ice cap whatever is under it.
 			vec3 Biome(float height, float latitude, float moisture, float warmth)
 			{
-				float sea = u_SeaRadius - u_Radius;
+				float sea = u_SeaDepth;
 
 				if (u_Vegetated < 0.5)
 				{
@@ -4960,12 +6171,19 @@ private:
 					return mix(u_LowColour.rgb, u_HighColour.rgb, t);
 				}
 
-				if (height <= 0.0)
-					return mix(u_Shallow, u_Deep,
-						clamp(-height / (u_Relief * 0.35), 0.0, 1.0));
+				// **Ground is ground, however low it is.**
+				//
+				// This returned ocean colour for anything below the
+				// waterline, which is a statement about altitude and not
+				// about water -- so the 3,425 km^2 across 435 basins that the
+				// drainage pass correctly calls *dry* were painted sea, and
+				// the planet from orbit was a uniform blue-grey ball with no
+				// coastline anywhere on it. Whether there is water somewhere
+				// is `SurfaceWater`'s answer and the wet mask's, and both of
+				// them are drawn *as water*, in front of this. A seabed is
+				// allowed to look like a seabed; what is over it decides what
+				// colour it arrives as.
 
-				float top = max(u_Relief * 0.5 - sea, 1.0);
-				float f = clamp(height / top, 0.0, 1.0);
 
 				// Without a climate map, fall back to the old latitude band --
 				// which is exactly what a body with no water has to do.
@@ -4990,14 +6208,57 @@ private:
 				// the voxels the ground is actually made of.
 				vec3 colour = mix(u_Sand, green, smoothstep(0.0, u_Beach, height));
 
-				colour = mix(colour, u_Rock, smoothstep(0.45, 0.75, f));
-				colour = mix(colour, u_Snow, smoothstep(0.74, 0.93, f));
+				// **Bare rock is above the tree line, and the tree line is a
+				// temperature too.**
+				//
+				// This was `smoothstep(0.45, 0.75, height/top)` -- a fraction
+				// of the tallest land on the planet. That reads as
+				// scale-independence and is not: it assumes land heights are
+				// spread evenly from sea level to the summit. Once the
+				// continents became real plateaus that stopped being true. A
+				// continental platform sits near the *top* of the relief range
+				// by construction, so every interior came out above `f = 0.7`
+				// and the whole landmass was painted rock with a thin green
+				// rim at the shore.
+				//
+				// Height does not decide what grows; temperature does, and the
+				// tree line is the isotherm where the warm part of the year
+				// stops being warm enough to build wood. Driving it the same
+				// way as the snow line means the two cannot cross each other,
+				// and means a plateau is bare because it is cold rather than
+				// because it is a large fraction of something.
+				float seaLevel = mix(u_TempPole, u_TempEquator, warm);
+				float temperature = seaLevel - u_LapseRate * max(height, 0.0);
 
-				// Cold last, and driven by warmth rather than by latitude, so
-				// the tundra line bends round a highland instead of running
-				// straight through it.
-				colour = mix(colour, u_Tundra, smoothstep(0.30, 0.16, warm));
-				colour = mix(colour, u_Snow, smoothstep(0.14, 0.05, warm));
+				colour = mix(colour, u_Rock,
+					smoothstep(u_Freeze + 12.0, u_Freeze + 5.0, temperature));
+
+				// **Snow is where the air freezes, which is a temperature and
+				// not a fraction of the relief.**
+				//
+				// This was `smoothstep(0.74, 0.93, f)` on the height over the
+				// relief, and a second pass on `warm` -- so a planet whose
+				// tallest hill was 600 m put snow on the top of it, and a
+				// planet whose tallest was 16 km put snow at the same
+				// *fraction*. Both cannot be right and neither was: a snow
+				// line is an altitude in metres, set by how fast air cools as
+				// it rises, and on Earth it is near sea level at the poles and
+				// about 5 km at the equator. That range comes out of these
+				// three uniforms and nothing else.
+				//
+				// `warm` is the latitude, `height` is the altitude, and the
+				// lapse rate is `g/c_p` slackened by moisture. The line bends
+				// round a highland for the same reason it does on Earth --
+				// because the highland is higher, not because a field was
+				// smoothed.
+				// Tundra in the few degrees above freezing, snow below it.
+				// One threshold, approached from both sides, so there is never
+				// a band of bare rock between the two.
+				colour = mix(colour, u_Tundra,
+					smoothstep(u_Freeze + 6.0, u_Freeze + 1.0, temperature));
+
+				colour = mix(colour, u_Snow,
+					smoothstep(u_Freeze + 1.0, u_Freeze - 2.0, temperature));
 
 				return colour;
 			}
@@ -5031,14 +6292,20 @@ private:
 				// your feet -- but moisture has no geometry to be read off,
 				// so it comes from the map wherever you are standing. One
 				// sample serves both.
-				vec4 mapped = texture(u_Map, uv);
+				vec4 mapped = SampleSphere(u_Map, uv);
 
 				float height;
 
 				if (u_HasMap > 0.5)
-					height = u_Radius + (mapped.r * 2.0 - 1.0) * u_Relief - u_SeaRadius;
+					height = (mapped.r * 2.0 - 1.0) * u_Relief - u_SeaDepth;
+				else if (u_HasReference > 0.5)
+					height = u_ReferenceAltitude
+						+ (2.0 * u_ReferenceRadius * dot(u_ReferenceNormal, v_Offset)
+							+ dot(v_Offset, v_Offset))
+						/ (u_ReferenceRadius + length(v_Position));
 				else
 					height = length(v_Position) - u_SeaRadius;
+
 
 				vec3 base = Biome(height, abs(fixedUp.y), mapped.g, mapped.b);
 
@@ -5085,7 +6352,44 @@ private:
 				// density -- an airless body -- leaves this the identity mix,
 				// the same place u_Sky itself already goes to zero.
 				float camDist = length(v_Position + u_Origin);
-				float haze = 1.0 - exp(-camDist * u_HazeDensity);
+
+				// **How much air is on the path, not how long the path is.**
+				//
+				// This was `1.0 - exp(-camDist * u_HazeDensity)`, with the
+				// full camera distance and nothing else. `u_HazeDensity` is
+				// 9.9e-3 per metre for Earth here -- a half-hazed distance of
+				// 70 m, which is the right order for standing in a landscape
+				// and is what it was tuned against. From orbit `camDist` is
+				// 750 km, the exponent is **7425**, and `haze` is 1.0 to the
+				// bit: every land pixel on the disc came out exactly `u_Sky`.
+				// The planet had no continents on it because the terrain was
+				// never drawn, only the sky colour was -- and the mottling
+				// that read as malformed ground was the atmosphere shell's
+				// raymarch over a flat grey ball.
+				//
+				// The missing term is the air itself. Extinction is the
+				// integral of density along the ray, and density falls off
+				// exponentially with height; a path 750 km long that spends
+				// all but four of those kilometres above the atmosphere
+				// carries almost no air. Sampling the density at the midpoint
+				// of the segment is the cheapest thing with the right limits:
+				// on the ground both ends are at zero altitude, the factor is
+				// 1, and the landed tuning is untouched to the last bit;
+				// from orbit the midpoint is 375 km up, the factor underflows
+				// to zero, and the ground is drawn as ground. Between the two
+				// it falls off the way flying up out of the murk actually
+				// looks.
+				//
+				// It is a near-field term and it stays one -- the honest
+				// account of a long slant path is the shell's raymarch, which
+				// is already drawn over the top of this.
+				vec3 eye = -u_Origin;
+				vec3 midway = 0.5 * (eye + v_Position);
+
+				float midAltitude = max(length(midway) - u_SeaRadius, 0.0);
+				float air = exp(-midAltitude / max(u_AirScaleHeight, 1.0));
+
+				float haze = 1.0 - exp(-camDist * u_HazeDensity * air);
 				lit = mix(lit, u_Sky, haze);
 
 				color = vec4(lit, 1.0);
@@ -5093,7 +6397,8 @@ private:
 		)";
 
 		m_TerrainShader.reset(
-			Egss::Shader::Create("PlanetSurface", vertexSrc, fragmentSrc));
+			Egss::Shader::Create("PlanetSurface", vertexSrc,
+				WithSphereSample(fragmentSrc)));
 
 		m_TerrainMaterial = Egss::Material::Create(m_TerrainShader);
 	}
@@ -5158,6 +6463,12 @@ private:
 			uniform float u_Radius;
 			uniform float u_Relief;
 			uniform float u_SeaRadius;
+
+			// Sea radius less mean radius, taken in double on the CPU -- see
+			// the terrain shader's own `u_SeaDepth` for why it is not a
+			// subtraction done here.
+			uniform float u_SeaDepth;
+
 			uniform vec3 u_LightDirection;
 			uniform vec3 u_LightColor;
 			uniform vec3 u_Eye;            // camera, in the planet's frame
@@ -5171,6 +6482,14 @@ private:
 			// the two never blend over each other. Two means never.
 			uniform vec3 u_NearCentre;
 			uniform float u_NearCos;
+
+			// The same climate band the terrain is coloured from. Water is at
+			// sea level by definition, so there is no lapse rate here -- only
+			// the latitude decides whether this is a sea or an ice sheet.
+			uniform float u_TempEquator;
+			uniform float u_TempPole;
+			uniform float u_Freeze;
+			uniform vec3 u_Ice;
 
 			void main()
 			{
@@ -5202,7 +6521,31 @@ private:
 				// quarter as wet errs toward too much sea, which puts the
 				// disagreement with the real geometry under the ground rather
 				// than leaving a fringe of missing sea along every shore.
-				if (texture(u_Map, uv).a < 0.25)
+				// **Coverage, not a threshold** -- and the local sheet is not
+				// asked at all.
+				//
+				// This was `if (mask < 0.25) discard`, which is a claim that
+				// a texel is either sea or not. A texel is 1.5 km across and
+				// a coastline runs through the middle of it, so at any real
+				// distance it is *part* sea -- and once the mip chain landed
+				// (2026-08-26) the averaged mask stopped dropping below 0.25
+				// almost anywhere, so from orbit the shell covered the whole
+				// disc and the planet had no land on it at all. That was
+				// invisible only because the shell was 55% transparent and
+				// the terrain under it was painting itself blue; take either
+				// of those away and the continents vanish.
+				//
+				// Weighting the alpha by the mask is the same statement the
+				// mip chain is already making: a half-wet texel is half a
+				// pixel of sea. It antialiases the coastline for free instead
+				// of stair-stepping it, and it costs nothing.
+				//
+				// The near mesh carries its own shoreline -- `SurfaceWater`
+				// cut it against the terrain the mesher actually produced --
+				// so gating that by a 1.5 km texel could only erode it.
+				float wet = u_HasDepth > 0.5 ? 1.0 : SampleSphere(u_Map, uv).a;
+
+				if (wet < 0.02)
 					discard;
 
 				vec3 view = normalize(u_Eye - v_Position);
@@ -5245,9 +6588,25 @@ private:
 				// The view angle still has a job -- it is why a lake is a
 				// mirror at a grazing angle -- but it is applied as Fresnel
 				// below, where it belongs, rather than as a colour.
-				float sunk = u_HasDepth > 0.5
-					? 1.0 - exp(-2.0 * max(v_Depth, 0.0) / max(u_Clarity, 0.01))
-					: 1.0;
+				// **The sphere has a depth too, and it comes off the map.**
+				//
+				// It had none: `u_HasDepth` was 0 for the shell and `sunk`
+				// went straight to 1, so every ocean pixel on the planet was
+				// the same flat `u_Deep` at a constant 0.55 alpha. Half the
+				// terrain showed through it and the terrain was painting
+				// itself blue underneath, which between them is the whole
+				// reason the planet had no visible coastline from orbit.
+				//
+				// The map already carries the ground height in its red
+				// channel -- the terrain shader decodes it the same way --
+				// and the shell stands at sea level, so the depth under any
+				// point of it is however far that ground is below zero.
+				float depth = u_HasDepth > 0.5
+					? max(v_Depth, 0.0)
+					: max(u_SeaDepth
+						- (SampleSphere(u_Map, uv).r * 2.0 - 1.0) * u_Relief, 0.0);
+
+				float sunk = 1.0 - exp(-2.0 * depth / max(u_Clarity, 0.01));
 
 				vec3 body = mix(u_Shallow, u_Deep, sunk);
 
@@ -5269,15 +6628,41 @@ private:
 				// running right up the beach is the other half of why this
 				// read as a texture. Fresnel still floors it, because even a
 				// film is a mirror edge-on.
-				float alpha = u_HasDepth > 0.5
-					? clamp(mix(0.10, 0.92, sunk) + 0.55 * fresnel, 0.0, 1.0)
-					: clamp(0.55 + 0.45 * fresnel, 0.0, 1.0);
+				// The same number again, and now the shell obeys it as well:
+				// a shelf you can see the bottom of, an ocean you cannot.
+				float alpha = clamp(mix(0.10, 0.92, sunk) + 0.55 * fresnel,
+					0.0, 1.0) * clamp(wet, 0.0, 1.0);
+
+				// **Sea ice, from the same temperature that decides the snow
+				// line, so the two meet at the coast instead of arguing.**
+				//
+				// Water freezes at the surface, so there is no lapse rate in
+				// this one -- the sea is at sea level wherever it is, and only
+				// the latitude is left. Which means the ice edge and the
+				// snow line reach the shore at the same latitude by
+				// construction rather than by being tuned to.
+				//
+				// Ice is opaque and it is not a mirror: the depth colouring
+				// and the Fresnel both go away with it, which is most of what
+				// makes it read as a solid surface rather than pale water.
+				float warmth = SampleSphere(u_Map, uv).b;
+
+				float temperature = mix(u_TempPole, u_TempEquator, warmth);
+
+				float frozen = smoothstep(u_Freeze + 1.0, u_Freeze - 1.0,
+					temperature);
+
+				vec3 sheet = u_Ice * (0.25 + 0.75 * diffuse) * u_LightColor;
+
+				lit = mix(lit, sheet, frozen);
+				alpha = mix(alpha, clamp(wet, 0.0, 1.0), frozen);
 
 				color = vec4(lit, alpha);
 			}
 		)";
 
-		m_WaterShader.reset(Egss::Shader::Create("PlanetWater", vertexSrc, fragmentSrc));
+		m_WaterShader.reset(Egss::Shader::Create("PlanetWater", vertexSrc,
+			WithSphereSample(fragmentSrc)));
 		m_WaterMaterial = Egss::Material::Create(m_WaterShader);
 	}
 
@@ -5661,7 +7046,7 @@ private:
 				vec2 uv = vec2(atan(up.z, up.x) / (2.0 * pi) + 0.5,
 					acos(clamp(up.y, -1.0, 1.0)) / pi);
 
-				float coverage = texture(u_CloudMap, uv).a;
+				float coverage = SampleSphere(u_CloudMap, uv).a;
 
 				if (coverage < 0.02)
 					discard;
@@ -5678,7 +7063,8 @@ private:
 			}
 		)";
 
-		m_CloudShader.reset(Egss::Shader::Create("Clouds", vertexSrc, fragmentSrc));
+		m_CloudShader.reset(Egss::Shader::Create("Clouds", vertexSrc,
+			WithSphereSample(fragmentSrc)));
 		m_CloudMaterial = Egss::Material::Create(m_CloudShader);
 	}
 
@@ -5783,6 +7169,8 @@ private:
 
 		ImGui::TextColored(ImVec4(0.6f, 0.9f, 0.6f, 1.0f), "%s %s, %.1f m up",
 			m_Walking ? "on" : "near", m_Bodies[m_Frame].Name.c_str(), altitude);
+
+		WeatherPanel();
 
 		if (m_Walking)
 		{
@@ -6051,7 +7439,25 @@ private:
 	// against a capture instead: this is the value at which the foreground
 	// stays clean and the treeline a few hundred metres out visibly greys
 	// toward the sky.
+	// A rounded body's drag coefficient. Measured: a sphere is 0.47, a
+	// standing person about 1.0, a car 0.3.
+	static constexpr float s_DragCoefficient = 0.8f;
+
 	float m_HazeScale = 3.3e-3f;
+
+	// The weather where the camera is. Recomputed once a fixed step rather
+	// than per frame or per draw: several things read it -- the panel, and
+	// shortly the wind on the ship and the trees -- and they all have to be
+	// looking at the same instant, or a gust pushes the player and not the
+	// grass beside them.
+	Climate::Site m_WeatherSite;
+	Climate::Weather m_Weather;
+	bool m_HasWeather = false;
+
+	// The same wind in the two frames that want it: the body-fixed one the
+	// physics runs in, and the scene one things are drawn in.
+	glm::vec3 m_WindFixed = glm::vec3(0.0f);
+	glm::vec3 m_WindScene = glm::vec3(0.0f);
 
 	std::shared_ptr<Egss::Shader> m_TerrainShader;
 	std::shared_ptr<Egss::Material> m_TerrainMaterial;
@@ -6079,6 +7485,17 @@ private:
 	std::vector<glm::mat4> m_TreeBatch[s_TreeShapes][s_TreeLods];
 
 	std::shared_ptr<Egss::Shader> m_TreeShader;
+	// The wind field: one static mesh in a box round the camera, drifted on
+	// the GPU. 220 m is a little past where the strokes stop being legible.
+	static constexpr int s_StreakCount = 1100;
+	static constexpr float s_StreakExtent = 150.0f;
+
+	std::shared_ptr<Egss::Shader> m_StreakShader;
+	std::shared_ptr<Egss::Material> m_StreakMaterial;
+	std::shared_ptr<Egss::Mesh> m_StreakMesh;
+
+	std::shared_ptr<Egss::Shader> m_GrassShader;
+	std::shared_ptr<Egss::Material> m_GrassMaterial;
 	std::shared_ptr<Egss::Material> m_TreeMaterial;
 
 	// Room for every tree the streaming radius can hold: 14 a chunk over a few
@@ -6206,7 +7623,13 @@ private:
 	// Terrain level of detail, in metres from the camera at Earth's voxel
 	// size. See the note where they are handed to the planet.
 	bool m_Lod = true;
-	float m_LodNear = 100.0f;
+	// **Stride 2 begins here, and so does the end of the grass.** Grass is
+	// built on stride-1 chunks only, so this radius is the grass budget as
+	// much as the terrain one -- pulling it from 100 m to 55 m is what pays
+	// for sixty blades a square metre instead of six. The terrain loses very
+	// little by it: stride 2 at 55 m is 3 m between samples on ground that is
+	// 55 m away.
+	float m_LodNear = 55.0f;
 	float m_LodFar = 200.0f;
 	int m_ChunksPerStep = 12;
 
@@ -6241,8 +7664,11 @@ private:
 	// terrain instead of staying glued to whatever coastline is under them.
 	// Arbitrary and purely visual; picked for one full drift in about nine
 	// days of simulated time.
-	double m_CloudDrift = 0.0;
-	double m_CloudDriftRate = 2.0 * 3.14159265358979323846 * (365.25 / 9.0);
+	// Simulated seconds since the start, for the cloud drift. `CloudMatrix`
+	// converts to an angle per body, so this carries no rate of its own.
+	double m_CloudSeconds = 0.0;
+
+	static constexpr double s_SecondsPerYear = 365.25 * 24.0 * 3600.0;
 
 	double m_ShortestPeriod = 1.0;
 	double m_MaxStep = 1.0 / 64.0;

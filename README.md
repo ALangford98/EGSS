@@ -933,13 +933,29 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       starts, both caught by OpenWorld: rounding a field origin that is
       deliberately half a voxel off (13.5% of its pixels) and re-associating a
       float addition (34 of them)
-- [ ] **Sample the density in double, which is the other half of 1:1.**
-      `FillChunk` evaluates the generator at `PositionOf`, so at Earth's own
-      radius the sample lattice jitters by up to half a voxel. It displaces the
-      terrain rather than breaking it — neighbouring chunks read the same cell
-      values and still agree — but it is the next thing in the way of the scale
-      actually being used. The same applies to the terrain shader's height,
-      which is `world - u_Origin` in float on the GPU
+- [x] **Sample the density in double, which is the other half of 1:1** —
+      `PositionOfFixed`, a `dvec3` through `Fill`/`FillChunk`, and a
+      `DensityFixed` that takes `|p| - Radius` in double. Measured against the
+      generator's own exact zero (`Radius + Relief(d)`, arithmetic the chunk
+      store and the reconstruction know nothing about): the surface error at
+      1:1 falls from 0.1673 m mean / 0.8509 m worst to 0.0121 / 0.1247, against
+      a hand-computed bound of 0.866 m. At the default 250 km scale it changes
+      the frame by 1.7 of 255, which is what it should. Fixing it exposed that
+      the cache fingerprint sampled the generator rather than the fill, and
+      that it had been hashing four bytes of uninitialised stack since it was
+      written — see the changelog
+- [x] **The terrain shader's height, the GPU half of the same thing** — each
+      draw carries a reference point near its own geometry, so the shader forms
+      `world.xyz - u_Reference` (small, exact) instead of a planet-centred
+      `length`, and rebuilds the height from a double-computed reference
+      altitude plus `(2|C|(n·e) + e·e) / (|C+e| + |C|)` — an identity, so the
+      horizon mesh's fourteen-kilometre offsets are fine. Predicted from the
+      float format that `fract(height)` could take exactly 2 distinct values at
+      1:1 and exactly 64 at 250 km; counted 2 and 64, and 256 after. The height
+      was carrying 1.145 m of error at 1:1 and 0.047 m at 250 km. It changes
+      1,520 pixels by one level, because the only band narrow enough to notice
+      is the 4.78 m beach and neither captured view has a single pixel of
+      shoreline in it — see the changelog
 - [x] **Instance the trees** — a landed frame went from about 23,000 draw calls
       to 1,001, and from 16.66 M triangles to 9.49 M once trees behind the camera
       stopped being submitted. Needed instancing in the engine: a divisor on
@@ -1247,6 +1263,1483 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-08-29 (a big tree is not a small tree made bigger)
+
+Every tree was one mesh per habit with a uniform scale on it, which says a
+forty-metre tree is a four-metre tree seen from closer. It is not, and the
+reason is buckling.
+
+A column of height H and radius r standing under its own weight goes at
+Greenhill's limit,
+
+    H_crit = (7.8373 E I / (rho g A))^(1/3) = (7.8373 E r^2 / (4 rho g))^(1/3)
+
+so the safe height grows only as r^(2/3), and a trunk keeping up with a tree
+getting taller must thicken as **H^(3/2)**. That is elastic similarity, and it is
+why a sapling is a wand and an oak is a barrel: double the height and the trunk
+is nearly three times as thick.
+
+So there are **three size classes per habit**, each its own mesh with its own
+trunk, and the per-instance scale is only a twelve per cent jitter. Small trees
+outnumber large ones, the way a stand left alone has a great many seedlings, a
+few poles and a handful of standards.
+
+**Verified against Greenhill, which appears nowhere in the generator.** The
+radius is set from the habit's `Length`; the height is then whatever the
+branching happens to produce, and is read off the finished mesh's bounds. McMahon
+measured that real trees stand at about a quarter of their buckling height:
+
+| habit | small | middling | large | tallest |
+| --- | --- | --- | --- | --- |
+| spire | 0.269 | 0.301 | 0.299 | 22.0 m on a 80 cm trunk |
+| vase | 0.192 | 0.216 | 0.231 | 12.0 m on a 47 cm trunk |
+| mop | 0.180 | 0.189 | 0.201 | 8.2 m on a 33 cm trunk |
+| sapling | 0.201 | 0.203 | 0.219 | 7.6 m on a 26 cm trunk |
+| parasol | 0.148 | 0.153 | 0.157 | 9.8 m on a 63 cm trunk |
+| scrub | 0.177 | 0.165 | 0.189 | 4.9 m on a 17 cm trunk |
+
+Two things fall out of that table. Every habit is **flat across its three
+sizes** -- which is the whole content of the 3/2 exponent, since H/H_crit goes as
+H/r^(2/3) and is constant only if the exponent is right. And all six sit in the
+band real trees occupy, 0.15 to 0.30, with the conifer at the top and the
+flat-crowned parasol stoutest, which is the order they come in outdoors.
+
+The old parameters gave a 6 m tree a **52 cm** trunk. It wants 15 cm. Seven times
+the section it needs is most of why they read as stubby.
+
+**Which habit grows where is now a question about the climate**: conifers where
+it is cold, broadleaves where it is mild and wet, a flat wide crown on warm open
+ground, scrub at the dry edge, saplings everywhere in small numbers because a
+wood with no young trees in it is a plantation. A wood of six architectures mixed
+evenly is a botanical garden. The panel's checkboxes still hold -- a habit
+switched off has no weight anywhere.
+
+**And leaves are not one green.** A leaf in a hot dry place is small, thick, waxy
+and pale, which is sclerophylly and reads grey-olive. A conifer needle is nearly
+blue-green, because a leaf that must work in a short cool season packs in
+chlorophyll and keeps it all winter. A broadleaf in mild wet country is the
+yellow-green everyone means by "green". Bark goes the other way: dark under a
+closed canopy, pale in the open.
+
+**Nothing in the world is lit only from above, and the big trees are what made
+that obvious.** `0.5 + 0.5 * n.y` is the share of the sky a surface can see and
+it is zero for anything facing down, so the underside of a canopy came out pure
+black -- invisible while every tree was small enough to look down on, and half
+the screen the moment you could stand under one. The missing term is the ground,
+which returns about a fifth of what falls on it. And a leaf is thin: it
+transmits, which is why a wood in summer is green twilight and not a dark room.
+One extra diffuse term against the back of the surface, at 0.30 for leaves and
+zero for bark and rock. The terrain gets the ground bounce too, so a roof you dig
+over yourself is dim rather than black.
+
+**The loose stones were spheres, and a sphere on a slope never stops.** They were
+still travelling at three to ten metres a second five seconds in. They are boxes
+now -- a box tumbles and settles on a face, which is what angular rock does and
+why a scree slope stays where it is. All six are at rest by fifteen seconds
+(under 1.5e-9 m/s). The driftwood is unchanged and still floats at 0.480 of its
+depth against a predicted 0.500.
+
+Cost of the boulders and the bigger trees together: 8.43 s against 7.755 s over
+400 frames, which is 1.7 ms a frame for 309 bedded boulders and three size
+classes of tree.
+
+### 2026-08-29 (boulders that are a statement about the ground they are on)
+
+The rocks were grey spheres dropped from the sky at uniformly random points and
+left to the solver, which gives exactly what it sounds like: balls resting on
+hilltops, balls rolling downhill for ever, and nothing said about the terrain.
+They are placed now, and where they are placed is the whole point.
+
+**Scree collects at the foot of steep ground, not on it.** A site needs two
+things at once -- its own slope at or under the angle of repose so a block can
+rest, and steep ground *above* it to have supplied the block. That second half
+is what makes a boulder field mean something: it says there is a cliff up there.
+**Bedrock shows through where soil cannot stay**, so ground past about 34 degrees
+gets a few large blocks, mostly buried, part of the face rather than lying on it.
+And **soil buries stone**: a wood and a meadow have a soil profile and a litter
+layer and a surface stone is under both within a few centuries, while frost-
+shattered tundra, bare rock and stony desert have neither. In a desert the wind
+takes the fines and leaves the coarse, which is a lag deposit and is why a stony
+desert is stony. The biome does not decide whether rock exists; it decides
+whether you can see it.
+
+**Repose and the threshold hillslope angle are different numbers, and confusing
+them put two boulders on the entire map.** Repose (about 34 degrees) is where
+loose material *stops*. What decides whether a hillside delivers debris downhill
+is the threshold hillslope angle, near 30 degrees in soil-mantled country --
+lower, because a slope need not be bare to move rock down it, and every real
+landscape has far more ground above 30 degrees than above 34. Both are in the
+code as their own constants now.
+
+**Sizes follow a power law because fragmentation does**: N(>d) proportional to
+d^-b with b near 2.5, so a field is a great many cobbles with a handful of blocks
+in it and the handful is what you notice. Drawn by inverse transform, and fitted
+back off the placed stones:
+
+| | asked | measured |
+| --- | --- | --- |
+| fragmentation exponent | 2.500 | **2.534**, standard error 0.220, over 133 stones |
+| relief standing above a boulder | -- | 7.32 m, against 3.70 m at 1837 random points |
+| resting below repose / on faces too steep for soil | -- | 174 / 135 of 309 |
+| floating, or wholly buried | 0 | 0, 0 |
+
+The relief figure is the one worth having: it is not a rule the code contains.
+Nothing measures *height* anywhere -- the placement asks about slope, uphill --
+and yet a boulder ends up with twice as much ground standing over it as a point
+picked at random. That is what "at the foot of a slope" means, arrived at
+sideways.
+
+**The exponent read 2.679 first, and the measurement was wrong rather than the
+field.** `n / sum ln(d/lo)` is the maximum likelihood exponent for a Pareto with
+no upper bound, and the sample had one: everything above 2 m was discarded to
+keep clear of the size clamp. That throws away about one per cent of the sample,
+all of it from the far tail, which shortens every log and raises the estimate --
+by 0.18, which is the whole of the discrepancy. The doubly-truncated likelihood
+has the correction in it and is monotone in b, so a bisection settles it.
+
+Three smaller things, all of them the difference between a rock and a prop.
+**Six meshes rather than one**, because every boulder being the same jittered
+sphere is visible the moment two are near each other. **Three axes rather than
+one**, at the ratios river and scree gravels actually measure -- b/a about 0.7,
+c/a about 0.5 -- lying on the flattest face, which is where a loose clast comes
+to rest because it is the lowest centre of mass and is why a shingle beach is
+flat. And **bedded rather than balanced**: sunk by a third of the short axis,
+because frost heave and washed-in fines put a stone partly under within any time
+at all, and a stone sitting exactly on the surface reads as scenery dropped on
+the ground.
+
+**Fall sorting** puts the big blocks at the outside of a field: a block carries
+more momentum than a cobble and rolls further from the cliff, so the base of a
+talus slope is coarser than its head.
+
+Colour is one granite with two coatings on it. Desert varnish -- the dark
+manganese-and-iron film that takes millennia -- in hot dry country; lichen, the
+pale grey-green that makes an upland boulder field the colour it is, in cold wet
+country.
+
+**They collide, from a pool that is rewritten rather than rebuilt.**
+`PhysicsWorld3D` cannot remove a body and does not need to: a static body can be
+moved. The pool is allocated once at 512 and each rebuild writes the boulders
+that exist into the front of it and parks the rest a kilometre underneath the
+world. The same trick `Dig` uses on the ground body. One sphere on the short
+axis is a deliberate under-approximation -- being stopped early is a shape,
+being stopped by nothing is a bug.
+
+The dynamic bodies stay, but only as the buoyancy test they always were, and
+only in and around the lake: a log that floats and a cobble that does not, both
+settling under Archimedes rather than under a flag. They are the only rocks here
+that move.
+
+### 2026-08-29 (the doorway becomes a window, and one map does the walking and the looking)
+
+The panel between the posts was a flat dark board, and a comment said so: what
+made the door work was the plane test, not the picture. It is a picture now --
+the scene rendered from a second camera on the far side, into an off-screen
+target, and sampled by the panel at its own place on the screen.
+
+**Screen-space sampling is what makes the angle right, and it is right for
+free.** Both cameras share a projection, so the fragment of the panel at pixel
+(x, y) wants the pixel at (x, y) of that target -- the same ray, seen from the
+other end of the doorway. There is no quad to project, no matrix to get subtly
+wrong, and walking sideways slides the view the way a view through a window
+slides, because it is one.
+
+**Verified against the shed's own dimensions.** Where the far wall meets the
+floor is 7.75 m behind the doorway and 0 m above its base, so its elevation from
+the eye follows from the room, the eye's offset from the door, the 60 degree
+field of view and the camera's 12 degree downward pitch -- none of which the
+portal code puts together anywhere. Predicted image row against measured, at two
+eye heights:
+
+| eye above the door base | predicted row | measured | error |
+| --- | --- | --- | --- |
+| 2.799 m | 400.47 | 400 | -0.47 px |
+| 1.715 m | 335.81 | 336 | +0.19 px |
+
+Half a pixel on a 720-line frame, at a feature ten metres away through a
+1.1 m opening. The angle is right.
+
+**A doorway is a place and a heading, and a portal is one rigid map between two
+of them.** Turn a point by the difference between the two doors' headings and
+set it down beside the other one. That is written once and used twice -- the
+player's teleport and the second camera are the *same* transform -- so the
+picture in the doorway cannot disagree with where you end up.
+
+Writing it once is also what fixed the complaint that started this: walking out
+of the shed left you facing the door and you walked straight back in. The
+position went through the map and **the view did not**, so you were set down a
+metre in front of the doorway still looking whichever way you had been looking
+inside, which is usually back at it. The heading of a crossing is the direction
+you are travelling, so the way out is the inverse of the way in and you come out
+walking away. Checked: out 1.1 m on the side you went in from, forward dotted
+with the direction back to the door, -1.0.
+
+The heading following the crossing also fixes something that was never noticed:
+the world door is a free-standing frame you can walk round, and a pure rigid map
+sends anyone who approaches it from behind out into four hundred metres of empty
+air on the wrong side of the shed. Both faces land you inside the room now.
+
+`s_DoorTop` is one constant for both openings. They were 2.50 m and 2.45 m, and
+the difference showed as a strip of the shed's lintel hanging above the frame.
+
+**`SetSmooth(true)` on a framebuffer attachment makes it sample black.** It sets
+the minifying filter to `GL_LINEAR_MIPMAP_LINEAR`, an attachment has no mip
+chain, and an incomplete texture reads as black with no error anywhere. The
+doorway came out a solid black board -- which is exactly what it looked like
+*before* any of this was written, so it read as the second camera never having
+run. The framebuffer already gives its colour attachment `GL_LINEAR` both ways.
+
+Cost: **0.24 ms a frame** with a door up (7.85 s against 7.755 s over 400
+frames, two runs each) -- the pass that draws the room draws eight boxes and
+nothing else, because eight boxes is all that is on the far side. Standing
+*inside* the shed the far side is the world, and that pass draws it a second
+time; the checkbox is there for that. `--portal` plants a door on the first
+step, which is the only way a capture can look through one.
+
+### 2026-08-29 (grass that thins around you, not around the map)
+
+The level-of-detail sliders looked dead. Moving them changed something, but not
+anything near where you were standing, and walking about did not move the effect
+at all.
+
+The distance the shrink is keyed to was `length(world.xyz)` -- **the distance
+from the world origin, not from the eye.** The block is centred on the origin,
+so the thinning was a fixed bullseye painted on the terrain: tall grass in the
+middle of the map, collapsed grass at the corners, whoever was looking and from
+wherever. `u_LodFar` is 75 m and a corner cell centre is 76.4 m out, so standing
+in one put *every* blade past the far end.
+
+Measured, standing at the corner cell and at the mid-edge cell, as mean
+|Laplacian| of luminance over the bottom quarter of the frame -- which is how
+much fine detail there is at your feet, and so whether there are blades there at
+all:
+
+| spawn | before | after |
+| --- | --- | --- |
+| corner cell (76.4 m from the map centre) | 2.284 | 6.804 |
+| mid-edge cell (56.9 m) | 7.573 | 10.998 |
+
+The per-chunk `u_Fade` sitting three lines away had been measured from the
+camera all along, so the *shading* converged with distance from the viewer while
+the *geometry* thinned by position on the map -- two level-of-detail schemes
+disagreeing about where the viewer was, one of them right.
+
+### 2026-08-29 (the ground was reading a nine-cell grid out of sixteen)
+
+Grass growing on sand, and sand under grass. The grid went from three by three
+to four by four; `s_Grid` changed, and the copy of it hard-coded in the ground
+shader's GLSL did not.
+
+So the CPU filled `u_Cells[j * 4 + i]` for sixteen cells and the shader read
+`u_Cells[j * 3 + i]` out of an array nine long. Seven of the sixteen writes
+landed past the end and went nowhere; the nine that landed were shuffled into
+the wrong squares. **The grass never took part in any of this** -- it asks
+`ClimateAt` on the CPU, which was right the whole time -- so what the change
+actually broke was the agreement between the ground and the things growing out
+of it.
+
+Standing in a cell the grid says is Desert, colour of the ground in the bottom
+quarter of the frame:
+
+| spawn | green before | sand before | green after | sand after |
+| --- | --- | --- | --- | --- |
+| cell 7 (Desert) | 100.00% | 0.00% | 0.00% | 97.45% |
+| cell 11 (Desert) | 100.00% | 0.00% | 0.00% | 100.00% |
+| cell 0 (Wetland, control) | 99.72% | 0.00% | 99.72% | 0.00% |
+
+Cell 0 is the control and index 0 maps to itself under both schemes, which is
+why it does not move.
+
+The fix is not the corrected index. It is that **the grid's size is now written
+once** and injected into the shader as `#define GRID` from `s_Grid`, so the two
+cannot drift apart again. A constant that has to be written out twice will
+eventually be wrong in one of the two places, and the symptom will not look like
+an indexing bug -- this one looked like a biome rule.
+
+`--spawn N` stands the camera at the centre of cell N, which is what let a
+capture ask the question at all. The spawn buttons were the only way to be
+somewhere specific and an unattended run has nobody to press one.
+
+### 2026-08-29 (a door you can carry, and a room that is not where the door is)
+
+`E` plants a doorway in front of you and `E` again nearby pockets it. Walk
+through and you are in a toolshed; walk out of the shed's door and you are back
+where you left it. One portal, and the shed is built once and stays built --
+deploying does not create a room, it creates a *way in*, which is what a pocket
+dimension is.
+
+**Crossing is a plane test, not a trigger volume.** A box you must be inside for
+a frame can be outrun: the player moves six metres a second and a fixed step is
+a sixtieth, so a half-metre trigger is missed one time in five. Testing which
+*side* of the doorway the player was on last step and is on now cannot be
+outrun, because the two positions bracket the crossing however fast it happened.
+
+Two faults, and the second is the interesting one.
+
+The crossing test was `was in front && is behind` -- one direction only -- and
+the portal is planted two metres *in front* of you, so you begin behind it and
+walk the other way. It never fired once. A door is a door from both sides, and a
+sign change says "crossed" without caring which way.
+
+**The shed was 400 m underground, and the ground collider threw the player out
+of it at ninety-five metres a step.** The placement was exactly right -- y
+-398.80 with the floor at -400 -- and then the solver shoved them upward,
+continuously. It was doing precisely its job: the ground is an SDF collider over
+the voxel field, the field is only defined across the block, and *below* it
+every query reads as solid. The player was being pushed out of rock that goes
+down for ever.
+
+Above the field the same query reads as air. So the pocket dimension is in the
+sky instead, which costs nothing because nobody can see it -- and the asymmetry
+is worth remembering, because anything else placed outside the block will meet
+the same wall. Verified: into the shed at y 400.9 standing on its floor, back
+out at y 3.0 on the terrain.
+
+### 2026-08-29 (an editor layout, and the demo gets a viewport)
+
+Every panel in the sandbox was an independent ImGui window dropped wherever it
+last happened to be, over a demo drawn across the whole framebuffer. Fine for
+one panel and unreadable by the time there are four: they overlap the thing they
+describe, they move when the window resizes, and the scene is always partly
+behind something.
+
+`EditorShell` lays them out -- controls down the left with the demo selector
+under them, the profiler on the right, a spare `Assets` pane along the bottom,
+and the demo in the middle. **Nothing about any demo changed to make that
+happen.**
+
+**The demo is drawn into the central node by setting the viewport, not by
+rendering to a framebuffer.** A framebuffer is the textbook answer and it would
+have broken every capture in this project: `--hide-ui` exists so an unattended
+run draws no panels at all, and with an off-screen target there would be nothing
+to blit it with. Setting the viewport degrades correctly on its own -- no panels
+means the rect is invalid means the demo owns the whole framebuffer, exactly as
+before. Verified: `--hide-ui` still produces a full 1280x720 frame with all four
+corners lit.
+
+The camera's aspect follows the pane rather than the window. Leaving it alone
+stretched the scene vertically by the ratio between them, which is the kind of
+wrong that is easy to look at and hard to name -- nothing is obviously broken,
+the trees are simply too tall.
+
+Three things went wrong on the way and all three are worth keeping:
+
+**Docking by window title is too fragile.** A demo's panel is titled whatever
+its author chose, which is not its name in the registry, and a list of both in a
+third file is exactly the thing that silently falls out of step. The shell
+publishes the dock id instead and `DemoLayer` applies it to the window it is
+about to open, so a demo written next year lands in the right place without
+anyone adding it to a list.
+
+**ImGui runs in layer order, and the shell has to go first.** Pushed after the
+demos, it published the dock id *after* they had already opened their windows --
+and `FirstUseEver` only fires once, so the panel floated for ever. It handles no
+events, so sitting at the bottom of the stack costs nothing.
+
+**`PassthruCentralNode` is what leaves the middle transparent.** Without it the
+central node paints itself and the demo behind it is never seen, which looks
+exactly like the scene failing to render.
+
+The layout is built into `imgui.ini` once and only if that file does not already
+describe one, so it is a starting point rather than a cage -- drag a panel
+somewhere better and it stays. `--no-editor` turns the whole thing off.
+
+### 2026-08-28 (leaves that are blobs, and grass that stops being blades)
+
+**Leaf clusters were blocky for one reason: flat normals.** `LeafCluster` builds
+a low-polygon sphere with the radius jittered per point and gave every triangle
+its own face normal, so flat shading drew each facet as its own flat patch of
+colour -- and the jitter that was there to make the blob look organic instead
+outlined every triangle in it.
+
+A cluster of leaves is a blob, and the normal a blob has at a point is the
+direction from its centre. That was already known here and free to compute. The
+silhouette is exactly as jagged as it was; what changed is that the lumpy radius
+now reads as a rough surface rather than as a modelling error.
+
+**The grass sparkle is not a smoothing problem, and smoothing would not have
+fixed it.** A blade is six millimetres across, so beyond a couple of metres it
+is well under a pixel wide. Coverage is then a coin-flip per pixel -- the blade
+either contains the sample point or it does not -- and every blade carries its
+own normal, its own colour jitter *and* its own root-to-tip gradient. Three
+high-frequency signals, all aliasing, all moving in the wind.
+
+The proposal on the table was to texture-map distant grass. That is the standard
+endgame and it is a lot of machinery -- bake an atlas, cross-quads, cross-fade
+between two representations, and impostors bring their own popping. There is a
+cheaper thing that targets the actual complaint: **make the two outcomes of the
+coin-flip look the same.** Converge each blade's normal toward the ground's, and
+its colour and gradient toward the field's mean, as it recedes. A pixel that
+lands on a blade and a pixel that lands on the gap beside it then shade almost
+identically, and the aliasing stops *showing* even though it is still there.
+
+It is also the physically sensible thing. A field of grass at a distance does
+not shade like a million independent leaves; it shades like a surface. Close up
+you are looking at blades, far away you are looking at a meadow.
+
+Blades now stop entirely past sixty metres rather than thinning to a fifth --
+a fifth of the blades is still a fifth of the sparkle, and the terrain beneath
+is already tinted green by the same climate the grass grew from and already
+carries a noise texture. Measured as mean Laplacian of luminance, which is what
+a per-pixel sparkle *is*:
+
+| band | before | after | |
+|---|---|---|---|
+| far hillside | 7.462 | 3.133 | **−58%** |
+| mid | 10.324 | 8.218 | −20% |
+| near | 14.319 | 14.285 | −0.2% |
+
+The near field is deliberately untouched: at two metres a blade is about 3.7
+pixels wide, so what varies there is detail rather than aliasing, and flattening
+it would be throwing away the thing the density was bought for.
+
+Worth writing down for whoever reaches for impostors later: **there is no MSAA
+anywhere in this engine**, which is why sub-pixel geometry aliases as hard as it
+does here. Turning it on is probably worth more than any of this, and is a
+window-creation flag rather than a rendering feature.
+
+### 2026-08-28 (digging was on the wrong input path, and trees that bend rather than fall)
+
+**The dig was fine; the way it was being asked for was not.** Every part of the
+path measured clean -- the raycast hit at 3.29 m, `EditSphere` touched 52
+voxels, one chunk went dirty, the triangle count moved -- so nothing about the
+editing was broken. It was hung off a `MouseButtonPressedEvent`.
+
+`VoxelTerrain` polls the mouse on the fixed step instead, and says why in a
+comment that has been there since it was written: *"the mouse and the keyboard
+are in the replay stream and events are not, so a digging session records and
+replays."* An event can also be consumed before it reaches a demo layer, which
+is the symptom; the replay problem is the reason. The lab simply had not
+followed a convention the project already had.
+
+Everything that edits or teleports is polled now -- dig, add, the clipping
+toggle, mouse-look and the nine spawn keys -- all edge-triggered, because one
+edit per *press* rather than per step is the difference between digging a hole
+and hollowing the block out in a second.
+
+**Trees bend now rather than falling over.** The displacement goes as the square
+of the height *and* the square of the wind, so a crown six metres up in a gust
+was thrown many times its own height and a wood came out as a tangle of
+stretched triangles. Capped at a share of how high up the tree a vertex is, so a
+low branch is held tighter than the crown and the shape stays a tree rather than
+being sheared uniformly. A tenth of the height is already a lot of movement;
+grass gets 0.85 because grass really does lie flat and a tree really does not.
+
+**Six habits rather than three seeds.** Three seeds of the same parameters give
+three trees that are recognisably the same tree. What makes a wood look like a
+wood is different *architecture*, and the three parameters that decide it are
+the branching count, how far a child leans off its parent, and how fast length
+falls off with depth. Between them: a spire, a vase, a mop, a sapling, a parasol
+and a scrub.
+
+They are a set to choose from rather than one tuned answer, and each has its own
+checkbox -- turning all but one off gives a stand of a single habit, which is
+the only way to judge whether that habit is any good. The sapling earns its
+place for a reason worth stating: a stand all of one size reads as an orchard.
+
+### 2026-08-28 (trees in the lab, and a theory the lab disproved)
+
+Three tree shapes, scattered by biome, leaning in the same three-layer wind the
+grass does. Each shape is a different *habit* rather than a different seed — a
+tall narrow conifer, a broad open-grown hardwood, and one between — because
+three seeds of the same parameters give three trees that are recognisably the
+same tree.
+
+They want it wetter than grass does: grass will grow on a steppe and a tree will
+not, so the threshold sits well above the grass's, which is what puts the edge
+of a wood *inside* a biome transition rather than on it. Nothing grows within a
+metre and a half of the waterline either — a trunk half in the water looks like
+a mistake even when the shoreline is exactly right.
+
+The bend is the trunk's: height *squared*, because a trunk is a beam clamped at
+the ground, so the root stays vertical and the crown does the moving. The wind
+is sampled at the tree's own root rather than per vertex, so the whole tree
+agrees with itself — a trunk leaning one way while its own canopy leans another
+is the artefact that avoids. And because there is one draw per tree, the root is
+the transform's own translation: known exactly, with nothing to reconstruct.
+
+**The theory this was built to test is wrong, and the lab is what proved it.**
+The planet's trees currently draw as flat canopy slabs lying across the ground —
+buried to the crown. The standing guess was that the cause is *where* they are
+placed: the planet asks the generator for the surface radius along a direction,
+an analytic answer, while the ground you see is the isosurface a mesher found in
+a sampled field, and the two need not agree.
+
+So the lab scatters trees over the chunk's own triangles instead — a triangle of
+the mesh cannot disagree with the mesh — and then measured both, over 156 trees:
+
+| | worst |
+|---|---|
+| field distance at a trunk's foot (on the mesh) | **0.1159 m** |
+| gap between the mesh position and the analytic height | **0.1268 m** |
+
+They agree to about a tenth of a metre, which is the marching-cubes
+interpolation error and nothing more. **Whatever buries the planet's trees, it
+is not this.** The comment that had already been written into the file asserting
+that cause has been replaced with the disproof, because the next person to look
+will look there.
+
+Scattering off the mesh stays, on its own merits: it is exact by construction
+rather than by luck, and it needs no surface search at all.
+
+### 2026-08-28 (wind as a field, a lake in a pit, and digging that stays put)
+
+**Wind is a field, not a vector.** A single direction and speed for the whole
+world is what made the grass read as a machine: every blade leaning the same way
+by the same amount, for ever. Real wind over open ground has structure at
+several scales at once, so there are three layers and each is a different
+*size* rather than a different amplitude of the same thing — the prevailing
+wind, gusts about 70 m across that multiply the speed between a lull and a
+squall, and eddies about 18 m across that turn the direction by up to a quarter
+turn and stop a gust front being a straight edge.
+
+All of it is **advected with the mean**, which is the part that makes it look
+like weather rather than like noise: a gust is a structure travelling downwind,
+so it is sampled at `position − mean × time`. Stand still and the pattern comes
+past you. The same three layers run in the grass shader, because a gust is
+metres across and a chunk is sixteen — done per chunk it would be one number for
+a whole gust front.
+
+Measured over the block: mean 5.0 m/s, field **2.41 to 5.92 m/s**, direction
+**±45°** off the mean, and the speed at a fixed point drifts as gusts pass. The
+first version had the noise offsets at 0.75 and 0.80, so the product averaged
+0.6 and every reading came out well under the number on the slider — the sort of
+quiet lie that makes a tuning session take twice as long. They are 1.0 now, so a
+zero-mean noise gives a field whose mean *is* the slider.
+
+**A cap on how far a blade may lean.** The displacement goes as the square of
+the wind, so at the top of the slider a blade was thrown several times its own
+length and the field turned into a smear of stretched triangles. A real blade
+lies flat and stops. The cap is a share of the blade's own length, so a short
+blade in the understorey is capped shorter than a tall one and the two stay in
+proportion.
+
+**Digging no longer teleports you.** `Dig` called `BuildWorld`, which calls
+`SpawnWalker`, which puts the player back at forty metres above the origin — so
+every dig threw you into the sky and digging read as broken rather than as
+working and moving you. The collider holds the field by pointer so the shape
+follows on its own; what does not follow is the broadphase bound. Replacing the
+ground body alone fixes that and leaves the player, their velocity and where
+they were looking exactly as they were.
+
+**Nine by nine by nine, with the grid still three by three.** 144 m of ground,
+each of the nine cells owning a 3×3 group of chunks and covering 48 m.
+Decoupling the block from the grid is what lets it grow without the panel
+growing with it: eighty-one checkboxes would be a worse tool than nine.
+
+**A water pit, and the water is one quad.** Noise does not make lakes — a basin
+has to be a *bowl*, ground that falls away smoothly and comes back up on every
+side, and nothing built from summed octaves reliably closes like that. So the
+pit is put in on purpose: a smooth depression subtracted after the noise,
+squared so the sides are steep near the rim and the floor is broad and flat,
+which is the profile a lake bed actually has.
+
+Then the water needs no mesh of its own at all. A lake surface only has to exist
+where the ground is below it, and the depth buffer already knows where that is —
+draw one horizontal plane across the block and everything underground is
+occluded by the ground in front of it. What is left is exactly the water in the
+pit, with a shoreline that follows the terrain to the pixel and cost nothing to
+find. **That is worth taking back to the planet**, where the ocean is currently
+a whole sphere carrying a wet mask.
+
+Grass stops at the waterline with a metre of margin, so the shore is a band
+rather than a line drawn on the water. The water level is measured from the rim
+rather than from zero, so deepening the pit does not also empty it — which is
+what anyone dragging the slider expects and the opposite of what a fixed level
+gives.
+
+Spawns now face the middle of the block. A spawn tool that drops you looking
+whichever way you happened to be facing makes you turn round before you can see
+anything, and the interesting thing is nearly always toward the centre.
+
+### 2026-08-28 (the lab is a 3x3x3 cube with a biome grid on it)
+
+**Three chunks a side, and the three is the same three as the grid.** The lab
+was built nine chunks across, which was not what was asked for and was wrong for
+the job besides: at 48 m a side each of the nine columns is 16 m square, small
+enough to stand in the middle of one and see its neighbours on every side, which
+is what a biome grid is for. It is a *cube* -- 48 m of vertical extent with the
+terrain in the middle -- so there is real rock underneath to dig into and real
+air above to dig out into, rather than a surface with nothing either side.
+
+**Nine checkboxes, nine biomes, and the blend is the point.** A cell's biome is
+a property of a 16 m square, and a 16 m square of desert against a 16 m square
+of meadow with a hard line between them reads as a tiled floor rather than as
+country. What makes a boundary look like a boundary is that it is *wide*.
+
+So the cells are treated as samples at their own centres and read back
+bilinearly, smoothstepped -- which gives the stated value at each centre and a
+transition a full cell wide between any two neighbours. The same expression runs
+twice, once on the CPU for where grass grows and once in the fragment shader for
+what the ground looks like, because the grass has to agree with the soil it
+comes out of. Nine `vec3`s of (moisture, warmth, weight) is cheaper than a
+texture and needs no upload path.
+
+**An unticked cell contributes nothing rather than contributing zero.** Those
+are different: zero moisture is a desert, and a hole in the ground should not
+make its neighbours arid, so the weights of the cells that exist are
+renormalised. And unticked means *no ground* -- the column is empty, you can
+walk into the gap and look at the section of its neighbours, which is the
+cheapest way to see what the generator is doing under the surface.
+
+Measured on the opening grid, which runs wet-to-dry across and cold-to-warm
+down so that every neighbouring pair is a transition:
+
+| check | result |
+|---|---|
+| each cell centre reads back its own biome | all nine exact |
+| moisture across the middle row | 0.85 → 0.83 → 0.76 → 0.72 → 0.60 → 0.40 → 0.34 |
+| biggest jump between samples 2 m apart | **0.0698** |
+| density at the centre of an unticked cell | **+4.00** (empty) |
+
+The row is monotone from forest through meadow to steppe with no step at either
+cell line, which is the whole claim.
+
+The five named spawn points are gone and the number keys now stand you in a
+grid cell instead. A named list was the right idea while the climate was two
+sliders; now that every cell has its own biome the useful thing to stand in the
+middle of is a cell, and there are exactly nine of them.
+
+### 2026-08-28 (a lab for the ground, and the trees were never drawing)
+
+**`TerrainLab`, nine chunks of ground with every knob on a slider.** The solar
+demo is where the terrain has to work and a poor place to find out why it does
+not: a change costs a planet-wide rebuild, the interesting ground is wherever
+the camera happens to point, and half the effects only appear at a scale you
+have to fly to. Nine chunks of sixteen voxels is 144 m across — big enough for
+a hill and a hollow, small enough that the whole field regenerates in a fraction
+of a second, so a slider can rebuild the world on release.
+
+Feature size, octaves, amplitude, a rolling-to-ridged mix, domain warp, the
+plateau control the planet's continental shelf came from, caves, seed and voxel
+size. Digging with the mouse. And the climate is **two sliders** rather than a
+hydrology pass, which is the entire reason a desert is reachable here: on a
+planet it takes a landing-site search.
+
+**Developer tools, built here to be ported.** Five named spawn points on the
+number keys — meadow, desert, steppe, tundra, wetland — and each one carries the
+climate that makes it what it is, because a spawn that only moves the camera
+shows you the same ground from somewhere else. And a clipping toggle on `V`.
+
+The tempting way to write no-clip is to keep simulating and turn the collider
+off, which leaves the solver pushing a shape nothing pushes back on — so gravity
+still accumulates and letting go of the keys drops you through the floor at
+whatever speed you had reached. Making the body **kinematic** and integrating
+the position by hand is simpler and is what a person means by "let me through
+the ground": while it is on, the world does not act on you at all.
+
+**Ground is dirt with grass on it, not a green surface.** Painting the ground
+the colour of what grows on it works from orbit and fails underfoot — what shows
+between blades is *soil*, and painting it green is the single thing that makes a
+field read as a carpet. So the ground is brown and the green is a tint over it,
+which means the blades and the earth between them are different colours and the
+eye reads depth. The texture is three octaves of value noise on the world
+position; two things about it are worth more than a bitmap would be, that it is
+in world space so it does not swim as you walk, and that it moves the *colour*
+rather than the brightness, because a surface varied only in value reads as
+dirty rather than as soil.
+
+Blades come in two passes now, a tall sparse one and a short dense one. One
+length reads as a brush: every tip at the same height is a flat plane of green
+with nothing behind it. The short pass is what hides the ground between the tall
+blades, which is the job density was being asked to do alone. Colour varies
+blade to blade off the per-blade ticket the scatterer already writes — a
+brightness spread *and* a small hue shift, because brightness alone reads as
+noise and both together read as different plants.
+
+**And the reason there were no trees: the tree shader had not compiled since
+the sway work.** Two commits ago a `.replace` meant for the grass shader also
+matched the tree one — they share a `u_Compliance` line — and left
+`u_GustOffset` declared twice. `SolarSystemTrees` failed to compile from that
+point on and drew nothing.
+
+That is worth writing down twice over, because the measurement taken at the time
+said **"656 instances drawn"** and was believed. It was counting *submissions*,
+not pixels: the batch was built, the buffer uploaded, the draw issued, and the
+program behind it was dead. A count taken on the CPU says nothing about whether
+anything reached the framebuffer, and the log line that would have said so —
+`Shader 'SolarSystemTrees' compilation failed` — was scrolling past under a
+`grep` for the word "error", which it does not contain.
+
+With the shader fixed the trees draw, and they are visibly wrong: enormous flat
+leaf polygons lying across the ground, which is what a buried tree looks like
+when only its canopy clears the terrain. Disabling the sway entirely leaves the
+image byte-identical, so it is a placement fault and not a bending one. Not yet
+root-caused; written down rather than guessed at.
+
+### 2026-08-28 (the geometry artifacts were the grass, and grass LOD)
+
+**The artifact was the grass all along.** Reported as flat angular slabs cutting
+through the hillside, and they looked like terrain — big, planar, dark. Two
+hypotheses were measured and both were wrong before the right one turned up:
+
+- The **horizon mesh** stands 192 spokes at 340 m, which is 11 m triangles
+  against 1.5 m chunks, so it should bridge valleys and poke through. Measured
+  as mean-of-two-ends against the generator's own height at the midpoint, net
+  of the droop meant to keep it under: it stands **0.08 m proud, at 340 m out**.
+  Not it.
+- **Terrain LOD.** `--no-terrain-lod` against the same frame differs by 5.6% of
+  pixels, all of it at the coarse strides where it should be. Not it either.
+
+The blades were `Width = Height * 0.10`, so 9 cm across. A real blade is four or
+five millimetres. Standing in it you were not looking at grass but at a heap of
+flat green shards the size of dinner plates — correct geometry at an absurd
+scale, which is exactly what "geometry artifact" looks like from the inside.
+
+**Narrow blades need many more of them, and that needs LOD.** At 6 mm and 60
+blades a square metre over the full stride-1 radius the frame went from 12.4 ms
+to **57 ms**. Three things fixed that, and two of them failed first:
+
+1. **Density became blades per square metre.** Per terrain triangle is a number
+   that means nothing on its own — it depends on how finely the ground happens
+   to be meshed. The triangle's own area makes it a density anyone can reason
+   about, and makes the cost of a change predictable.
+2. **Grass exists only on stride-1 chunks, so that radius *is* the grass
+   budget.** Pulling it from 100 m to 55 m is what pays for sixty blades a
+   square metre instead of six. The terrain loses very little: stride 2 at 55 m
+   is 3 m between samples on ground 55 m away.
+3. **A keep-fraction per chunk against a per-blade ticket.** Both sides of the
+   comparison have to be constant across a blade. The first attempt computed
+   the distance *per vertex*, so blades near the threshold had some vertices
+   collapse and some not, and the field filled with long black slivers stretched
+   to the collapse point — about two per cent of blades. Moving the blade's root
+   into the position slot fixed that exactly, but cost the normal its attribute,
+   and a **derivative normal is noise on geometry six millimetres wide** — the
+   whole field went black. The version that works keeps the normal and makes the
+   *threshold* a uniform set per chunk, so it cannot vary across a blade at all.
+
+| | ms per step |
+|---|---|
+| 60 blades/m² over 100 m, no LOD | 57.0 |
+| the same over 55 m, no LOD | 28.5 |
+| per-chunk keep, full inside 20 m to a fifth at 52 m | **12.5** |
+
+Ten times the blade density of two commits ago, at the frame time it had before
+any of this.
+
+**The gust was still tied to walking speed, and the frame was only half of it.**
+The phase became camera-independent last commit; the *wavelength* did not. It
+was an 18 m pattern travelling at 8.9 m/s, and walking at 6 m/s through an 18 m
+pattern changes the rate you meet it by most of itself. A real gust front is
+tens of metres across and travels with the air, and both of those are the fix:
+one radian per 55 m, and a time term that is that scale times the wind speed, so
+the pattern advects at exactly the speed the air is moving and nothing else.
+
+**Trees are placed and drawn** — 2,061 made, 656 batched — but the nearest to
+the default site is **151 m away**, so the opening view has none in it. The
+landing clearing is 20 m and the batch cap is 16,384, so neither of those is
+it; this is not yet root-caused and is written down rather than guessed at. The
+tree line is at least honest now: it was `height / (Amplitude/2 - sea)`, a
+fraction of the relief that stopped trees 87 m above sea level while the shader
+painted green forest floor for another five hundred. It is the same isotherm the
+shader uses, filled from the same model, so the two cannot drift.
+
+**Wind streaks down from 0.11 to 0.035.** Third time; they were built to be
+found and kept being far too loud for something standing in for air.
+
+**And the solar scale is already exact.** From the demo's own numbers at
+`p = q = 1.000`: the Sun is 27,311 km drawn at 5.87e9 m, which is **0.5331°**
+across against a real 0.533°, and the Moon 0.5177° against a real 0.518°. Both
+are within a tenth of a per cent. They look small because the real ones are
+small — half a degree is about a pencil eraser at arm's length. Games nearly
+always exaggerate them; the `Bodies q` slider is that exaggeration, and it
+defaults to true scale on purpose.
+
+### 2026-08-28 (the forest was swaying in time with how fast you walked)
+
+**A real bug, reported as "the trees are tied to the camera".** The gust phase
+in both the tree and the grass shader was taken from a world position — and in
+this demo "world" is camera-relative, because everything is drawn that way to
+keep planet-sized coordinates off the GPU. So the phase changed every time the
+player took a step, and the whole forest swayed in time with walking speed.
+
+The comment beside it claimed the root position "is fixed for the life of the
+tree". In a frame fixed to the planet it is. That was the wrong frame, and the
+comment was confidently describing a property the code did not have.
+
+The fix is that `a_Model`'s translation is the tree's offset from the forest
+origin, and that origin follows the camera — so the two move by equal and
+opposite amounts and their **sum** is exactly the planet-fixed position. The CPU
+adds the origin's half in double and hands it over as a uniform, folded into
+`[0, 2π)` first: a phase only means anything modulo a turn, and folding is what
+lets a 250 km coordinate survive the cast to float. The grass does the same
+thing per chunk, with the gust axis taken in the planet's frame while the lean
+stays in the scene frame — the same vector seen from two places, and keeping
+them apart is the whole fix.
+
+Measured over a 400 m walk past a fixed tree, as the sine of the gust phase,
+where 0 to 2 is the entire range:
+
+| | swing |
+|---|---|
+| taken from the camera-relative position | **1.6313** |
+| taken from the planet-fixed position | **0.0000274** |
+
+So the old gust went through most of a full cycle from walking alone. That is
+the reported symptom, in a number.
+
+**Grass that is grass rather than needles.** Two things were wrong and only one
+of them was the shape.
+
+The shape was one triangle a blade — two corners at the root and a point at the
+tip, which is a *needle*. It has no length along which anything can happen, so
+it cannot curve, and the only way to make it read as grass is to make it fat,
+which makes it read as a leaf. Three triangles and a middle pair of corners at
+55% of the height costs five vertices instead of three and buys the thing that
+matters: the blade bends **along itself**. The wind lean now goes as the square
+of height up the blade rather than the first power, which is a beam bending
+under a load rather than a hinge at the root, so the root stays vertical and the
+tip lies over.
+
+The larger error was density. It ran at 0.6 blades per terrain triangle, which
+on metre-scale triangles is a few blades a square metre — no shape or width
+rescues that, because it reads as sparse spikes by being sparse spikes. A real
+lawn is thousands a square metre. Now 6 on the planet and 4 in the open world,
+with the blade half again as tall.
+
+Cost, measured: 400 steps of the open world in 3.49 s and 600 of the solar demo
+in 8.03 s, both including generation. Roughly twenty times the grass geometry
+for no change anyone would notice in the frame time, which is the answer to
+whether three triangles a blade was affordable.
+
+**And the wind streaks are down from 0.42 to 0.11.** They were drawn to be
+found, and once found they were far too loud for something standing in for air.
+
+### 2026-08-28 (grass, wind you can see, and the first two shared modules)
+
+Two new modules, and they are the first pieces built as modules rather than
+found inside a demo and left there.
+
+**`Grass.h`** is `OpenWorld::BuildGrass` lifted out so the planet can have grass
+too. That move was most of the work: the original assumed `+Y` was up in four
+separate places, which is true on a flat world and false everywhere on a sphere.
+Nothing in the module knows which way up is — it asks.
+
+It asks through a **template parameter rather than a `std::function`**, and the
+reason is the one place in this refactor where the choice has a cost either way.
+The callbacks run once per terrain triangle, thousands of times per chunk while
+chunks stream in. A `std::function` is an indirect call the optimiser cannot see
+through, so it cannot inline the body or hoist anything out of the loop; a
+template is resolved at compile time, and OpenWorld's `up` — which returns a
+constant — compiles away to nothing. The price is that a template lives in a
+header and every user compiles its own copy. **Things called in a loop are worth
+a template; things called once are worth a `.cpp`.**
+
+On the planet, the vertical has to be recovered by adding the chunk's
+float-sized local position back onto its planet-sized origin *in double*, which
+is the same split the whole chunk system rests on. Where grass belongs is asked
+of the hydrology's own moisture field, so the grass line and the biome colour
+cannot disagree.
+
+The blade bends by the height it already carries in `a_TexCoord.y` — zero at the
+root, one at the tip — so the root stays planted without anything knowing where
+it is. Grass goes as the **first** power of that where a trunk goes as the
+square: a trunk is a cantilever, a blade is closer to a hinge.
+
+**Bending preserves length, and leaving that out was immediately visible.** The
+first version displaced the tip sideways and nothing else, so at this site's
+8 m/s the blade did not bend, it *stretched* — the meadow came out as long dark
+streaks lying across the ground. A blade pivots, so its tip travels an arc of
+its own length and must drop by `h - sqrt(h² - d²)`. That caps the lean on its
+own, since `d` can never exceed `h`.
+
+**`WindStreaks.h`** draws the wind. Everything else the weather does is a force,
+legible only if you already know to look for it; this is the wind as something
+you can see, drifting at exactly the speed the model says the air is moving, so
+the grass and the strokes above it are two views of one number. Painterly on
+purpose — air is transparent and there is nothing there to draw, so what these
+stand in for is what a painter puts on a canvas to say "windy". The geometry is
+honest and the appearance is a brush stroke.
+
+One static mesh, advected on the GPU and wrapped in a box centred on the camera,
+so a streak that leaves downwind reappears upwind and the field is endless for
+one draw call. The first pass made them 0.1 to 0.45 m wide, which at a hundred
+metres is well under a pixel — every soft profile in the fragment shader was
+thrown away by the rasteriser and the field came out as hard thin scratches. A
+brush stroke has to cover enough pixels for its own taper to show, which is a
+lower bound in *pixels* and therefore in metres once the box fixes the distance.
+
+**And the default landing site had to be re-surveyed.** It is a hard-coded
+direction, chosen once against relief that no longer exists — after the
+continent work the old site came out underwater, which looks like a broken
+camera rather than a moved site. The new one is 54.8 m above sea level, slope
+0.066, 138 m of relief inside 400 m, shore 240 m away. **Anything that changes
+`Relief` invalidates that constant.**
+
+### 2026-08-28 (the planet had no continents, and four reasons why)
+
+The orbital view had been called "malformed terrain" three times, and looking at
+it was never going to settle it. Dumping the baked map did, immediately: the
+land was not continents but a **spidery filigree**, a net of threads with no
+landmass anywhere in it. Two numbers off that dump:
+
+- The wet mask had **exactly two distinct alpha values** — a hard binary
+  land/sea test, no antialiasing at all.
+- **129 land/sea crossings per row** of 1024 texels. A handful of continents
+  would give five or six.
+
+Four separate causes, each measured on its own.
+
+**1. The coastline was cut across flat ground.** Sea level is solved for a
+target land fraction, so it goes wherever it must — and the height field was
+near-Gaussian with only **8.6% of its variance at continent scale** and 41%
+below 6 km. Cutting a unimodal distribution near its mode is the case that
+maximises boundary length. Earth's hypsometry is strongly bimodal — continental
+platform, abyssal plain four kilometres down, sea level in the gap — which is
+exactly why its coastlines are crisp. `ContinentEdge` squashes the broad noise
+into two plateaus joined by a slope, so the same detail noise now shifts the
+coast a little way along a gradient instead of shredding it. 129 → 87.
+
+**2. Mountains were being built on the sea floor.** `Landscape` was added at
+full strength everywhere, and on this planet it is the *larger* of the two: up
+to 700 m of range on a continental step of about 270 m. The shape that decides
+where land is was outvoted by the shape that decides what land looks like.
+Weighting it by the platform is what the real thing does anyway — ocean floor is
+smooth because nothing uplifts it, coastal plains are flat because they are the
+drowned edge of the platform, ranges are inland. 87 → 59, and with the
+continental share raised, 59 → 55.
+
+**3. The map was aliasing the landscape into noise, and the drainage pass
+believed it.** This was the big one, and the cap that was supposed to prevent it
+was already there and already carried a comment saying exactly what would happen
+("an aliased height field routes water into pits that are not there"). It cut
+octaves at the finest wavelength the sampler could represent — but `1 - |n|`
+puts a corner wherever the noise crosses zero, so **a ridge field of wavelength
+L carries detail at L/2**, and the cap never accounted for the fold. It also
+floored at one octave, so the layer went into the map no matter what. A 4 km
+ridge field with 700 m of rise, on a 1.5 km texel, came out as per-texel salt
+and pepper across every continent.
+
+That is not just a rendering problem. The drainage pass runs on that grid, and
+it reported **a quarter of all land under a lake** against about two per cent
+for the real thing. Doubling the cut and dropping the layer when even its
+coarsest octave is below the line: **55 → 24.8 crossings**, and lakes 23.3% →
+12.1%. The ground you walk on is meshed at 1.5 m and passes no cap, so it keeps
+every octave — this only ever trims the map.
+
+**4. And then the continents came out grey.** Fixing the coastline made the
+hypsometry bimodal, which broke a ramp that had been fine before:
+`smoothstep(0.45, 0.75, height/top)` for bare rock. A fraction of the tallest
+land reads as scale-independence and is not — it assumes land heights are spread
+evenly from sea level to the summit, and a continental platform sits near the
+*top* of the range by construction. Every interior landed above `f = 0.7` and
+was painted rock with a thin green rim at the shore.
+
+Height does not decide what grows; temperature does. The tree line is the
+isotherm where the warm part of the year stops being warm enough to build wood,
+and driving it the same way as the snow line means the two cannot cross. That
+removed `u_LandTop` and `ReliefHigh` again on the way — both had been added an
+hour earlier for a ramp that no longer exists.
+
+From orbit: land 23.7% → 19.8% of the disc against 24% expected from the
+hydrology's own dry-land figure, and it is continents now rather than lace.
+
+### 2026-08-28 (a snow line that is a temperature, and a pole that is cold)
+
+Wiring the weather into the terrain found a real flaw in the model committed an
+hour earlier. `Redistribution` was answering two different questions with one
+number: how much of noon's heat survives to midnight, and how much of the
+tropics' heat reaches the poles. Those are different physics — the first is
+thermal inertia, ground and water still warm at dawn; the second is *transport*,
+air and ocean actually carrying heat thousands of kilometres — and the second is
+far less complete, which is the entire reason Earth has ice caps. With one
+factor at 0.97, correct for Earth's small day/night swing, the equator came out
+**1.6 K** warmer than the pole against a real 44.
+
+Split in two, with the latitude's own share of the beam from a two-term
+Legendre expansion. `s2` is not fitted: a pole's annual mean is exactly
+`S sin(ε)/π`, and matching the expansion to it gives `s2 = 4 sin(ε)/π − 1`,
+which is −0.494 for Earth against a published −0.482. It has the right limit at
+the other end too — a body with no tilt gets `s2 = −1` and poles that receive
+nothing, which is correct.
+
+| | model | measured |
+|---|---|---|
+| Earth equatorial annual mean | **26.6 °C** | ~26 °C |
+| Earth polar annual mean | −13.9 °C | ~−16 °C (Arctic) |
+| equator-to-pole range | 40.5 K | ~44 K |
+
+The pole is the weaker of the two, and knowably so: this model has no
+ice-albedo feedback, so it cannot reach an Antarctic −50.
+
+**The snow line is now a temperature.** It was `smoothstep(0.74, 0.93, f)` on
+height over relief, so a planet whose tallest hill was 600 m grew a snow cap on
+it and a planet whose tallest was 16 km put snow at the same *fraction*. Both
+cannot be right and neither was. A snow line is an altitude in metres set by how
+fast air cools as it rises. `Warmth` stopped being two things at once as well —
+it carried its own altitude term quoted against the relief, on the reasoning
+that "a planet with more relief has a snow line in the same place relative to
+its own mountains", which is precisely the wrong invariant. It is latitude now,
+and altitude enters once, as `g/c_p` slackened by moisture.
+
+What that gives on Earth: sea-level snow **poleward of 68.8°** against a real
+Arctic circle at 66.5°, and an equator needing 3365 m to freeze against 1757 m
+of relief — so no equatorial snow here, but a tall mid-latitude peak gets some.
+Neither number was aimed at.
+
+Sea ice comes off the same band with no lapse rate in it, because the sea is at
+sea level wherever it is. That means the ice edge and the snow line reach the
+coast at the same latitude **by construction** rather than by being tuned to
+each other. Measured by diffing the same orbital frame before and after: 10,161
+pixels change, all of them in one contiguous cap around the pole.
+
+**And the clouds ride the wind.** The drift was `2π × 365.25/9` radians a year
+for every body in the system — a cloud going round Jupiter in the same nine days
+it goes round the Moon, which for a body forty times wider is a cloud moving
+forty times faster for no reason anyone could point at. The accumulator counts
+seconds now and each body converts at `v/R`. Earth's clouds circle in 1.9 days
+at the drawn 250 km radius; the same line at 1:1 gives **49 days**, which is
+what a mid-latitude weather system actually takes.
+
+One limitation written down rather than fixed: `ClimateBand` is meaningless on
+an airless body. Temperature goes as the fourth root of flux, which is concave,
+so the temperature of the mean flux is not the mean of the temperature, and
+with nothing to carry heat through the night the two are hundreds of degrees
+apart — asked for the Moon's equator it returns 26 °C against a real −20. It
+does not matter, because `Biome` takes its airless branch and returns before
+reaching the snow line, and computing the integral properly would be arithmetic
+nothing reads.
+
+### 2026-08-28 (wind goes to zero at the ground, and the rocks were already rolling)
+
+The first landed capture after the drag went in showed the boulders in
+different places, which looked exactly like a 3.9 m/s breeze rolling rocks
+across a landscape. It was not, and finding out which is a good example of
+suspecting the measurement.
+
+Measured with the wind disabled entirely: the rocks reach **150 m/s and keep
+climbing**. They are spheres with `Friction 0.7` but no rolling resistance and
+`LinearDamping` and `AngularDamping` both zeroed (deliberately -- see the
+comment where they are spawned, which is about orbits), sitting on a site with
+233 m of relief inside 400 m. They roll downhill and nothing ever stops them.
+That is pre-existing and predates every change in this session.
+
+With the drag on they settle at 8-13 m/s instead. Which is to say the wind
+force is not blowing the boulders around, it is **the only thing giving them a
+terminal velocity**: for a 40 kg sphere of 2.54 m² presented area, balancing
+½ρCdAv² against `g sin θ` at 13 m/s puts the slope at 32°, which is about what
+that hillside is. Worth writing down that the rocks are 40 kg -- a real rock of
+that radius is eleven tonnes, so this is a gameplay mass and the wind moving it
+at all is correct.
+
+**Wind still had to go to zero at the ground, though.** A wind speed is quoted
+at ten metres by convention, and the air below is slower because the ground is
+not moving. That is the log wind profile,
+`v(z) = v_ref ln(z/z0) / ln(z_ref/z0)`, out of the turbulent boundary layer and
+the correction every wind measurement in the world gets. `z0` is a measured
+property of a surface: 0.0002 m over open water, 0.03 m over grass, 0.1 m over
+scattered obstacles, a metre over forest.
+
+Without it a boulder lying on the ground was being handed the wind from a storey
+above it. With it, a settled rock sits in 53% of the reference wind and so 28%
+of the force, and a person's feet are in slower air than their head. The clamp
+is at 1.5 rather than 1 on purpose: a body forty metres up genuinely gets 1.31×
+the ten-metre wind, and that is the profile being right rather than overflowing.
+
+### 2026-08-28 (the wind pushes things)
+
+Drag, which is the only way air touches anything: `F = ½ ρ Cd A |v| v`, with ρ
+out of the weather model, A off the collider, and **v the wind relative to the
+body**. That last part is what makes it drag rather than a push — standing
+still in a gale is shoved hardest, moving downwind is barely touched, and
+something already travelling at wind speed feels nothing at all. The same line
+is what slows a thrown rock with no wind blowing.
+
+The area is a theorem rather than a choice. **Cauchy's formula** — averaged
+over every orientation, a convex body's projected area is a quarter of its
+surface area — covers the sphere, the capsule and the box with one rule, and
+reduces correctly: a sphere's 4πr² over four is πr², which is the disc it
+presents from every direction anyway. The alternative was orienting each
+collider against the wind every step, which for a tumbling rock is a more
+precise answer to a question nobody asked.
+
+Checked by hand against the engine. The player is a capsule of radius 0.4 and
+half-height 0.9, so its surface is 2π(0.4)(1.8) + 4π(0.4)² = 6.5345 m² and
+Cauchy gives **1.6336 m²** — matching the engine to the digit. Then
+½(1.2078)(0.8)(1.6336)(3.91²) = **12.066 N** against a measured 12.0662, on a
+78 kg body, so 0.155 m/s². That is meant to be nearly imperceptible: it is what
+a 3.9 m/s breeze does to a person. The same expression at 30 m/s gives 720 N
+and 9.2 m/s², more than this planet's gravity, which would take you off your
+feet. Four orders of magnitude out of one line.
+
+**Trees bend like cantilevers.** The load is wind pressure ½ρv², which is why
+twice the wind bends a tree four times as far and why nothing bends in a
+vacuum; the shape is the first bending mode of a beam clamped at one end, which
+goes as the square of the height above the clamp, and is what keeps the trunk
+planted while the crown swings. The gust phase comes off the root position, so
+neighbouring trees are out of step with each other and each one is in step with
+itself.
+
+The compliance is the one stand-in here, and it is split in two for a reason
+that is real: a beam's compliance goes as 1/(E I) and I goes as the fourth
+power of the section radius, so a twig a tenth the thickness of a trunk is ten
+thousand times easier to bend. That is the whole reason a tree in a light
+breeze is still at the bottom and moving at the top. The mesh has one trunk
+radius and no twigs, so the r⁴ cannot be computed from it; the canopy gets 20×
+the trunk's compliance instead. At the default site's 3.9 m/s that is 1.1 cm at
+the top of a ten-metre trunk and 22 cm in its canopy — a stirring crown over a
+still trunk, which is what the calibration is trying to buy.
+
+Measured by capturing the same frame with the compliance zeroed and diffing:
+**35,152 pixels move, 3.81% of the frame**, worst channel delta 175, and every
+one of them is in rows 48–413. The ground below y=420 is untouched, which is
+the check that nothing else moved with it.
+
+### 2026-08-28 (weather, derived rather than authored)
+
+`TestEnv/src/Climate.h`: one temperature and one wind for any point on any
+body, out of the numbers the system already had. Nothing in it is a designer's
+dial, which is the whole point — a wind you can lean into means very little if
+someone typed the number and a great deal if it came out of the same orbit
+that decides when the sun rises.
+
+The chain is five steps: the star's output spread over a sphere gives the flux
+arriving; what is not reflected is absorbed and re-radiated, and setting those
+equal gives a temperature; air is transparent to sunlight and not to heat, so
+it raises that temperature by a closed form in one optical depth; ground higher
+up is colder at a rate that is `g/c_p` and nothing else; and air moves from
+where there is more of it to where there is less while the planet turns
+underneath, which is what makes the bands.
+
+Axial tilt and time of day never appear in the code. They do not have to — the
+zenith angle is `dot(up, toSun)` with both vectors in scene coordinates, so
+the seasons happen because the axis the body turns about is not its orbit's,
+and the sun rises because the body turns. That was the test that the frames
+were already right.
+
+**Twenty-five checks against numbers the model contains no fit for**, run from
+a temporary self-test and then deleted:
+
+| | model | measured | off |
+|---|---|---|---|
+| solar constant, 1 AU | 1361.17 W/m² | 1361 | 0.01% |
+| Earth equilibrium temperature | 254.04 K | 254 | 0.02% |
+| Earth scale height | 8429 m | 8500 | 0.84% |
+| Earth sea-level air density | 1.23 kg/m³ | 1.225 | 0.03% |
+| dry adiabatic lapse rate | 9.76 K/km | 9.76 | 0.01% |
+| saturated lapse rate | 6.54 K/km | 6.5 | 0.62% |
+| **lunar subsolar temperature** | **380.9 K** | **390** | **2.3%** |
+| lunar night temperature | 101.7 K | 100 | 1.7% |
+| **Mars equilibrium temperature** | **209.8 K** | **210** | **0.09%** |
+
+The Moon and Mars are the ones worth having: the greenhouse coefficient is
+calibrated so Earth lands on 288 K, so Earth's surface temperature is not
+evidence of anything, but nothing is fitted to an airless body's subsolar
+point or to Mars's distance and albedo. The circulation was checked
+structurally instead — the prevailing wind is zero at 0°, 30°, 60° and 90°,
+easterly in the trades, westerly in the mid-latitudes and easterly again at
+the pole, all out of `sin(π |lat| / 30)` with no cases in it.
+
+Two things the checks turned up. `Colour` is not an albedo: its luminance puts
+Earth at 0.46 against a real Bond albedo of 0.306, which would have made the
+equilibrium temperature 17 K too cold, so `BondAlbedo` is now a measured column
+in the table. And Mars's surface pressure comes out at **15.9% of Earth's**
+against a real 0.6% — the table's `AtmosphereFraction × AtmosphereDensity` are
+render depths chosen to make a sky look right, not weights of gas. The model is
+reading them as weights, and that is written down rather than tuned around.
+
+Known to be wrong: Venus. Its column gives a grey optical depth of 17 and a
+surface of 442 K against a real 737 K. A grey atmosphere is simply the wrong
+model for an optically thick CO₂ one, and no single coefficient fixes it.
+
+At the default landing site the model reads 18.4 °C at latitude 4.1° and 22 m
+up, with 600 W/m² absorbed, 101.1 kPa, and a 3.9 m/s wind from the east
+blowing toward the equator. Each of those is checkable by hand: 1361 × 0.694 ×
+0.635 = 600.0, and 101.325 × exp(−22/8430) = 101.06. The wind is the trades,
+because latitude 4.1 is in them.
+
+### 2026-08-28 (a planet with continents on it, and the seam down the middle)
+
+Two bugs that between them had been erasing every landmass on Earth from
+orbit, both found by arithmetic rather than by looking.
+
+**The haze was drawn over 750 km of vacuum.** The terrain shader ended with
+`haze = 1.0 - exp(-camDist * u_HazeDensity)` — the full camera distance and
+nothing else. `u_HazeDensity` is `AtmosphereDensity * m_HazeScale`, and for
+Earth that is `3.0 * 3.3e-3 = 9.9e-3` per metre: a half-hazed distance of 70 m,
+which is the right order for standing in a landscape and is exactly what the
+constant's own comment says it was tuned against. From `--orbit` the camera
+sits four radii out, so `camDist` to the near surface is 750,000 m, the
+exponent is **7425**, and `haze` is 1.0 to the bit. Every land pixel on the
+disc came out *exactly* `u_Sky`.
+
+So the planet had no continents on it because the terrain was never drawn —
+only the sky colour was. The mottled dark speckle that read as malformed
+ground was the atmosphere shell's raymarch over a flat grey ball, and the
+reason nobody had caught it is that it is invisible while anything else is
+wrong: the shell used to be 55% transparent and the terrain used to paint
+itself blue below sea level, so the disc looked plausibly like a water world
+either way.
+
+The missing term is the air. Extinction is the integral of density along the
+ray and density falls off exponentially with height, so a path that spends all
+but four of its 750 kilometres above the atmosphere carries almost none.
+Sampling the density at the **midpoint** of the eye-to-fragment segment is the
+cheapest thing with the right limits at both ends: on the ground both
+endpoints are at zero altitude, the factor is 1, and the landed tuning is
+untouched to within 0.2%; from orbit the midpoint is 375 km up and the factor
+underflows to zero. The scale height is the shell's own — a quarter of its
+thickness — because the two are describing one atmosphere and a fragment sits
+under both, and drifting them apart would put a step in the haze exactly at
+the horizon, which is the one place it would be seen.
+
+**Checked against the hydrology, which the shader never sees.** Green-dominant
+pixels over the disc went from 1.8% to 18.9%, and the 1.8% had been neutral
+cloud grey (108/107/104) rather than anything green. The drainage pass reports
+land at 29.3% of the sphere with 30.68% of it under a lake, so dry land is
+29.3 × (1 − 0.3068) = **20.3%** of the surface. Measured as a share of the lit,
+cloud-free disc: 18.9 / (100 − 9.0 dark − 2.3 cloud) = **21.3%**. One
+percentage point, from a Priority-Flood accounting the fragment shader has no
+access to — it gets a wet mask and a Whittaker square. The small excess is
+what a projection over-weighting the sub-camera point and blending partial
+coastal coverage should give.
+
+**And a two-pixel blue line down the middle of the planet.** Every one of
+these shaders builds `u` from `atan`, so it wraps from 1 back to 0 along one
+meridian. The *value* is right on both sides; the derivative is not, and the
+hardware picks a mip level from the screen-space derivative of the coordinate.
+Across the wrap that derivative is a whole texture wide, so it selects the very
+top of the chain, where a texel is the average of the entire map — and at the
+top of the chain the wet mask averages to roughly the ocean fraction, so along
+the seam the shell decided there was sea and painted it over whatever land the
+meridian crossed.
+
+No sane sampling of a sphere moves half a texture in one pixel, so a derivative
+that claims to has wrapped and subtracting the nearest whole turn recovers the
+true one. `SampleSphere` does that and hands the result to `textureGrad`; it is
+spliced in after the `#version` line of the terrain, water and cloud shaders,
+all three of which had the bug. Measured on a uniform stretch of ocean at
+y = 400, where any deviation is unambiguous: the seam columns went from
+(52, 67, 94) against a background of (27, 47, 84) to **exactly** (27, 47, 84).
+Across the disc the seam column is now 13.5% anomalous by a crude
+neighbour test against controls elsewhere running 10.4–23.5% — indistinguishable
+from ordinary coastline, which is all that test can really measure.
+
+The sanitizer reports 16 of 16 demos failing, and all of it is LeakSanitizer
+inside system ALSA reached through vendored miniaudio's
+`ma_context_open_pcm__alsa`. It hits demos nothing has touched in weeks because
+every demo opens audio. With `detect_leaks=0` there are no ASan or UBSan
+reports at all.
+
+**And a ring of missing sea, from a circle standing back over a square.** The
+ocean shell discards inside a cone around the local water so the two never
+blend over each other, and it was given `SurfaceWater::Reach()`. But
+`BuildMesh` leaves `s_SeedMargin` = 6 columns off each edge of a 128-column
+grid, so what it actually draws is a *square* of half-width
+`Reach × (1 − 12/127)` = 0.9055 Reach. The largest circle inside that square
+has the same radius, and the shell had stood back over a disc of radius Reach:
+between the two there was nothing at all.
+
+The uncovered part is the disc minus the square, which is four circular
+segments cut at distance `a` from the centre — a shape the code contains no
+formula for. `4[R² acos(a/R) − a√(R²−a²)] / πR²` gives **6.87%** of the local
+water disc; two million Monte Carlo samples of the same question gave 6.858%.
+Four bites at the edge midpoints of the square, each 9.4% of the reach deep,
+at the far edge of the sheet you are standing on — which is what "the water
+falls away into the middle of the body" looks like from a shore.
+
+`DrawnReach()` derives the radius from the same two constants `BuildMesh`
+loops over, so the cone cannot drift from the mesh again; with it the
+uncovered fraction is exactly 0. The wet-column and quad counts are unchanged
+(3482 and 1966), which is the point — nothing about the local answer moved,
+only how much of the sphere stood back for it.
+
+While measuring this, two comments turned out to be wrong: both said the map
+and the terrain disagree at the seeded rim "by up to a couple of metres" and
+"up to 2.5 m". At the dry `--land Earth` site it is 1.859 m, and at the default
+shore site it is **59.375 m** — a 1.5 km texel that straddles a coast averages
+a cliff. The margin was already wide enough; the number in the comment was
+measured somewhere the question is easy.
+
+### 2026-08-27 (the shading height, and a frame with no shoreline in it)
+
+The GPU half of 1:1, and the last precision item on the surface. The terrain
+shader computed its shading height as `length(v_Position) - u_SeaRadius`, where
+`v_Position = world.xyz - u_Origin` is planet-centred — about 6.4e6 at 1:1, in
+`float32`. Both the subtraction that forms it and the `length` that reads it
+happen at that magnitude, and the answer wanted is a few hundred metres, so the
+entire shading height was computed in the bits the format had already thrown
+away. `Biome`'s waterline had the same shape one line up: `u_SeaRadius -
+u_Radius`, two values near 6.4e6 differenced on the GPU for an answer of a few
+hundred metres.
+
+**Predicted from the format, then counted in a frame.** Floats in
+[2²², 2²³) — which is where 6.371e6 lives — are exactly the multiples of 0.5,
+so `length(v_Position)` lands on a 0.5 m grid, `u_SeaRadius` is on the same
+grid, and the difference is a multiple of 0.5 m. Therefore `fract(height)` can
+take **exactly two values**. At the default 250 km the same argument gives
+2⁻⁶ = 0.015625 m and therefore **exactly 64**. A temporary debug output painted
+`fract(height)` into the red channel with green pinned at 1 to mark the pixels
+this shader drew — the first count included the trees and the lander and was
+meaningless — and captured the landing site:
+
+| | distinct levels | spacing in 8-bit |
+|---|---|---|
+| 6,371 km, before | **2** (0, 128) | — |
+| 250 km, before | **64** | 4 |
+| 6,371 km, after | 256 | 1 |
+| 250 km, after | 256 | 1 |
+
+Two scales, two different predictions, both exact. After the change the count
+is 256, which is all an 8-bit buffer can show.
+
+**The fix is the same one the CPU side already uses: never form the large
+number.** Each draw now carries a reference point near its own geometry —
+a chunk's origin, the horizon mesh's site — as `u_Reference` in camera-relative
+coordinates, so `v_Offset = world.xyz - u_Reference` is a difference of two
+small numbers and is exact. The CPU sends `u_ReferenceAltitude = |C| - sea`
+computed in double, and the shader adds `|C + e| - |C|` written as
+
+    (2 |C| (n·e) + e·e) / (|C+e| + |C|)
+
+which is an **identity, not an expansion** — there is no small-`e` assumption in
+it, and that matters because the horizon mesh's `e` reaches fourteen kilometres,
+where a second-order Taylor term would be 15 m. Every quantity in it is either
+small or needs only relative precision. The stand-in sphere keeps the old path
+and does not want a reference: it is body-sized, so `e·e` would be 1e14, and
+when it is drawn at all you are looking at it from space. `u_SeaDepth` replaces
+the waterline subtraction with the answer, taken in double on the CPU.
+
+**How wrong the old height was, measured rather than estimated.** The old
+formula is the true height *rounded*, so the difference between the two is the
+error it was carrying. Painted into the blue channel of the same debug frame:
+
+| | mean | worst |
+|---|---|---|
+| Earth at 6,371 km | +0.157 m | **1.145 m** |
+| Earth at 250 km | +0.012 m | 0.047 m |
+
+Both bigger than the 0.5 m / 0.016 m this roadmap item was opened with, because
+that estimate covered `length()` alone and the `world.xyz - u_Origin`
+subtraction contributes as much again. The two scales agree with each other to
+4% — 1.145 × 250/6371 = 0.045 against 0.047 measured — which is what a purely
+relative float error should do and is the check that the number is the format
+rather than the terrain.
+
+**And it changes almost nothing on screen, for a reason worth writing down.**
+Every band the height drives is hundreds of metres or wider — the altitude ramp
+spans `u_Relief`, which is 15.9 km at 1:1 — except one: the beach, at
+`3 × voxelSize = 4.78 m`, where 1.145 m is a quarter of the band and can put a
+pixel on the wrong side of the waterline outright. So the A/B of the real frame
+is 1,520 pixels differing by a single 8-bit level at the default site and
+**zero** pixels at `--land Earth`. The reason is not that the fix does nothing:
+the same debug pass counted the pixels whose height falls inside the beach band,
+and there are **0 of 579,001 and 0 of 443,698**. Neither view contains a
+shoreline. The defect is real, measured, and currently invisible for want of a
+frame that looks at a beach — which is worth saying plainly rather than
+implying a visual improvement nobody can see.
+
+**Still float, and deliberately.** `settings.OceanRadius` is a `float` member,
+so at 1:1 the sea radius itself is only known on a 0.5 m grid. That is a uniform
+offset in where the waterline sits, not a per-pixel quantisation, and the water
+shell reads the same value, so the sea surface and the terrain's shore agree
+with each other. Making it a double ripples into the bisection that finds it and
+into the water material; listed under known approximations rather than done.
+
+### 2026-08-27 (the density sampled in double, and a fingerprint that was half stack)
+
+The other half of 1:1. `--earth-radius 6371000` has streamed, rendered and been
+walked on since 25 August, but only the *reading* of the field was exact:
+`PositionFrom` and `SampleDistanceFrom` subtract on the integers, chunk meshes
+carry their own double origin, and the surface physics world is centred on the
+landing site. The *writing* was not. `FillChunk` evaluated the generator at
+`PositionOf` — `origin + i * voxelSize` in float, both terms about 6.4e6 — so
+the sample stored at a lattice point was the density at somewhere else.
+
+**The bound, from the float format alone.** At Earth's radius the origin is
+−6,386,935.5 m and the voxel is 1.59275 m. A float carries 24 bits, so in that
+range an ulp is 0.5 m; each axis of `PositionOf` is wrong by up to 0.5 m and
+the radial displacement by up to `sqrt(3)/2 = 0.866` m — 54% of a voxel, which
+is the "half a voxel" the roadmap had been asserting without a number behind
+it.
+
+**The measurement, against arithmetic the field does not contain.** `Density`
+has an exact zero: along a direction `d` the surface is at radius
+`Radius + Relief(d)`, one line, and nothing in the path being tested computes
+it — not the sparse chunk store, not the encoding, not the trilinear
+reconstruction, not the relief patch the fill actually interpolates. So stand
+on that point and ask the field how far it thinks it is from the surface. It
+should say zero. `VoxelPlanet::ReportSurfaceError` walks 8,192 points on a
+sunflower spiral over the landing site and reports what it says instead:
+
+| | mean | worst | worst as a voxel |
+|---|---|---|---|
+| Earth at 6,371 km, before | 0.1673 m | 0.8509 m | 53.4% |
+| Earth at 6,371 km, after | 0.0121 m | 0.1247 m | 7.8% |
+| Earth at 250 km, before | 0.0051 m | 0.2016 m | 13.4% |
+| Earth at 250 km, after | 0.0042 m | 0.2015 m | 13.4% |
+
+The 0.8509 m sits just under the hand-computed 0.866 m bound, which is the
+agreement that says the diagnosis was right rather than merely plausible. What
+is left after the fix is the relief patch's own interpolation error — measured
+on the same frame at 0.0721 m worst — plus the trilinear reconstruction of a
+curved surface, and the lattice contributes nothing further.
+
+**At the default 250 km scale it changes almost nothing, and that is the
+honest result.** The float lattice error there is 0.047 m, well under the patch
+error that dominates the residual; the frame does change, but the mean
+difference over the pixels that move is **1.7 of 255** — a shading dither. At
+1:1 the same comparison is **21.4 of 255 over 68% of the frame**, and 218,000
+pixels move by more than 32. The change was never for the scale the demo opens
+at.
+
+The fix is three lines of arithmetic and one signature. `VoxelField3D` gained
+`PositionOfFixed`, and `Fill`/`FillChunk` now hand the generator a `dvec3`;
+`VoxelPlanet::DensityFixed` takes the length and the `- Radius` in double and
+drops to float immediately after, because the result is small and the
+*direction* never had a magnitude problem; `ReliefPatch::Centre` became a
+`dvec3` so that subtracting it from a nearby point is not the difference of two
+numbers each already rounded to half a metre. Cost: nothing measurable. A
+chunk fill is thirteen octaves of value noise, and this is three multiplies and
+three adds in front of it.
+
+**OpenWorld and the Voxel terrain demo are provably untouched**, which is
+better than a screenshot: their origins and voxel sizes are exact dyadic
+rationals, so `origin + i * voxelSize` is bit-identical in float and in double
+over every lattice coordinate either field holds — checked over all of both.
+Confirmed anyway by generating OpenWorld's terrain fresh against chunks its
+cache had stored on 19 August under the old code: the captured frame is
+byte-identical.
+
+**And then the cache stopped rebuilding itself.** `VoxelPlanet::Fingerprint`
+exists so that changing the terrain function throws the stored chunks away
+instead of handing back a world that no longer exists — and it sampled
+`Density` at a float position, which is neither where a voxel is nor the
+arithmetic that computes one. So the day the fill moved to `PositionOfFixed`,
+every `.site` and `.edits` file on disk described a planet the generator no
+longer makes, and the hash did not change by a bit. It samples `DensityFixed`
+at a lattice point now, through the same function the fill calls.
+
+Printing the hash to check that was working turned up a second, older bug in
+the same eight lines. `mix` copied a **four**-byte float into an
+**eight**-byte `unsigned long long` that was never initialised, and hashed all
+sixty-four bits. Half of every sample was whatever the stack held. It showed as
+`Fingerprint()` returning two different values at its two call sites —
+`OpenEdits` and `OpenSiteCache`, three lines apart with nothing in between —
+agreeing exactly in the low thirty-two bits, which is the signature of the
+thing. That is why the site cache had been rebuilding on runs where nothing had
+changed: a fingerprint that is partly garbage sometimes reproduces and
+sometimes does not, and the failure mode looks exactly like a cache working.
+Debug site preparation is **10,461 ms cold against 3,181 ms warm** now, to a
+byte-identical frame, and the warm path is taken every run instead of some of
+them. Neither ASan nor UBSan catches an uninitialised read; the trace did.
+
+**Still float on the GPU, and now with a number on it.** The terrain shader
+computes its shading height as `length(v_Position) - u_SeaRadius`, where
+`v_Position` is `world.xyz - u_Origin` — planet-centred, and at 1:1 about
+6.4e6 in `float32`. Measured over 20,000 directions, `length()` alone
+quantises the height by 0.019 m on average and 0.5 m at worst, and the
+subtraction that produces `v_Position` costs another 0.5 m an axis before it.
+Against a beach band of 4.8 m that is up to a tenth of the band, so the visible
+consequence is terracing within a few metres of the shore, at 1:1 only — 0.016 m
+worst at the default scale. It cannot be fixed by rearranging the shader,
+because `float32` has no more bits: it wants a per-vertex altitude computed on
+the CPU in double, or a per-chunk reference altitude plus a first-order
+expansion over the chunk (the second-order term is 4e-5 m over a 22 m chunk
+half-diagonal, so one term is plenty). Split out as its own roadmap item,
+because it is a different mechanism from this one and the sphere stand-in, the
+horizon mesh and the water all share the shader.
 
 ### 2026-08-26 (clouds, haze, a mip chain that never existed, and a static portal)
 
