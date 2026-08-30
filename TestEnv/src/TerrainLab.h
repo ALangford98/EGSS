@@ -48,19 +48,13 @@ public:
 		RegisterParam("Walk speed", &m_WalkSpeed);
 		RegisterParam("Dig radius", &m_DigRadius);
 
-		// The two designs to start from, and the knobs that shape them. These
-		// are registered because the design decides what `C` consumes and what
-		// `B` puts in the world -- an unregistered slider here would make a
-		// recorded building session replay as a different building.
-		FillPanel(m_Draft, 24, 1);
+		// The kit to start from. These are registered because the design
+		// decides what `C` consumes and what `B` puts in the world -- an
+		// unregistered slider here would make a recorded building session
+		// replay as a different building.
+		MakeKit();
 
-		Design wallPanel;
-		std::strncpy(wallPanel.Name, "Wall panel", sizeof(wallPanel.Name) - 1);
-		wallPanel.Upright = true;
-		FillPanel(wallPanel, 20, 1);
-
-		m_Designs.push_back(m_Draft);
-		m_Designs.push_back(wallPanel);
+		m_Draft = m_Designs[0];
 
 		// **The design is registered piece by piece, and that is why there is a
 		// cap on pieces.**
@@ -2823,26 +2817,68 @@ private:
 	// spent at the other: green off the mill beside the saw, seasoned stock
 	// beside the crafting table where the editor is. Carrying between them is
 	// the work.
-	enum class Pile { Mill = 0, Stock = 1 };
+	// **Three piles: green off the saw, seasoned stock at the table, and a
+	// deck of round timber between them.** The deck is the third because logs
+	// became a building material -- a log wall is spent whole, so a log has to
+	// be somewhere the table can count it without being sawn first.
+	enum class Pile { Mill = 0, Stock = 1, Deck = 2 };
 
+	static constexpr int s_Piles = 3;
 	static constexpr int s_PileAcross = 8;      // boards to a course
 	static constexpr float s_PileGap = 0.004f;  // sticker between boards
+	static constexpr int s_DeckAcross = 4;      // logs to a course
+	static constexpr float s_DeckPitch = 0.36f; // wider than any log you lift
 
 	glm::vec3 PileAt(Pile pile) const
 	{
 		// Clear of the bench and against the wall behind it, so the pile is
-		// beside the work rather than under it.
+		// beside the work rather than under it. The deck is against the back
+		// wall between the two benches, where a log can be rolled off a
+		// shoulder without going round anything.
+		//
 		// Lifted by the bearers, which is where sawn timber sits: off the
 		// floor, so air gets under the bottom course.
-		return ShedCentre() + (pile == Pile::Mill
-			? glm::vec3(s_ShedHalf - 1.1f, 0.06f, -1.3f)
-			: glm::vec3(-(s_ShedHalf - 1.1f), 0.06f, -1.3f));
+		switch (pile)
+		{
+			case Pile::Mill:
+				return ShedCentre() + glm::vec3(s_ShedHalf - 1.1f, 0.06f, -1.3f);
+			case Pile::Stock:
+				return ShedCentre() + glm::vec3(-(s_ShedHalf - 1.1f), 0.06f, -1.3f);
+			default:
+				return ShedCentre() + glm::vec3(0.0f, 0.02f, 2.6f);
+		}
 	}
 
-	// Where the n-th board of a pile sits. Boards lie along the room's x axis,
-	// courses run across it, and the layers go up.
-	glm::vec3 PileSlot(Pile pile, int n) const
+	// **Which pile a thing belongs on**, so putting timber down does not need
+	// to be told what it is holding.
+	static Pile PileFor(Flotsam kind, Pile near)
 	{
+		return kind == Flotsam::Log ? Pile::Deck : near;
+	}
+
+	// Where the n-th piece of a pile sits. Boards lie along the room's x axis,
+	// courses run across it, and the layers go up. A log deck is the same idea
+	// at a log's pitch, and it takes the piece's own radius because logs come
+	// off the tree at whatever thickness they grew -- a slot that assumed one
+	// diameter would float the thin ones.
+	glm::vec3 PileSlot(Pile pile, int n, float radius = 0.0f) const
+	{
+		if (pile == Pile::Deck)
+		{
+			int across = n % s_DeckAcross;
+			int layer = n / s_DeckAcross;
+
+			// Odd courses nestle in the valleys of the one below, which is how
+			// a deck of round timber actually stacks and is why it does not
+			// need a pitch of two radii between courses.
+			float shift = (layer & 1) ? 0.5f * s_DeckPitch : 0.0f;
+
+			return PileAt(pile) + glm::vec3(0.0f,
+				radius + (float)layer * s_DeckPitch * 0.87f,
+				((float)across - 0.5f * (float)(s_DeckAcross - 1))
+					* s_DeckPitch + shift);
+		}
+
 		int across = n % s_PileAcross;
 		int layer = n / s_PileAcross;
 
@@ -2851,6 +2887,20 @@ private:
 		return PileAt(pile) + glm::vec3(0.0f,
 			BoardThick() * ((float)layer + 0.5f),
 			((float)across - 0.5f * (float)(s_PileAcross - 1)) * wide);
+	}
+
+	// The round timber on the deck, which is what a log design is billed
+	// against. Volume rather than a count, for the same reason the mill counts
+	// a log's own volume.
+	float DeckWood() const
+	{
+		float wood = 0.0f;
+
+		for (const Loose& loose : m_Loose)
+			if (loose.Stack >= 0 && loose.Pile == (int)Pile::Deck)
+				wood += LooseVolume(loose);
+
+		return wood;
 	}
 
 	// How far from a pile counts as reaching it.
@@ -2918,7 +2968,7 @@ private:
 
 		Egss::RigidBody3D& body = m_World.GetBody(board.Body);
 
-		body.Position = PileSlot(pile, slot);
+		body.Position = PileSlot(pile, slot, board.Half.y);
 		body.Orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 		body.Velocity = glm::vec3(0.0f);
 		body.AngularVelocity = glm::vec3(0.0f);
@@ -2948,7 +2998,7 @@ private:
 
 		glm::vec3 at = m_Camera.GetPosition();
 
-		for (int i = 0; i < 2; i++)
+		for (int i = 0; i < s_Piles; i++)
 		{
 			float range = glm::length(at - PileAt((Pile)i)
 				- glm::vec3(0.0f, s_EyeHeight, 0.0f));
@@ -3323,11 +3373,13 @@ private:
 			body.Position.y = floor + reach + 0.02f;
 
 		// **Put down at a pile means stacked, not dropped.** A person setting
-		// boards down beside a stack sets them on it.
+		// boards down beside a stack sets them on it, and rolls a log onto the
+		// deck rather than leaving it where it fell.
 		Pile pile = Pile::Stock;
 
-		if (held.Kind == Flotsam::Plank && PileHere(pile) >= 0)
-			PutOnPile(slot, pile);
+		if ((held.Kind == Flotsam::Plank || held.Kind == Flotsam::Log)
+			&& PileHere(pile) >= 0)
+			PutOnPile(slot, PileFor(held.Kind, pile));
 	}
 
 	// The first carried piece of a kind, which is what the bench mills.
@@ -3734,8 +3786,8 @@ private:
 	// Laying the design flat and standing it up is still one flag, because that
 	// part was right: a floor and a wall are the same assembly at different
 	// angles.
-	static constexpr int s_MaxDesigns = 6;
-	static constexpr int s_PanelPool = 32;
+	static constexpr int s_MaxDesigns = 10;
+	static constexpr int s_PanelPool = 96;
 
 	// Reach at the table. The two piles are 6.2 m apart, so timber has to be
 	// carried across the room rather than counted where it fell.
@@ -3748,18 +3800,54 @@ private:
 	static constexpr int s_GridCells = 48;
 	static constexpr int s_BoardCells = 24;   // 2.4 m / 100 mm
 
+	// **A design has courses now, not two sides.**
+	//
+	// It was a face and a ledger under it -- one bit -- which is a *panel* and
+	// nothing else. A pillar is a piece standing on end and a log wall is ten
+	// pieces stacked, and neither can be said with one bit. So a piece carries
+	// which course it sits in, measured in board thicknesses off the base, and
+	// the old two sides are courses 0 and 1.
+	//
+	// Six bits, so 64 courses: 3.2 m of height, which is a storey.
+	static constexpr int s_MaxLayers = 64;
+
+	// **The building log, which is not the log you cut down.** A stem tapers
+	// and comes off the tree at whatever thickness it grew to; a log you build
+	// with is one size, because a wall of mixed diameters does not course. So
+	// the design's log is a standard 300 mm round, and what the crafting table
+	// spends is *volume* of whatever logs are on the deck -- the same rule the
+	// mill uses, and the reason riving loses nothing.
+	static constexpr int s_LogCells = 3;    // 300 mm across, in 100 mm cells
+	static constexpr int s_LogLayers = 6;   // and 300 mm tall, in 50 mm courses
+
 	// **The cap exists because the design has to be replayable.** See the note
 	// on `m_Draft`: each piece is one registered integer, and a registered
 	// parameter is a fixed slot in the recording's parameter table.
 	static constexpr int s_MaxParts = 64;
 
+	// Which way a piece runs. Upright is the one that makes a post a post, and
+	// it is why `Length` is not always in the same unit -- see `PartSize`.
+	enum class Run { AlongX = 0, AlongZ = 1, Upright = 2 };
+
+	// What it is cut from. A board is 100 x 50 mm sawn; a log is a 300 mm
+	// round. Everything else about a piece is the same either way.
+	enum class Stock { Board = 0, Log = 1 };
+
 	struct Part
 	{
 		int X = 0;
 		int Z = 0;
-		int Length = s_BoardCells;   // cells along its run
-		bool AlongZ = false;
-		bool Face = true;            // the course on top, rather than under
+
+		// **Cells along its run, except upright, where it is courses.** A run
+		// is measured in the unit of the axis it runs along, and the two axes
+		// have different units -- 100 mm across the plan, 50 mm up it. Quoting
+		// an upright post in cells would make its length mean something the
+		// grid it stands on does not.
+		int Length = s_BoardCells;
+
+		int Layer = 0;                 // courses of 50 mm off the base
+		Run Axis = Run::AlongX;
+		Stock Kind = Stock::Board;
 	};
 
 	// **A piece packs into one integer, and that integer is the design.**
@@ -3770,18 +3858,18 @@ private:
 	// the one the recorder reads.
 	//
 	// Zero is "no piece", which works because a piece of zero length is not a
-	// piece. Twenty-one bits used of thirty-one.
+	// piece. Twenty-eight bits used of thirty-one.
 	//
 	// **Six bits for the length, not five.** Five holds 0 to 31, and a piece
 	// spanning the 48-cell grid is 48 -- which masked to 16, or to 0 for a
 	// 32-cell one, and the piece then decoded as an empty slot and vanished
 	// without a word. A packed field one bit too narrow does not fail, it
-	// forgets.
+	// forgets. The layer field has the same six for the same reason.
 	static int PackPart(const Part& part)
 	{
 		return 1 | ((part.X & 63) << 1) | ((part.Z & 63) << 7)
-			| ((part.Length & 63) << 13) | ((part.AlongZ ? 1 : 0) << 19)
-			| ((part.Face ? 1 : 0) << 20);
+			| ((part.Length & 63) << 13) | ((part.Layer & 63) << 19)
+			| (((int)part.Axis & 3) << 25) | (((int)part.Kind & 1) << 27);
 	}
 
 	static bool UnpackPart(int code, Part& out)
@@ -3792,10 +3880,40 @@ private:
 		out.X = (code >> 1) & 63;
 		out.Z = (code >> 7) & 63;
 		out.Length = (code >> 13) & 63;
-		out.AlongZ = ((code >> 19) & 1) != 0;
-		out.Face = ((code >> 20) & 1) != 0;
+		out.Layer = (code >> 19) & 63;
+		out.Axis = (Run)((code >> 25) & 3);
+		out.Kind = (Stock)((code >> 27) & 1);
 
-		return out.Length > 0;
+		return out.Length > 0 && (int)out.Axis < 3;
+	}
+
+	// **How big a piece is, in grid units: cells across, courses up.**
+	//
+	// The section is the stock's, the run is the piece's, and which axis gets
+	// which is the whole of `Run`. A log is three cells and six courses, a
+	// board one of each -- so the same design reads as boards or as logs
+	// without anything else knowing which.
+	static int PartAcross(const Part& part)
+	{
+		return part.Kind == Stock::Log ? s_LogCells : 1;
+	}
+
+	static int PartTall(const Part& part)
+	{
+		return part.Kind == Stock::Log ? s_LogLayers : 1;
+	}
+
+	static glm::ivec3 PartSize(const Part& part)
+	{
+		int across = PartAcross(part);
+		int tall = PartTall(part);
+
+		switch (part.Axis)
+		{
+			case Run::AlongX: return { part.Length, tall, across };
+			case Run::AlongZ: return { across, tall, part.Length };
+			default:          return { across, part.Length, across };
+		}
 	}
 
 	struct Design
@@ -3848,21 +3966,27 @@ private:
 		return total;
 	}
 
-	// The design's extent in cells: [low, high) on each axis. Empty designs
-	// report a single cell so nothing downstream divides by zero.
-	void DesignBounds(const Design& plan, glm::ivec2& low, glm::ivec2& high) const
+	// Where a piece sits, in grid units: [low, high) as (cells x, courses,
+	// cells z).
+	static void PartBox(const Part& part, glm::ivec3& low, glm::ivec3& high)
 	{
-		low = glm::ivec2(s_GridCells);
-		high = glm::ivec2(0);
+		low = glm::ivec3(part.X, part.Layer, part.Z);
+		high = low + PartSize(part);
+	}
+
+	// The design's extent in grid units. Empty designs report a single unit so
+	// nothing downstream divides by zero.
+	void DesignBounds(const Design& plan, glm::ivec3& low, glm::ivec3& high) const
+	{
+		low = glm::ivec3(s_GridCells, s_MaxLayers, s_GridCells);
+		high = glm::ivec3(0);
 
 		bool any = false;
 
 		for (const Part& part : PartsOf(plan))
 		{
-			glm::ivec2 from(part.X, part.Z);
-
-			glm::ivec2 to = from + (part.AlongZ
-				? glm::ivec2(1, part.Length) : glm::ivec2(part.Length, 1));
+			glm::ivec3 from, to;
+			PartBox(part, from, to);
 
 			low = glm::min(low, from);
 			high = glm::max(high, to);
@@ -3872,29 +3996,63 @@ private:
 
 		if (!any)
 		{
-			low = glm::ivec2(0);
-			high = glm::ivec2(1);
+			low = glm::ivec3(0);
+			high = glm::ivec3(1);
 		}
+	}
+
+	// The design's own box in metres, before `Upright` stands it up.
+	glm::vec3 PanelSize(const Design& plan) const
+	{
+		glm::ivec3 low, high;
+		DesignBounds(plan, low, high);
+
+		glm::ivec3 span = high - low;
+
+		return glm::vec3((float)span.x * Cell(),
+			(float)span.y * LayerHeight(), (float)span.z * Cell());
 	}
 
 	glm::vec2 PanelSpan(const Design& plan) const
 	{
-		glm::ivec2 low, high;
-		DesignBounds(plan, low, high);
+		glm::vec3 size = PanelSize(plan);
 
-		return glm::vec2(high - low) * Cell();
+		return glm::vec2(size.x, size.z);
 	}
 
-	// In panel space, which is flat: x and z across the plan, y through the
-	// thickness. `Upright` is a rotation applied afterwards, so the extents do
-	// not depend on it. Two courses thick whether or not both are used -- the
-	// collider is the assembly's envelope, and a design that is all face still
-	// wants somewhere for the ledgers to go if one is added.
+	// In panel space: x and z across the plan, y up it. `Upright` is a
+	// rotation applied afterwards, so the extents do not depend on it.
+	//
+	// **It used to be two courses thick whatever the design said**, because a
+	// design *was* two courses. Now the height is the height, which is what
+	// lets a post be a post and a stack of ten logs be three metres tall.
 	glm::vec3 PanelHalf(const Design& plan) const
 	{
-		glm::vec2 span = PanelSpan(plan);
+		return 0.5f * PanelSize(plan);
+	}
 
-		return { 0.5f * span.x, BoardThick(), 0.5f * span.y };
+	// The wood in one piece. A log is round in the two axes across its run, so
+	// it fills pi/4 of the box it is quoted in -- the same factor the loose
+	// logs float at.
+	static float PartVolume(const Part& part, float cell, float layer)
+	{
+		glm::ivec3 size = PartSize(part);
+
+		float box = (float)size.x * cell * (float)size.y * layer
+			* (float)size.z * cell;
+
+		return part.Kind == Stock::Log
+			? box * glm::quarter_pi<float>() : box;
+	}
+
+	// **How long a piece is in board-cells, whichever axis it runs along.**
+	// An upright piece is quoted in 50 mm courses and a board is cut in 100 mm
+	// cells, so billing an upright post by its `Length` would charge twice what
+	// it takes. Rounded up, because half a cell of board is still a cut.
+	static int PartRunCells(const Part& part)
+	{
+		return part.Axis == Run::Upright
+			? (part.Length + 1) / 2 : part.Length;
 	}
 
 	// **The bill is a cutting-stock problem, solved first-fit-decreasing.**
@@ -3908,8 +4066,21 @@ private:
 	// A multiplication cannot answer this. Three 0.8 m ledgers come out of one
 	// board and two 2.0 m ones do not, and both cases occur in the two designs
 	// the table opens with.
-	int PanelCost(const Design& plan) const
+	// **The bill is two materials now, and only one of them is a bin-packing
+	// problem.** Boards come in 2.4 m lengths and have to be cut out of them;
+	// a log is spent as *volume*, because the logs on the deck are whatever
+	// thickness they grew and the design's log is one standard round. That is
+	// the same rule the mill counts by, and it is why riving loses nothing.
+	struct Bill
 	{
+		int Boards = 0;
+		float Logs = 0.0f;   // cubic metres of round timber
+	};
+
+	Bill PanelBill(const Design& plan) const
+	{
+		Bill bill;
+
 		std::vector<int> pieces;
 
 		// **A piece longer than a board is cut from more than one.** Scarfing a
@@ -3919,7 +4090,13 @@ private:
 		// wide designs quietly cheaper than they are.
 		for (const Part& part : PartsOf(plan))
 		{
-			int left = part.Length;
+			if (part.Kind == Stock::Log)
+			{
+				bill.Logs += PartVolume(part, Cell(), LayerHeight());
+				continue;
+			}
+
+			int left = PartRunCells(part);
 
 			while (left > s_BoardCells)
 			{
@@ -3927,7 +4104,8 @@ private:
 				left -= s_BoardCells;
 			}
 
-			pieces.push_back(left);
+			if (left > 0)
+				pieces.push_back(left);
 		}
 
 		std::sort(pieces.begin(), pieces.end(), std::greater<int>());
@@ -3951,63 +4129,72 @@ private:
 			boards[fit] -= piece;
 		}
 
-		return (int)boards.size();
+		bill.Boards = (int)boards.size();
+
+		return bill;
 	}
+
+	// The count on its own, for the places that only want to know how many
+	// boards a thing takes.
+	int PanelCost(const Design& plan) const { return PanelBill(plan).Boards; }
 
 	// The wood actually in the design, which is less than the wood it cost --
 	// the difference is the offcut left on the bench.
 	float PanelMass(const Design& plan) const
 	{
-		int cells = 0;
+		float wood = 0.0f;
 
 		for (const Part& part : PartsOf(plan))
-			cells += part.Length;
+			wood += PartVolume(part, Cell(), LayerHeight());
 
-		return s_Pine * (float)cells * Cell() * Cell() * BoardThick();
+		return s_Pine * wood;
 	}
 
-	// What is left over, in whole boards' worth of length.
+	// What is left over of the *boards*, in metres of length. A log is spent by
+	// volume and has no offcut to speak of.
 	float PanelOffcut(const Design& plan) const
 	{
 		int cells = 0;
 
 		for (const Part& part : PartsOf(plan))
-			cells += part.Length;
+			if (part.Kind == Stock::Board)
+				cells += PartRunCells(part);
 
-		return (float)(PanelCost(plan) * s_BoardCells - cells) * Cell();
+		return (float)(PanelBill(plan).Boards * s_BoardCells - cells) * Cell();
 	}
 
 	// --- Editing --------------------------------------------------------------
 
 	bool PartFits(const Design& plan, const Part& want) const
 	{
-		// The packed code holds six bits of length and the grid is 48 cells,
-		// so anything outside that could not be stored faithfully anyway.
-		if (want.Length < 1 || want.Length > s_GridCells)
+		// The packed code holds six bits of length, and the largest thing six
+		// bits can say is 63 -- anything longer could not be stored faithfully
+		// whatever the grid allowed.
+		int limit = want.Axis == Run::Upright ? s_MaxLayers : s_GridCells;
+
+		if (want.Length < 1 || want.Length > limit)
 			return false;
 
-		glm::ivec2 from(want.X, want.Z);
+		glm::ivec3 from, to;
+		PartBox(want, from, to);
 
-		glm::ivec2 to = from + (want.AlongZ
-			? glm::ivec2(1, want.Length) : glm::ivec2(want.Length, 1));
-
-		if (from.x < 0 || from.y < 0 || to.x > s_GridCells || to.y > s_GridCells)
+		if (from.x < 0 || from.y < 0 || from.z < 0
+			|| to.x > s_GridCells || to.y > s_MaxLayers || to.z > s_GridCells)
 			return false;
 
-		// Only against the same course: a ledger is *under* the face, which is
-		// the entire point of there being two.
+		// **In three dimensions now, and that is the whole change.** It used to
+		// test only against pieces in the same course, because a design was a
+		// face and a ledger under it and "same course" was one bit. A post
+		// stands through twenty courses and a log fills six, so overlap is a
+		// question about boxes.
 		for (const Part& part : PartsOf(plan))
 		{
-			if (part.Face != want.Face)
-				continue;
-
-			glm::ivec2 low(part.X, part.Z);
-
-			glm::ivec2 high = low + (part.AlongZ
-				? glm::ivec2(1, part.Length) : glm::ivec2(part.Length, 1));
+			glm::ivec3 low, high;
+			PartBox(part, low, high);
 
 			if (from.x < high.x && to.x > low.x
-				&& from.y < high.y && to.y > low.y)
+				&& from.y < high.y && to.y > low.y
+				&& from.z < high.z && to.z > low.z)
 				return false;
 		}
 
@@ -4029,22 +4216,22 @@ private:
 		return false;
 	}
 
-	// The piece covering a cell in one course, or -1. Used by the right button.
-	int PartAt(const Design& plan, int x, int z, bool face) const
+	// The piece covering one cell of one course, or -1. Used by the right
+	// button, and by the canvas to know what to draw where.
+	int PartAt(const Design& plan, int x, int z, int layer) const
 	{
 		for (int i = 0; i < s_MaxParts; i++)
 		{
 			Part part;
 
-			if (!UnpackPart(plan.Code[i], part) || part.Face != face)
+			if (!UnpackPart(plan.Code[i], part))
 				continue;
 
-			glm::ivec2 low(part.X, part.Z);
+			glm::ivec3 low, high;
+			PartBox(part, low, high);
 
-			glm::ivec2 high = low + (part.AlongZ
-				? glm::ivec2(1, part.Length) : glm::ivec2(part.Length, 1));
-
-			if (x >= low.x && x < high.x && z >= low.y && z < high.y)
+			if (x >= low.x && x < high.x && z >= low.z && z < high.z
+				&& layer >= low.y && layer < high.y)
 				return i;
 		}
 
@@ -4073,8 +4260,8 @@ private:
 			face.X = course * s_BoardCells;
 			face.Z = board;
 			face.Length = s_BoardCells;
-			face.AlongZ = false;
-			face.Face = true;
+			face.Axis = Run::AlongX;
+			face.Layer = 1;
 
 			if (!AddPart(plan, face))
 				return;
@@ -4088,12 +4275,144 @@ private:
 				+ (end ? s_BoardCells - 1 : 0);
 			ledger.Z = 0;
 			ledger.Length = across;
-			ledger.AlongZ = true;
-			ledger.Face = false;
+			ledger.Axis = Run::AlongZ;
+			ledger.Layer = 0;
 
 			if (!AddPart(plan, ledger))
 				return;
 		}
+	}
+
+	// **The kit: everything the workshop is made of.**
+	//
+	// Not a set of examples. The building in the middle of the map is put up
+	// out of exactly these designs, at exactly these sizes -- which is the only
+	// way to know the editor can describe a building rather than a panel. If a
+	// piece here were wrong the shed would show it, because the shed *is* these
+	// pieces.
+	//
+	// A log wall is ten courses of 300 mm round at 0.60 m centres... which is
+	// to say, contiguous: a log is six courses thick and the next one starts
+	// where it ends. The corners are not notched -- perpendicular walls cross
+	// and the round sections read as a saddle notch, which is what a crossing
+	// of two round logs looks like anyway.
+	static constexpr int s_WallLogs = 10;      // 3.0 m of wall
+	static constexpr int s_DoorLogs = 8;       // 2.4 m, to the head of the door
+	static constexpr int s_BayCells = 40;      // a 4.0 m deck bay
+	static constexpr int s_PillarTall = 54;    // 2.7 m, a plate's depth under
+	                                          // the eaves
+
+	void MakeKit()
+	{
+		m_Designs.clear();
+
+		auto named = [](const char* name)
+		{
+			Design plan;
+			std::strncpy(plan.Name, name, sizeof(plan.Name) - 1);
+			plan.Name[sizeof(plan.Name) - 1] = 0;
+
+			for (int i = 0; i < s_MaxParts; i++)
+				plan.Code[i] = 0;
+
+			return plan;
+		};
+
+		// A wall of stacked logs, `courses` of them, running along x.
+		auto logWall = [&](const char* name, int cells, int courses)
+		{
+			Design plan = named(name);
+
+			for (int i = 0; i < courses; i++)
+			{
+				Part log;
+				log.X = 0;
+				log.Z = 0;
+				log.Layer = i * s_LogLayers;
+				log.Length = cells;
+				log.Axis = Run::AlongX;
+				log.Kind = Stock::Log;
+
+				AddPart(plan, log);
+			}
+
+			return plan;
+		};
+
+		// A deck: boards laid edge to edge across a bay, on two bearers.
+		auto deck = [&](const char* name, int cells)
+		{
+			Design plan = named(name);
+
+			for (int i = 0; i < cells; i++)
+			{
+				Part board;
+				board.X = 0;
+				board.Z = i;
+				board.Layer = 1;
+				board.Length = cells;
+				board.Axis = Run::AlongX;
+
+				AddPart(plan, board);
+			}
+
+			for (int end = 0; end < 2; end++)
+			{
+				Part bearer;
+				bearer.X = end ? cells - 1 : 0;
+				bearer.Z = 0;
+				bearer.Layer = 0;
+				bearer.Length = cells;
+				bearer.Axis = Run::AlongZ;
+
+				AddPart(plan, bearer);
+			}
+
+			return plan;
+		};
+
+		Design floorPanel = named("Floor panel");
+		FillPanel(floorPanel, 24, 1);
+
+		Design wallPanel = named("Wall panel");
+		wallPanel.Upright = true;
+		FillPanel(wallPanel, 20, 1);
+
+		Design plate = named("Plate log");
+		{
+			Part log;
+			log.Length = s_BayCells;
+			log.Kind = Stock::Log;
+			AddPart(plate, log);
+		}
+
+		Design pillar = named("Pillar");
+		{
+			Part post;
+			post.Length = s_PillarTall;
+			post.Axis = Run::Upright;
+			post.Kind = Stock::Log;
+			AddPart(pillar, post);
+		}
+
+		m_Designs.push_back(floorPanel);
+		m_Designs.push_back(wallPanel);
+		m_Designs.push_back(logWall("Log wall", s_BayCells, s_WallLogs));
+		m_Designs.push_back(logWall("Log wall, door", 29, s_DoorLogs));
+		m_Designs.push_back(plate);
+		m_Designs.push_back(pillar);
+		m_Designs.push_back(deck("Deck bay", s_BayCells));
+	}
+
+	// The kit by name, so the shed's assembly reads as a bill rather than as
+	// a set of indices nobody can check.
+	const Design& KitPart(const char* name) const
+	{
+		for (const Design& plan : m_Designs)
+			if (std::strcmp(plan.Name, name) == 0)
+				return plan;
+
+		return m_Designs[0];
 	}
 
 	// **How many boards are on the pile beside the table.**
@@ -4151,19 +4470,38 @@ private:
 
 		const Design& plan = m_Draft;
 
-		int cost = PanelCost(plan);
+		Bill cost = PanelBill(plan);
 
-		if (Stockpile() < cost)
+		// **Both materials, and neither is spent until both are there.** A
+		// design half built out of boards you had and logs you did not is a
+		// pile of boards you no longer have.
+		if (Stockpile() < cost.Boards || DeckWood() < cost.Logs)
 			return;
 
 		// Off the top, so the pile goes down course by course rather than
 		// leaving a hole somewhere in the middle of it.
-		for (int taken = 0; taken < cost; taken++)
+		for (int taken = 0; taken < cost.Boards; taken++)
 		{
 			int top = TopOfPile(Pile::Stock);
 
 			if (top < 0)
 				return;
+
+			RemoveLoose((size_t)top);
+		}
+
+		// **Logs go by volume and a log is indivisible**, so the deck is spent
+		// until the debt is met and whatever the last log had left over is
+		// wasted -- which is what happens when you cut a wall log out of a
+		// stem that was longer than the wall.
+		for (float owed = cost.Logs; owed > 1e-6f; )
+		{
+			int top = TopOfPile(Pile::Deck);
+
+			if (top < 0)
+				return;
+
+			owed -= LooseVolume(m_Loose[(size_t)top]);
 
 			RemoveLoose((size_t)top);
 		}
@@ -4461,7 +4799,11 @@ private:
 	// in the world frame is a window onto the shed's own doorway, so if one is
 	// taller than the other the difference shows as a strip of the shed's
 	// lintel hanging in mid-air above the frame. One constant for both.
-	static constexpr float s_DoorTop = 2.45f;
+	// It is where the log courses put it: eight courses of 300 mm round is
+	// 2.40 m, and the ninth log is the lintel. A door head is wherever the
+	// wall stops, and pretending otherwise would put a strip of the shed's own
+	// lintel in mid-air above the frame in the field.
+	static constexpr float s_DoorTop = 2.40f;
 
 	// The top of the floor, at the middle of the room. Chosen once by
 	// `SiteShed` and then fixed: everything in the building is an offset from
@@ -4578,49 +4920,142 @@ private:
 		m_Terraced = true;
 	}
 
+	// **The workshop is put up out of the kit.**
+	//
+	// It used to be eleven hand-written static boxes, which was honest while
+	// there was nothing else to build it from. Now there is: the same designs
+	// the crafting table makes, at the same sizes, placed the same way `B`
+	// places one. That is the only way to know the editor can describe a
+	// *building* and not just a panel -- if a piece in the kit were wrong the
+	// shed would show it, because the shed is those pieces.
+	//
+	// The layout is a bill of materials read top to bottom, and it is meant to
+	// be read that way.
+	void RaiseShed()
+	{
+		while ((int)m_PanelPool.size() < s_PanelPool)
+			m_PanelPool.push_back(m_World.AddBody(
+				Egss::RigidBody3D::MakeStaticSphere(
+					glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f)));
+
+		glm::vec3 centre = ShedCentre();
+
+		// Put one piece of the kit down. `at` is the *lower corner* in the
+		// shed's own frame, which is how a building is set out -- from a
+		// corner and a run, never from a middle.
+		auto raise = [&](const char* name, const glm::vec3& corner, float yaw)
+		{
+			if (m_Panels.size() >= m_PanelPool.size())
+				return;
+
+			Panel made;
+			made.Plan = KitPart(name);
+			made.Body = m_PanelPool[m_Panels.size()];
+			made.Yaw = yaw;
+			made.Placed = true;
+
+			made.At = centre + corner + PanelWorldHalf(made.Plan, yaw);
+
+			Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(made.At,
+				PanelHalf(made.Plan), 0.0f);
+
+			body.Type = Egss::BodyType::Static;
+			body.Orientation = PanelTurn(made);
+			body.Friction = 0.7f;
+			body.UpdateInertiaWorld();
+
+			m_World.GetBody(made.Body) = body;
+
+			m_Panels.push_back(made);
+		};
+
+		const float h = s_ShedHalf;
+		const float quarter = glm::half_pi<float>();
+		const float log = (float)s_LogCells * Cell();       // 0.30 m
+		const float deck = (float)s_BayCells * Cell();      // 4.00 m
+		const float floor = LayerHeight() * 2.0f;           // a deck's thickness
+
+		// **The floor: four bays over the plinth**, their top surface at the
+		// shed's own datum so everything else measures off zero.
+		for (int i = 0; i < 2; i++)
+		for (int j = 0; j < 2; j++)
+			raise("Deck bay", glm::vec3(-h + (float)i * deck, -floor,
+				-h + (float)j * deck), 0.0f);
+
+		// **The four walls, on the datum.** The two that run along z are laid
+		// with their logs crossing the other two at the corners, which is what
+		// a saddle notch looks like when both members are round.
+		for (int i = 0; i < 2; i++)
+		{
+			raise("Log wall", glm::vec3(-h + (float)i * deck, 0.0f,
+				h - log), 0.0f);
+
+			raise("Log wall", glm::vec3(-h, 0.0f,
+				-h + (float)i * deck), quarter);
+
+			raise("Log wall", glm::vec3(h - log, 0.0f,
+				-h + (float)i * deck), quarter);
+		}
+
+		// The wall with the door in it: two runs of eight courses either side
+		// of the opening, and the opening is the gap between them.
+		float side = h - s_DoorHalf;
+
+		raise("Log wall, door", glm::vec3(-h, 0.0f, -h), 0.0f);
+		raise("Log wall, door", glm::vec3(h - side, 0.0f, -h), 0.0f);
+
+		// Two plates across the whole front, which are the lintel over the
+		// door and the wall plate the roof sits on.
+		for (int course = 0; course < 2; course++)
+		for (int i = 0; i < 2; i++)
+			raise("Plate log", glm::vec3(-h + (float)i * deck,
+				(float)(s_DoorLogs + course) * s_LogLayers * LayerHeight(),
+				-h), 0.0f);
+
+		// **The roof, on top of the walls.**
+		float head = (float)s_WallLogs * s_LogLayers * LayerHeight();
+
+		for (int i = 0; i < 2; i++)
+		for (int j = 0; j < 2; j++)
+			raise("Deck bay", glm::vec3(-h + (float)i * deck, head,
+				-h + (float)j * deck), 0.0f);
+
+		// **A porch, which is what the pillars are for.** Two posts in front
+		// of the door, a plate across them, and a bay of decking over it --
+		// four pieces, and the entrance stops being a hole in a wall.
+		// At the outer corners of the porch, which is where a post carries a
+		// plate. Inboard of them it carries nothing and reads as a prop.
+		raise("Pillar", glm::vec3(-0.5f * deck, 0.0f, -h - deck), 0.0f);
+		raise("Pillar", glm::vec3(0.5f * deck - log, 0.0f, -h - deck), 0.0f);
+
+		// The plate sits on the posts and the decking on the plate, so the
+		// porch roof comes out level with the eaves rather than floating
+		// above them.
+		raise("Plate log", glm::vec3(-0.5f * deck,
+			(float)s_PillarTall * LayerHeight(), -h - deck), 0.0f);
+
+		raise("Deck bay", glm::vec3(-0.5f * deck, head, -h - deck), 0.0f);
+	}
+
 	void BuildShed()
 	{
 		glm::vec3 centre = ShedCentre();
 
-		// Floor and four walls as static boxes. The doorway is a gap in one
-		// wall rather than a hole in a mesh: two short walls either side of it,
-		// so the collider and the thing you can see through are the same shape
-		// and there is nothing to keep in step.
-		auto wall = [&](const glm::vec3& at, const glm::vec3& half)
-		{
-			Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(at, half, 0.0f);
-			body.Type = Egss::BodyType::Static;
-			body.Friction = 0.7f;
+		// The plinth, which is the one part of the building that is not
+		// carpentry: it retains the levelled pad and carries the floor. Its top
+		// is a deck's thickness below the datum, so the deck laid on it brings
+		// the floor to zero.
+		Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(
+			centre - glm::vec3(0.0f,
+				LayerHeight() * 2.0f + 0.5f * s_ShedSlab, 0.0f),
+			glm::vec3(s_ShedHalf, 0.5f * s_ShedSlab, s_ShedHalf), 0.0f);
 
-			m_World.AddBody(body);
-		};
+		body.Type = Egss::BodyType::Static;
+		body.Friction = 0.7f;
 
-		const float h = s_ShedHalf;
+		m_World.AddBody(body);
 
-		// The floor slab: its top is the floor, and it is thick enough that
-		// its underside is buried in the pad rather than showing daylight.
-		wall(centre - glm::vec3(0.0f, 0.5f * s_ShedSlab, 0.0f),
-			{ h, 0.5f * s_ShedSlab, h });
-
-		// **The roof sits on the walls and overhangs them.** It used to span
-		// the same 3.0 to 3.5 the wall tops run through, so its faces and
-		// theirs were interpenetrating and the eaves came out as a row of
-		// z-fighting stripes -- invisible from inside a dark room, and the
-		// first thing you see walking up to a building.
-		wall(centre + glm::vec3(0.0f, 3.425f, 0.0f),
-			{ h + 0.35f, 0.175f, h + 0.35f });
-		wall(centre + glm::vec3(-h, 1.5f, 0.0f), { 0.25f, 1.75f, h });
-		wall(centre + glm::vec3(h, 1.5f, 0.0f), { 0.25f, 1.75f, h });
-		wall(centre + glm::vec3(0.0f, 1.5f, h), { h, 1.75f, 0.25f });
-
-		// The wall with the door in it: two posts and a lintel.
-		float side = 0.5f * (h - s_DoorHalf);
-
-		wall(centre + glm::vec3(-(s_DoorHalf + side), 1.5f, -h),
-			{ side, 1.75f, 0.25f });
-		wall(centre + glm::vec3(s_DoorHalf + side, 1.5f, -h),
-			{ side, 1.75f, 0.25f });
-		wall(centre + glm::vec3(0.0f, 2.85f, -h), { s_DoorHalf, 0.4f, 0.25f });
+		RaiseShed();
 	}
 
 	// **A doorway is a place and a heading, and a portal is one rigid map
@@ -5234,8 +5669,12 @@ private:
 	// The editor's own state: which course, which way round, and how long a
 	// piece to cut. None of it reaches the simulation -- the pieces already on
 	// the grid do, and those are registered.
-	bool m_EditLedger = false;
-	bool m_EditAlongZ = false;
+	// What the next click lays. Editor state, not simulation state: the pieces
+	// it produces are registered parameters, so a replay writes the recorded
+	// design back whatever these were set to.
+	int m_EditLayer = 1;
+	Run m_EditAxis = Run::AlongX;
+	Stock m_EditKind = Stock::Board;
 	int m_EditLength = s_BoardCells;
 
 	int m_FillAcross = 24;
@@ -7556,36 +7995,58 @@ inline void TerrainLab::DrawPanels()
 	// for every fragment, which switches off all three at once.
 	m_TreeMaterial->Set("u_CutRadius", 0.0f);
 
-	float thick = BoardThick();
-
 	for (const Panel& panel : m_Panels)
 	{
 		if (!panel.Placed)
 			continue;
 
-		glm::ivec2 low, high;
+		glm::ivec3 low, high;
 		DesignBounds(panel.Plan, low, high);
 
-		glm::vec2 span = PanelSpan(panel.Plan);
+		glm::vec3 size = PanelSize(panel.Plan);
 		glm::mat4 frame = PanelFrame(panel);
-
-		int index = 0;
 
 		for (const Part& part : PartsOf(panel.Plan))
 		{
-			// Cells to metres, with the design centred on its own bounding box
-			// so a panel is put down where you are looking rather than offset
-			// by wherever on the grid it happened to be drawn.
-			glm::vec2 from = glm::vec2(glm::ivec2(part.X, part.Z) - low)
-				* Cell() - 0.5f * span;
+			glm::ivec3 span = PartSize(part);
 
-			glm::vec2 size = part.AlongZ
-				? glm::vec2(Cell(), (float)part.Length * Cell())
-				: glm::vec2((float)part.Length * Cell(), Cell());
+			// Grid units to metres, with the design centred on its own
+			// bounding box so a panel is put down where you are looking rather
+			// than offset by wherever on the grid it happened to be drawn.
+			glm::ivec3 from = glm::ivec3(part.X, part.Layer, part.Z) - low;
 
-			glm::vec3 at(from.x + 0.5f * size.x,
-				part.Face ? 0.5f * thick : -0.5f * thick,
-				from.y + 0.5f * size.y);
+			glm::vec3 half(0.5f * (float)span.x * Cell(),
+				0.5f * (float)span.y * LayerHeight(),
+				0.5f * (float)span.z * Cell());
+
+			glm::vec3 at(
+				(float)from.x * Cell() + half.x - 0.5f * size.x,
+				(float)from.y * LayerHeight() + half.y - 0.5f * size.y,
+				(float)from.z * Cell() + half.z - 0.5f * size.z);
+
+			// **The mesh's own axis is x, so the piece is turned to it rather
+			// than the other way round.** The log cylinder runs along its
+			// local x, and a cube does not care -- so one rotation serves both
+			// stocks and the scale is quoted in the mesh's axes.
+			glm::quat turn(1.0f, 0.0f, 0.0f, 0.0f);
+			glm::vec3 mesh = half;
+
+			if (part.Axis == Run::AlongZ)
+			{
+				turn = glm::angleAxis(glm::half_pi<float>(),
+					glm::vec3(0.0f, 1.0f, 0.0f));
+
+				mesh = glm::vec3(half.z, half.y, half.x);
+			}
+			else if (part.Axis == Run::Upright)
+			{
+				turn = glm::angleAxis(glm::half_pi<float>(),
+					glm::vec3(0.0f, 0.0f, 1.0f));
+
+				mesh = glm::vec3(half.y, half.x, half.z);
+			}
+
+			bool log = part.Kind == Stock::Log;
 
 			// **Every piece a slightly different brown.** In one colour the
 			// assembly is a single pale slab: the pieces are butted, there is
@@ -7593,19 +8054,19 @@ inline void TerrainLab::DrawPanels()
 			// so the object whose entire cost is a board count showed no
 			// boards. Sawn timber does vary piece to piece, which makes the
 			// variation the honest fix rather than a fake gap.
-			float tone = 0.86f + 0.28f * Veg::Hash2DUnit(part.X,
-				part.Z * 2 + (part.Face ? 1 : 0), 0x9E3779B9u);
+			float tone = 0.86f + 0.28f * Veg::Hash2DUnit(part.X + part.Layer * 7,
+				part.Z * 2 + (int)part.Axis, 0x9E3779B9u);
 
-			m_TreeMaterial->Set("u_Color", (part.Face
-				? glm::vec3(0.66f, 0.51f, 0.32f)
-				: glm::vec3(0.52f, 0.39f, 0.24f)) * tone);
+			m_TreeMaterial->Set("u_Color", (log
+				? glm::vec3(0.46f, 0.34f, 0.21f)
+				: part.Layer & 1
+					? glm::vec3(0.66f, 0.51f, 0.32f)
+					: glm::vec3(0.52f, 0.39f, 0.24f)) * tone);
 
-			Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+			Egss::Renderer::Submit(m_TreeMaterial, log ? m_Log : m_Cube,
 				frame * glm::translate(glm::mat4(1.0f), at)
-				* glm::scale(glm::mat4(1.0f),
-					glm::vec3(0.5f * size.x, 0.5f * thick, 0.5f * size.y)));
-
-			index++;
+				* glm::mat4_cast(turn)
+				* glm::scale(glm::mat4(1.0f), mesh));
 		}
 	}
 }
@@ -7787,9 +8248,11 @@ inline void TerrainLab::DrawHud()
 inline void TerrainLab::DrawPrefabEditor()
 {
 	int stock = Stockpile();
-	int cost = PanelCost(m_Draft);
+	Bill cost = PanelBill(m_Draft);
 
-	glm::vec2 span = PanelSpan(m_Draft);
+	float deck = DeckWood();
+
+	glm::vec3 size3 = PanelSize(m_Draft);
 
 	ImGui::Text("%d built, %d put down", m_Built, m_Placed);
 
@@ -7801,9 +8264,9 @@ inline void TerrainLab::DrawPrefabEditor()
 
 	ImGui::Checkbox("Stand it up (wall)", &m_Draft.Upright);
 
-	ImGui::Text("%d of %d pieces, %.2f x %.2f m %s, %.0f kg",
-		PartCount(m_Draft), s_MaxParts, span.x, span.y,
-		m_Draft.Upright ? "wall" : "floor", PanelMass(m_Draft));
+	ImGui::Text("%d of %d pieces, %.2f x %.2f x %.2f m, %.0f kg",
+		PartCount(m_Draft), s_MaxParts, size3.x, size3.z, size3.y,
+		PanelMass(m_Draft));
 
 	// The cap is the registered-parameter budget, and hitting it silently
 	// would look like the editor dropping pieces.
@@ -7812,15 +8275,24 @@ inline void TerrainLab::DrawPrefabEditor()
 
 	// Longest piece first into the first board it fits, so the count depends
 	// on the shape and not on a multiplication.
-	ImGui::Text("%d boards to cut them from, %.2f m offcut", cost,
-		PanelOffcut(m_Draft));
+	if (cost.Boards > 0)
+		ImGui::Text("%d boards, %.2f m offcut  (pile has %d)", cost.Boards,
+			PanelOffcut(m_Draft), stock);
 
-	ImGui::Text("Stock at the table: %d of %d", stock, cost);
+	if (cost.Logs > 1e-6f)
+		ImGui::Text("%.3f m3 of round timber  (deck has %.3f)", cost.Logs,
+			deck);
 
-	if (stock >= cost && cost > 0)
+	bool enough = stock >= cost.Boards && deck >= cost.Logs;
+
+	if (enough && (cost.Boards > 0 || cost.Logs > 1e-6f))
 		ImGui::Text("[C] cut it -- then [B] puts it down where you look");
-	else if (cost > 0)
-		ImGui::TextDisabled("  carry %d more boards to the pile", cost - stock);
+	else if (cost.Boards > stock)
+		ImGui::TextDisabled("  carry %d more boards to the pile",
+			cost.Boards - stock);
+	else if (cost.Logs > deck)
+		ImGui::TextDisabled("  carry %.3f m3 more log to the deck",
+			cost.Logs - deck);
 
 	// **Why this is a key and the buttons below are not.** Input is polled per
 	// fixed step and goes into the recording; an ImGui click does neither. The
@@ -7828,13 +8300,39 @@ inline void TerrainLab::DrawPrefabEditor()
 	// -- only the moment of committing it has to be a key.
 
 	// --- The canvas ---------------------------------------------------------
+	//
+	// **The plan is one course at a time.** A design has height now, so the
+	// canvas has to say which slice it is showing: the current course is drawn
+	// solid, everything else faint underneath it, and the piece you lay goes
+	// into the course the slider names. That is the only honest way to draw a
+	// three-dimensional assembly on a flat plan, and it is what every set of
+	// building drawings does.
 
-	ImGui::Checkbox("Ledger", &m_EditLedger);
+	ImGui::SliderInt("Course", &m_EditLayer, 0, s_MaxLayers - 1);
+	ImGui::TextDisabled("  course %d is %.2f m up", m_EditLayer,
+		(float)m_EditLayer * LayerHeight());
 
-	ImGui::SameLine();
-	ImGui::Checkbox("Along Z", &m_EditAlongZ);
+	int run = (int)m_EditAxis;
 
-	ImGui::SliderInt("Cut to", &m_EditLength, 1, s_BoardCells);
+	ImGui::RadioButton("Along X", &run, 0); ImGui::SameLine();
+	ImGui::RadioButton("Along Z", &run, 1); ImGui::SameLine();
+	ImGui::RadioButton("Upright", &run, 2);
+
+	m_EditAxis = (Run)run;
+
+	int kind = (int)m_EditKind;
+
+	ImGui::RadioButton("Board", &kind, 0); ImGui::SameLine();
+	ImGui::RadioButton("Log", &kind, 1);
+
+	m_EditKind = (Stock)kind;
+
+	int limit = m_EditAxis == Run::Upright ? s_MaxLayers - 1 : s_GridCells;
+
+	m_EditLength = glm::min(m_EditLength, limit);
+
+	ImGui::SliderInt(m_EditAxis == Run::Upright ? "Courses tall" : "Cut to",
+		&m_EditLength, 1, limit);
 
 	ImVec2 origin = ImGui::GetCursorScreenPos();
 
@@ -7869,27 +8367,41 @@ inline void TerrainLab::DrawPrefabEditor()
 			ImVec2(origin.x + size.x, origin.y + at), tint);
 	}
 
-	auto paint = [&](const Part& part, ImU32 tint)
+	auto paint = [&](const Part& part, ImU32 tint, bool outline)
 	{
-		float w = part.AlongZ ? cell : (float)part.Length * cell;
-		float h = part.AlongZ ? (float)part.Length * cell : cell;
+		glm::ivec3 span = PartSize(part);
 
 		ImVec2 from(origin.x + (float)part.X * cell,
 			origin.y + (float)part.Z * cell);
 
-		draw->AddRectFilled(from, ImVec2(from.x + w, from.y + h), tint);
-		draw->AddRect(from, ImVec2(from.x + w, from.y + h),
-			IM_COL32(20, 18, 16, 200));
+		ImVec2 to(from.x + (float)span.x * cell, from.y + (float)span.z * cell);
+
+		draw->AddRectFilled(from, to, tint);
+
+		if (outline)
+			draw->AddRect(from, to, IM_COL32(20, 18, 16, 200));
 	};
 
-	// Ledgers first, so the face draws over them the way it lies over them.
+	// Everything not in this course, faintly, so the plan shows what it is
+	// being built on. Lower courses first, so the nearest one reads strongest.
+	for (int pass = 0; pass < 2; pass++)
 	for (const Part& part : PartsOf(m_Draft))
-		if (!part.Face)
-			paint(part, IM_COL32(112, 84, 52, 255));
+	{
+		glm::ivec3 low, high;
+		PartBox(part, low, high);
 
-	for (const Part& part : PartsOf(m_Draft))
-		if (part.Face)
-			paint(part, IM_COL32(168, 130, 82, 255));
+		bool here = m_EditLayer >= low.y && m_EditLayer < high.y;
+
+		if (here != (pass == 1))
+			continue;
+
+		ImU32 tint = here
+			? (part.Kind == Stock::Log ? IM_COL32(150, 108, 62, 255)
+				: IM_COL32(168, 130, 82, 255))
+			: IM_COL32(78, 64, 48, 190);
+
+		paint(part, tint, here);
+	}
 
 	// The piece about to go down, and red where it will not go.
 	if (ImGui::IsItemHovered())
@@ -7900,21 +8412,22 @@ inline void TerrainLab::DrawPrefabEditor()
 		want.X = (int)((mouse.x - origin.x) / cell);
 		want.Z = (int)((mouse.y - origin.y) / cell);
 		want.Length = m_EditLength;
-		want.AlongZ = m_EditAlongZ;
-		want.Face = !m_EditLedger;
+		want.Layer = m_EditLayer;
+		want.Axis = m_EditAxis;
+		want.Kind = m_EditKind;
 
 		bool room = PartFits(m_Draft, want)
 			&& PartCount(m_Draft) < s_MaxParts;
 
 		paint(want, room ? IM_COL32(210, 190, 140, 130)
-			: IM_COL32(190, 70, 60, 130));
+			: IM_COL32(190, 70, 60, 130), true);
 
 		if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && room)
 			AddPart(m_Draft, want);
 
 		if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
 		{
-			int hit = PartAt(m_Draft, want.X, want.Z, want.Face);
+			int hit = PartAt(m_Draft, want.X, want.Z, m_EditLayer);
 
 			if (hit >= 0)
 				m_Draft.Code[hit] = 0;
@@ -7971,10 +8484,18 @@ inline void TerrainLab::DrawPrefabEditor()
 			m_Draft = m_Designs[i];
 
 		ImGui::SameLine();
-		ImGui::Text("%s -- %d pieces%s, %d boards", m_Designs[i].Name,
-			PartCount(m_Designs[i]),
-			m_Designs[i].Upright ? ", upright" : "",
-			PanelCost(m_Designs[i]));
+
+		Bill bill = PanelBill(m_Designs[i]);
+
+		if (bill.Logs > 1e-6f)
+			ImGui::Text("%s -- %d pieces%s, %d boards + %.2f m3",
+				m_Designs[i].Name, PartCount(m_Designs[i]),
+				m_Designs[i].Upright ? ", upright" : "", bill.Boards,
+				bill.Logs);
+		else
+			ImGui::Text("%s -- %d pieces%s, %d boards", m_Designs[i].Name,
+				PartCount(m_Designs[i]),
+				m_Designs[i].Upright ? ", upright" : "", bill.Boards);
 
 		ImGui::PopID();
 	}
@@ -8079,38 +8600,15 @@ inline void TerrainLab::DrawShed()
 	m_TreeMaterial->Set("u_Time", m_Time);
 
 	glm::vec3 centre = ShedCentre();
-	const float h = s_ShedHalf;
 
-	// **Sawn timber, not the near-black it was.** The old colour was picked
-	// for a room lit by ambient alone, where anything lighter glared. Outdoors
-	// beside sunlit ground it came out at 4% of the sand's brightness -- the
-	// building read as a hole in the hill. Weathered boards are about this.
-	glm::vec3 plank(0.58f, 0.47f, 0.35f);
-
-	DrawBox(centre - glm::vec3(0.0f, 0.5f * s_ShedSlab, 0.0f),
-		{ h, 0.5f * s_ShedSlab, h }, 0.0f, glm::vec3(0.42f, 0.33f, 0.23f));
-	DrawBox(centre + glm::vec3(0.0f, 3.425f, 0.0f),
-		{ h + 0.35f, 0.175f, h + 0.35f }, 0.0f, plank * 0.82f);
-	DrawBox(centre + glm::vec3(-h, 1.5f, 0.0f), { 0.25f, 1.75f, h }, 0.0f, plank);
-	DrawBox(centre + glm::vec3(h, 1.5f, 0.0f), { 0.25f, 1.75f, h }, 0.0f, plank);
-	DrawBox(centre + glm::vec3(0.0f, 1.5f, h), { h, 1.75f, 0.25f }, 0.0f, plank);
-
-	// The wall with the door in it: two posts and a lintel, and the lintel
-	// sits at `s_DoorTop` so the opening matches the panel in the field.
-	//
-	// **The same numbers the collider uses.** The drawn lintel used to stop at
-	// 3.0 m while the wall it sits in goes to 3.25, which left a quarter-metre
-	// band above the door with nothing in it. Invisible while the ceiling was
-	// also at 3.0; a slit of daylight over the doorway the moment the roof
-	// went up to meet the walls.
-	float side = 0.5f * (h - s_DoorHalf);
-
-	DrawBox(centre + glm::vec3(-(s_DoorHalf + side), 1.5f, -h),
-		{ side, 1.75f, 0.25f }, 0.0f, plank);
-	DrawBox(centre + glm::vec3(s_DoorHalf + side, 1.5f, -h),
-		{ side, 1.75f, 0.25f }, 0.0f, plank);
-	DrawBox(centre + glm::vec3(0.0f, 2.85f, -h),
-		{ s_DoorHalf, 0.4f, 0.25f }, 0.0f, plank);
+	// **The shell is not drawn here any more.** Floor, walls, plates and roof
+	// are placed panels, so `DrawPanels` draws them out of the same kit the
+	// crafting table makes. What is left is the fixed furniture: the plinth
+	// the building stands on, the two benches, the rack and the bearers.
+	DrawBox(centre - glm::vec3(0.0f,
+		LayerHeight() * 2.0f + 0.5f * s_ShedSlab, 0.0f),
+		{ s_ShedHalf, 0.5f * s_ShedSlab, s_ShedHalf }, 0.0f,
+		glm::vec3(0.34f, 0.31f, 0.28f));
 
 	// **The rack, on the wall you face as you walk in.** Two pegs and, when it
 	// is not in your hands, the axe on them -- so the wall tells you both that
