@@ -1264,6 +1264,226 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-30 (the toolshed comes onto the map, and the ground under it is levelled)
+
+The shed was a pocket dimension four hundred metres above the block --
+somewhere the terrain was not, so it needed no hole cut in the ground and no
+clipping against the world. That was the cheap version and it worked, and it
+made the only building in the demo a place that **did not exist until you
+deployed a door to it**: you could not see it, walk to it, or put a panel down
+beside it.
+
+Siting it on the terrain first tried to find ground flat enough to build on,
+and the measurement killed that idea outright. The flattest 8 m square anywhere
+on a ring 22 m out still varied **4.16 m** -- a five-metre plinth and a doorway
+two metres above the path. There is no flat ground on this terrain.
+
+So the site is **cut and filled** instead, which is what happens when a
+building goes on a hill. And once it is going to be levelled anyway, "flattest"
+stops being the question: what a real siting minimises is earth moved, which is
+smallest when the pad sits at the **mean** ground height over the footprint.
+That number has units. The chosen spot costs **0.901 m³/m²**, against 2.228 at
+the worst of 95 dry candidates.
+
+**The terrace lives in `Height`, not in `Density`, and that is the whole
+trick.** The slope, the distance field, the mesh, the grass, the trees, the
+boulders and the walker's ground query all read the terrain through that one
+function, so every one of them saw the pad and **not one of them needed a line
+changed**. Measured afterwards at 81×81 across the room: flat to 0.00000 m, at
+the pad level to 0.00000 m, a 0.150 m step at the door, and the hill untouched
+40 m away.
+
+Two things the move exposed, both invisible while the shed was somewhere nobody
+could see:
+
+- **The shader had no ground bounce.** The sky dome only lights what faces up;
+  outdoors the other half of the sphere is ground, and ground returns a good
+  part of what the sun puts on it. The moment the shed stood in a field its
+  door wall came out at **11/255 against sunlit sand at 192** — 4%, a
+  night-time number in full daylight. With the bounce term it is 28, and with
+  cladding picked for daylight rather than for a dim interior, about 50.
+- **The roof spanned the same heights the wall tops ran through**, so their
+  faces interpenetrated and the eaves were a row of z-fighting stripes. The
+  drawn lintel also stopped 0.25 m short of the wall it sits in, which became a
+  slit of daylight over the doorway the moment the roof went up to meet the
+  walls.
+
+`m_InShed` is `m_ViaPortal` now, because "am I in the shed" became a question
+about position that the portal has no business answering. **None of the portal
+transform changed:** the second camera and the plane test never cared that the
+two doorways were in different worlds, only that they were two doorways.
+
+Also: `BuildWorld` cleared the loose timber but not the felled tops, the panels
+or the panel pool. `Clear` empties the body list and the next `AddBody` starts
+again at zero, so a panel that survived a slider drag came back **owning the
+walker**.
+
+### 2026-08-30 (a felled tree turns on its hinge, and a log is the stem it was cut from)
+
+Three things were wrong with felling, and the report was that it looked
+"choppy" -- the crown disappears and comes back about a metre in the air.
+
+**The crown moved when it came off the stump.** The body is a capsule about the
+middle of the fallen stem; the mesh is drawn from its *cut*. Nothing carried the
+distance between the two, so the drawing put the mesh origin at the body's
+position and the crown jumped half its own length -- eleven metres on a
+standard -- straight up. `Felled::Lift` is that distance, and the check asks
+the matrix the renderer uses where the mesh origin lands: **0.000 m** from
+where the standing tree left it.
+
+**It fell backwards.** `ω × r` for a point at `(0, h, 0)` under `ω = (0, 0, w)`
+is `(-wh, 0, 0)`, so tipping the top toward `+x` wants `w` negative -- and
+`cross(up, +x)` is already `(0, 0, -1)`. Negating it as well sent every tree
+over *away* from its own notch, while a separate linear nudge pushed the centre
+the other way. The two disagreed, which is most of why it read as a glitch.
+
+**Nothing was holding the butt.** The stump is not a collider, so the crown
+free-fell the cut height, landed upright and toppled from there. Damping cannot
+fix that; the problem is the constraint. What holds a real tree is the hinge --
+the strip of uncut wood on the far side of the notch -- and with it the crown is
+a rod pivoted at one end:
+
+    α = (3g / 2L) sin θ
+
+`HoldFalling` supplies that torque and puts the butt back on the stump, **after**
+the solver has integrated, because a projection applied before the step is one
+the step undoes. It lets go at 75° and the rest is an ordinary body landing.
+
+Checked against **energy**, not against the equation of motion. Integrating α
+once gives `ω² = ω₀² + (3g/L)(cos θ₀ − cos θ)`, which is the same physics
+reached a different way and is exactly what a numerical integration gets wrong.
+Through 75° of a 22.9 m fall the two disagree by **0.166%**, and the butt
+drifts **0.00000 m**.
+
+The initial push is quoted in metres a second **at the tip** rather than radians
+a second at the middle: a fixed spin gave a 27 m standard a crown already doing
+nine metres a second at the instant of the cut, about the speed it should be
+doing when it lands.
+
+**The trees grew rather than the trunks thickening.** The first answer to "make
+them thicker" was to fatten them, and the measurement said not to: the biggest
+standard already stood at **H/D 29 on an 0.80 m butt**, which is a stout tree --
+a forest conifer runs H/D 40 to 60. Nothing was slender. What was wrong was the
+mix: nearly half the wood was the smallest class, and the smallest class of a
+scrub is a 2 cm stick. Classes and shares both moved, and radius follows height
+as H^(3/2), so **growing a tree is a better lever on its thickness than
+thickening it** and it keeps the allometry honest. The stand now runs from 4 cm
+scrub to an 0.86 m conifer 24 m tall, all of it between 0.18 and 0.32 of its own
+buckling height.
+
+**Bucking follows the taper.** It used to make N identical 0.17 m logs, so a
+24 m conifer and a 5 m pole gave the same timber and only the count differed. A
+stem is a cone near enough: the butt log carries the trunk's radius at the cut
+and each one above it is thinner. Measured: **9 logs off a 26.25 m stem holding
+6.236 m³, against the 6.266 m³ cone they were cut from.** The mill counts the
+log's own volume, so a butt log off a standard is worth eighty boards and a top
+log off a pole is worth two, and the **top diameter limit** (100 mm at the small
+end) is why the tip is left in the wood and a sapling yields nothing at all.
+
+**Riving**, because a butt log is six hundred kilograms and the alternative to
+splitting it is felling only small trees. Each half keeps the length and half
+the cross-section, so the volume -- and the board count -- is exactly conserved:
+1.6239 m³ to 1.6239 m³, 81 boards to 80. And a ceiling on a single lift, because
+there is no reading of "a struggle rather than a refusal" that covers half a
+tonne.
+
+### 2026-08-30 (timber is stacked on piles, and a carried load stops at the wall)
+
+**Boards are placed, not dropped.** A board off the saw is a dynamic body, and
+eighty of them out of one butt log will not settle into a stack: they find a way
+out of each other, spread across the floor and go out of the door. Making them
+settle is the wrong fix. A stack of sawn timber is *stacked*, by hand, one board
+at a time, and a person putting boards down does not leave them where they land
+either.
+
+So a board that reaches a pile goes into the next slot of a layout and becomes
+**static** -- the same trick the bedded boulders use, a thing that is where it is
+put and never simulated. Take one off the top and it is dynamic again. Two
+piles: green beside the mill, seasoned stock beside the crafting table, 6.2 m
+apart, and carrying between them is the work. Reaching into a pile takes off the
+**top** whichever board you pointed at, and crafting spends from the top for the
+same reason -- it used to take nearest-first from "every loose plank within
+2.5 m of the table", which counted whatever had rolled under it.
+
+Measured: a log milled to 7 boards puts 7 on the pile, no two in a slot, the
+bottom course clear of the floor, the stack no wider than its course. An armful
+off it is **6 boards at 36.0 kg of the 40 kg budget** -- which is the "40 kg is
+six rough 2×4s" the carry comment has claimed since it was written, arrived at
+from the other end.
+
+**And a carried load stops at the wall.** Carried timber is kinematic and was
+parked at a fixed 1.6 m in front of the eye, which is exactly why it went
+through walls and into the ground: a kinematic body is one the solver has been
+told not to move. Put it down there and it is released *inside* the world,
+penetrating on every side, and the solver's way out is whichever side is
+shallowest -- often downward, which is the board falling through the floor.
+
+The arm shortens instead. Terrain by its own raycast, static boxes by a slab
+test **in each box's own frame**, so an oriented panel is tested as the box it
+is rather than the box that contains it. Measured at 0.950 m against a wall
+0.950 m away, and 1.600 m across an empty room. Releasing also refuses to put
+anything below the floor, and asks for that floor **at the eye**: you cannot be
+standing inside rock, so the surface under your feet is the one a thing put down
+in front of you lands on. Asked under the load it finds the hillside beneath the
+plinth, which is a correct answer to the wrong question.
+
+### 2026-08-30 (the walker was never grounded below sea level, so it slid down every hill)
+
+Standing perfectly still on a 28.8° slope, the player travelled **27.5 m in ten
+seconds** and reached 8.1 m/s. It also sometimes slid *uphill*, which is what
+put the measurement on the right thing: momentum that is never cleared can be
+turned any direction the ground turns it.
+
+`GroundBelow`'s last argument is the **initial best**, not a floor to search
+from, and it defaults to `0.0` -- so a surface is accepted only if it is above
+sea level. Over most of this map the terrain is not, so `found` came back false,
+`m_Grounded` was false, and the branch that zeroes horizontal velocity when you
+are standing still **never ran**. Nothing was wrong with the friction, the
+solver or the slope: the walker did not know it was on the ground.
+
+Same trap already in HANDOVER for `GroundHeightBelow`, which caught the panel
+placement earlier. One argument, in three places -- `FirstPersonController` and
+`VoxelTerrain` had the identical line.
+
+Over the same six seconds on the same slope: **27.46 m becomes 0.024 m**, 8.14
+m/s becomes 0.000, and `grounded` reads 1 throughout. What is left is a
+millimetre a second of downhill creep from the position correction pushing along
+the contact normal -- 7 cm in a minute of standing perfectly still.
+
+Worth recording: **the slope limit here is emergent, not written.** Being
+grounded needs the ground within 0.25 m of the feet, and a capsule resting on a
+slope of θ sits `r(1/cos θ − 1)` above the surface directly below it — 0.049 m
+at 29°, measured 0.041. That reaches 0.25 m at about **54°**, which is where
+standing stops working.
+
+### 2026-08-30 (the prefab editor moves to the crafting table, with an outline and prompts)
+
+**A menu the character opens, not a panel the developer reads.** The editor was
+first in the demo's docked column, between the terrain sliders and the profiler,
+which made designing a floor panel something you did in the *tool* rather than
+in the workshop. Same widgets; what changed is that it belongs to the bench.
+Walk up to the crafting table, press `Q`, and it opens over the view in its own
+styling; walk away and it closes behind you.
+
+`C` and `B` stay keys, and that is not laziness. Input is polled per fixed step
+and goes into the recording; an ImGui click does neither, so a session that
+built something from a button could never play itself back. What the editor
+*draws* is safe either way, because the design is registered parameters -- the
+plan replays whatever the mouse did to it, and only the moment of committing it
+has to be a key.
+
+**An outline where the panel will land.** Placing one was guesswork: press `B`
+and find out. `PanelStance` is the placement, factored out, so the outline is
+not a prediction of where the panel will go -- it *is* where it will go, drawn a
+moment early. Twelve bars round the box in the panel's own frame, each
+overshooting by its own thickness so the corners close, and lit flat rather than
+shaded: a mark on the view that goes dark on the shaded side of a hill is a mark
+you cannot follow.
+
+**And prompts**, because this demo has nine keys and they were all in a
+paragraph of grey text in the developer panel -- a place a player never looks.
+One line at the foot of the view, and nothing when there is nothing to say.
+
 ### 2026-08-30 (the prefab editor becomes an editor, and the bill becomes bin packing)
 
 The first version was two sliders -- boards across, boards along -- which makes

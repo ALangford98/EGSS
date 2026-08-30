@@ -343,6 +343,74 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **`GroundBelow`'s and `GroundHeightBelow`'s last argument is the *initial
+  best*, not a floor to search from, and it defaults to `0.0`.** It has now
+  cost time three times. Left out, every surface below sea level is rejected
+  and the query reports "nothing there" -- which for the walker meant it was
+  **never grounded** on low ground, so the branch that zeroes horizontal
+  velocity when you are standing still never ran and the player slid 27.5 m
+  down a 28.8-degree slope in ten seconds, sometimes uphill. Pass `-1000.0f`
+  unless you genuinely mean "and it must be above y = 0".
+
+- **A body drawn about a different point than it is simulated about needs that
+  offset stored somewhere.** The felled crown is a capsule about the middle of
+  the stem and a mesh drawn from the *cut*, and for a long time nothing carried
+  the distance between them -- so the crown jumped half its own length the
+  instant it came off the stump. If a draw transform and a collider disagree
+  about the origin, the disagreement is a field, not a comment.
+
+- **A spin and a linear velocity picked separately describe two different
+  motions.** A felled tree given `omega` about its centre and a nudge along the
+  ground has no stationary point, so its butt slides off the stump. If a body
+  is meant to pivot about a point, `v = omega x (centre - point)` is not a
+  refinement -- it is what "pivot" means.
+
+- **A post-step projection applied before the step is a projection the step
+  undoes.** `StepFelled` runs before `m_World.Step` because it applies a
+  torque, and forces belong to the step they act over. The hinge constraint had
+  to be a separate pass *after* it. Getting this backwards produces a
+  constraint that appears to do nothing.
+
+- **A kinematic body is a body the solver has been told not to move**, so
+  nothing pushes back on it. Carried timber parked at a fixed distance in front
+  of the eye went through walls and into the ground, and releasing it inside
+  geometry hands the solver penetration on every side -- its way out is
+  whichever side is shallowest, which is often downward. Shorten the hold
+  instead of expecting a collision that cannot happen.
+
+- **"Where is the ground under this thing" is usually the wrong question.**
+  Asked under a load that has been pushed inside a wall, the honest answer is
+  the hillside beneath the floor. Ask at the *eye*: you cannot be standing
+  inside rock, so the surface under your feet is the one a thing put down in
+  front of you lands on.
+
+- **Dropping many small dynamic bodies in one place does not make a pile.**
+  Eighty boards off one butt log push each other apart, spread across the room
+  and go out of the door. A stack of sawn timber is *stacked* -- placed into
+  slots and made static, the same as the bedded boulders. Trying to make them
+  settle is solving the wrong problem.
+
+- **A per-object lighting term missing from a shader can hide for months
+  behind what the shader happens to draw.** The tree shader had a sky dome and
+  no ground bounce, which is invisible on trees and on a room nobody can see
+  from outside. The moment a building stood in a field its shaded wall came out
+  at 4% of the sunlit ground beside it. If a shader is about to be used for a
+  new *kind* of thing, ask what it never had to model before.
+
+- **Two boxes that span the same range interpenetrate, and coplanar faces
+  z-fight.** The shed's roof ran through its wall tops and the eaves were a row
+  of stripes; the drawn lintel stopped 0.25 m short of the wall it sits in and
+  left a slit of daylight over the door. Both were invisible from inside a dark
+  room. When the collider and the drawing use separate literals for the same
+  surface, they will drift.
+
+- **A terrain modifier belongs in `Height`, not in `Density`.** Everything in
+  the lab -- slope, the distance field, the mesh, the grass, the trees, the
+  boulders, the walker's ground query -- reads the terrain through `Height`, so
+  the workshop's terrace needed no other line changed anywhere. Anything that
+  needs the *bare* terrain (the siting search that chooses where the terrace
+  goes) calls `RawHeight` explicitly.
+
 - **A packed bit field one bit too narrow does not fail, it forgets.** The
   prefab editor stores a piece as one integer and gave `Length` five bits,
   which holds 0 to 31. A 32-cell piece masked to zero, decoded as an empty
@@ -361,6 +429,13 @@ look caught immediately.
   written the weight of whatever the player happened to be holding into every
   recording, and a replay would then walk at a speed the recorder never chose.
   Apply the modifier where the value is *used*.
+
+- **A pool of bodies is not cleared by `PhysicsWorld3D::Clear`, it is
+  *orphaned* by it.** `Clear` empties the body list and the next `AddBody`
+  starts again at zero, so a handle kept across a world rebuild is not stale --
+  it is aimed at somebody else's body. `BuildWorld` cleared the loose timber
+  and not the felled tops, the panels or the panel pool, and a panel that
+  survived a slider drag came back owning the walker.
 
 - **An index into `m_Loose` held anywhere else has to survive a removal.**
   `RemoveLoose` moves the last entry into the freed slot, so `m_Carry` is fixed
@@ -1842,7 +1917,10 @@ look caught immediately.
   solver pushes bodies upward without limit. A toolshed placed 400 m underground
   threw the player out at ninety-five metres a step, and the placement was
   correct the whole time. Above the field the same query reads as air, so
-  anything that needs to live off the block belongs *up*.
+  anything that needs to live off the block belongs *up*. (The terrain lab's
+  shed is on the terrain now and levels the ground under it, so it no longer
+  needs to live off the block at all -- but the asymmetry is still there for
+  the next thing that does.)
 
 - **The editor viewport is a `glViewport` call, not a framebuffer, and that
   is deliberate.** `EditorShell` publishes the central dock node's rect and
