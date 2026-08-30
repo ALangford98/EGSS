@@ -4160,22 +4160,25 @@ private:
 	}
 
 	// **Placing one puts it on the ground in front of you, square to the view.**
-	void PlacePanel()
+	// The first panel that has been made and not yet put down.
+	int NextPanel() const
 	{
-		int next = -1;
-
 		for (size_t i = 0; i < m_Panels.size(); i++)
 			if (!m_Panels[i].Placed)
-			{
-				next = (int)i;
-				break;
-			}
+				return (int)i;
 
-		if (next < 0)
-			return;
+		return -1;
+	}
 
-		Panel& panel = m_Panels[(size_t)next];
-
+	// **Where it would land, worked out once and used twice.**
+	//
+	// Placing a panel was guesswork: you pressed the key and found out. The
+	// outline drawn before the press has to be in exactly the place the press
+	// puts it, and the only way to be sure of that is for the two to be the
+	// same function -- a preview computed alongside the placement is a preview
+	// that drifts out of step with it the first time either is touched.
+	void PanelStance(const Design& plan, glm::vec3& at, float& yaw) const
+	{
 		glm::vec3 forward = m_Camera.GetForward();
 
 		forward.y = 0.0f;
@@ -4185,23 +4188,38 @@ private:
 
 		forward = glm::normalize(forward);
 
-		glm::vec3 at = m_Camera.GetPosition() + forward * 3.0f;
+		glm::vec3 ahead = m_Camera.GetPosition() + forward * 3.0f;
 
 		// The panel's length runs across the view rather than away down it, so
 		// a wall faces you and a floor lies where you were looking.
-		panel.Yaw = std::atan2(forward.x, forward.z);
+		yaw = std::atan2(forward.x, forward.z);
 
-		glm::vec3 half = PanelHalf(panel.Plan);
+		glm::vec3 half = PanelHalf(plan);
 
 		// After the quarter turn the breadth is what stands up, so which half
 		// extent clears the ground depends on which way the panel is laid.
-		float clear = panel.Plan.Upright ? half.z : half.y;
+		float clear = plan.Upright ? half.z : half.y;
 
 		float ground = m_World.GroundHeightBelow(
-			glm::vec3(at.x, m_Camera.GetPosition().y, at.z), m_Walker,
+			glm::vec3(ahead.x, m_Camera.GetPosition().y, ahead.z), m_Walker,
 			-1000.0f);
 
-		panel.At = glm::vec3(at.x, ground + clear, at.z);
+		at = glm::vec3(ahead.x, ground + clear, ahead.z);
+	}
+
+	void PlacePanel()
+	{
+		int next = NextPanel();
+
+		if (next < 0)
+			return;
+
+		Panel& panel = m_Panels[(size_t)next];
+
+		glm::vec3 half = PanelHalf(panel.Plan);
+
+		PanelStance(panel.Plan, panel.At, panel.Yaw);
+
 		panel.Placed = true;
 
 		Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(panel.At, half,
@@ -4220,6 +4238,76 @@ private:
 
 	void DrawPanels();
 	void DrawPrefabEditor();
+
+	// --- In-game UI -----------------------------------------------------------
+	//
+	// **A menu the character opens, not a panel the developer reads.**
+	//
+	// The editor lived in the demo's docked column, next to the terrain
+	// sliders and the profiler, which made designing a floor panel a thing you
+	// did in the *tool* rather than in the workshop. It is the same widgets;
+	// what changed is that it belongs to the crafting table now. Walk up to
+	// the bench, press `T`, and it opens over the view; walk away and it
+	// closes behind you.
+	//
+	// **`C` and `B` stay keys, and that is not laziness.** Input is polled per
+	// fixed step and recorded; an ImGui click is neither, so a session that
+	// built something from a button could never play itself back. What the
+	// editor *draws* is safe either way, because the design is registered
+	// parameters -- so the plan replays whatever the mouse did to it, and only
+	// the moment of committing it has to be a key.
+	bool AtCraftTable() const
+	{
+		return glm::length(m_Camera.GetPosition() - CraftTable())
+			<= s_TableReach;
+	}
+
+	void OpenBench()
+	{
+		if (m_Bench)
+			return;
+
+		m_Bench = true;
+
+		// The pointer has to come back to you to use a menu, and has to go
+		// away again afterwards -- so what it was doing before is remembered
+		// rather than assumed.
+		m_LookBefore = m_MouseLook;
+
+		SetMouseLook(false);
+	}
+
+	void CloseBench()
+	{
+		if (!m_Bench)
+			return;
+
+		m_Bench = false;
+
+		if (m_LookBefore)
+			SetMouseLook(true);
+	}
+
+	// Where the demo owns the screen, in ImGui's coordinates. `g_Viewport` is
+	// in GL's, whose origin is the other corner.
+	static void ViewportBox(ImVec2& at, ImVec2& size)
+	{
+		ImVec2 display = ImGui::GetIO().DisplaySize;
+
+		if (!g_Viewport.Valid())
+		{
+			at = ImVec2(0.0f, 0.0f);
+			size = display;
+			return;
+		}
+
+		size = ImVec2((float)g_Viewport.Width, (float)g_Viewport.Height);
+		at = ImVec2((float)g_Viewport.X,
+			display.y - (float)g_Viewport.Y - size.y);
+	}
+
+	void DrawBench();
+	void DrawHud();
 
 	// --- The portal and the toolshed ------------------------------------------
 	//
@@ -4812,6 +4900,28 @@ private:
 
 		m_WasPlace = place;
 
+		// **The bench opens at the bench and closes when you leave it.** A
+		// menu you can carry across the map is a developer panel with a key
+		// bound to it, which is the thing this replaced.
+		bool bench = Egss::Input::IsKeyPressed(EGSS_KEY_Q);
+
+		if (bench && !m_WasBench)
+		{
+			if (m_Bench)
+				CloseBench();
+			else if (AtCraftTable())
+				OpenBench();
+		}
+
+		m_WasBench = bench;
+
+		if (m_Bench && !AtCraftTable())
+			CloseBench();
+
+		// The refusal fades rather than latching, so it reads as a reply to
+		// the press that caused it.
+		m_TooHeavy = glm::max(m_TooHeavy - (float)step, 0.0f);
+
 		CarryTimber();
 
 		AimAxe();
@@ -4922,6 +5032,11 @@ private:
 	void DrawBox(const glm::vec3& at, const glm::vec3& half, float yaw,
 		const glm::vec3& colour);
 
+	void DrawOutline(const glm::mat4& frame, const glm::vec3& half,
+		float thick, const glm::vec3& colour);
+
+	void DrawPanelGhost();
+
 	void SetMouseLook(bool on)
 	{
 		m_MouseLook = on;
@@ -5020,6 +5135,11 @@ private:
 
 	bool m_WasCraft = false;
 	bool m_WasPlace = false;
+	bool m_WasBench = false;
+
+	// The workbench menu, and what the pointer was doing before it opened.
+	bool m_Bench = false;
+	bool m_LookBefore = false;
 
 	static constexpr int s_TreeShapes = 6;
 
@@ -7195,6 +7315,11 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 	// The workshop, which is a building on the map like anything else.
 	DrawShed();
 
+	// Where the next panel would land. Only in the main pass: an outline is
+	// an aid for the person holding the panel, not part of the world.
+	if (pass == Pass::Main)
+		DrawPanelGhost();
+
 	// **The picture in the doorway.**
 	//
 	// The panel between the posts used to be a flat dark board, and it said so
@@ -7382,30 +7507,183 @@ inline void TerrainLab::DrawPanels()
 // The bill is the part worth having on screen. It is the only place the whole
 // pipeline shows as one figure: twenty-six boards is two and a half logs is
 // most of a tree.
+// **The workbench, as a menu the character opens.**
+//
+// Styled away from the editor deliberately: the demo panel is grey and square
+// because it is a tool, and this one is a board on a wall in a workshop. Same
+// widgets underneath -- what makes it a different thing is where it is, when it
+// appears, and that it goes away when you walk off.
+inline void TerrainLab::DrawBench()
+{
+	if (!m_Bench)
+		return;
+
+	ImVec2 at, size;
+	ViewportBox(at, size);
+
+	// A panel a third of the way in, tall enough for the plan and the bill
+	// without either scrolling. Clamped, because the viewport is whatever the
+	// docking layout left the demo and can be short.
+	ImVec2 want(glm::clamp(size.x * 0.42f, 340.0f, 460.0f),
+		glm::min(size.y - 40.0f, 620.0f));
+
+	ImGui::SetNextWindowPos(ImVec2(at.x + 24.0f,
+		at.y + 0.5f * (size.y - want.y)), ImGuiCond_Always);
+
+	ImGui::SetNextWindowSize(want, ImGuiCond_Always);
+
+	// Not dockable: this belongs over the view, and a menu that can be
+	// dragged into the editor's tab bar is the panel it replaced.
+	ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar
+		| ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove
+		| ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking
+		| ImGuiWindowFlags_NoSavedSettings;
+
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 3.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 14.0f));
+	ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
+
+	ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(30, 25, 20, 244));
+	ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(120, 92, 56, 255));
+	ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(232, 214, 184, 255));
+	ImGui::PushStyleColor(ImGuiCol_TextDisabled, IM_COL32(150, 130, 104, 255));
+	ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(52, 42, 32, 255));
+	ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(70, 56, 40, 255));
+	ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(86, 68, 46, 255));
+	ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(74, 58, 40, 255));
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(102, 80, 52, 255));
+	ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(130, 102, 64, 255));
+	ImGui::PushStyleColor(ImGuiCol_SliderGrab, IM_COL32(158, 124, 76, 255));
+	ImGui::PushStyleColor(ImGuiCol_SliderGrabActive,
+		IM_COL32(196, 158, 100, 255));
+	ImGui::PushStyleColor(ImGuiCol_CheckMark, IM_COL32(212, 172, 108, 255));
+	ImGui::PushStyleColor(ImGuiCol_Separator, IM_COL32(96, 74, 48, 255));
+
+	ImGui::Begin("##workbench", nullptr, flags);
+
+	// A title bar drawn rather than used, so it reads as a sign over a bench
+	// rather than as a window somebody can drag away.
+	ImDrawList* draw = ImGui::GetWindowDrawList();
+
+	ImVec2 corner = ImGui::GetWindowPos();
+	float width = ImGui::GetWindowSize().x;
+
+	draw->AddRectFilled(corner, ImVec2(corner.x + width, corner.y + 34.0f),
+		IM_COL32(58, 44, 30, 255), 3.0f, ImDrawFlags_RoundCornersTop);
+
+	draw->AddLine(ImVec2(corner.x, corner.y + 34.0f),
+		ImVec2(corner.x + width, corner.y + 34.0f),
+		IM_COL32(120, 92, 56, 255), 2.0f);
+
+	ImGui::SetCursorPosY(9.0f);
+	ImGui::TextUnformatted("  THE CRAFTING TABLE");
+	ImGui::SetCursorPosY(44.0f);
+
+	ImGui::Separator();
+
+	DrawPrefabEditor();
+
+	ImGui::Separator();
+	ImGui::TextDisabled("Q or step away to close");
+
+	ImGui::End();
+
+	ImGui::PopStyleColor(14);
+	ImGui::PopStyleVar(5);
+}
+
+// **What you can do where you are standing.**
+//
+// One line at the foot of the view, and nothing when there is nothing to say.
+// A prompt is the only honest way to make a key discoverable: this demo has
+// nine of them and they were all in a paragraph of grey text in the developer
+// panel, which is a place a player never looks.
+inline void TerrainLab::DrawHud()
+{
+	ImVec2 at, size;
+	ViewportBox(at, size);
+
+	std::vector<std::string> lines;
+
+	if (Carrying())
+	{
+		char held[96];
+
+		std::snprintf(held, sizeof(held), "Carrying %d, %.0f kg%s   [R] put down",
+			(int)m_Carry.size(), CarriedMass(),
+			LoadFactor() < 0.999f ? " -- heavy" : "");
+
+		lines.push_back(held);
+	}
+
+	if (m_TooHeavy > 0.0f)
+		lines.push_back("Too heavy to lift -- rive it with the axe");
+
+	if (AtCraftTable() && !m_Bench)
+		lines.push_back("[Q] the crafting table");
+
+	if (Carrying() && CarriedOf(Flotsam::Log) >= 0
+		&& glm::length(m_Camera.GetPosition() - SawBench()) <= 3.0f)
+		lines.push_back("[T] saw the log into boards");
+
+	if (NextPanel() >= 0)
+		lines.push_back("[B] put the panel down where the outline is");
+
+	if (lines.empty())
+		return;
+
+	ImGui::SetNextWindowPos(ImVec2(at.x + 0.5f * size.x, at.y + size.y - 26.0f),
+		ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+
+	ImGui::SetNextWindowBgAlpha(0.55f);
+
+	ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar
+		| ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove
+		| ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings
+		| ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize
+		| ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav
+		| ImGuiWindowFlags_NoInputs;
+
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 8.0f));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 3.0f);
+	ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(18, 15, 12, 210));
+	ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(236, 220, 190, 255));
+
+	ImGui::Begin("##prompts", nullptr, flags);
+
+	for (size_t i = 0; i < lines.size(); i++)
+	{
+		if (i == 0 && m_TooHeavy <= 0.0f)
+			ImGui::TextUnformatted(lines[i].c_str());
+		else if (lines[i][0] == 'T')
+			ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.35f, 1.0f), "%s",
+				lines[i].c_str());
+		else
+			ImGui::TextUnformatted(lines[i].c_str());
+	}
+
+	ImGui::End();
+
+	ImGui::PopStyleColor(2);
+	ImGui::PopStyleVar(2);
+}
+
 inline void TerrainLab::DrawPrefabEditor()
 {
-	float reach = glm::length(m_Camera.GetPosition() - CraftTable());
-
 	int stock = Stockpile();
 	int cost = PanelCost(m_Draft);
 
 	glm::vec2 span = PanelSpan(m_Draft);
 
-	ImGui::Text("Prefabs: %d built, %d placed", m_Built, m_Placed);
-
-	if (reach > s_TableReach)
-		ImGui::TextDisabled("  draw anywhere; build at the table in the shed");
+	ImGui::Text("%d built, %d put down", m_Built, m_Placed);
 
 	ImGui::InputText("Name", m_Draft.Name, sizeof(m_Draft.Name));
 
 	// --- The bill -------------------------------------------------------------
 	//
-	// **Above the canvas, because the pane is shorter than both.** The demo
-	// panel is a docked column about 430 px high and the plan view wants most
-	// of that; something had to be below the fold. The numbers are what you
-	// check while drawing, so the drawing is what scrolls -- and anyone
-	// working in here for real drags the panel taller, which is what docking
-	// is for.
+	// Above the canvas, because the numbers are what you check while drawing.
 
 	ImGui::Checkbox("Stand it up (wall)", &m_Draft.Upright);
 
@@ -7425,10 +7703,15 @@ inline void TerrainLab::DrawPrefabEditor()
 
 	ImGui::Text("Stock at the table: %d of %d", stock, cost);
 
-	if (reach <= s_TableReach && stock >= cost && cost > 0)
-		ImGui::Text("C builds it, B puts it down where you look");
-	else if (reach <= s_TableReach && cost > 0)
-		ImGui::TextDisabled("  carry %d more boards to the table", cost - stock);
+	if (stock >= cost && cost > 0)
+		ImGui::Text("[C] cut it -- then [B] puts it down where you look");
+	else if (cost > 0)
+		ImGui::TextDisabled("  carry %d more boards to the pile", cost - stock);
+
+	// **Why this is a key and the buttons below are not.** Input is polled per
+	// fixed step and goes into the recording; an ImGui click does neither. The
+	// design itself is registered parameters, so what the mouse draws replays
+	// -- only the moment of committing it has to be a key.
 
 	// --- The canvas ---------------------------------------------------------
 
@@ -7441,9 +7724,8 @@ inline void TerrainLab::DrawPrefabEditor()
 
 	ImVec2 origin = ImGui::GetCursorScreenPos();
 
-	// Capped, because the panel is a docked column and a canvas that takes all
-	// of it pushes the bill -- the thing worth reading -- below the fold.
-	float width = glm::clamp(ImGui::GetContentRegionAvail().x, 120.0f, 200.0f);
+	// Capped, so the templates and the saved designs below it stay on screen.
+	float width = glm::clamp(ImGui::GetContentRegionAvail().x, 140.0f, 240.0f);
 
 	float cell = width / (float)s_GridCells;
 
@@ -7582,6 +7864,75 @@ inline void TerrainLab::DrawPrefabEditor()
 
 		ImGui::PopID();
 	}
+}
+
+// **Twelve bars round a box, in the box's own frame.**
+//
+// A wireframe would be one draw and no mesh, and the renderer here has no line
+// mode -- so the edges are boxes. Four along each axis, at the four corners of
+// the other two, and each one overshoots by its own thickness so the corners
+// close rather than showing a notch.
+inline void TerrainLab::DrawOutline(const glm::mat4& frame,
+	const glm::vec3& half, float thick, const glm::vec3& colour)
+{
+	m_TreeMaterial->Set("u_Color", colour);
+
+	for (int axis = 0; axis < 3; axis++)
+	for (int a = 0; a < 2; a++)
+	for (int b = 0; b < 2; b++)
+	{
+		int i = (axis + 1) % 3, j = (axis + 2) % 3;
+
+		glm::vec3 at(0.0f);
+		at[i] = (a ? 1.0f : -1.0f) * half[i];
+		at[j] = (b ? 1.0f : -1.0f) * half[j];
+
+		glm::vec3 size(thick);
+		size[axis] = half[axis] + thick;
+
+		Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+			frame * glm::translate(glm::mat4(1.0f), at)
+				* glm::scale(glm::mat4(1.0f), size));
+	}
+}
+
+// **Where the next panel would land.**
+//
+// Placing one was guesswork -- press the key and find out where it went. The
+// outline is the same `PanelStance` the press uses, so what is drawn is not a
+// prediction of the placement; it *is* the placement, drawn a moment early.
+//
+// Lit flat rather than shaded: an outline is a mark on the view and a mark
+// that goes dark on the shaded side of a hill is a mark you cannot follow.
+// Sun off, sky white, bounce at one -- which makes `dome` exactly one and the
+// colour exactly what is asked for.
+inline void TerrainLab::DrawPanelGhost()
+{
+	int next = NextPanel();
+
+	if (next < 0 || !m_Cube)
+		return;
+
+	Panel ghost;
+	ghost.Plan = m_Panels[(size_t)next].Plan;
+
+	PanelStance(ghost.Plan, ghost.At, ghost.Yaw);
+
+	m_TreeMaterial->Set("u_SunColor", glm::vec3(0.0f));
+	m_TreeMaterial->Set("u_SkyColor", glm::vec3(1.0f));
+	m_TreeMaterial->Set("u_SunDirection", glm::vec3(0.0f, -1.0f, 0.0f));
+	m_TreeMaterial->Set("u_Ambient", 1.0f);
+	m_TreeMaterial->Set("u_Bounce", 1.0f);
+	m_TreeMaterial->Set("u_Through", 0.0f);
+	m_TreeMaterial->Set("u_Compliance", 0.0f);
+	m_TreeMaterial->Set("u_MaxLean", 0.0f);
+	m_TreeMaterial->Set("u_CutRadius", 0.0f);
+	m_TreeMaterial->Set("u_CutDepth", 0.0f);
+	m_TreeMaterial->Set("u_CutPart", 0.0f);
+	m_TreeMaterial->Set("u_AimY", 1.0e9f);
+
+	DrawOutline(PanelFrame(ghost), PanelHalf(ghost.Plan), 0.022f,
+		glm::vec3(0.95f, 0.78f, 0.30f));
 }
 
 inline void TerrainLab::DrawBox(const glm::vec3& at, const glm::vec3& half,
@@ -7946,6 +8297,13 @@ inline void TerrainLab::DrawPortalView()
 
 inline void TerrainLab::OnDemoImGui()
 {
+	// **The game's own UI first, and outside the demo panel.** These two draw
+	// over the view rather than into the docked column, so they have to be
+	// begun before it -- a window opened inside another window's scope is that
+	// window's child, which is exactly the mistake this is undoing.
+	DrawHud();
+	DrawBench();
+
 	ImGui::Begin("Terrain lab");
 
 	ImGui::Text("%.2f ms  |  %d ground tris, %d grass tris, %d trees",
@@ -7957,14 +8315,11 @@ inline void TerrainLab::OnDemoImGui()
 	ImGui::TextDisabled("Tab mouse look, WASD walk, LMB dig, RMB add, V noclip");
 
 	// --- Developer tools ---------------------------------------------------
-
-	// **First in the panel, and its own section.** It lived at the bottom of
-	// "Dev tools" behind four other subsystems, and the panel is a docked
-	// column half the window high -- so it was below the fold and might as
-	// well not have been there. An editor is a place you work, not a readout,
-	// and it goes where the thing being worked on goes.
-	if (ImGui::CollapsingHeader("Prefab editor", ImGuiTreeNodeFlags_DefaultOpen))
-		DrawPrefabEditor();
+	//
+	// **The prefab editor is not here any more.** It was first in this panel
+	// and it was in the wrong place: designing a floor panel next to the
+	// terrain sliders and the profiler makes it a thing you do in the tool
+	// rather than in the workshop. It opens at the crafting table now.
 
 	if (ImGui::CollapsingHeader("Dev tools", ImGuiTreeNodeFlags_DefaultOpen))
 	{
@@ -7989,10 +8344,13 @@ inline void TerrainLab::OnDemoImGui()
 		ImGui::Separator();
 		ImGui::Text("Timber: %d logs, %d boards", CountTimber(Flotsam::Log),
 			CountTimber(Flotsam::Plank));
-		ImGui::TextDisabled("  swing at a felled top to buck it into logs;");
-		ImGui::TextDisabled("  R takes an armful and puts it down, so a stack");
-		ImGui::TextDisabled("  is wherever you carried them to; T at the saw");
-		ImGui::TextDisabled("  bench in the shed rips a log into boards");
+		ImGui::TextDisabled("  swing at a felled top to buck it into logs,");
+		ImGui::TextDisabled("  and at a log too heavy to lift to rive it;");
+		ImGui::TextDisabled("  R takes an armful and puts it down, and put");
+		ImGui::TextDisabled("  down at a pile means stacked on it; T at the");
+		ImGui::TextDisabled("  saw bench rips a log onto the mill pile");
+		ImGui::Text("Piles: %d at the mill, %d at the table",
+			PileCount(Pile::Mill), PileCount(Pile::Stock));
 
 		if (Carrying())
 		{
@@ -8006,9 +8364,11 @@ inline void TerrainLab::OnDemoImGui()
 		}
 		else
 		{
-			ImGui::TextDisabled("  an armful is %.0f kg, six rough 2x4s; a log",
+			ImGui::TextDisabled("  an armful is %.0f kg, six rough 2x4s; one",
 				CarryLimit());
-			ImGui::TextDisabled("  is 113 kg and goes on one shoulder, slowly");
+			ImGui::TextDisabled("  piece up to %.0f kg goes on a shoulder,",
+				LiftLimit());
+			ImGui::TextDisabled("  slowly, and past that the answer is the axe");
 		}
 		ImGui::Text("%d logs bucked, %d riven, %d boards sawn", m_Bucked,
 			m_Riven, m_Milled);
