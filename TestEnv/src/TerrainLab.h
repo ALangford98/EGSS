@@ -4222,6 +4222,30 @@ private:
 		return -1;
 	}
 
+	// The height of one course: a board on its face. Everything vertical in a
+	// design is a whole number of these.
+	float LayerHeight() const { return BoardThick(); }
+
+	// **The panel's half extents in the world**, which is its own box turned
+	// by whatever `Upright` and a right-angle yaw do to it. Only right angles,
+	// because that is all placement produces -- see `PanelStance`.
+	glm::vec3 PanelWorldHalf(const Design& plan, float yaw) const
+	{
+		glm::vec3 half = PanelHalf(plan);
+
+		// `PanelTurn` follows the yaw with -90 degrees about x, which takes
+		// local +z to world +y and local +y to world -z. So the breadth is
+		// what stands up and the thickness lies across.
+		if (plan.Upright)
+			half = glm::vec3(half.x, half.z, half.y);
+
+		float quarter = glm::half_pi<float>();
+
+		// An odd quarter turn swaps x and z; an even one leaves them.
+		return ((int)std::llround(yaw / quarter) & 1) != 0
+			? glm::vec3(half.z, half.y, half.x) : half;
+	}
+
 	// **Where it would land, worked out once and used twice.**
 	//
 	// Placing a panel was guesswork: you pressed the key and found out. The
@@ -4229,34 +4253,72 @@ private:
 	// puts it, and the only way to be sure of that is for the two to be the
 	// same function -- a preview computed alongside the placement is a preview
 	// that drifts out of step with it the first time either is touched.
+	//
+	// **And it lands on a lattice, so pieces butt instead of nearly butting.**
+	// It used to be three metres ahead at whatever heading you happened to be
+	// facing. Two walls put down side by side were never quite in line and
+	// never quite touching, and there was no way to make them: the odds of
+	// hitting the same heading twice with a mouse are nil.
+	//
+	// Three snaps, and each earns its place.
+	//
+	//   * **The heading, to a right angle.** Anything else and two pieces meet
+	//     at a wedge, which no amount of position snapping closes. It also
+	//     makes every placed panel axis-aligned, and that is what lets
+	//     `GroundHeightBelow` -- an *AABB* query -- report a panel's top
+	//     exactly rather than "slightly high", which is what stacking needs.
+	//
+	//   * **The lower corner, to the cell.** Not the centre: a design an odd
+	//     number of cells across has its centre on a half cell, so snapping
+	//     centres puts odd and even pieces on two different lattices and they
+	//     never meet.
+	//
+	//   * **The base, to a course.** And the base is whatever is under the
+	//     aim, ground or the top of a panel already standing there -- which is
+	//     the whole of what makes a second course sit on the first.
+	static constexpr float s_PlaceReach = 6.0f;
+
 	void PanelStance(const Design& plan, glm::vec3& at, float& yaw) const
 	{
+		glm::vec3 eye = m_Camera.GetPosition();
 		glm::vec3 forward = m_Camera.GetForward();
 
-		forward.y = 0.0f;
+		// Where you are actually looking, or as far out as the reach goes if
+		// there is nothing there.
+		float range = Clearance(eye, forward, s_PlaceReach);
 
-		if (glm::length(forward) < 1e-4f)
-			forward = glm::vec3(0.0f, 0.0f, 1.0f);
+		glm::vec3 aim = eye + forward * glm::max(range - 0.05f, 0.6f);
 
-		forward = glm::normalize(forward);
+		glm::vec3 flat = forward;
+		flat.y = 0.0f;
 
-		glm::vec3 ahead = m_Camera.GetPosition() + forward * 3.0f;
+		if (glm::length(flat) < 1e-4f)
+			flat = glm::vec3(0.0f, 0.0f, 1.0f);
 
-		// The panel's length runs across the view rather than away down it, so
-		// a wall faces you and a floor lies where you were looking.
-		yaw = std::atan2(forward.x, forward.z);
+		flat = glm::normalize(flat);
 
-		glm::vec3 half = PanelHalf(plan);
+		float quarter = glm::half_pi<float>();
 
-		// After the quarter turn the breadth is what stands up, so which half
-		// extent clears the ground depends on which way the panel is laid.
-		float clear = plan.Upright ? half.z : half.y;
+		yaw = std::round(std::atan2(flat.x, flat.z) / quarter) * quarter;
 
-		float ground = m_World.GroundHeightBelow(
-			glm::vec3(ahead.x, m_Camera.GetPosition().y, ahead.z), m_Walker,
-			-1000.0f);
+		glm::vec3 half = PanelWorldHalf(plan, yaw);
 
-		at = glm::vec3(ahead.x, ground + clear, ahead.z);
+		glm::vec3 corner = aim - half;
+
+		corner.x = std::round(corner.x / Cell()) * Cell();
+		corner.z = std::round(corner.z / Cell()) * Cell();
+
+		// Asked a little above the aim rather than at the eye. At the eye, a
+		// wall taller than you puts the query point *inside* it and the top it
+		// is meant to find is above the query rather than below it -- so a
+		// second course would be laid on the ground beside the first.
+		float base = m_World.GroundHeightBelow(
+			glm::vec3(corner.x + half.x, aim.y + 0.05f, corner.z + half.z),
+			m_Walker, -1000.0f);
+
+		base = std::round(base / LayerHeight()) * LayerHeight();
+
+		at = glm::vec3(corner.x + half.x, base + half.y, corner.z + half.z);
 	}
 
 	void PlacePanel()
