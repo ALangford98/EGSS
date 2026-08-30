@@ -31,6 +31,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <cstring>
 #include <map>
 
 #include "Demo.h"
@@ -46,6 +47,27 @@ public:
 	{
 		RegisterParam("Walk speed", &m_WalkSpeed);
 		RegisterParam("Dig radius", &m_DigRadius);
+
+		// The two designs to start from, and the knobs that shape them. These
+		// are registered because the design decides what `C` consumes and what
+		// `B` puts in the world -- an unregistered slider here would make a
+		// recorded building session replay as a different building.
+		Design wallPanel;
+		std::strncpy(wallPanel.Name, "Wall panel", sizeof(wallPanel.Name) - 1);
+		wallPanel.Across = 20;
+		wallPanel.Upright = true;
+
+		m_Designs.push_back(m_Draft);
+		m_Designs.push_back(wallPanel);
+
+		// **The draft is a member and the saved designs are a list**, rather
+		// than the draft being an index into the list. A registered parameter
+		// is a raw pointer held for the life of the demo, and a pointer into a
+		// vector that can be appended to is a pointer that stops being valid
+		// the first time somebody saves a seventh design.
+		RegisterParam("Panel across", &m_Draft.Across);
+		RegisterParam("Panel courses", &m_Draft.Courses);
+		RegisterParam("Panel upright", &m_Draft.Upright);
 
 		// **Opens on a gradient, not on one biome nine times.** The demo is
 		// for looking at boundaries, so the default grid runs wet to dry
@@ -2004,7 +2026,7 @@ private:
 	{
 		m_Loose.clear();
 		m_Stacked = 0;
-		m_Carried = -1;
+		m_Carry.clear();
 
 		unsigned int seed = 20261u;
 
@@ -2654,25 +2676,100 @@ private:
 		return true;
 	}
 
-	// **Carrying is one slot.** You have two hands and one of them is holding
-	// an axe. A carried thing is kinematic and parked in front of the eye, so
-	// it neither falls nor pushes you about while you walk.
+	// --- Carrying -------------------------------------------------------------
+	//
+	// **Capacity is a mass, not a number of items.**
+	//
+	// One board at a time was honest and unusable: a 26-board floor panel is 26
+	// walks across the shed. An armful is what a person actually does, and the
+	// question "how big an armful" has one right answer -- as much as you can
+	// lift -- which is a mass.
+	//
+	// It is a mass rather than a count for a second reason. When characters
+	// have attributes, strength has to land somewhere, and a kilogram budget is
+	// somewhere it can land without anything else being told: scale
+	// `s_Strength` and the armful, the pace penalty and the panel all follow.
+	// A count would have had to be re-derived per item type by hand.
+	//
+	// 40 kg is six rough 2x4s. That is a heavy but real armful of timber, and
+	// it is deliberately not enough for a 113 kg log -- see `LoadFactor`.
+	static constexpr float s_Strength = 1.0f;
+	static constexpr float s_CarryPerStrength = 40.0f;
+
+	// How far from the first piece the rest of an armful can be gathered. A
+	// pile is about a metre across; reaching further would be picking timber
+	// off the floor of the whole room in one press.
+	static constexpr float s_ArmSpread = 1.6f;
+
+	float CarryLimit() const { return s_Strength * s_CarryPerStrength; }
+
+	bool Carrying() const { return !m_Carry.empty(); }
+
+	float CarriedMass() const
+	{
+		float total = 0.0f;
+
+		for (int slot : m_Carry)
+			total += m_World.GetBody(m_Loose[(size_t)slot].Body).GetMass();
+
+		return total;
+	}
+
+	// **One object is a lift you either make or you do not, and you make it.**
+	// A 2.5 m log is 113 kg, which is over the budget and over what one person
+	// should shoulder -- but refusing it would take away something that already
+	// works, and a struggle reads better than a refusal. So the first piece is
+	// always allowed and being over the budget costs pace instead. This is the
+	// other thing the strength attribute will pull on.
+	float LoadFactor() const
+	{
+		float over = CarriedMass() / CarryLimit() - 1.0f;
+
+		return 1.0f - 0.45f * glm::clamp(over, 0.0f, 1.0f);
+	}
+
+	// Put one piece down without dropping the rest of the armful.
+	void Release(int slot)
+	{
+		for (size_t i = 0; i < m_Carry.size(); i++)
+			if (m_Carry[i] == slot)
+			{
+				m_Carry.erase(m_Carry.begin() + (long)i);
+				break;
+			}
+
+		Loose& held = m_Loose[(size_t)slot];
+
+		held.Carried = false;
+
+		Egss::RigidBody3D& body = m_World.GetBody(held.Body);
+
+		body.Type = Egss::BodyType::Dynamic;
+		body.Velocity = glm::vec3(0.0f);
+		body.AngularVelocity = glm::vec3(0.0f);
+		body.Awake = true;
+	}
+
+	// The first carried piece of a kind, which is what the bench mills.
+	int CarriedOf(Flotsam kind) const
+	{
+		for (int slot : m_Carry)
+			if (m_Loose[(size_t)slot].Kind == kind)
+				return slot;
+
+		return -1;
+	}
+
+	// **One press takes an armful.** Whatever you are looking at, plus every
+	// piece of the same kind within reach of it that still fits the budget,
+	// nearest first. Carried pieces are kinematic and parked in front of the
+	// eye, so they neither fall nor shove you about while you walk.
 	void ToggleCarry()
 	{
-		if (m_Carried >= 0)
+		if (Carrying())
 		{
-			Loose& held = m_Loose[(size_t)m_Carried];
-
-			held.Carried = false;
-
-			Egss::RigidBody3D& body = m_World.GetBody(held.Body);
-
-			body.Type = Egss::BodyType::Dynamic;
-			body.Velocity = glm::vec3(0.0f);
-			body.AngularVelocity = glm::vec3(0.0f);
-			body.Awake = true;
-
-			m_Carried = -1;
+			while (!m_Carry.empty())
+				Release(m_Carry.back());
 
 			return;
 		}
@@ -2709,54 +2806,110 @@ private:
 		if (best < 0)
 			return;
 
-		m_Carried = best;
+		Take(best);
 
-		m_Loose[(size_t)best].Carried = true;
+		// The rest of the armful, nearest to the first piece outwards, while
+		// there is budget left. Same kind only: an armful of boards with a log
+		// balanced on it is not a thing anybody does.
+		glm::vec3 pile = m_World.GetBody(m_Loose[(size_t)best].Body).Position;
 
-		Egss::RigidBody3D& body = m_World.GetBody(m_Loose[(size_t)best].Body);
+		Flotsam kind = m_Loose[(size_t)best].Kind;
+
+		for (;;)
+		{
+			int add = -1;
+			float closest = s_ArmSpread;
+
+			for (size_t i = 0; i < m_Loose.size(); i++)
+			{
+				const Loose& loose = m_Loose[i];
+
+				if (loose.Carried || loose.Kind != kind)
+					continue;
+
+				float range = glm::length(
+					m_World.GetBody(loose.Body).Position - pile);
+
+				if (range > closest)
+					continue;
+
+				closest = range;
+				add = (int)i;
+			}
+
+			if (add < 0)
+				break;
+
+			if (CarriedMass()
+				+ m_World.GetBody(m_Loose[(size_t)add].Body).GetMass()
+				> CarryLimit())
+				break;
+
+			Take(add);
+		}
+	}
+
+	void Take(int slot)
+	{
+		m_Carry.push_back(slot);
+
+		m_Loose[(size_t)slot].Carried = true;
+
+		Egss::RigidBody3D& body = m_World.GetBody(m_Loose[(size_t)slot].Body);
 
 		body.Type = Egss::BodyType::Kinematic;
 		body.Velocity = glm::vec3(0.0f);
 		body.AngularVelocity = glm::vec3(0.0f);
 	}
 
-	// Held out in front, turned to lie across the view the way anyone carries
-	// a length of timber.
+	// Held out in front, turned to lie across the view the way anyone carries a
+	// length of timber, and stacked upwards so an armful reads as a stack
+	// rather than as one board with the rest hidden inside it.
 	void CarryTimber()
 	{
-		if (m_Carried < 0 || m_Carried >= (int)m_Loose.size())
-			return;
-
-		const Loose& held = m_Loose[(size_t)m_Carried];
-
-		Egss::RigidBody3D& body = m_World.GetBody(held.Body);
-
 		glm::vec3 forward = m_Camera.GetForward();
 		glm::vec3 right = m_Camera.GetRight();
 
-		body.Position = m_Camera.GetPosition() + forward * 1.5f
-			- glm::vec3(0.0f, 0.35f, 0.0f);
+		float yaw = std::atan2(right.x, right.z) - glm::half_pi<float>();
 
-		body.Orientation = glm::angleAxis(
-			std::atan2(right.x, right.z) - glm::half_pi<float>(),
-			glm::vec3(0.0f, 1.0f, 0.0f));
+		float lift = 0.0f;
 
-		body.Velocity = glm::vec3(0.0f);
-		body.AngularVelocity = glm::vec3(0.0f);
+		for (int slot : m_Carry)
+		{
+			if (slot < 0 || slot >= (int)m_Loose.size())
+				continue;
 
-		body.UpdateInertiaWorld();
+			const Loose& held = m_Loose[(size_t)slot];
+
+			Egss::RigidBody3D& body = m_World.GetBody(held.Body);
+
+			// Carried low enough that a full armful tops out below the sight
+			// line: six boards stack 0.32 m, and starting at the old 0.35 m
+			// put the top one across the middle of the screen.
+			body.Position = m_Camera.GetPosition() + forward * 1.6f
+				- glm::vec3(0.0f, 0.62f - lift, 0.0f);
+
+			body.Orientation = glm::angleAxis(yaw,
+				glm::vec3(0.0f, 1.0f, 0.0f));
+
+			body.Velocity = glm::vec3(0.0f);
+			body.AngularVelocity = glm::vec3(0.0f);
+
+			body.UpdateInertiaWorld();
+
+			lift += 2.1f * held.Half.y;
+		}
 	}
 
 	// **The bench turns one log into boards, and the count is arithmetic.**
 	void MillLog()
 	{
-		if (m_Carried < 0)
+		int slot = CarriedOf(Flotsam::Log);
+
+		if (slot < 0)
 			return;
 
-		Loose& held = m_Loose[(size_t)m_Carried];
-
-		if (held.Kind != Flotsam::Log)
-			return;
+		Loose& held = m_Loose[(size_t)slot];
 
 		const Egss::RigidBody3D& body = m_World.GetBody(held.Body);
 
@@ -2767,8 +2920,9 @@ private:
 
 		glm::vec3 stack = SawBench() + glm::vec3(0.0f, 0.35f, 0.0f);
 
-		// Drop the log first, so the slot it was in is free to be a board.
-		ToggleCarry();
+		// Put down the log and nothing else: the rest of the armful stays in
+		// your hands, and the slot it was in becomes the first board.
+		Release(slot);
 
 		held.Kind = Flotsam::Plank;
 		held.Half = glm::vec3(s_BoardHalf[0], s_BoardHalf[1], s_BoardHalf[2]);
@@ -2794,6 +2948,311 @@ private:
 
 		m_Milled += boards;
 	}
+
+	// --- Prefabs --------------------------------------------------------------
+	//
+	// **A panel is boards on ledgers, and the bill of materials is arithmetic.**
+	//
+	// A design is a rectangle measured in boards: `Across` of them laid edge to
+	// edge, `Courses` of them end to end. Lay that rectangle down and it is a
+	// floor; stand it on edge and it is a wall. Nothing else changes, which is
+	// why there is one design type and not two.
+	//
+	// What makes it a *panel* rather than a pile of boards is the ledgers --
+	// two across the back of each course. They are boards too, cut to the
+	// panel's width, so a narrow panel gets several of them out of one board
+	// while a wide one needs a whole board for each. That is the reason to
+	// compute the bill rather than to name a number: it depends on the shape,
+	// and the offcut means the panel weighs less than the wood it cost.
+	static constexpr int s_MaxDesigns = 6;
+	static constexpr int s_PanelPool = 32;
+
+	// Reach at the table, and how far from it a board still counts as being in
+	// the pile. The stock radius is deliberately shorter than the shed: the saw
+	// bench is 6.2 m from the crafting table, so boards have to be *carried*
+	// across the room rather than counted where they fell.
+	static constexpr float s_TableReach = 3.0f;
+	static constexpr float s_StockRadius = 2.5f;
+
+	struct Design
+	{
+		char Name[24] = "Floor panel";
+		int Across = 24;
+		int Courses = 1;
+		bool Upright = false;
+	};
+
+	struct Panel
+	{
+		Design Plan;
+		Egss::PhysicsWorld3D::BodyHandle Body = 0;
+		glm::vec3 At = glm::vec3(0.0f);
+		float Yaw = 0.0f;
+		bool Placed = false;
+
+		// **Which room it is in.** The shed is a real place in the world, 400 m
+		// up, and everything else in it is drawn only while you are there. A
+		// panel that ignored the distinction hung in the sky over the map --
+		// which is exactly what it looks like from outside.
+		bool InShed = false;
+	};
+
+	float BoardLength() const { return 2.0f * s_BoardHalf[0]; }
+	float BoardThick() const { return 2.0f * s_BoardHalf[1]; }
+	float BoardWide() const { return 2.0f * s_BoardHalf[2]; }
+
+	// Length along the boards, and breadth across them.
+	glm::vec2 PanelSpan(const Design& plan) const
+	{
+		return { (float)plan.Courses * BoardLength(),
+			(float)plan.Across * BoardWide() };
+	}
+
+	// In panel space, which is flat: x along the boards, y through the
+	// thickness, z across. `Upright` is a rotation applied afterwards, so the
+	// extents do not depend on it.
+	glm::vec3 PanelHalf(const Design& plan) const
+	{
+		glm::vec2 span = PanelSpan(plan);
+
+		// Face on top of ledger, so the panel is two boards thick.
+		return { 0.5f * span.x, BoardThick(), 0.5f * span.y };
+	}
+
+	int Ledgers(const Design& plan) const { return 2 * plan.Courses; }
+
+	// How many ledgers come out of one 2.4 m board. A panel wider than a board
+	// is long needs one board per ledger and no more -- the join is where the
+	// courses already meet, so nothing is lost by it.
+	int LedgersPerBoard(const Design& plan) const
+	{
+		return glm::max(1, (int)(BoardLength() / PanelSpan(plan).y));
+	}
+
+	int PanelCost(const Design& plan) const
+	{
+		int perBoard = LedgersPerBoard(plan);
+
+		return plan.Across * plan.Courses
+			+ (Ledgers(plan) + perBoard - 1) / perBoard;
+	}
+
+	// The wood actually in the panel, which is less than the wood it cost --
+	// the difference is offcut from the ledgers.
+	float PanelMass(const Design& plan) const
+	{
+		float board = BoardLength() * BoardThick() * BoardWide();
+
+		float ledger = PanelSpan(plan).y * BoardThick() * BoardWide();
+
+		return s_Pine * ((float)(plan.Across * plan.Courses) * board
+			+ (float)Ledgers(plan) * ledger);
+	}
+
+	// **How many boards are stacked at the table.** Carried timber does not
+	// count: it is in your hands, not in the pile.
+	int Stockpile() const
+	{
+		int total = 0;
+
+		for (size_t i = 0; i < m_Loose.size(); i++)
+		{
+			if (m_Loose[i].Kind != Flotsam::Plank || m_Loose[i].Carried)
+				continue;
+
+			if (glm::length(m_World.GetBody(m_Loose[i].Body).Position
+				- CraftTable()) <= s_StockRadius)
+				total++;
+		}
+
+		return total;
+	}
+
+	// **Removing one keeps the pool indexed by position.** `AddLoose` hands
+	// out `m_LoosePool[m_Loose.size()]`, so an entry cannot simply be erased --
+	// the next one added would be given a body another entry is still using.
+	// The last entry's *contents* are moved into this slot's body instead.
+	void RemoveLoose(size_t at)
+	{
+		size_t last = m_Loose.size() - 1;
+
+		// Whatever is being removed is no longer in your hands, and whatever
+		// moves into its slot has to take the carry index with it.
+		for (size_t i = 0; i < m_Carry.size(); i++)
+			if (m_Carry[i] == (int)at)
+			{
+				m_Carry.erase(m_Carry.begin() + (long)i);
+				break;
+			}
+
+		if (at != last)
+		{
+			m_World.GetBody(m_Loose[at].Body) =
+				m_World.GetBody(m_Loose[last].Body);
+
+			Egss::PhysicsWorld3D::BodyHandle keep = m_Loose[at].Body;
+
+			m_Loose[at] = m_Loose[last];
+			m_Loose[at].Body = keep;
+
+			for (int& slot : m_Carry)
+				if (slot == (int)last)
+					slot = (int)at;
+		}
+
+		m_Loose.pop_back();
+
+		ParkLoose(m_Loose.size());
+	}
+
+	// **The table turns boards into a panel.** `C` rather than a button in the
+	// panel: a key press is recorded and replayed, and an ImGui click is not,
+	// so a session that built something from a button could never play itself
+	// back. The sliders are registered parameters for the same reason.
+	void CraftPanel()
+	{
+		if (glm::length(m_Camera.GetPosition() - CraftTable()) > s_TableReach)
+			return;
+
+		const Design& plan = m_Draft;
+
+		int cost = PanelCost(plan);
+
+		if (Stockpile() < cost)
+			return;
+
+		// Nearest first, so the pile empties from the table outwards.
+		for (int taken = 0; taken < cost; taken++)
+		{
+			int best = -1;
+			float nearest = s_StockRadius;
+
+			for (size_t i = 0; i < m_Loose.size(); i++)
+			{
+				if (m_Loose[i].Kind != Flotsam::Plank || m_Loose[i].Carried)
+					continue;
+
+				float range = glm::length(
+					m_World.GetBody(m_Loose[i].Body).Position - CraftTable());
+
+				if (range > nearest)
+					continue;
+
+				nearest = range;
+				best = (int)i;
+			}
+
+			if (best < 0)
+				return;
+
+			RemoveLoose((size_t)best);
+		}
+
+		while ((int)m_PanelPool.size() < s_PanelPool)
+			m_PanelPool.push_back(m_World.AddBody(
+				Egss::RigidBody3D::MakeStaticSphere(
+					glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f)));
+
+		if (m_Panels.size() >= m_PanelPool.size())
+			return;
+
+		Panel made;
+		made.Plan = plan;
+		made.Body = m_PanelPool[m_Panels.size()];
+
+		m_Panels.push_back(made);
+
+		m_Built++;
+	}
+
+	// The panel's frame: where it stands and which way up. `Upright` is a
+	// quarter turn about the panel's own length, so the same rectangle is a
+	// floor or a wall and the collider and the drawing share the transform.
+	glm::mat4 PanelFrame(const Panel& panel) const
+	{
+		glm::mat4 frame = glm::rotate(
+			glm::translate(glm::mat4(1.0f), panel.At),
+			panel.Yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+
+		if (panel.Plan.Upright)
+			frame = glm::rotate(frame, -glm::half_pi<float>(),
+				glm::vec3(1.0f, 0.0f, 0.0f));
+
+		return frame;
+	}
+
+	glm::quat PanelTurn(const Panel& panel) const
+	{
+		glm::quat yaw = glm::angleAxis(panel.Yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+
+		return panel.Plan.Upright
+			? yaw * glm::angleAxis(-glm::half_pi<float>(),
+				glm::vec3(1.0f, 0.0f, 0.0f))
+			: yaw;
+	}
+
+	// **Placing one puts it on the ground in front of you, square to the view.**
+	void PlacePanel()
+	{
+		int next = -1;
+
+		for (size_t i = 0; i < m_Panels.size(); i++)
+			if (!m_Panels[i].Placed)
+			{
+				next = (int)i;
+				break;
+			}
+
+		if (next < 0)
+			return;
+
+		Panel& panel = m_Panels[(size_t)next];
+
+		glm::vec3 forward = m_Camera.GetForward();
+
+		forward.y = 0.0f;
+
+		if (glm::length(forward) < 1e-4f)
+			forward = glm::vec3(0.0f, 0.0f, 1.0f);
+
+		forward = glm::normalize(forward);
+
+		glm::vec3 at = m_Camera.GetPosition() + forward * 3.0f;
+
+		// The panel's length runs across the view rather than away down it, so
+		// a wall faces you and a floor lies where you were looking.
+		panel.Yaw = std::atan2(forward.x, forward.z);
+
+		glm::vec3 half = PanelHalf(panel.Plan);
+
+		// After the quarter turn the breadth is what stands up, so which half
+		// extent clears the ground depends on which way the panel is laid.
+		float clear = panel.Plan.Upright ? half.z : half.y;
+
+		float ground = m_World.GroundHeightBelow(
+			glm::vec3(at.x, m_Camera.GetPosition().y, at.z), m_Walker,
+			m_InShed ? ShedCentre().y : -1000.0f);
+
+		panel.At = glm::vec3(at.x, ground + clear, at.z);
+		panel.Placed = true;
+		panel.InShed = m_InShed;
+
+		Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(panel.At, half,
+			0.0f);
+
+		body.Type = Egss::BodyType::Static;
+		body.Orientation = PanelTurn(panel);
+		body.Friction = 0.8f;
+
+		body.UpdateInertiaWorld();
+
+		m_World.GetBody(panel.Body) = body;
+
+		m_Placed++;
+	}
+
+	void DrawPanels(bool inShed);
+	void DrawPrefabEditor();
 
 	// --- The portal and the toolshed ------------------------------------------
 	//
@@ -3156,7 +3615,11 @@ private:
 
 		if (glm::length(wish) > 1e-4f)
 		{
-			glm::vec3 move = glm::normalize(wish) * m_WalkSpeed;
+			// **The load is applied here rather than to `m_WalkSpeed`.** That
+			// is a registered parameter, so writing to it would put the weight
+			// of whatever you happened to be holding into every recording.
+			glm::vec3 move = glm::normalize(wish) * m_WalkSpeed * LoadFactor();
+
 			velocity.x = move.x;
 			velocity.z = move.z;
 		}
@@ -3241,6 +3704,20 @@ private:
 			MillLog();
 
 		m_WasMill = mill;
+
+		bool craft = Egss::Input::IsKeyPressed(EGSS_KEY_C);
+
+		if (craft && !m_WasCraft)
+			CraftPanel();
+
+		m_WasCraft = craft;
+
+		bool place = Egss::Input::IsKeyPressed(EGSS_KEY_B);
+
+		if (place && !m_WasPlace)
+			PlacePanel();
+
+		m_WasPlace = place;
 
 		CarryTimber();
 
@@ -3407,9 +3884,29 @@ private:
 	std::shared_ptr<Egss::Mesh> m_Cube;
 	int m_LooseCount = 12;
 	int m_Stacked = 0;
-	int m_Carried = -1;
+	// **Which loose entries are in your hands.** A list rather than one index:
+	// an armful is the unit now, and every place that used to ask "is this the
+	// carried one" asks the list instead.
+	std::vector<int> m_Carry;
 	int m_Bucked = 0;
 	int m_Milled = 0;
+
+	// The saved designs. Two to start with, because a floor and a wall are the
+	// two things a panel can be and having both there is what makes the third
+	// one obviously editable.
+	std::vector<Design> m_Designs;
+
+	// What the editor is editing, and what `C` builds.
+	Design m_Draft;
+
+	std::vector<Panel> m_Panels;
+	std::vector<Egss::PhysicsWorld3D::BodyHandle> m_PanelPool;
+
+	int m_Built = 0;
+	int m_Placed = 0;
+
+	bool m_WasCraft = false;
+	bool m_WasPlace = false;
 
 	static constexpr int s_TreeShapes = 6;
 
@@ -5184,6 +5681,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 		Egss::Renderer::BeginScene(camera);
 
 		DrawShed();
+		DrawPanels(true);
 
 		Egss::Renderer::EndScene();
 
@@ -5535,6 +6033,10 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 		m_TreeMaterial->Set("u_MaxLean", 0.0f);
 		m_TreeMaterial->Set("u_Through", 0.0f);
 
+		// Same reason as the panels: a carried board would otherwise wear the
+		// last tree's aim line and take its notch.
+		m_TreeMaterial->Set("u_CutRadius", 0.0f);
+
 		for (const Loose& loose : m_Loose)
 		{
 			const Egss::RigidBody3D& body = m_World.GetBody(loose.Body);
@@ -5557,6 +6059,11 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 			Egss::Renderer::Submit(m_TreeMaterial, mesh, transform);
 		}
 	}
+
+	// Only the panels in the room being drawn. The pass that looks through
+	// the doorway into the shed returns before reaching here and asks for the
+	// other room itself.
+	DrawPanels(pass != Pass::ToWorld && m_InShed);
 
 	// **The doorway, the room if you are in it, and the picture in the
 	// doorway.**
@@ -5660,6 +6167,159 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 // switched off. It is already lit by the same sun and sky, and a second shader
 // that differed only in having no wind term would be a second thing to keep in
 // step.
+// **Panels are drawn board by board, not as one box.**
+//
+// The collider is a single box, because that is what standing on a floor and
+// walking into a wall want. The picture is the individual boards and ledgers,
+// because the point of the whole pipeline is that this thing came out of the
+// trees -- a smooth slab would say nothing about where it came from, and the
+// board count would be invisible in exactly the object whose cost is a board
+// count.
+inline void TerrainLab::DrawPanels(bool inShed)
+{
+	if (!m_Cube || m_Panels.empty())
+		return;
+
+	m_TreeMaterial->Set("u_Compliance", 0.0f);
+	m_TreeMaterial->Set("u_MaxLean", 0.0f);
+	m_TreeMaterial->Set("u_Through", 0.0f);
+
+	// **A panel is not a trunk.** The tree shader gates the axe wedge, the aim
+	// line and the pale sapwood on `axis < u_CutRadius * 3.0`, and that uniform
+	// is left set by whichever tree was drawn last. A zero makes the test fail
+	// for every fragment, which switches off all three at once.
+	m_TreeMaterial->Set("u_CutRadius", 0.0f);
+
+	float length = BoardLength();
+	float thick = BoardThick();
+	float wide = BoardWide();
+
+	for (const Panel& panel : m_Panels)
+	{
+		if (!panel.Placed || panel.InShed != inShed)
+			continue;
+
+		glm::vec2 span = PanelSpan(panel.Plan);
+		glm::mat4 frame = PanelFrame(panel);
+
+		auto piece = [&](const glm::vec3& at, const glm::vec3& half)
+		{
+			Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+				frame * glm::translate(glm::mat4(1.0f), at)
+				* glm::scale(glm::mat4(1.0f), half));
+		};
+
+		// **The face, sawn side up, and every board a slightly different
+		// brown.** Drawn in one colour the panel reads as a single slab: the
+		// boards are butted, so there is no gap to cast a shadow and nothing
+		// tells one from the next. Sawn timber does vary board to board -- the
+		// two faces of a log are not the same wood -- so the variation is the
+		// honest fix rather than a fake gap, and it is what makes a bill of
+		// twenty-six boards visible as twenty-six boards.
+		for (int course = 0; course < panel.Plan.Courses; course++)
+		for (int board = 0; board < panel.Plan.Across; board++)
+		{
+			float tone = 0.86f + 0.28f * Veg::Hash2DUnit(course, board,
+				0x9E3779B9u);
+
+			m_TreeMaterial->Set("u_Color",
+				glm::vec3(0.66f, 0.51f, 0.32f) * tone);
+
+			piece({ ((float)course + 0.5f) * length - 0.5f * span.x,
+				0.5f * thick,
+				((float)board + 0.5f) * wide - 0.5f * span.y },
+				{ 0.5f * length, 0.5f * thick, 0.5f * wide });
+		}
+
+		// The ledgers underneath, a shade darker because they are the face
+		// nobody planed and because two identical browns read as one board.
+		m_TreeMaterial->Set("u_Color", glm::vec3(0.52f, 0.39f, 0.24f));
+
+		for (int course = 0; course < panel.Plan.Courses; course++)
+		for (int end = 0; end < 2; end++)
+			piece({ (float)course * length - 0.5f * span.x
+				+ (end ? length - 0.5f * wide : 0.5f * wide),
+				-0.5f * thick, 0.0f },
+				{ 0.5f * wide, 0.5f * thick, 0.5f * span.y });
+	}
+}
+
+// **The prefab editor.** A design is four numbers, so the editor is four
+// widgets and a bill of materials -- and the bill is the part worth having on
+// screen, because it is the only place the whole pipeline shows up as one
+// figure. Twenty-six boards is two and a half logs is most of a tree.
+inline void TerrainLab::DrawPrefabEditor()
+{
+	ImGui::Separator();
+
+	float reach = glm::length(m_Camera.GetPosition() - CraftTable());
+
+	int stock = Stockpile();
+	int cost = PanelCost(m_Draft);
+
+	glm::vec2 span = PanelSpan(m_Draft);
+
+	ImGui::Text("Prefabs: %d built, %d placed", m_Built, m_Placed);
+
+	if (reach > s_TableReach)
+	{
+		ImGui::TextDisabled("  the crafting table is in the shed, on the left");
+		ImGui::TextDisabled("  as you come in; the design can be edited from");
+		ImGui::TextDisabled("  anywhere but only built standing at it");
+	}
+
+	ImGui::InputText("Name", m_Draft.Name, sizeof(m_Draft.Name));
+
+	ImGui::SliderInt("Boards across", &m_Draft.Across, 1, 32);
+	ImGui::SliderInt("Courses", &m_Draft.Courses, 1, 4);
+	ImGui::Checkbox("Stand it up (wall)", &m_Draft.Upright);
+
+	ImGui::Text("%.2f x %.2f m %s, %.0f kg", span.x, span.y,
+		m_Draft.Upright ? "wall" : "floor", PanelMass(m_Draft));
+
+	// The bill, spelled out. `Across x Courses` boards for the face and the
+	// rest for the ledgers, which is where the size dependence lives.
+	ImGui::Text("%d boards: %d face + %d for %d ledgers", cost,
+		m_Draft.Across * m_Draft.Courses, cost - m_Draft.Across * m_Draft.Courses,
+		Ledgers(m_Draft));
+
+	ImGui::TextDisabled("  a ledger is %.2f m, so %d come out of one board",
+		span.y, LedgersPerBoard(m_Draft));
+
+	ImGui::Text("Stock at the table: %d of %d", stock, cost);
+
+	if (reach <= s_TableReach && stock >= cost)
+		ImGui::Text("C builds it, B puts it down where you look");
+	else if (reach <= s_TableReach)
+		ImGui::TextDisabled("  carry %d more boards to the table", cost - stock);
+
+	ImGui::TextDisabled("  boards count within %.1f m of the table, and the",
+		s_StockRadius);
+	ImGui::TextDisabled("  saw bench is 6.2 m from it -- so they are carried");
+
+	// **Saving and loading a design is editor state, not simulation state.**
+	// The sliders above are registered parameters, so a replay writes the
+	// recorded numbers back whatever these buttons did; that is what lets
+	// them be buttons at all, when `C` had to be a key.
+	if (ImGui::Button("Save as new") && (int)m_Designs.size() < s_MaxDesigns)
+		m_Designs.push_back(m_Draft);
+
+	for (size_t i = 0; i < m_Designs.size(); i++)
+	{
+		ImGui::PushID((int)i);
+
+		if (ImGui::Button("Load"))
+			m_Draft = m_Designs[i];
+
+		ImGui::SameLine();
+		ImGui::Text("%s -- %d x %d%s, %d boards", m_Designs[i].Name,
+			m_Designs[i].Across, m_Designs[i].Courses,
+			m_Designs[i].Upright ? ", upright" : "", PanelCost(m_Designs[i]));
+
+		ImGui::PopID();
+	}
+}
+
 inline void TerrainLab::DrawBox(const glm::vec3& at, const glm::vec3& half,
 	float yaw, const glm::vec3& colour)
 {
@@ -6035,13 +6695,32 @@ inline void TerrainLab::OnDemoImGui()
 		ImGui::Text("Timber: %d logs, %d boards", CountTimber(Flotsam::Log),
 			CountTimber(Flotsam::Plank));
 		ImGui::TextDisabled("  swing at a felled top to buck it into logs;");
-		ImGui::TextDisabled("  R picks one up and puts it down, so a stack");
+		ImGui::TextDisabled("  R takes an armful and puts it down, so a stack");
 		ImGui::TextDisabled("  is wherever you carried them to; T at the saw");
 		ImGui::TextDisabled("  bench in the shed rips a log into boards");
+
+		if (Carrying())
+		{
+			ImGui::Text("Carrying %d, %.1f of %.0f kg%s",
+				(int)m_Carry.size(), CarriedMass(), CarryLimit(),
+				LoadFactor() < 0.999f ? " -- heavy" : "");
+
+			if (LoadFactor() < 0.999f)
+				ImGui::TextDisabled("  over the budget, so you walk at %.0f%%",
+					100.0f * LoadFactor());
+		}
+		else
+		{
+			ImGui::TextDisabled("  an armful is %.0f kg, six rough 2x4s; a log",
+				CarryLimit());
+			ImGui::TextDisabled("  is 113 kg and goes on one shoulder, slowly");
+		}
 		ImGui::Text("%d logs bucked, %d boards sawn (%d a log)", m_Bucked,
 			m_Milled, BoardsPerLog());
 		ImGui::TextDisabled("  0.60 x pi r^2 L / (50 x 100 x 2400 mm): a mill");
 		ImGui::TextDisabled("  loses the slabs, the edgings and the kerf");
+
+		DrawPrefabEditor();
 
 		ImGui::Separator();
 		ImGui::Text("Weights placed: %d of %d", m_Stacked, s_WeightCount);

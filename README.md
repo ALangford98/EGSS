@@ -1264,6 +1264,114 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-30 (an armful, measured in kilograms so strength has somewhere to land)
+
+One board at a time was honest and unusable: a 26-board floor panel is 26 walks
+across the shed. `R` takes an **armful** now -- whatever you are looking at, plus
+every piece of the same kind within 1.6 m of it that still fits.
+
+**Capacity is a mass, not a number of items**, and that is the whole point. When
+characters have attributes, strength needs somewhere to land; a kilogram budget
+is somewhere it can land without anything else being told, since the armful, the
+pace penalty and the panel readout all follow from `s_Strength`. A count would
+have had to be re-derived per item type by hand.
+
+Forty kilograms at strength 1. A rough 2x4 is 2.4 x 0.10 x 0.05 m of pine at
+500 kg/m^3 = **6.00 kg**, so an armful is six of them and not seven -- 36 kg
+fits, 42 does not.
+
+**A log is over the budget and is carried anyway.** pi r^2 L x 500 makes a 2.5 m
+log **113.5 kg**, which is a two-person lift in real life; refusing it would
+take away something that already worked, and a struggle reads better than a
+refusal. So the first piece is always allowed and the excess costs pace instead:
+113.5 kg on a 40 kg budget walks at **55 %**. That is the second thing the
+strength attribute will pull on, and it is applied where the velocity is
+computed rather than to `m_WalkSpeed` -- which is a registered parameter, so
+writing to it would put the weight of whatever you were holding into every
+recording.
+
+Fifteen checks, all passing, including the one worth having: **the carry list
+survives its own boards being eaten.** `RemoveLoose` moves the last loose entry
+into the freed slot, so an index held anywhere else has to move with it --
+crafting a 26-board panel while holding an armful is exactly that case, and the
+test confirms the held indices still point at the same two bodies afterwards.
+
+Also: the armful is carried 0.62 m below the eye rather than 0.35 m. Six boards
+stack 0.32 m, and the old height put the top one straight across the middle of
+the screen.
+
+### 2026-08-30 (a panel is boards on ledgers, and the bill of materials is arithmetic)
+
+The end of the pipeline: boards carried to the crafting table in the shed
+become panels, and a panel can be put down in the world and stood on.
+
+**A design is a rectangle measured in boards** -- `Across` of them edge to edge,
+`Courses` of them end to end. Lay that rectangle down and it is a floor; stand
+it on edge and it is a wall. That is one design type and not two, and it is why
+`Upright` is a rotation in `PanelFrame` rather than a second kind of object.
+
+What makes it a panel rather than a pile is the **ledgers**, two across the back
+of every course. They are boards too, cut to the panel's width -- so a narrow
+panel gets several of them out of one board while a wide one needs a whole board
+for each, and the bill depends on the shape. That is the whole reason to compute the bill
+instead of naming a number:
+
+| design | face | ledgers | boards | panel |
+| --- | --- | --- | --- | --- |
+| floor, 24 across x 1 | 24 | 2 x 2.4 m, 1 a board | **26** | 2.4 x 2.4 m, 156 kg |
+| wall, 20 across x 1 | 20 | 2 x 2.0 m, 1 a board | **22** | 2.4 x 2.0 m, 130 kg |
+| 8 across x 2 | 16 | 4 x 0.8 m, 3 a board | **18** | 4.8 x 0.8 m, 104 kg |
+
+Twenty-six boards is two and a half logs is most of a tree, which is the figure
+the whole pipeline was for. Twenty-two checks, all passing, against arithmetic
+done by hand: a board is 0.012 m^3 and pine is 500 kg/m^3, so a board is 6.00 kg
+and the 22-board wall weighs 130 kg rather than 132 -- the 2 kg difference is
+0.4 m of offcut off each of two ledgers, and the panel weighing *less* than the
+wood it cost is the check that the offcut is real.
+
+The rest is placement. `C` at the table builds the design, `B` puts it down
+three metres in front of you, square to the view and resting on the ground.
+Verified: a floor panel's underside sits exactly on the shed floor, it is two
+boards thick (100 mm), and `GroundBelow` from above it returns its top face --
+so it is something to stand on and not scenery. A wall's foot is on the terrain
+it was placed on and it stands 2.0 m.
+
+**Boards are drawn one at a time and each is a slightly different brown.** In
+one colour a panel is a single pale slab: the boards are butted, there is no gap
+to cast a shadow, and nothing tells one from the next -- so the object whose
+entire cost is a board count showed no boards. Sawn timber does vary board to
+board, which makes the variation the honest fix rather than a fake gap.
+
+Three things this turned up:
+
+- **Removing one loose item has to keep the pool indexed by position.**
+  `AddLoose` hands out `m_LoosePool[m_Loose.size()]`, so erasing an entry would
+  give the next thing added a body another entry was still using. The last
+  entry's contents move into the freed slot instead, and the test checks
+  `m_Loose[i].Body == m_LoosePool[i]` for every i afterwards -- a pairing that
+  would otherwise only show up as two objects moving as one.
+
+- **A registered parameter is a raw pointer held for the life of the demo.** The
+  design being edited is a member and the saved designs are a vector, not the
+  other way round: registering `&m_Designs[0].Across` would dangle the first
+  time somebody saved a seventh design. `C` is a key rather than a button in the
+  panel for the related reason -- a click is not recorded, so a session that
+  built something from a button could never replay itself.
+
+- **A panel placed in the shed hung in the sky over the map.** Everything else
+  in the shed is drawn only while you are in it; panels were drawn in every
+  pass. They carry which room they are in now.
+
+And one measurement that was wrong twice before the code was. A wall photographed
+outdoors read (21, 23, 21) at *every* time of day while the ground went from 18
+to 89 -- a constant across a fivefold change in light, which is the shape of a
+bug. It was not one: the sun's azimuth is fixed here with a +z bias, so a face
+pointing the other way is in shade all day, and the daytime sky colour barely
+moves. The panel had been placed square to a camera heading left over from
+indoors. Earlier in the same test `GroundHeightBelow`'s last argument was read as
+a floor to search *from* when it is the initial best -- passing 0.0 rejected
+every surface below sea level, and that ground is 17 m under it.
+
 ### 2026-08-30 (a tree becomes logs, a log becomes boards, and nothing is spawned)
 
 The question was whether the floating planks are 2x4s. They are -- **38 x 89 mm,

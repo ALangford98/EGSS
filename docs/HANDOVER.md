@@ -343,6 +343,40 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **Never write to a registered replay parameter from the simulation.**
+  `m_WalkSpeed` is registered, so scaling it by the carried load would have
+  written the weight of whatever the player happened to be holding into every
+  recording, and a replay would then walk at a speed the recorder never chose.
+  Apply the modifier where the value is *used*.
+
+- **An index into `m_Loose` held anywhere else has to survive a removal.**
+  `RemoveLoose` moves the last entry into the freed slot, so `m_Carry` is fixed
+  up in the same function -- erase the removed one, repoint any that referred to
+  the last. Crafting a panel while holding an armful is the case that finds it,
+  and the symptom would be carrying a board that is also in the pile.
+
+- **A registered replay parameter is a raw pointer kept for the life of the
+  demo.** `RegisterParam` stores the address, so registering a field of a
+  `std::vector` element dangles the first time that vector grows. Anything
+  registered belongs in a member that never moves -- `TerrainLab::m_Draft` is
+  the edited prefab design for exactly this reason, with the saved designs in a
+  vector beside it. The same rule is why anything that changes the simulation
+  has to be on a *key*: an ImGui button is not recorded, so a session that used
+  one can never replay itself.
+
+- **`GroundHeightBelow`'s last argument is the initial best, not a floor to
+  search from.** Passing 0.0 does not mean "start at sea level", it means "no
+  surface below zero counts" -- and it silently returns 0.0 as though it had
+  found something. On terrain that sits 17 m under sea level this reads as an
+  object placed 17 m in the air.
+
+- **A constant reading across a changing input is a bug in the measurement more
+  often than in the code.** A wall read (21, 23, 21) at every hour while the
+  ground beside it went from 18 to 89. It was correct: the sun's azimuth in
+  `TerrainLab` is fixed with a +z bias, so a face turned the other way is shaded
+  all day, and the daytime sky colour hardly moves. Check what is *supposed* to
+  vary before concluding the shader is stuck.
+
 - **A pool of bodies, not a growing list.** `PhysicsWorld3D` lets a body be
   rewritten but never removed, so anything that respawns has to reserve its
   slots once and write into them. `TerrainLab`'s flotsam appended instead, and
