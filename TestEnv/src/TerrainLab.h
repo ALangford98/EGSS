@@ -1742,7 +1742,7 @@ private:
 	// thing that separates them is how heavy they are for their size, which is
 	// the whole point of doing buoyancy properly rather than tagging things as
 	// floaty.
-	enum class Flotsam { Driftwood, Cobble, Plank, Weight };
+	enum class Flotsam { Driftwood, Cobble, Plank, Weight, Log };
 
 	struct Loose
 	{
@@ -1750,7 +1750,26 @@ private:
 		glm::vec3 Half = glm::vec3(0.5f);
 		glm::vec3 Colour = glm::vec3(0.5f);
 		Flotsam Kind = Flotsam::Driftwood;
+
+		// **How much of its own box the thing actually is.** A plank is all of
+		// it; a log is a cylinder in a square box, which is pi/4. Mass and
+		// displacement both scale by it, so a round log floats at the draft a
+		// round log floats at rather than at a squared beam's.
+		float Fill = 1.0f;
+
+		// In your hands, so gravity and water are somebody else's problem.
+		bool Carried = false;
 	};
+
+	// **A fixed pool, because bodies can be rewritten and not removed.**
+	//
+	// Same reason the boulders have one. It also fixes a leak nobody had
+	// noticed: "Reset the water" called `ScatterLoose` again, which cleared the
+	// list and added a fresh set of bodies while the old ones stayed in the
+	// world for ever -- so every press doubled the physics.
+	static constexpr int s_LoosePool = 200;
+
+	std::vector<Egss::PhysicsWorld3D::BodyHandle> m_LoosePool;
 
 	// **Archimedes, and now the shape of what is under water as well.**
 	//
@@ -1798,7 +1817,7 @@ private:
 		{
 			Egss::RigidBody3D& body = m_World.GetBody(loose.Body);
 
-			if (body.InverseMass <= 0.0f)
+			if (body.InverseMass <= 0.0f || loose.Carried)
 				continue;
 
 			// Cheap reject: nothing within its own diagonal of the surface can
@@ -1823,7 +1842,11 @@ private:
 
 			glm::vec3 cell = loose.Half / (float)s_FloatSamples;
 
-			float share = 8.0f * cell.x * cell.y * cell.z;
+			// `Fill` is what makes a round log displace a cylinder's worth
+			// rather than its bounding box's -- pi/4 of it, which is 27 per
+			// cent, and the difference between a log floating half out and a
+			// log floating a third out.
+			float share = 8.0f * cell.x * cell.y * cell.z * loose.Fill;
 
 			int under = 0;
 
@@ -1922,15 +1945,39 @@ private:
 
 	static constexpr int s_WeightCount = 12;
 
-	void AddLoose(const glm::vec3& at, const glm::vec3& half, float density,
-		Flotsam kind, const glm::vec3& colour, float yaw = 0.0f)
+	// Everything unused is parked a kilometre below the world, where nothing
+	// else ever goes -- the same trick `Dig` uses on the ground body.
+	void ParkLoose(size_t from)
 	{
+		for (size_t i = from; i < m_LoosePool.size(); i++)
+		{
+			Egss::RigidBody3D& body = m_World.GetBody(m_LoosePool[i]);
+
+			body = Egss::RigidBody3D::MakeStaticSphere(
+				glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f);
+		}
+	}
+
+	int AddLoose(const glm::vec3& at, const glm::vec3& half, float density,
+		Flotsam kind, const glm::vec3& colour, float yaw = 0.0f,
+		float fill = 1.0f)
+	{
+		while ((int)m_LoosePool.size() < s_LoosePool)
+			m_LoosePool.push_back(m_World.AddBody(
+				Egss::RigidBody3D::MakeStaticSphere(
+					glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f)));
+
+		if (m_Loose.size() >= m_LoosePool.size())
+			return -1;
+
 		Loose loose;
 		loose.Half = half;
 		loose.Colour = colour;
 		loose.Kind = kind;
+		loose.Fill = fill;
+		loose.Body = m_LoosePool[m_Loose.size()];
 
-		float mass = density * 8.0f * half.x * half.y * half.z;
+		float mass = density * fill * 8.0f * half.x * half.y * half.z;
 
 		Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(at, half, mass);
 
@@ -1946,15 +1993,18 @@ private:
 		body.LinearDamping = 0.0f;
 		body.AngularDamping = 0.02f;
 
-		loose.Body = m_World.AddBody(body);
+		m_World.GetBody(loose.Body) = body;
 
 		m_Loose.push_back(loose);
+
+		return (int)m_Loose.size() - 1;
 	}
 
 	void ScatterLoose()
 	{
 		m_Loose.clear();
 		m_Stacked = 0;
+		m_Carried = -1;
 
 		unsigned int seed = 20261u;
 
@@ -2014,6 +2064,8 @@ private:
 			AddLoose(at, glm::vec3(s_WeightHalf), s_Concrete, Flotsam::Weight,
 				glm::vec3(0.46f, 0.46f, 0.48f));
 		}
+
+		ParkLoose(m_Loose.size());
 	}
 
 	// **Put a weight where you are looking.**
@@ -2259,8 +2311,12 @@ private:
 	{
 		m_Swing = 1.0f;
 
+		// Nothing standing in front of you: maybe something lying down.
 		if (m_AimTree < 0)
+		{
+			BuckNearest();
 			return;
+		}
 
 		auto found = m_Trees.find(m_AimKey);
 
@@ -2451,6 +2507,292 @@ private:
 			body.AngularVelocity = glm::length(change) >= spin
 				? glm::vec3(0.0f) : body.AngularVelocity + change;
 		}
+	}
+
+	// --- Timber ---------------------------------------------------------------
+	//
+	// **A tree becomes logs, a log becomes planks, and each step is work.**
+	//
+	// Fell a tree and what lies on the ground is a whole top. Hit it with the
+	// axe and it is bucked into logs of a standard length. Carry a log to the
+	// bench in the shed and it is sawn into boards. Nothing is spawned from
+	// nothing at any point: the number of planks that comes out of a log is
+	// its volume, times what a mill actually recovers.
+	//
+	// **Real timber sizes throughout, because the numbers are the point.** A
+	// "2x4" is nominal: rough-sawn off the mill it is a full 50 x 100 mm, and
+	// only after planing is it the 38 x 89 mm the floating ones are. Boards
+	// come off the saw rough, so these are 50 x 100 x 2.4 m -- which is also
+	// why they read as timber rather than as lath.
+	static constexpr float s_LogRadius = 0.17f;
+	static constexpr float s_LogLength = 2.5f;
+
+	static constexpr float s_BoardHalf[3] = { 1.2f, 0.025f, 0.05f };
+
+	// **Sawmill recovery.** A round log cannot become square boards without
+	// loss: the slabs off the outside, the edgings, and a 4 mm kerf on every
+	// cut. Sixty per cent by volume is what a small mill gets out of a
+	// straight log, and it is the only reason a quarter-cubic-metre log does
+	// not turn into twenty-one planks.
+	static constexpr float s_MillRecovery = 0.60f;
+
+	glm::vec3 SawBench() const
+	{
+		return ShedCentre() + glm::vec3(s_ShedHalf - 0.9f, 0.45f, 1.6f);
+	}
+
+	glm::vec3 CraftTable() const
+	{
+		return ShedCentre() + glm::vec3(-(s_ShedHalf - 0.9f), 0.45f, 1.6f);
+	}
+
+	float LogVolume() const
+	{
+		return glm::pi<float>() * s_LogRadius * s_LogRadius * s_LogLength;
+	}
+
+	float BoardVolume() const
+	{
+		return 8.0f * s_BoardHalf[0] * s_BoardHalf[1] * s_BoardHalf[2];
+	}
+
+	int BoardsPerLog() const
+	{
+		return glm::max(1, (int)(s_MillRecovery * LogVolume() / BoardVolume()));
+	}
+
+	int CountTimber(Flotsam kind) const
+	{
+		int total = 0;
+
+		for (const Loose& loose : m_Loose)
+			if (loose.Kind == kind)
+				total++;
+
+		return total;
+	}
+
+	// **Bucking.** A felled top is one long body; the axe cuts it into logs.
+	// How many is how long it was, which is why a big tree is worth more than
+	// a small one without anything having to say so.
+	bool BuckNearest()
+	{
+		glm::vec3 origin = m_Camera.GetPosition();
+		glm::vec3 direction = m_Camera.GetForward();
+
+		int best = -1;
+		float nearest = s_AxeReach;
+
+		for (size_t i = 0; i < m_Fell.size(); i++)
+		{
+			if (!m_Fell[i].Active)
+				continue;
+
+			const Egss::RigidBody3D& body = m_World.GetBody(m_Fell[i].Body);
+
+			glm::vec3 to = body.Position - origin;
+
+			float along = glm::dot(to, direction);
+
+			if (along < 0.0f || along > nearest)
+				continue;
+
+			// Distance from the ray to the capsule's centre line, near enough
+			// at this range: the perpendicular distance to its centre plus its
+			// own half-length is a generous but honest reach.
+			float off = glm::length(to - direction * along);
+
+			if (off > body.Radius + body.HalfHeight)
+				continue;
+
+			nearest = along;
+			best = (int)i;
+		}
+
+		if (best < 0)
+			return false;
+
+		Felled& fell = m_Fell[(size_t)best];
+
+		const Egss::RigidBody3D& body = m_World.GetBody(fell.Body);
+
+		float length = 2.0f * (body.HalfHeight + body.Radius);
+
+		int logs = glm::max(1, (int)(length / s_LogLength));
+
+		glm::mat3 frame = glm::mat3_cast(body.Orientation);
+
+		glm::vec3 along = frame * glm::vec3(0.0f, 1.0f, 0.0f);
+
+		for (int i = 0; i < logs; i++)
+		{
+			float t = (2.0f * (float)i + 1.0f - (float)logs) * 0.5f
+				* s_LogLength;
+
+			glm::vec3 at = body.Position + along * t
+				+ glm::vec3(0.0f, 0.05f * (float)i, 0.0f);
+
+			float yaw = std::atan2(along.x, along.z);
+
+			// A log is a cylinder in a square box: the collider and the
+			// displacement are the box, the `Fill` is what makes both of them
+			// a cylinder's.
+			AddLoose(at, glm::vec3(0.5f * s_LogLength, s_LogRadius,
+				s_LogRadius), s_Pine, Flotsam::Log,
+				glm::vec3(0.44f, 0.31f, 0.18f), yaw - glm::half_pi<float>(),
+				glm::pi<float>() * 0.25f);
+		}
+
+		// The top is gone: it is these logs now.
+		fell.Active = false;
+
+		m_World.GetBody(fell.Body) = Egss::RigidBody3D::MakeStaticSphere(
+			glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f);
+
+		m_Bucked += logs;
+
+		return true;
+	}
+
+	// **Carrying is one slot.** You have two hands and one of them is holding
+	// an axe. A carried thing is kinematic and parked in front of the eye, so
+	// it neither falls nor pushes you about while you walk.
+	void ToggleCarry()
+	{
+		if (m_Carried >= 0)
+		{
+			Loose& held = m_Loose[(size_t)m_Carried];
+
+			held.Carried = false;
+
+			Egss::RigidBody3D& body = m_World.GetBody(held.Body);
+
+			body.Type = Egss::BodyType::Dynamic;
+			body.Velocity = glm::vec3(0.0f);
+			body.AngularVelocity = glm::vec3(0.0f);
+			body.Awake = true;
+
+			m_Carried = -1;
+
+			return;
+		}
+
+		glm::vec3 origin = m_Camera.GetPosition();
+		glm::vec3 direction = m_Camera.GetForward();
+
+		int best = -1;
+		float nearest = 4.0f;
+
+		for (size_t i = 0; i < m_Loose.size(); i++)
+		{
+			const Loose& loose = m_Loose[i];
+
+			if (loose.Kind != Flotsam::Log && loose.Kind != Flotsam::Plank)
+				continue;
+
+			const Egss::RigidBody3D& body = m_World.GetBody(loose.Body);
+
+			glm::vec3 to = body.Position - origin;
+
+			float along = glm::dot(to, direction);
+
+			if (along < 0.0f || along > nearest)
+				continue;
+
+			if (glm::length(to - direction * along) > glm::length(loose.Half))
+				continue;
+
+			nearest = along;
+			best = (int)i;
+		}
+
+		if (best < 0)
+			return;
+
+		m_Carried = best;
+
+		m_Loose[(size_t)best].Carried = true;
+
+		Egss::RigidBody3D& body = m_World.GetBody(m_Loose[(size_t)best].Body);
+
+		body.Type = Egss::BodyType::Kinematic;
+		body.Velocity = glm::vec3(0.0f);
+		body.AngularVelocity = glm::vec3(0.0f);
+	}
+
+	// Held out in front, turned to lie across the view the way anyone carries
+	// a length of timber.
+	void CarryTimber()
+	{
+		if (m_Carried < 0 || m_Carried >= (int)m_Loose.size())
+			return;
+
+		const Loose& held = m_Loose[(size_t)m_Carried];
+
+		Egss::RigidBody3D& body = m_World.GetBody(held.Body);
+
+		glm::vec3 forward = m_Camera.GetForward();
+		glm::vec3 right = m_Camera.GetRight();
+
+		body.Position = m_Camera.GetPosition() + forward * 1.5f
+			- glm::vec3(0.0f, 0.35f, 0.0f);
+
+		body.Orientation = glm::angleAxis(
+			std::atan2(right.x, right.z) - glm::half_pi<float>(),
+			glm::vec3(0.0f, 1.0f, 0.0f));
+
+		body.Velocity = glm::vec3(0.0f);
+		body.AngularVelocity = glm::vec3(0.0f);
+
+		body.UpdateInertiaWorld();
+	}
+
+	// **The bench turns one log into boards, and the count is arithmetic.**
+	void MillLog()
+	{
+		if (m_Carried < 0)
+			return;
+
+		Loose& held = m_Loose[(size_t)m_Carried];
+
+		if (held.Kind != Flotsam::Log)
+			return;
+
+		const Egss::RigidBody3D& body = m_World.GetBody(held.Body);
+
+		if (glm::length(body.Position - SawBench()) > 3.0f)
+			return;
+
+		int boards = BoardsPerLog();
+
+		glm::vec3 stack = SawBench() + glm::vec3(0.0f, 0.35f, 0.0f);
+
+		// Drop the log first, so the slot it was in is free to be a board.
+		ToggleCarry();
+
+		held.Kind = Flotsam::Plank;
+		held.Half = glm::vec3(s_BoardHalf[0], s_BoardHalf[1], s_BoardHalf[2]);
+		held.Fill = 1.0f;
+		held.Colour = glm::vec3(0.66f, 0.51f, 0.32f);
+
+		Egss::RigidBody3D& first = m_World.GetBody(held.Body);
+
+		float mass = s_Pine * 8.0f * s_BoardHalf[0] * s_BoardHalf[1]
+			* s_BoardHalf[2];
+
+		first = Egss::RigidBody3D::MakeBox(
+			stack + glm::vec3(0.0f, 2.0f * s_BoardHalf[1], 0.0f),
+			held.Half, mass);
+
+		first.Friction = 0.7f;
+		first.Awake = true;
+
+		for (int i = 1; i < boards; i++)
+			AddLoose(stack + glm::vec3(0.0f,
+				2.0f * s_BoardHalf[1] * (float)(i + 1) + 0.004f * (float)i,
+				0.0f), held.Half, s_Pine, Flotsam::Plank, held.Colour);
+
+		m_Milled += boards;
 	}
 
 	// --- The portal and the toolshed ------------------------------------------
@@ -2886,6 +3228,22 @@ private:
 
 		m_WasWeight = weight;
 
+		bool carry = Egss::Input::IsKeyPressed(EGSS_KEY_R);
+
+		if (carry && !m_WasCarry)
+			ToggleCarry();
+
+		m_WasCarry = carry;
+
+		bool mill = Egss::Input::IsKeyPressed(EGSS_KEY_T);
+
+		if (mill && !m_WasMill)
+			MillLog();
+
+		m_WasMill = mill;
+
+		CarryTimber();
+
 		AimAxe();
 
 		// The stroke is a wind-up and a fall, so it wants to be visible for
@@ -3045,9 +3403,13 @@ private:
 	}
 
 	std::shared_ptr<Egss::Mesh> m_Boulder;
+	std::shared_ptr<Egss::Mesh> m_Log;
 	std::shared_ptr<Egss::Mesh> m_Cube;
 	int m_LooseCount = 12;
 	int m_Stacked = 0;
+	int m_Carried = -1;
+	int m_Bucked = 0;
+	int m_Milled = 0;
 
 	static constexpr int s_TreeShapes = 6;
 
@@ -3212,6 +3574,8 @@ private:
 	bool m_WasPortal = false;
 	bool m_WasAxe = false;
 	bool m_WasWeight = false;
+	bool m_WasCarry = false;
+	bool m_WasMill = false;
 
 	bool m_PortalOn = false;
 	bool m_InShed = false;
@@ -4361,6 +4725,97 @@ inline void TerrainLab::BuildTrees()
 		m_PortalMaterial = Egss::Material::Create(m_PortalShader);
 	}
 
+	// **A log, as a cylinder lying along x.** Unit radius and unit half-length,
+	// so the same scale that sizes its collider sizes it. Sixteen sides is
+	// enough that a 34 cm log does not read as a hexagon and few enough that a
+	// stack of them costs nothing.
+	{
+		Egss::MeshData log;
+
+		const int sides = 16;
+
+		auto ring = [&](float x, float nx)
+		{
+			for (int i = 0; i < sides; i++)
+			{
+				float a0 = (float)i / (float)sides * 6.2831853f;
+
+				glm::vec3 at(x, std::cos(a0), std::sin(a0));
+
+				log.Vertices.push_back({ at, glm::vec3(nx, 0.0f, 0.0f),
+					{ (float)i / (float)sides, x * 0.5f + 0.5f } });
+			}
+		};
+
+		// Two rings for the sides, with radial normals, and two more for the
+		// end caps with axial ones -- a shared vertex cannot have both, and an
+		// end cap lit as though it were the barrel is the tell.
+		unsigned int side = (unsigned int)log.Vertices.size();
+
+		for (int end = 0; end < 2; end++)
+		for (int i = 0; i < sides; i++)
+		{
+			float a0 = (float)i / (float)sides * 6.2831853f;
+
+			glm::vec3 at(end ? 1.0f : -1.0f, std::cos(a0), std::sin(a0));
+
+			log.Vertices.push_back({ at,
+				glm::vec3(0.0f, std::cos(a0), std::sin(a0)),
+				{ (float)i / (float)sides, (float)end } });
+		}
+
+		for (int i = 0; i < sides; i++)
+		{
+			unsigned int a0 = side + (unsigned int)i;
+			unsigned int a1 = side + (unsigned int)((i + 1) % sides);
+
+			log.Indices.insert(log.Indices.end(), {
+				a0, a1 + (unsigned int)sides, a0 + (unsigned int)sides,
+				a0, a1, a1 + (unsigned int)sides });
+		}
+
+		for (int end = 0; end < 2; end++)
+		{
+			unsigned int centre = (unsigned int)log.Vertices.size();
+
+			log.Vertices.push_back({ glm::vec3(end ? 1.0f : -1.0f, 0.0f, 0.0f),
+				glm::vec3(end ? 1.0f : -1.0f, 0.0f, 0.0f), { 0.5f, 0.5f } });
+
+			unsigned int rim = (unsigned int)log.Vertices.size();
+
+			for (int i = 0; i < sides; i++)
+			{
+				float a0 = (float)i / (float)sides * 6.2831853f;
+
+				log.Vertices.push_back({
+					glm::vec3(end ? 1.0f : -1.0f, std::cos(a0), std::sin(a0)),
+					glm::vec3(end ? 1.0f : -1.0f, 0.0f, 0.0f),
+					{ 0.5f + 0.5f * std::cos(a0), 0.5f + 0.5f * std::sin(a0) } });
+			}
+
+			for (int i = 0; i < sides; i++)
+			{
+				unsigned int a0 = rim + (unsigned int)i;
+				unsigned int a1 = rim + (unsigned int)((i + 1) % sides);
+
+				if (end)
+					log.Indices.insert(log.Indices.end(), { centre, a0, a1 });
+				else
+					log.Indices.insert(log.Indices.end(), { centre, a1, a0 });
+			}
+		}
+
+		(void)ring;
+
+		Egss::Submesh all;
+		all.IndexCount = (unsigned int)log.Indices.size();
+
+		log.Submeshes.push_back(all);
+		log.RecalculateBounds();
+
+		m_Log = std::make_shared<Egss::Mesh>(log, "LabLog");
+	}
+
 	// A unit cube, scaled by whatever draws it. The doorway and the shed are
 	// both made of boxes and neither is worth a mesh of its own.
 	{
@@ -5086,11 +5541,13 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 
 			m_TreeMaterial->Set("u_Color", loose.Colour);
 
-			// A rock for the rock and a box for everything else. All of them
-			// are box colliders; the boulder mesh fits inside the unit box
-			// exactly, which is what makes the two agree.
+			// A rock for the rock, a cylinder for a log, a box for the rest.
+			// All of them are box colliders: the boulder mesh fits inside the
+			// unit box exactly, and the log fills its box in two axes and is
+			// round in the third, which is what `Fill` accounts for.
 			const std::shared_ptr<Egss::Mesh>& mesh =
-				loose.Kind == Flotsam::Cobble ? m_Boulder : m_Cube;
+				loose.Kind == Flotsam::Cobble ? m_Boulder
+				: loose.Kind == Flotsam::Log ? m_Log : m_Cube;
 
 			glm::mat4 transform =
 				glm::translate(glm::mat4(1.0f), body.Position)
@@ -5275,6 +5732,27 @@ inline void TerrainLab::DrawShed()
 		DrawBox(rack + glm::vec3(0.34f, 0.0f, 0.0f),
 			{ 0.06f, 0.10f, 0.02f }, 0.0f, iron);
 	}
+
+	// **The saw bench and the crafting table**, two benches against the side
+	// walls. A bench is a top and four legs and neither is worth a mesh; what
+	// makes them benches is that `MillLog` and the prefab editor ask how far
+	// you are from one.
+	auto bench = [&](const glm::vec3& top, const glm::vec3& colour)
+	{
+		DrawBox(top, { 0.55f, 0.04f, 0.35f }, 0.0f, colour);
+
+		for (int i = 0; i < 4; i++)
+			DrawBox(top + glm::vec3((i & 1) ? 0.48f : -0.48f, -0.24f,
+				(i & 2) ? 0.28f : -0.28f), { 0.04f, 0.24f, 0.04f }, 0.0f,
+				colour * 0.8f);
+	};
+
+	bench(SawBench(), glm::vec3(0.40f, 0.31f, 0.20f));
+	bench(CraftTable(), glm::vec3(0.36f, 0.28f, 0.19f));
+
+	// The blade, so the saw bench reads as one rather than as a table.
+	DrawBox(SawBench() + glm::vec3(0.0f, 0.16f, 0.0f),
+		{ 0.02f, 0.16f, 0.16f }, 0.0f, glm::vec3(0.55f, 0.56f, 0.58f));
 }
 
 // **The axe in your hands, drawn in the camera's frame.**
@@ -5552,6 +6030,18 @@ inline void TerrainLab::OnDemoImGui()
 		ImGui::TextDisabled("  left mouse swings, and the line on the trunk");
 		ImGui::TextDisabled("  is where the stroke will land");
 		ImGui::Text("%d strokes, %d trees down", m_Chopped, m_Felled);
+
+		ImGui::Separator();
+		ImGui::Text("Timber: %d logs, %d boards", CountTimber(Flotsam::Log),
+			CountTimber(Flotsam::Plank));
+		ImGui::TextDisabled("  swing at a felled top to buck it into logs;");
+		ImGui::TextDisabled("  R picks one up and puts it down, so a stack");
+		ImGui::TextDisabled("  is wherever you carried them to; T at the saw");
+		ImGui::TextDisabled("  bench in the shed rips a log into boards");
+		ImGui::Text("%d logs bucked, %d boards sawn (%d a log)", m_Bucked,
+			m_Milled, BoardsPerLog());
+		ImGui::TextDisabled("  0.60 x pi r^2 L / (50 x 100 x 2400 mm): a mill");
+		ImGui::TextDisabled("  loses the slabs, the edgings and the kerf");
 
 		ImGui::Separator();
 		ImGui::Text("Weights placed: %d of %d", m_Stacked, s_WeightCount);

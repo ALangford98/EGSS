@@ -343,6 +343,27 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **A pool of bodies, not a growing list.** `PhysicsWorld3D` lets a body be
+  rewritten but never removed, so anything that respawns has to reserve its
+  slots once and write into them. `TerrainLab`'s flotsam appended instead, and
+  every press of "Reset the water" doubled the world's body count with the old
+  ones still simulating out of sight. `m_LoosePool` and `ParkLoose` are the
+  shape to copy.
+
+- **A self-test that counts a converted thing twice.** `MillLog` turns the
+  carried log's *own body* into the first board rather than making a new one,
+  so the change in the plank count already includes it. The test added one for
+  it and reported twelve boards from a log that yields eleven -- a 63 % mill
+  recovery, which would mean wood had been created. That impossible number is
+  the only reason it was caught. When a conservation check comes out *above*
+  the bound, suspect the counting before the code.
+
+- **Indexing a lazily filled pool from a test.** `m_Fell` is empty until a tree
+  actually falls, so `m_Fell[0]` in a harness that fabricates a felled crown is
+  out of range. Under `-O2` it did not crash loudly: the run simply ended
+  between two log lines with an exit code of zero, which reads as the test
+  never having run.
+
 - **Never seed scattered things on a triangle's index.** Marching cubes emits
   triangles in lattice order, so editing the field anywhere in a chunk
   renumbers every triangle after the edit and the entire chunk's grass, trees

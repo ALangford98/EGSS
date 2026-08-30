@@ -1264,6 +1264,67 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-30 (a tree becomes logs, a log becomes boards, and nothing is spawned)
+
+The question was whether the floating planks are 2x4s. They are -- **38 x 89 mm,
+which is the *dressed* size** of a nominal 2x4, and dressed is why they look
+thin. Rough off the saw a 2x4 is a full 50 x 100 mm, so that is what the mill
+now cuts, and the difference is visible standing next to both.
+
+Between the standing tree and the plank there are now three steps and each is
+work:
+
+- **Felling** was already there: the axe cuts where the line says it will.
+- **Bucking.** Swing at a felled crown and it is cut into 2.5 m logs along its
+  own axis. How many is how long the tree was, so a big tree is worth more than
+  a small one without any rule saying so.
+- **Milling.** Carry a log to the saw bench in the shed and `T` rips it into
+  boards.
+
+`R` picks a log or a board up and puts it down again -- one slot, because the
+other hand is holding the axe. A carried thing is kinematic and parked in front
+of the eye, so it neither falls nor shoves you downhill while you walk. A
+stockpile is simply wherever you carried them to.
+
+**The yield is arithmetic, not a number someone picked.** A log is
+`pi r^2 L` = pi x 0.17^2 x 2.5 = **0.226980 m^3**. A rough-sawn board is
+2.4 x 0.05 x 0.10 = **0.012 m^3**. A small mill recovers about **60 %** by
+volume -- the slabs off the round, the edgings, and 4 mm of kerf on every cut
+are all sawdust and firewood. So:
+
+    0.60 x 0.226980 / 0.012 = 11.35  ->  eleven boards
+
+Verified against that arithmetic rather than against the code's own copy of it,
+with the pipeline driven from a temporary test so nobody had to hold the keys:
+
+| | measured | expected |
+| --- | --- | --- |
+| logs from an 8.30 m crown | 3 | floor(8.30 / 2.50) = 3 |
+| boards from one log | 11 | 11 |
+| log volume | 0.226980 m^3 | pi r^2 L |
+| board volume | 0.012000 m^3 | 50 x 100 x 2400 mm |
+| realised recovery | 0.5816 | <= 0.60, and 11 x 0.012 / 0.226980 |
+| pine in water | 0.500 | 500 / 1000, half submerged |
+
+Nine checks, nine passed -- but only after the *measurement* was fixed twice.
+The first run said **twelve** boards and a 63 % recovery, which would have meant
+the mill created wood. It had not: `MillLog` turns the carried log's own body
+into the first board, so that one is already inside the change in the plank
+count, and the test added it again. The second was `m_Fell[0]` on a pool that is
+filled lazily when the first tree actually falls, so it was empty and the run
+died silently between two log lines.
+
+**A log is a cylinder in a square collider.** The collider, the mass and the
+displaced volume are all the box; a `Fill` of `pi/4` on the `Loose` entry is
+what makes each of them a cylinder's instead. Same trick the buoyancy sampler
+already used, now doing something.
+
+Two other things fell out of building it. The `Loose` bodies are drawn from a
+**pool of 200** now: they used to be appended to the physics world, and since a
+body can be rewritten but not removed, every press of "Reset the water" doubled
+them. And the boards come off the bench and slide onto the shed floor, because
+the bench is drawn and not a collider -- which looks right and was not planned.
+
 ### 2026-08-29 (digging a hole stops rearranging the county)
 
 Reported: digging seems to re-run the terrain generation -- things shift well
