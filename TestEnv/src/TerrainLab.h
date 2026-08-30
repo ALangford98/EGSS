@@ -949,9 +949,45 @@ private:
 		int Size = 0;
 		float Scale = 1.0f;
 		float CutY = 0.0f;
+
+		// **How far the cut is below the capsule's centre.**
+		//
+		// The body is a capsule about the *middle* of the fallen stem and the
+		// mesh is drawn from its *cut*, and for a long time nothing carried
+		// the distance between them -- the drawing simply put the mesh origin
+		// at the body's position. So the moment a tree came off its stump the
+		// crown jumped half its own length straight up, which is what "it
+		// disappears and comes back a metre in the air" is.
+		float Lift = 0.0f;
+
+		// **The hinge: the strip of uncut wood on the far side of the notch.**
+		// Where the butt is pinned while the tree goes over, and which way it
+		// turns. Cleared once it is most of the way down, after which it is an
+		// ordinary body again.
+		glm::vec3 Hinge = glm::vec3(0.0f);
+		glm::vec3 HingeAxis = glm::vec3(1.0f, 0.0f, 0.0f);
+		bool Hinged = false;
+
 		glm::vec3 Leaf = glm::vec3(0.2f);
 		glm::vec3 Bark = glm::vec3(0.2f);
 	};
+
+	// The transform the fallen crown is drawn with. One function, because the
+	// only way to know the mesh lands where the standing tree left it is to
+	// ask the same matrix the renderer uses.
+	glm::mat4 FelledFrame(const Felled& fell) const
+	{
+		const Egss::RigidBody3D& body = m_World.GetBody(fell.Body);
+
+		// Read right to left: lift the mesh so its own cut height is at the
+		// origin, scale it, slide it down the stem to where the cut is, then
+		// place and turn it with the body.
+		return glm::translate(glm::mat4(1.0f), body.Position)
+			* glm::mat4_cast(body.Orientation)
+			* glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -fell.Lift, 0.0f))
+			* glm::scale(glm::mat4(1.0f), glm::vec3(fell.Scale))
+			* glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -fell.CutY, 0.0f));
+	}
 
 	// **Trees are scattered over the chunk's own triangles, exactly as the
 	// grass is.** A triangle of the mesh cannot disagree with the mesh, so
@@ -2416,10 +2452,14 @@ private:
 	{
 		m_Swing = 1.0f;
 
-		// Nothing standing in front of you: maybe something lying down.
+		// Nothing standing in front of you: maybe something lying down. A
+		// felled top first, then a log -- one key, and which job it does is
+		// whatever the axe is actually pointed at.
 		if (m_AimTree < 0)
 		{
-			BuckNearest();
+			if (!BuckNearest())
+				RiveNearest();
+
 			return;
 		}
 
@@ -2521,6 +2561,12 @@ private:
 
 		glm::vec3 centre = root + glm::vec3(0.0f, above * 0.5f, 0.0f);
 
+		// The cut is half the stem's length below the capsule's centre, which
+		// is the number the drawing needs and never had.
+		slot.Lift = above * 0.5f;
+		slot.Hinge = root;
+		slot.Hinged = true;
+
 		Egss::RigidBody3D body = Egss::RigidBody3D::MakeCapsule(centre, radius,
 			halfHeight, glm::max(mass, 20.0f));
 
@@ -2533,20 +2579,46 @@ private:
 		body.AngularDamping = 0.15f;
 		body.LinearDamping = 0.05f;
 
-		// **It falls the way it was cut.** A hinge on the uncut side is what
-		// makes a felled tree go where the cutter meant it to; the wedge is
-		// on `CutSide`, so the tree tips that way. A nudge rather than a
-		// throw -- gravity does the rest, and a tree that leaps off its stump
-		// looks like a spring.
+		// **It falls the way it was cut, and it falls about its butt.**
+		//
+		// A hinge on the uncut side is what sends a felled tree where the
+		// cutter meant it to go; the wedge is on `CutSide`, so it tips that
+		// way. Two things were wrong with the old nudge and both showed.
+		//
+		// The sign. `omega x r` for a point at `r = (0, h, 0)` under
+		// `omega = (0, 0, w)` is `(-w h, 0, 0)`, so tipping the top toward
+		// `+x` wants `w` negative -- and `cross(up, +x)` is already
+		// `(0, 0, -1)`. Negating it as well sent every tree over backwards,
+		// away from its own notch, while a separate linear nudge pushed the
+		// centre forwards. The two disagreed, which is most of why it read as
+		// a glitch rather than as a fall.
+		//
+		// And the linear part has to be the one the spin implies. A body given
+		// a spin about its centre and a velocity picked separately has no
+		// stationary point: the butt slides sideways off the stump. Setting
+		// `v = omega x (centre - butt)` makes the butt instantaneously still,
+		// which is what a hinge is, and the tree pivots instead of leaping.
 		float c = std::cos(tree.Yaw), sn = std::sin(tree.Yaw);
 
 		glm::vec3 fall(tree.CutSide.x * c + tree.CutSide.y * sn, 0.0f,
 			-tree.CutSide.x * sn + tree.CutSide.y * c);
 
-		body.AngularVelocity = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), fall)
-			* -0.7f;
+		slot.HingeAxis = glm::normalize(
+			glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), fall));
 
-		body.Velocity = fall * 0.25f;
+		// **A nudge sized in metres a second at the tip, not in radians a
+		// second at the middle.** A fixed spin gives a 27 m standard a crown
+		// already doing nine metres a second at the instant of the cut, which
+		// is about the speed it should be doing when it *lands*. Everything a
+		// person sees is the tip, so the tip is what the push is quoted in.
+		slot.Hinged = true;
+
+		body.AngularVelocity = slot.HingeAxis
+			* (s_TipPush / glm::max(above, 0.5f));
+
+		body.Velocity = glm::cross(body.AngularVelocity,
+			glm::vec3(0.0f, above * 0.5f, 0.0f));
+
 		body.Awake = true;
 
 		m_World.GetBody(slot.Body) = body;
@@ -2581,6 +2653,74 @@ private:
 	// friction does not drive things.
 	static constexpr float s_RollResistance = 0.25f;
 
+	// **A felled tree turns on its hinge, and gravity is a torque about the
+	// stump rather than a pull on its middle.**
+	//
+	// Cut through and let go and the crown simply drops. The stump is not a
+	// collider, so it free-falls whatever the cut height was, lands upright,
+	// and topples from there -- which is most of what "it disappears and comes
+	// back about a metre in the air" is describing. No amount of damping fixes
+	// it, because the problem is that nothing is holding the butt.
+	//
+	// What holds it in a real felling is the hinge: the strip of uncut wood on
+	// the far side of the notch, which holds until the tree is most of the way
+	// over and is the whole reason a feller can aim one. With it, the crown is
+	// a rod pivoted at one end, and that has an equation of motion:
+	//
+	//     I = m L^2 / 3,   torque = m g (L/2) sin(theta)
+	//     =>  alpha = (3 g / 2 L) sin(theta)
+	//
+	// with theta from upright. This supplies that torque and then puts the
+	// butt back on the stump, which is what a constraint does. It runs *after*
+	// the solver has integrated, because a projection applied before the step
+	// is a projection the step undoes.
+	//
+	// The hinge lets go at 75 degrees, and the rest is an ordinary falling
+	// body landing on the ground.
+	static constexpr float s_TipPush = 0.80f;      // m/s at the tip, at the cut
+	static constexpr float s_HingeBreak = 75.0f;   // degrees over
+
+	void HoldFalling(float dt)
+	{
+		for (Felled& fell : m_Fell)
+		{
+			if (!fell.Active || !fell.Hinged)
+				continue;
+
+			Egss::RigidBody3D& body = m_World.GetBody(fell.Body);
+
+			glm::vec3 axis = glm::mat3_cast(body.Orientation)
+				* glm::vec3(0.0f, 1.0f, 0.0f);
+
+			float lean = std::acos(glm::clamp(axis.y, -1.0f, 1.0f));
+
+			if (lean > glm::radians(s_HingeBreak))
+			{
+				fell.Hinged = false;
+				continue;
+			}
+
+			float stem = glm::max(2.0f * fell.Lift, 0.2f);
+
+			float alpha = 1.5f * 9.81f * std::sin(lean) / stem;
+
+			float spin = glm::dot(body.AngularVelocity, fell.HingeAxis)
+				+ alpha * dt;
+
+			body.AngularVelocity = fell.HingeAxis * spin;
+
+			// The butt goes back on the stump, and the linear velocity is the
+			// one the spin implies -- anything else and the two describe
+			// different motions.
+			body.Position = fell.Hinge + axis * fell.Lift;
+
+			body.Velocity = glm::cross(body.AngularVelocity,
+				body.Position - fell.Hinge);
+
+			body.Awake = true;
+		}
+	}
+
 	void StepFelled(float dt)
 	{
 		for (Felled& fell : m_Fell)
@@ -2591,6 +2731,10 @@ private:
 			Egss::RigidBody3D& body = m_World.GetBody(fell.Body);
 
 			if (!body.Awake || body.InverseMass <= 0.0f)
+				continue;
+
+			// A tree still on its hinge is being turned, not rolled.
+			if (fell.Hinged)
 				continue;
 
 			// Nothing to roll on in mid-air.
@@ -2661,10 +2805,37 @@ private:
 		return 8.0f * s_BoardHalf[0] * s_BoardHalf[1] * s_BoardHalf[2];
 	}
 
+	// The wood in one loose piece: its box, times how much of the box it is.
+	float LooseVolume(const Loose& loose) const
+	{
+		return loose.Fill * 8.0f * loose.Half.x * loose.Half.y * loose.Half.z;
+	}
+
+	// **How many boards a log is worth is its own volume, not a constant.**
+	//
+	// `BoardsPerLog` returned eleven for every log, and it was right to,
+	// because every log was the same 0.17 m by 2.5 m cylinder. A stem tapers
+	// and trees come in sizes, so a butt log off a standard is worth dozens
+	// and a top log off a pole is worth two -- and nothing has to say so.
+	int BoardsFrom(const Loose& loose) const
+	{
+		return glm::max(1, (int)(s_MillRecovery * LooseVolume(loose)
+			/ BoardVolume()));
+	}
+
+	// The nominal log the timber sizes were fitted against, kept only so the
+	// panel can quote a yardstick.
 	int BoardsPerLog() const
 	{
 		return glm::max(1, (int)(s_MillRecovery * LogVolume() / BoardVolume()));
 	}
+
+	// **The top diameter limit is why the tip of a felled tree is left in the
+	// wood.** Below about 100 mm at the small end a length of stem will not
+	// square up into a board: it is brash, not timber. Every forestry
+	// measurement of a standing tree stops at exactly this rule, and it is
+	// what stops a sapling from yielding anything at all.
+	static constexpr float s_TopDiameter = 0.10f;
 
 	int CountTimber(Flotsam kind) const
 	{
@@ -2717,44 +2888,168 @@ private:
 		if (best < 0)
 			return false;
 
-		Felled& fell = m_Fell[(size_t)best];
+		return BuckFelled((size_t)best);
+	}
+
+	// The cutting itself, split from the aiming so it can be asked a question
+	// without a camera pointed at anything.
+	bool BuckFelled(size_t which)
+	{
+		Felled& fell = m_Fell[which];
 
 		const Egss::RigidBody3D& body = m_World.GetBody(fell.Body);
 
-		float length = 2.0f * (body.HalfHeight + body.Radius);
+		// **A log is the piece of stem it was cut from, and a stem tapers.**
+		//
+		// This used to make N identical 0.17 m logs, so a 24 m conifer and a
+		// 5 m pole gave the same timber and only the count differed. A stem is
+		// a cone near enough: it carries the trunk's own radius at the cut and
+		// runs out toward the tip, so the butt log is fat, each one above it
+		// is thinner, and a big tree is worth felling without anything having
+		// to say so.
+		float stem = glm::max(2.0f * fell.Lift, 0.2f);
 
-		int logs = glm::max(1, (int)(length / s_LogLength));
+		float butt = glm::max(
+			m_TreeTrunk[fell.Shape][fell.Size] * fell.Scale, 0.01f);
 
 		glm::mat3 frame = glm::mat3_cast(body.Orientation);
 
 		glm::vec3 along = frame * glm::vec3(0.0f, 1.0f, 0.0f);
 
-		for (int i = 0; i < logs; i++)
-		{
-			float t = (2.0f * (float)i + 1.0f - (float)logs) * 0.5f
-				* s_LogLength;
+		// The butt end, half a stem back down the capsule's own axis.
+		glm::vec3 root = body.Position - along * fell.Lift;
 
-			glm::vec3 at = body.Position + along * t
-				+ glm::vec3(0.0f, 0.05f * (float)i, 0.0f);
+		int logs = 0;
+
+		for (int i = 0; i < s_MaxLogs; i++)
+		{
+			float from = (float)i * s_LogLength;
+			float to = from + s_LogLength;
+
+			if (to > stem)
+				break;
+
+			// The small end has to make the grade or the rest is brash.
+			if (2.0f * butt * (1.0f - to / stem) < s_TopDiameter)
+				break;
+
+			float radius = butt * (1.0f - 0.5f * (from + to) / stem);
+
+			glm::vec3 at = root + along * (0.5f * (from + to));
+
+			// Set down on the ground rather than left along the axis of a
+			// capsule that may be lying at any angle: logs of different
+			// thickness strung along one line half bury the thin ones.
+			at.y = glm::max(at.y, Height(at.x, at.z) + radius + 0.05f);
 
 			float yaw = std::atan2(along.x, along.z);
 
 			// A log is a cylinder in a square box: the collider and the
 			// displacement are the box, the `Fill` is what makes both of them
 			// a cylinder's.
-			AddLoose(at, glm::vec3(0.5f * s_LogLength, s_LogRadius,
-				s_LogRadius), s_Pine, Flotsam::Log,
-				glm::vec3(0.44f, 0.31f, 0.18f), yaw - glm::half_pi<float>(),
-				glm::pi<float>() * 0.25f);
+			AddLoose(at, glm::vec3(0.5f * s_LogLength, radius, radius),
+				s_Pine, Flotsam::Log, glm::vec3(0.44f, 0.31f, 0.18f),
+				yaw - glm::half_pi<float>(), glm::pi<float>() * 0.25f);
+
+			logs++;
 		}
 
-		// The top is gone: it is these logs now.
+		// The top is gone -- it is these logs now, or it was brash and there
+		// is nothing to show for it, which is what felling a sapling is worth.
 		fell.Active = false;
 
 		m_World.GetBody(fell.Body) = Egss::RigidBody3D::MakeStaticSphere(
 			glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f);
 
 		m_Bucked += logs;
+
+		return true;
+	}
+
+	// **Riving: a log too heavy to shoulder is split down its length.**
+	//
+	// A butt log off a standard is 1.3 m^3, which is six hundred kilograms of
+	// pine. Nothing anybody lifts -- and the alternative to splitting it is
+	// felling only small trees, which is the opposite of the point of having
+	// sizes. Riving is what actually happens to a log that has to be moved by
+	// hand: halved down the grain, and halved again, until a piece is a piece
+	// a person can carry.
+	//
+	// **Nothing is lost, which is the same rule the rest of this runs on.**
+	// Each half keeps the full length and half the cross-section, so the
+	// radius goes down by sqrt(2) and the volume -- and therefore the board
+	// count -- is exactly conserved.
+	bool RiveNearest()
+	{
+		glm::vec3 origin = m_Camera.GetPosition();
+		glm::vec3 direction = m_Camera.GetForward();
+
+		int best = -1;
+		float nearest = s_AxeReach;
+
+		for (size_t i = 0; i < m_Loose.size(); i++)
+		{
+			if (m_Loose[i].Kind != Flotsam::Log || m_Loose[i].Carried)
+				continue;
+
+			const Egss::RigidBody3D& body = m_World.GetBody(m_Loose[i].Body);
+
+			glm::vec3 to = body.Position - origin;
+
+			float along = glm::dot(to, direction);
+
+			if (along < 0.0f || along > nearest)
+				continue;
+
+			if (glm::length(to - direction * along)
+				> glm::length(m_Loose[i].Half))
+				continue;
+
+			nearest = along;
+			best = (int)i;
+		}
+
+		if (best < 0)
+			return false;
+
+		Loose& log = m_Loose[(size_t)best];
+
+		// Under a board's width there is nothing left to split into.
+		if (2.0f * log.Half.y < 2.0f * s_BoardHalf[2])
+			return false;
+
+		float radius = log.Half.y * 0.70710678f;
+
+		Egss::RigidBody3D& body = m_World.GetBody(log.Body);
+
+		glm::vec3 at = body.Position;
+		glm::quat turn = body.Orientation;
+
+		// Across the log rather than along it, so the two halves fall apart
+		// instead of into each other.
+		glm::vec3 aside = glm::mat3_cast(turn) * glm::vec3(0.0f, 0.0f, 1.0f);
+
+		log.Half = glm::vec3(log.Half.x, radius, radius);
+
+		float mass = s_Pine * log.Fill * 8.0f * log.Half.x * radius * radius;
+
+		body = Egss::RigidBody3D::MakeBox(at - aside * (radius * 1.05f),
+			log.Half, mass);
+
+		body.Orientation = turn;
+		body.Friction = 0.7f;
+		body.Restitution = 0.02f;
+		body.AngularDamping = 0.02f;
+		body.Awake = true;
+		body.UpdateInertiaWorld();
+
+		int made = AddLoose(at + aside * (radius * 1.05f), log.Half, s_Pine,
+			Flotsam::Log, glm::vec3(0.46f, 0.33f, 0.20f), 0.0f, log.Fill);
+
+		if (made >= 0)
+			m_World.GetBody(m_Loose[(size_t)made].Body).Orientation = turn;
+
+		m_Riven++;
 
 		return true;
 	}
@@ -2784,7 +3079,17 @@ private:
 	// off the floor of the whole room in one press.
 	static constexpr float s_ArmSpread = 1.6f;
 
+	// **And a ceiling on a single piece.** "The first piece is always allowed"
+	// was right while the heaviest thing in the world was a 113 kg log: over
+	// the budget, but a struggle rather than a refusal. Butt logs now run to
+	// six hundred kilograms, and there is no reading of "struggle" that covers
+	// shouldering half a tonne. Four times the budget is the limit; past it
+	// the answer is the axe, not the arms.
+	static constexpr float s_LiftCeiling = 4.0f;
+
 	float CarryLimit() const { return s_Strength * s_CarryPerStrength; }
+
+	float LiftLimit() const { return CarryLimit() * s_LiftCeiling; }
 
 	bool Carrying() const { return !m_Carry.empty(); }
 
@@ -2888,6 +3193,14 @@ private:
 
 		if (best < 0)
 			return;
+
+		// Too heavy to shoulder at all. Nothing happens, and what to do about
+		// it is rive it.
+		if (m_World.GetBody(m_Loose[(size_t)best].Body).GetMass() > LiftLimit())
+		{
+			m_TooHeavy = 1.2f;
+			return;
+		}
 
 		Take(best);
 
@@ -2999,7 +3312,7 @@ private:
 		if (glm::length(body.Position - SawBench()) > 3.0f)
 			return;
 
-		int boards = BoardsPerLog();
+		int boards = BoardsFrom(held);
 
 		glm::vec3 stack = SawBench() + glm::vec3(0.0f, 0.35f, 0.0f);
 
@@ -4278,6 +4591,8 @@ private:
 			StepFelled(slice);
 
 			m_World.Step(slice);
+
+			HoldFalling(slice);
 		}
 
 		if (m_DeployOnStart)
@@ -4370,7 +4685,15 @@ private:
 	// carried one" asks the list instead.
 	std::vector<int> m_Carry;
 	int m_Bucked = 0;
+	int m_Riven = 0;
 	int m_Milled = 0;
+
+	// Seconds left on "that is too heavy", so the refusal says something.
+	float m_TooHeavy = 0.0f;
+
+	// Twenty-four is longer than any stem the tallest habit grows: a bound on
+	// the loop, not a rule about trees.
+	static constexpr int s_MaxLogs = 24;
 
 	// The saved designs. Two to start with, because a floor and a wall are the
 	// two things a panel can be and having both there is what makes the third
@@ -4408,13 +4731,25 @@ private:
 	// three meshes and cannot be one mesh scaled.
 	static constexpr int s_TreeSizes = 3;
 
-	static constexpr float s_TreeScale[s_TreeSizes] = { 0.5f, 1.0f, 1.8f };
+	// **Grown, not thickened.** The first answer to "the trees are too thin"
+	// was to fatten the trunks, and the measurement said not to: the biggest
+	// standard here already stood at H/D 29 with an 0.80 m butt, which is a
+	// *stout* tree -- a forest conifer runs H/D 40 to 60. Nothing was slender.
+	// What was wrong was the stand. Nearly half of it was the smallest class,
+	// and the smallest class of a scrub is a 2 cm stick.
+	//
+	// So the classes moved up and the mix moved with them. Radius follows
+	// height as H^(3/2), so a scale of 1.4 on the smallest class is 1.66 on
+	// its trunk -- which is why growing the tree is a better lever on
+	// thickness than thickening it, and keeps the allometry honest.
+	static constexpr float s_TreeScale[s_TreeSizes] = { 0.7f, 1.2f, 1.9f };
 
 	// Small trees outnumber large ones in any stand that has been left alone:
 	// a great many seedlings, fewer poles, a handful of standards. Not the
 	// -3/2 self-thinning law, which needs a stand history this does not have,
-	// but the same shape.
-	static constexpr float s_TreeShare[s_TreeSizes] = { 0.46f, 0.36f, 0.18f };
+	// but the same shape -- flattened, because a wood that is half saplings
+	// has nothing in it worth felling.
+	static constexpr float s_TreeShare[s_TreeSizes] = { 0.34f, 0.40f, 0.26f };
 
 	// The trunk's radius at the base and the finished height, per habit and
 	// size, measured off the mesh as it is built. The axe needs both: the
@@ -6456,18 +6791,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 			if (!fell.Active)
 				continue;
 
-			const Egss::RigidBody3D& body = m_World.GetBody(fell.Body);
-
-			// **The mesh is drawn about the cut, not about its own root.**
-			// The body's origin is where the trunk parted, so the mesh has to
-			// be slid down by the cut height *inside* the scale -- which is
-			// what the last translate does, and why it is last.
-			glm::mat4 transform =
-				glm::translate(glm::mat4(1.0f), body.Position)
-				* glm::mat4_cast(body.Orientation)
-				* glm::scale(glm::mat4(1.0f), glm::vec3(fell.Scale))
-				* glm::translate(glm::mat4(1.0f),
-					glm::vec3(0.0f, -fell.CutY, 0.0f));
+			glm::mat4 transform = FelledFrame(fell);
 
 			m_TreeMaterial->Set("u_CutY", fell.CutY);
 
@@ -7371,8 +7695,10 @@ inline void TerrainLab::OnDemoImGui()
 				CarryLimit());
 			ImGui::TextDisabled("  is 113 kg and goes on one shoulder, slowly");
 		}
-		ImGui::Text("%d logs bucked, %d boards sawn (%d a log)", m_Bucked,
-			m_Milled, BoardsPerLog());
+		ImGui::Text("%d logs bucked, %d riven, %d boards sawn", m_Bucked,
+			m_Riven, m_Milled);
+		ImGui::TextDisabled("  a nominal %.2f m log is %d boards;"
+			" a real one is its own volume", s_LogLength, BoardsPerLog());
 		ImGui::TextDisabled("  0.60 x pi r^2 L / (50 x 100 x 2400 mm): a mill");
 		ImGui::TextDisabled("  loses the slabs, the edgings and the kerf");
 
