@@ -142,6 +142,7 @@ public:
 		// middle cell is the bottom of the lake and opens you underwater.
 		// From the rim you are looking across it.
 		GoTo(spawn);
+
 	}
 
 private:
@@ -452,7 +453,51 @@ private:
 		return glm::mix(glm::mix(a, b, fx), glm::mix(c, d, fx), fy) * 2.0f - 1.0f;
 	}
 
+	// **The ground under the workshop is levelled, and the terrace lives in
+	// `Height` so that nothing has to be told about it.**
+	//
+	// The first attempt looked for ground flat enough to build on and the
+	// measurement killed it: the flattest 8 m square anywhere on a ring 22 m
+	// out still varied **4.16 m**, which is a five-metre plinth and a doorway
+	// two metres above the path. There is no flat ground on this terrain, so
+	// the site is cut and filled instead -- which is what actually happens
+	// when a building goes on a hill.
+	//
+	// Folding it into `Height` rather than into `Density` is the whole trick.
+	// The slope, the distance field, the mesh, the grass, the trees, the
+	// boulders and the walker's ground query all read the terrain through
+	// this one function, so every one of them sees the terrace and not one of
+	// them needed a line changed.
+	static constexpr float s_PadEdge = 1.2f;   // pad beyond the walls
+	static constexpr float s_PadApron = 5.0f;  // and the ramp back to the hill
+
 	float Height(float x, float z) const
+	{
+		float h = RawHeight(x, z);
+
+		if (!m_Terraced)
+			return h;
+
+		// A square pad with a smooth apron: `t` is 1 on the pad, 0 past it.
+		float out = glm::max(glm::max(
+			std::abs(x - m_ShedAt.x) - (s_ShedHalf + s_PadEdge),
+			std::abs(z - m_ShedAt.z) - (s_ShedHalf + s_PadEdge)), 0.0f);
+
+		float t = 1.0f - glm::smoothstep(0.0f, s_PadApron, out);
+
+		return glm::mix(h, m_ShedAt.y - s_ShedFloor, t);
+	}
+
+	// True on the levelled pad, which is where nothing grows and no boulder
+	// was ever bedded.
+	bool OnShedPad(float x, float z, float margin = 0.0f) const
+	{
+		return m_Terraced
+			&& std::abs(x - m_ShedAt.x) < s_ShedHalf + s_PadEdge + margin
+			&& std::abs(z - m_ShedAt.z) < s_ShedHalf + s_PadEdge + margin;
+	}
+
+	float RawHeight(float x, float z) const
 	{
 		float frequency = 1.0f / glm::max(m_Shape.FeatureSize, 1.0f);
 
@@ -583,6 +628,11 @@ private:
 
 	void Generate()
 	{
+		// **Before the fill, because the fill reads `Height` and `Height` now
+		// carries the terrace.** Siting it afterwards would cut the pad into
+		// a field that had already been sampled without it.
+		SiteShed();
+
 		float half = 0.5f * Extent();
 
 		m_Field = std::make_shared<Egss::VoxelField3D>();
@@ -600,6 +650,17 @@ private:
 
 	void BuildWorld()
 	{
+		// **Every handle into the world dies here.** `Clear` empties the body
+		// list and the next `AddBody` starts again at zero, so a pool kept
+		// across a regenerate is not stale -- it is aimed at somebody else's
+		// body. The loose timber has always been cleared; the felled tops and
+		// the panels were not, and a panel that survived a slider drag came
+		// back owning the walker.
+		m_Fell.clear();
+		m_Panels.clear();
+		m_PanelPool.clear();
+		m_Carry.clear();
+
 		m_World.Clear();
 		m_World.Gravity = { 0.0f, -9.81f, 0.0f };
 
@@ -703,8 +764,9 @@ private:
 		// instead of stopping on the chunk line.
 		auto allow = [this](const glm::vec3& at, const glm::vec3&)
 		{
-			// Nothing grows on the inside of a hole you dug.
-			if (!OnSurface(at))
+			// Nothing grows on the inside of a hole you dug, and nothing
+			// grows on the workshop floor.
+			if (!OnSurface(at) || OnShedPad(at.x, at.z))
 				return 0.0f;
 
 			glm::vec2 climate = ClimateAt(at.x, at.z);
@@ -1151,7 +1213,8 @@ private:
 				glm::vec3 root = a + (b - a) * (su * (1.0f - v))
 					+ (c - a) * (su * v);
 
-				if (!OnSurface(root))
+				// Nothing was left standing where the pad was cut.
+				if (!OnSurface(root) || OnShedPad(root.x, root.z, 1.0f))
 					continue;
 
 				Tree tree;
@@ -1587,6 +1650,11 @@ private:
 
 				glm::vec3 at = a + (b - a) * (su * (1.0f - v))
 					+ (c - a) * (su * v);
+
+				// The pad was levelled; anything that was lying on it was
+				// cleared with the earth.
+				if (OnShedPad(at.x, at.z, 1.0f))
+					continue;
 
 				// Asked at the stone's own place rather than at the triangle's
 				// centre: a big triangle on the rim of a hole can have its
@@ -3066,12 +3134,6 @@ private:
 		glm::vec3 At = glm::vec3(0.0f);
 		float Yaw = 0.0f;
 		bool Placed = false;
-
-		// **Which room it is in.** The shed is a real place in the world, 400 m
-		// up, and everything else in it is drawn only while you are there. A
-		// panel that ignored the distinction hung in the sky over the map --
-		// which is exactly what it looks like from outside.
-		bool InShed = false;
 	};
 
 	float BoardLength() const { return 2.0f * s_BoardHalf[0]; }
@@ -3538,11 +3600,10 @@ private:
 
 		float ground = m_World.GroundHeightBelow(
 			glm::vec3(at.x, m_Camera.GetPosition().y, at.z), m_Walker,
-			m_InShed ? ShedCentre().y : -1000.0f);
+			-1000.0f);
 
 		panel.At = glm::vec3(at.x, ground + clear, at.z);
 		panel.Placed = true;
-		panel.InShed = m_InShed;
 
 		Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(panel.At, half,
 			0.0f);
@@ -3558,19 +3619,16 @@ private:
 		m_Placed++;
 	}
 
-	void DrawPanels(bool inShed);
+	void DrawPanels();
 	void DrawPrefabEditor();
 
 	// --- The portal and the toolshed ------------------------------------------
 	//
 	// **A door you can carry, and a room that is not where the door is.**
 	//
-	// The shed is built once, four hundred metres below the block, and stays
-	// there. Deploying the portal does not create it -- it creates a *way in*.
-	// That is the whole idea of a pocket dimension and it is worth building the
-	// cheap version first: the room is somewhere the terrain is not, so it
-	// needs no hole cut in the ground, no clipping against the world, and its
-	// floor is a box rather than a heightfield.
+	// The shed is a building on the map. Deploying the portal does not create
+	// it -- it creates a *shortcut* to its doorway, which is what a door you
+	// can carry has always looked like from the outside.
 	//
 	// **Crossing is a plane test, not a trigger volume.** A box you must be
 	// inside for a frame can be stepped through at speed -- the player is at
@@ -3579,20 +3637,22 @@ private:
 	// the doorway the player was on last step and is on now cannot be outrun,
 	// because the two positions bracket the crossing however fast it happened.
 
-	// **Above the block, not below it, and the reason is the ground collider.**
+	// **It used to be a pocket dimension, four hundred metres above the block,
+	// and that was the wrong shape for it.**
 	//
-	// The shed was first put 400 m *under* the terrain, which placed the player
-	// correctly and then shoved them upward at ninety-five metres a step. The
-	// ground is an SDF collider over the voxel field, and the field is only
-	// defined across the block: below it every query reads as solid, so the
-	// solver was doing exactly its job -- pushing a body out of rock that goes
-	// down for ever.
+	// Above rather than below, because the ground is an SDF over the voxel
+	// field and the field is only defined across the block: below it every
+	// query reads as solid, so a room down there had the solver shoving the
+	// player upward at ninety-five metres a step, doing exactly its job.
+	// Above it the same query reads as air and a room is left alone.
 	//
-	// Above the field the same query reads as air, so a room up there is left
-	// alone. The asymmetry is in the field, not in the collider, and putting
-	// the pocket dimension in the sky costs nothing -- nobody can see it, which
-	// is rather the point of a pocket dimension.
-	static constexpr float s_ShedDrop = -400.0f;
+	// It worked, and it still made the only building in the demo a place that
+	// did not exist until you deployed a door to it -- you could not see it,
+	// walk to it, or put a panel down beside it. A workshop you cannot find is
+	// not a workshop. So it stands on the terrain now, and **none of the
+	// portal code changed**: the second camera and the plane test never cared
+	// that the two doorways were in different worlds, only that they were two
+	// doorways.
 	static constexpr float s_ShedHalf = 4.0f;     // the room is 8 m square
 	static constexpr float s_DoorHalf = 1.1f;     // half the doorway's width
 
@@ -3602,15 +3662,119 @@ private:
 	// lintel hanging in mid-air above the frame. One constant for both.
 	static constexpr float s_DoorTop = 2.45f;
 
-	glm::vec3 ShedCentre() const
-	{
-		return glm::vec3(0.0f, -s_ShedDrop, 0.0f);
-	}
+	// The top of the floor, at the middle of the room. Chosen once by
+	// `SiteShed` and then fixed: everything in the building is an offset from
+	// it, so the whole workshop moves by writing one vector.
+	glm::vec3 ShedCentre() const { return m_ShedAt; }
 
 	// The doorway inside the shed, which is the way back out.
 	glm::vec3 ShedDoor() const
 	{
 		return ShedCentre() + glm::vec3(0.0f, 0.0f, -s_ShedHalf);
+	}
+
+	// **Sited where the least earth has to move.**
+	//
+	// Once the ground is going to be levelled anyway, "flattest" stops being
+	// the question. What a real siting minimises is cut and fill: how much
+	// earth has to be shifted to make the pad. Balanced cut and fill puts the
+	// pad at the **mean** ground height over the footprint, and the cost is
+	// then the mean absolute deviation from it -- which is cubic metres of
+	// earth per square metre of pad, a number with units rather than a score.
+	//
+	// The search is a ring band rather than the whole block: near enough to
+	// find on foot from the spawn in the middle, far enough out to clear the
+	// water pit that is there.
+	static constexpr int s_ShedProbe = 9;       // samples across the footprint
+	static constexpr float s_ShedNear = 14.0f;
+	static constexpr float s_ShedFar = 30.0f;
+
+	// How far the floor stands above the levelled ground: a threshold. Not
+	// zero, because a slab whose top is exactly at ground level is coplanar
+	// with the terrain across the whole room, and coplanar surfaces flicker.
+	static constexpr float s_ShedFloor = 0.15f;
+	static constexpr float s_ShedSlab = 0.45f;
+
+	// The pad, and the earth moved to make it, at one spot. `level` comes back
+	// as the height that balances cut against fill.
+	float ShedCutFill(float x, float z, float& level) const
+	{
+		float sum = 0.0f;
+
+		const float reach = s_ShedHalf + s_PadEdge;
+
+		for (int a = 0; a < s_ShedProbe; a++)
+		for (int b = 0; b < s_ShedProbe; b++)
+		{
+			float u = (float)a / (float)(s_ShedProbe - 1) * 2.0f - 1.0f;
+			float v = (float)b / (float)(s_ShedProbe - 1) * 2.0f - 1.0f;
+
+			sum += RawHeight(x + u * reach, z + v * reach);
+		}
+
+		level = sum / (float)(s_ShedProbe * s_ShedProbe);
+
+		float moved = 0.0f;
+
+		for (int a = 0; a < s_ShedProbe; a++)
+		for (int b = 0; b < s_ShedProbe; b++)
+		{
+			float u = (float)a / (float)(s_ShedProbe - 1) * 2.0f - 1.0f;
+			float v = (float)b / (float)(s_ShedProbe - 1) * 2.0f - 1.0f;
+
+			moved += std::abs(
+				RawHeight(x + u * reach, z + v * reach) - level);
+		}
+
+		return moved / (float)(s_ShedProbe * s_ShedProbe);
+	}
+
+	void SiteShed()
+	{
+		// Sited off the bare terrain, so the search cannot read a terrace it
+		// is in the middle of choosing.
+		m_Terraced = false;
+
+		float best = 1.0e9f;
+		float bestLevel = 0.0f;
+
+		glm::vec3 at(0.0f, 0.0f, s_ShedNear);
+
+		const int rings = 5, spokes = 32;
+
+		for (int r = 0; r < rings; r++)
+		for (int k = 0; k < spokes; k++)
+		{
+			float radius = glm::mix(s_ShedNear, s_ShedFar,
+				(float)r / (float)(rings - 1));
+
+			// Offset every ring by half a step so the spokes do not all lie
+			// along the same lines and sample the same noise ridges.
+			float angle = ((float)k + 0.5f * (float)r)
+				* glm::two_pi<float>() / (float)spokes;
+
+			float x = std::cos(angle) * radius;
+			float z = std::sin(angle) * radius;
+
+			float level = 0.0f;
+			float moved = ShedCutFill(x, z, level);
+
+			// A workshop in the lake is not a workshop.
+			if (HasWater() && level < WaterLevel() + 1.0f)
+				continue;
+
+			if (moved >= best)
+				continue;
+
+			best = moved;
+			bestLevel = level;
+			at = glm::vec3(x, 0.0f, z);
+		}
+
+		m_ShedAt = glm::vec3(at.x, bestLevel + s_ShedFloor, at.z);
+		m_ShedMoved = best;
+
+		m_Terraced = true;
 	}
 
 	void BuildShed()
@@ -3632,8 +3796,18 @@ private:
 
 		const float h = s_ShedHalf;
 
-		wall(centre + glm::vec3(0.0f, -0.25f, 0.0f), { h, 0.25f, h });
-		wall(centre + glm::vec3(0.0f, 3.25f, 0.0f), { h, 0.25f, h });
+		// The floor slab: its top is the floor, and it is thick enough that
+		// its underside is buried in the pad rather than showing daylight.
+		wall(centre - glm::vec3(0.0f, 0.5f * s_ShedSlab, 0.0f),
+			{ h, 0.5f * s_ShedSlab, h });
+
+		// **The roof sits on the walls and overhangs them.** It used to span
+		// the same 3.0 to 3.5 the wall tops run through, so its faces and
+		// theirs were interpenetrating and the eaves came out as a row of
+		// z-fighting stripes -- invisible from inside a dark room, and the
+		// first thing you see walking up to a building.
+		wall(centre + glm::vec3(0.0f, 3.425f, 0.0f),
+			{ h + 0.35f, 0.175f, h + 0.35f });
 		wall(centre + glm::vec3(-h, 1.5f, 0.0f), { 0.25f, 1.75f, h });
 		wall(centre + glm::vec3(h, 1.5f, 0.0f), { 0.25f, 1.75f, h });
 		wall(centre + glm::vec3(0.0f, 1.5f, h), { h, 1.75f, 0.25f });
@@ -3802,7 +3976,7 @@ private:
 
 		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
 
-		if (!m_InShed)
+		if (!m_ViaPortal)
 		{
 			float side = DoorSide(body.Position, m_PortalAt, m_PortalYaw);
 
@@ -3826,7 +4000,7 @@ private:
 
 				StepThrough(from, { ShedDoor(), 0.0f });
 
-				m_InShed = true;
+				m_ViaPortal = true;
 				m_ShedSide = DoorSide(body.Position, ShedDoor(), 0.0f);
 			}
 
@@ -3842,7 +4016,7 @@ private:
 		{
 			StepThrough(ShedSideDoor(), ReturnDoor());
 
-			m_InShed = false;
+			m_ViaPortal = false;
 			m_PortalSide = DoorSide(body.Position, m_PortalAt, m_PortalYaw);
 		}
 
@@ -4391,8 +4565,20 @@ private:
 	bool m_WasCarry = false;
 	bool m_WasMill = false;
 
+	// Where the workshop ended up, whether its terrace is in `Height` yet, and
+	// the earth its pad cost -- the last only so the panel can say.
+	glm::vec3 m_ShedAt = glm::vec3(0.0f, 0.0f, s_ShedNear);
+	bool m_Terraced = false;
+	float m_ShedMoved = 0.0f;
+
 	bool m_PortalOn = false;
-	bool m_InShed = false;
+
+	// **Not "am I in the shed" -- "did I get here through the door I carry".**
+	// The shed is a place on the map, so being inside it is a question about
+	// position and the portal has no business answering it. What the link
+	// needs to know is whether stepping out of the shed's doorway should put
+	// you back at the frame or just outside the shed, and that is this.
+	bool m_ViaPortal = false;
 	glm::vec3 m_PortalAt = glm::vec3(0.0f);
 	float m_PortalYaw = 0.0f;
 	float m_PortalSide = 0.0f;
@@ -5460,8 +5646,30 @@ inline void TerrainLab::BuildTrees()
 			vec3 tone = (!gl_FrontFacing && trunk)
 				? vec3(0.74, 0.62, 0.44) : u_Color;
 
+			// **Light off the ground, which is what stops a shaded wall from
+			// being black.**
+			//
+			// The dome above only lights what faces up. Outdoors the other
+			// half of the sphere is ground, and ground returns a good part of
+			// what the sun puts on it -- which is why the north face of a
+			// building on a bright day is dim and not dark. Leaving it out
+			// did not show while the only things using this shader were trees
+			// and a room nobody could see from outside; the moment the shed
+			// stood in a field its door wall came out at **4%** of the sunlit
+			// sand a metre in front of it, which is a night-time number in
+			// full daylight.
+			//
+			// One constant albedo rather than the terrain's own colour under
+			// each fragment: this is the term that stops a wall being black,
+			// not a radiosity solve, and a wall does not see the ground it
+			// stands on so much as the whole field around it.
+			const vec3 albedo = vec3(0.42, 0.38, 0.30);
+
+			vec3 bounce = albedo * u_SunColor
+				* max(-u_SunDirection.y, 0.0) * (0.5 - 0.5 * normal.y);
+
 			vec3 lit = tone * (u_SkyColor * dome * u_Ambient
-				+ u_SunColor * diffuse);
+				+ u_SunColor * diffuse + bounce);
 
 			// The aim line, added rather than mixed so it reads on bark and on
 			// leaves alike and cannot be mistaken for either.
@@ -5950,7 +6158,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	// at its own screen position -- which is what makes the angle right for
 	// free: both cameras share a projection, so the pixel behind the doorway
 	// in the portal view *is* the pixel that belongs there.
-	if (m_SeeThrough && (m_PortalOn || m_InShed))
+	if (m_SeeThrough && (m_PortalOn || m_ViaPortal))
 		DrawPortalView();
 
 	DrawScene(m_Camera, Pass::Main);
@@ -5962,13 +6170,16 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 // time from somewhere else. The pass says which side of the doorway is being
 // drawn, and that is the only thing that differs between the three:
 //
-//   Main     -- the world, plus the shed if you are standing in it.
-//   ToShed   -- the room alone, which is all that is on the far side of a
-//               doorway planted in a field. No sky, no ground: there is none
-//               there, and drawing the terrain again to have it fall outside
-//               the frustum would cost the whole scene for nothing.
-//   ToWorld  -- the world without the room, which is what is on the far side
-//               of the shed's own door.
+//   Main     -- what the eye sees.
+//   ToShed   -- the same world from the shed's doorway, which is what is on
+//               the far side of a portal planted in a field.
+//   ToWorld  -- the same world from the planted frame, which is what is on
+//               the far side of the shed's own door while the link is live.
+//
+// The three used to differ in *what* was drawn, because the shed was four
+// hundred metres up and the terrain was not there. It is on the map now, so
+// they differ only in where the camera stands -- which is what a portal
+// between two doorways in one world ought to cost.
 //
 // The doorway's panel is drawn only in `Main`, which is what stops a portal
 // from recursing into itself.
@@ -5983,27 +6194,6 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 
 	glm::vec3 sunColour = SunColour();
 	glm::vec2 windMean = MeanWind();
-
-	// **The room, and nothing else.** A doorway planted in a field has a shed
-	// on the other side of it and no sky, no ground and no weather -- so the
-	// pass that draws what is through it draws six boxes and stops. Rendering
-	// the terrain again to have all of it fall outside the frustum would cost
-	// the whole scene for nothing, and the frustum is the only thing that
-	// would have thrown it away.
-	if (pass == Pass::ToShed)
-	{
-		Egss::RenderCommand::SetClearColor({ 0.015f, 0.014f, 0.02f, 1.0f });
-		Egss::RenderCommand::Clear();
-
-		Egss::Renderer::BeginScene(camera);
-
-		DrawShed();
-		DrawPanels(true);
-
-		Egss::Renderer::EndScene();
-
-		return;
-	}
 
 	Egss::RenderCommand::SetClearColor(
 		{ skyColour.r, skyColour.g, skyColour.b, 1.0f });
@@ -6377,13 +6567,12 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 		}
 	}
 
-	// Only the panels in the room being drawn. The pass that looks through
-	// the doorway into the shed returns before reaching here and asks for the
-	// other room itself.
-	DrawPanels(pass != Pass::ToWorld && m_InShed);
+	DrawPanels();
 
-	// **The doorway, the room if you are in it, and the picture in the
-	// doorway.**
+	// The workshop, which is a building on the map like anything else.
+	DrawShed();
+
+	// **The picture in the doorway.**
 	//
 	// The panel between the posts used to be a flat dark board, and it said so
 	// in a comment: what made the door work was the plane test, not the
@@ -6397,8 +6586,6 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 	// the doorway. There is nothing to line up by hand, no projected quad and
 	// no matrix to get subtly wrong; walk sideways and the view slides the way
 	// a view through a window slides, because it is one.
-	if (pass != Pass::ToWorld && m_InShed)
-		DrawShed();
 
 	if (m_PortalOn)
 		DrawDoorFrame();
@@ -6406,12 +6593,12 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 	if (pass == Pass::Main)
 	{
 		bool through = m_SeeThrough && m_PortalTexture
-			&& (m_InShed || m_PortalOn);
+			&& (m_ViaPortal || m_PortalOn);
 
-		glm::vec3 at = m_InShed ? ShedDoor() : m_PortalAt;
-		float yaw = m_InShed ? 0.0f : m_PortalYaw;
+		glm::vec3 at = m_ViaPortal ? ShedDoor() : m_PortalAt;
+		float yaw = m_ViaPortal ? 0.0f : m_PortalYaw;
 
-		if (m_InShed || m_PortalOn)
+		if (m_ViaPortal || m_PortalOn)
 		{
 			if (through)
 			{
@@ -6427,7 +6614,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 
 				Egss::Renderer::Submit(m_PortalMaterial, m_Cube, transform);
 			}
-			else if (!m_InShed)
+			else if (!m_ViaPortal)
 			{
 				DrawBox(at + glm::vec3(0.0f, 0.5f * s_DoorTop, 0.0f),
 					{ s_DoorHalf, 0.5f * s_DoorTop, 0.02f }, yaw,
@@ -6492,7 +6679,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 // trees -- a smooth slab would say nothing about where it came from, and the
 // board count would be invisible in exactly the object whose cost is a board
 // count.
-inline void TerrainLab::DrawPanels(bool inShed)
+inline void TerrainLab::DrawPanels()
 {
 	if (!m_Cube || m_Panels.empty())
 		return;
@@ -6511,7 +6698,7 @@ inline void TerrainLab::DrawPanels(bool inShed)
 
 	for (const Panel& panel : m_Panels)
 	{
-		if (!panel.Placed || panel.InShed != inShed)
+		if (!panel.Placed)
 			continue;
 
 		glm::ivec2 low, high;
@@ -6806,11 +6993,16 @@ inline void TerrainLab::DrawShed()
 	glm::vec3 centre = ShedCentre();
 	const float h = s_ShedHalf;
 
-	glm::vec3 plank(0.30f, 0.22f, 0.15f);
+	// **Sawn timber, not the near-black it was.** The old colour was picked
+	// for a room lit by ambient alone, where anything lighter glared. Outdoors
+	// beside sunlit ground it came out at 4% of the sand's brightness -- the
+	// building read as a hole in the hill. Weathered boards are about this.
+	glm::vec3 plank(0.58f, 0.47f, 0.35f);
 
-	DrawBox(centre + glm::vec3(0.0f, -0.25f, 0.0f), { h, 0.25f, h }, 0.0f,
-		glm::vec3(0.24f, 0.18f, 0.12f));
-	DrawBox(centre + glm::vec3(0.0f, 3.25f, 0.0f), { h, 0.25f, h }, 0.0f, plank);
+	DrawBox(centre - glm::vec3(0.0f, 0.5f * s_ShedSlab, 0.0f),
+		{ h, 0.5f * s_ShedSlab, h }, 0.0f, glm::vec3(0.42f, 0.33f, 0.23f));
+	DrawBox(centre + glm::vec3(0.0f, 3.425f, 0.0f),
+		{ h + 0.35f, 0.175f, h + 0.35f }, 0.0f, plank * 0.82f);
 	DrawBox(centre + glm::vec3(-h, 1.5f, 0.0f), { 0.25f, 1.75f, h }, 0.0f, plank);
 	DrawBox(centre + glm::vec3(h, 1.5f, 0.0f), { 0.25f, 1.75f, h }, 0.0f, plank);
 	DrawBox(centre + glm::vec3(0.0f, 1.5f, h), { h, 1.75f, 0.25f }, 0.0f, plank);
@@ -7065,12 +7257,12 @@ inline void TerrainLab::DrawPortalView()
 		m_PortalSize = glm::vec2((float)width, (float)height);
 	}
 
-	Doorway from = m_InShed ? ShedSideDoor()
+	Doorway from = m_ViaPortal ? ShedSideDoor()
 		: WorldSideDoor(m_Camera.GetPosition());
 
-	Doorway to = m_InShed ? ReturnDoor() : Doorway{ ShedDoor(), 0.0f };
+	Doorway to = m_ViaPortal ? ReturnDoor() : Doorway{ ShedDoor(), 0.0f };
 
-	Pass pass = m_InShed ? Pass::ToWorld : Pass::ToShed;
+	Pass pass = m_ViaPortal ? Pass::ToWorld : Pass::ToShed;
 
 	glm::mat3 turn = DoorTurn(from, to);
 
@@ -7142,9 +7334,11 @@ inline void TerrainLab::OnDemoImGui()
 
 		ImGui::Separator();
 		ImGui::Text("Portal: %s%s", m_PortalOn ? "deployed" : "stowed",
-			m_InShed ? " (you are in the shed)" : "");
+			m_ViaPortal ? " (you went through it)" : "");
 		ImGui::TextDisabled("  E to plant it in front of you, E again nearby");
-		ImGui::TextDisabled("  to pick it up; walk through to reach the shed");
+		ImGui::TextDisabled("  to pick it up; walk through to skip the walk");
+		ImGui::Text("Workshop at (%.0f, %.0f), %.2f m3/m2 of earth moved",
+			ShedCentre().x, ShedCentre().z, m_ShedMoved);
 
 		ImGui::Separator();
 		ImGui::Text("Axe: %s", m_HasAxe ? "in hand" : "on the shed wall");
