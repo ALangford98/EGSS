@@ -343,6 +343,19 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **A packed bit field one bit too narrow does not fail, it forgets.** The
+  prefab editor stores a piece as one integer and gave `Length` five bits,
+  which holds 0 to 31. A 32-cell piece masked to zero, decoded as an empty
+  slot, and disappeared -- no warning, no crash, just a design with fewer
+  pieces than it was given. If a packed field's range is derived from a
+  constant (here the grid size), test the round trip across that whole range,
+  not across the value you happened to have in mind.
+
+- **Clamping a quantity to make it fit is a silent discount.** Billing a piece
+  longer than a board as `min(length, board)` charged 2.4 m for 3.2 m of
+  timber. Split it instead -- the real answer is that you scarf it from two
+  boards, and the offcut is part of the cost.
+
 - **Never write to a registered replay parameter from the simulation.**
   `m_WalkSpeed` is registered, so scaling it by the carried load would have
   written the weight of whatever the player happened to be holding into every

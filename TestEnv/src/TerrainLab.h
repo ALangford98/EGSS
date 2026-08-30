@@ -52,21 +52,36 @@ public:
 		// are registered because the design decides what `C` consumes and what
 		// `B` puts in the world -- an unregistered slider here would make a
 		// recorded building session replay as a different building.
+		FillPanel(m_Draft, 24, 1);
+
 		Design wallPanel;
 		std::strncpy(wallPanel.Name, "Wall panel", sizeof(wallPanel.Name) - 1);
-		wallPanel.Across = 20;
 		wallPanel.Upright = true;
+		FillPanel(wallPanel, 20, 1);
 
 		m_Designs.push_back(m_Draft);
 		m_Designs.push_back(wallPanel);
 
-		// **The draft is a member and the saved designs are a list**, rather
-		// than the draft being an index into the list. A registered parameter
-		// is a raw pointer held for the life of the demo, and a pointer into a
-		// vector that can be appended to is a pointer that stops being valid
-		// the first time somebody saves a seventh design.
-		RegisterParam("Panel across", &m_Draft.Across);
-		RegisterParam("Panel courses", &m_Draft.Courses);
+		// **The design is registered piece by piece, and that is why there is a
+		// cap on pieces.**
+		//
+		// What the editor draws reaches the simulation -- it decides what `C`
+		// consumes and what `B` puts in the world -- so it has to be in the
+		// recording, and `ReplayParams` takes fixed pointers to plain values.
+		// One integer a piece is the whole design, because the packed code *is*
+		// the stored form rather than a copy of one.
+		//
+		// Sixty-four slots written every step would be a lot of file; they are
+		// not, because the recorder only writes parameters that *changed*. A
+		// design sits still except in the moment a piece is put down.
+		//
+		// The draft is a member and the saved designs are a vector, and not the
+		// other way round: a registered pointer into a vector that can grow is
+		// a pointer that stops being valid the first time somebody saves a
+		// seventh design.
+		for (int i = 0; i < s_MaxParts; i++)
+			RegisterParam("Panel part " + std::to_string(i), &m_Draft.Code[i]);
+
 		RegisterParam("Panel upright", &m_Draft.Upright);
 
 		// **Opens on a gradient, not on one biome nine times.** The demo is
@@ -2951,19 +2966,25 @@ private:
 
 	// --- Prefabs --------------------------------------------------------------
 	//
-	// **A panel is boards on ledgers, and the bill of materials is arithmetic.**
+	// **A design is a list of pieces on a grid, and the bill of materials is a
+	// cutting-stock problem.**
 	//
-	// A design is a rectangle measured in boards: `Across` of them laid edge to
-	// edge, `Courses` of them end to end. Lay that rectangle down and it is a
-	// floor; stand it on edge and it is a wall. Nothing else changes, which is
-	// why there is one design type and not two.
+	// The first version of this was two sliders -- boards across, boards along
+	// -- which makes a rectangle and nothing else. That is a configurator, not
+	// an editor: a floor and a wall were two settings of the same object and
+	// there was no third thing you could describe. Now the table has a plan
+	// view, the grid is one board wide (100 mm), and a piece is put down where
+	// you click, cut to whatever length you asked for.
 	//
-	// What makes it a *panel* rather than a pile of boards is the ledgers --
-	// two across the back of each course. They are boards too, cut to the
-	// panel's width, so a narrow panel gets several of them out of one board
-	// while a wide one needs a whole board for each. That is the reason to
-	// compute the bill rather than to name a number: it depends on the shape,
-	// and the offcut means the panel weighs less than the wood it cost.
+	// Everything else follows from the piece list. The panel's size is the
+	// bounding box of what you drew. Its mass is the wood in it. And the number
+	// of boards it costs is **how few 2.4 m boards those pieces can be cut
+	// from**, which is a bin-packing question and not a multiplication -- three
+	// 0.8 m ledgers come out of one board, two 2.0 m ones do not.
+	//
+	// Laying the design flat and standing it up is still one flag, because that
+	// part was right: a floor and a wall are the same assembly at different
+	// angles.
 	static constexpr int s_MaxDesigns = 6;
 	static constexpr int s_PanelPool = 32;
 
@@ -2974,12 +2995,68 @@ private:
 	static constexpr float s_TableReach = 3.0f;
 	static constexpr float s_StockRadius = 2.5f;
 
+	// The grid is measured in board widths, so a piece is always a whole number
+	// of cells across and the arithmetic stays in integers. 48 cells is 4.8 m,
+	// which is two boards end to end -- a two-course panel has to fit, and at
+	// 32 cells it did not.
+	static constexpr int s_GridCells = 48;
+	static constexpr int s_BoardCells = 24;   // 2.4 m / 100 mm
+
+	// **The cap exists because the design has to be replayable.** See the note
+	// on `m_Draft`: each piece is one registered integer, and a registered
+	// parameter is a fixed slot in the recording's parameter table.
+	static constexpr int s_MaxParts = 64;
+
+	struct Part
+	{
+		int X = 0;
+		int Z = 0;
+		int Length = s_BoardCells;   // cells along its run
+		bool AlongZ = false;
+		bool Face = true;            // the course on top, rather than under
+	};
+
+	// **A piece packs into one integer, and that integer is the design.**
+	//
+	// Not a `Part` struct with a packed copy kept beside it -- the code *is*
+	// the stored form, decoded on demand. Two representations of the same thing
+	// is two things to keep in step, and the one that gets forgotten is always
+	// the one the recorder reads.
+	//
+	// Zero is "no piece", which works because a piece of zero length is not a
+	// piece. Twenty-one bits used of thirty-one.
+	//
+	// **Six bits for the length, not five.** Five holds 0 to 31, and a piece
+	// spanning the 48-cell grid is 48 -- which masked to 16, or to 0 for a
+	// 32-cell one, and the piece then decoded as an empty slot and vanished
+	// without a word. A packed field one bit too narrow does not fail, it
+	// forgets.
+	static int PackPart(const Part& part)
+	{
+		return 1 | ((part.X & 63) << 1) | ((part.Z & 63) << 7)
+			| ((part.Length & 63) << 13) | ((part.AlongZ ? 1 : 0) << 19)
+			| ((part.Face ? 1 : 0) << 20);
+	}
+
+	static bool UnpackPart(int code, Part& out)
+	{
+		if ((code & 1) == 0)
+			return false;
+
+		out.X = (code >> 1) & 63;
+		out.Z = (code >> 7) & 63;
+		out.Length = (code >> 13) & 63;
+		out.AlongZ = ((code >> 19) & 1) != 0;
+		out.Face = ((code >> 20) & 1) != 0;
+
+		return out.Length > 0;
+	}
+
 	struct Design
 	{
 		char Name[24] = "Floor panel";
-		int Across = 24;
-		int Courses = 1;
 		bool Upright = false;
+		int Code[s_MaxParts] = { 0 };
 	};
 
 	struct Panel
@@ -3001,52 +3078,282 @@ private:
 	float BoardThick() const { return 2.0f * s_BoardHalf[1]; }
 	float BoardWide() const { return 2.0f * s_BoardHalf[2]; }
 
-	// Length along the boards, and breadth across them.
-	glm::vec2 PanelSpan(const Design& plan) const
+	// The grid's cell, which is one board's width by definition -- boards laid
+	// edge to edge are what the grid is for.
+	float Cell() const { return BoardWide(); }
+
+	std::vector<Part> PartsOf(const Design& plan) const
 	{
-		return { (float)plan.Courses * BoardLength(),
-			(float)plan.Across * BoardWide() };
+		std::vector<Part> parts;
+
+		for (int i = 0; i < s_MaxParts; i++)
+		{
+			Part part;
+
+			if (UnpackPart(plan.Code[i], part))
+				parts.push_back(part);
+		}
+
+		return parts;
 	}
 
-	// In panel space, which is flat: x along the boards, y through the
-	// thickness, z across. `Upright` is a rotation applied afterwards, so the
-	// extents do not depend on it.
+	int PartCount(const Design& plan) const
+	{
+		int total = 0;
+
+		for (int i = 0; i < s_MaxParts; i++)
+			if ((plan.Code[i] & 1) != 0)
+				total++;
+
+		return total;
+	}
+
+	// The design's extent in cells: [low, high) on each axis. Empty designs
+	// report a single cell so nothing downstream divides by zero.
+	void DesignBounds(const Design& plan, glm::ivec2& low, glm::ivec2& high) const
+	{
+		low = glm::ivec2(s_GridCells);
+		high = glm::ivec2(0);
+
+		bool any = false;
+
+		for (const Part& part : PartsOf(plan))
+		{
+			glm::ivec2 from(part.X, part.Z);
+
+			glm::ivec2 to = from + (part.AlongZ
+				? glm::ivec2(1, part.Length) : glm::ivec2(part.Length, 1));
+
+			low = glm::min(low, from);
+			high = glm::max(high, to);
+
+			any = true;
+		}
+
+		if (!any)
+		{
+			low = glm::ivec2(0);
+			high = glm::ivec2(1);
+		}
+	}
+
+	glm::vec2 PanelSpan(const Design& plan) const
+	{
+		glm::ivec2 low, high;
+		DesignBounds(plan, low, high);
+
+		return glm::vec2(high - low) * Cell();
+	}
+
+	// In panel space, which is flat: x and z across the plan, y through the
+	// thickness. `Upright` is a rotation applied afterwards, so the extents do
+	// not depend on it. Two courses thick whether or not both are used -- the
+	// collider is the assembly's envelope, and a design that is all face still
+	// wants somewhere for the ledgers to go if one is added.
 	glm::vec3 PanelHalf(const Design& plan) const
 	{
 		glm::vec2 span = PanelSpan(plan);
 
-		// Face on top of ledger, so the panel is two boards thick.
 		return { 0.5f * span.x, BoardThick(), 0.5f * span.y };
 	}
 
-	int Ledgers(const Design& plan) const { return 2 * plan.Courses; }
-
-	// How many ledgers come out of one 2.4 m board. A panel wider than a board
-	// is long needs one board per ledger and no more -- the join is where the
-	// courses already meet, so nothing is lost by it.
-	int LedgersPerBoard(const Design& plan) const
-	{
-		return glm::max(1, (int)(BoardLength() / PanelSpan(plan).y));
-	}
-
+	// **The bill is a cutting-stock problem, solved first-fit-decreasing.**
+	//
+	// The pieces are cut from 2.4 m boards, so what a design costs is how few
+	// boards its pieces can be got out of. Longest piece first into the first
+	// board it fits: that is FFD, it is within 11/9 of optimal and it is what a
+	// person at a saw bench does anyway -- cut the long ones while the boards
+	// are whole.
+	//
+	// A multiplication cannot answer this. Three 0.8 m ledgers come out of one
+	// board and two 2.0 m ones do not, and both cases occur in the two designs
+	// the table opens with.
 	int PanelCost(const Design& plan) const
 	{
-		int perBoard = LedgersPerBoard(plan);
+		std::vector<int> pieces;
 
-		return plan.Across * plan.Courses
-			+ (Ledgers(plan) + perBoard - 1) / perBoard;
+		// **A piece longer than a board is cut from more than one.** Scarfing a
+		// 3.2 m ledger out of 2.4 m stock takes a full board and a 0.8 m
+		// offcut, so it is billed as both. Clamping the length instead -- which
+		// is what this did first -- charged 2.4 m for 3.2 m of timber and made
+		// wide designs quietly cheaper than they are.
+		for (const Part& part : PartsOf(plan))
+		{
+			int left = part.Length;
+
+			while (left > s_BoardCells)
+			{
+				pieces.push_back(s_BoardCells);
+				left -= s_BoardCells;
+			}
+
+			pieces.push_back(left);
+		}
+
+		std::sort(pieces.begin(), pieces.end(), std::greater<int>());
+
+		std::vector<int> boards;
+
+		for (int piece : pieces)
+		{
+			size_t fit = boards.size();
+
+			for (size_t i = 0; i < boards.size(); i++)
+				if (boards[i] >= piece)
+				{
+					fit = i;
+					break;
+				}
+
+			if (fit == boards.size())
+				boards.push_back(s_BoardCells);
+
+			boards[fit] -= piece;
+		}
+
+		return (int)boards.size();
 	}
 
-	// The wood actually in the panel, which is less than the wood it cost --
-	// the difference is offcut from the ledgers.
+	// The wood actually in the design, which is less than the wood it cost --
+	// the difference is the offcut left on the bench.
 	float PanelMass(const Design& plan) const
 	{
-		float board = BoardLength() * BoardThick() * BoardWide();
+		int cells = 0;
 
-		float ledger = PanelSpan(plan).y * BoardThick() * BoardWide();
+		for (const Part& part : PartsOf(plan))
+			cells += part.Length;
 
-		return s_Pine * ((float)(plan.Across * plan.Courses) * board
-			+ (float)Ledgers(plan) * ledger);
+		return s_Pine * (float)cells * Cell() * Cell() * BoardThick();
+	}
+
+	// What is left over, in whole boards' worth of length.
+	float PanelOffcut(const Design& plan) const
+	{
+		int cells = 0;
+
+		for (const Part& part : PartsOf(plan))
+			cells += part.Length;
+
+		return (float)(PanelCost(plan) * s_BoardCells - cells) * Cell();
+	}
+
+	// --- Editing --------------------------------------------------------------
+
+	bool PartFits(const Design& plan, const Part& want) const
+	{
+		// The packed code holds six bits of length and the grid is 48 cells,
+		// so anything outside that could not be stored faithfully anyway.
+		if (want.Length < 1 || want.Length > s_GridCells)
+			return false;
+
+		glm::ivec2 from(want.X, want.Z);
+
+		glm::ivec2 to = from + (want.AlongZ
+			? glm::ivec2(1, want.Length) : glm::ivec2(want.Length, 1));
+
+		if (from.x < 0 || from.y < 0 || to.x > s_GridCells || to.y > s_GridCells)
+			return false;
+
+		// Only against the same course: a ledger is *under* the face, which is
+		// the entire point of there being two.
+		for (const Part& part : PartsOf(plan))
+		{
+			if (part.Face != want.Face)
+				continue;
+
+			glm::ivec2 low(part.X, part.Z);
+
+			glm::ivec2 high = low + (part.AlongZ
+				? glm::ivec2(1, part.Length) : glm::ivec2(part.Length, 1));
+
+			if (from.x < high.x && to.x > low.x
+				&& from.y < high.y && to.y > low.y)
+				return false;
+		}
+
+		return true;
+	}
+
+	bool AddPart(Design& plan, const Part& want) const
+	{
+		if (!PartFits(plan, want))
+			return false;
+
+		for (int i = 0; i < s_MaxParts; i++)
+			if ((plan.Code[i] & 1) == 0)
+			{
+				plan.Code[i] = PackPart(want);
+				return true;
+			}
+
+		return false;
+	}
+
+	// The piece covering a cell in one course, or -1. Used by the right button.
+	int PartAt(const Design& plan, int x, int z, bool face) const
+	{
+		for (int i = 0; i < s_MaxParts; i++)
+		{
+			Part part;
+
+			if (!UnpackPart(plan.Code[i], part) || part.Face != face)
+				continue;
+
+			glm::ivec2 low(part.X, part.Z);
+
+			glm::ivec2 high = low + (part.AlongZ
+				? glm::ivec2(1, part.Length) : glm::ivec2(part.Length, 1));
+
+			if (x >= low.x && x < high.x && z >= low.y && z < high.y)
+				return i;
+		}
+
+		return -1;
+	}
+
+	void ClearDesign(Design& plan) const
+	{
+		for (int i = 0; i < s_MaxParts; i++)
+			plan.Code[i] = 0;
+	}
+
+	// **The old two-slider panel, kept as a template rather than as the
+	// editor.** It is still the fastest way to get a floor or a wall, and it is
+	// now a starting point you can cut about instead of the only shape there
+	// is. `across` boards edge to edge, `courses` end to end, on two ledgers a
+	// course.
+	void FillPanel(Design& plan, int across, int courses) const
+	{
+		ClearDesign(plan);
+
+		for (int course = 0; course < courses; course++)
+		for (int board = 0; board < across; board++)
+		{
+			Part face;
+			face.X = course * s_BoardCells;
+			face.Z = board;
+			face.Length = s_BoardCells;
+			face.AlongZ = false;
+			face.Face = true;
+
+			if (!AddPart(plan, face))
+				return;
+		}
+
+		for (int course = 0; course < courses; course++)
+		for (int end = 0; end < 2; end++)
+		{
+			Part ledger;
+			ledger.X = course * s_BoardCells
+				+ (end ? s_BoardCells - 1 : 0);
+			ledger.Z = 0;
+			ledger.Length = across;
+			ledger.AlongZ = true;
+			ledger.Face = false;
+
+			if (!AddPart(plan, ledger))
+				return;
+		}
 	}
 
 	// **How many boards are stacked at the table.** Carried timber does not
@@ -3898,6 +4205,16 @@ private:
 
 	// What the editor is editing, and what `C` builds.
 	Design m_Draft;
+
+	// The editor's own state: which course, which way round, and how long a
+	// piece to cut. None of it reaches the simulation -- the pieces already on
+	// the grid do, and those are registered.
+	bool m_EditLedger = false;
+	bool m_EditAlongZ = false;
+	int m_EditLength = s_BoardCells;
+
+	int m_FillAcross = 24;
+	int m_FillCourses = 1;
 
 	std::vector<Panel> m_Panels;
 	std::vector<Egss::PhysicsWorld3D::BodyHandle> m_PanelPool;
@@ -6190,68 +6507,73 @@ inline void TerrainLab::DrawPanels(bool inShed)
 	// for every fragment, which switches off all three at once.
 	m_TreeMaterial->Set("u_CutRadius", 0.0f);
 
-	float length = BoardLength();
 	float thick = BoardThick();
-	float wide = BoardWide();
 
 	for (const Panel& panel : m_Panels)
 	{
 		if (!panel.Placed || panel.InShed != inShed)
 			continue;
 
+		glm::ivec2 low, high;
+		DesignBounds(panel.Plan, low, high);
+
 		glm::vec2 span = PanelSpan(panel.Plan);
 		glm::mat4 frame = PanelFrame(panel);
 
-		auto piece = [&](const glm::vec3& at, const glm::vec3& half)
+		int index = 0;
+
+		for (const Part& part : PartsOf(panel.Plan))
 		{
+			// Cells to metres, with the design centred on its own bounding box
+			// so a panel is put down where you are looking rather than offset
+			// by wherever on the grid it happened to be drawn.
+			glm::vec2 from = glm::vec2(glm::ivec2(part.X, part.Z) - low)
+				* Cell() - 0.5f * span;
+
+			glm::vec2 size = part.AlongZ
+				? glm::vec2(Cell(), (float)part.Length * Cell())
+				: glm::vec2((float)part.Length * Cell(), Cell());
+
+			glm::vec3 at(from.x + 0.5f * size.x,
+				part.Face ? 0.5f * thick : -0.5f * thick,
+				from.y + 0.5f * size.y);
+
+			// **Every piece a slightly different brown.** In one colour the
+			// assembly is a single pale slab: the pieces are butted, there is
+			// no gap to cast a shadow, and nothing tells one from the next --
+			// so the object whose entire cost is a board count showed no
+			// boards. Sawn timber does vary piece to piece, which makes the
+			// variation the honest fix rather than a fake gap.
+			float tone = 0.86f + 0.28f * Veg::Hash2DUnit(part.X,
+				part.Z * 2 + (part.Face ? 1 : 0), 0x9E3779B9u);
+
+			m_TreeMaterial->Set("u_Color", (part.Face
+				? glm::vec3(0.66f, 0.51f, 0.32f)
+				: glm::vec3(0.52f, 0.39f, 0.24f)) * tone);
+
 			Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
 				frame * glm::translate(glm::mat4(1.0f), at)
-				* glm::scale(glm::mat4(1.0f), half));
-		};
+				* glm::scale(glm::mat4(1.0f),
+					glm::vec3(0.5f * size.x, 0.5f * thick, 0.5f * size.y)));
 
-		// **The face, sawn side up, and every board a slightly different
-		// brown.** Drawn in one colour the panel reads as a single slab: the
-		// boards are butted, so there is no gap to cast a shadow and nothing
-		// tells one from the next. Sawn timber does vary board to board -- the
-		// two faces of a log are not the same wood -- so the variation is the
-		// honest fix rather than a fake gap, and it is what makes a bill of
-		// twenty-six boards visible as twenty-six boards.
-		for (int course = 0; course < panel.Plan.Courses; course++)
-		for (int board = 0; board < panel.Plan.Across; board++)
-		{
-			float tone = 0.86f + 0.28f * Veg::Hash2DUnit(course, board,
-				0x9E3779B9u);
-
-			m_TreeMaterial->Set("u_Color",
-				glm::vec3(0.66f, 0.51f, 0.32f) * tone);
-
-			piece({ ((float)course + 0.5f) * length - 0.5f * span.x,
-				0.5f * thick,
-				((float)board + 0.5f) * wide - 0.5f * span.y },
-				{ 0.5f * length, 0.5f * thick, 0.5f * wide });
+			index++;
 		}
-
-		// The ledgers underneath, a shade darker because they are the face
-		// nobody planed and because two identical browns read as one board.
-		m_TreeMaterial->Set("u_Color", glm::vec3(0.52f, 0.39f, 0.24f));
-
-		for (int course = 0; course < panel.Plan.Courses; course++)
-		for (int end = 0; end < 2; end++)
-			piece({ (float)course * length - 0.5f * span.x
-				+ (end ? length - 0.5f * wide : 0.5f * wide),
-				-0.5f * thick, 0.0f },
-				{ 0.5f * wide, 0.5f * thick, 0.5f * span.y });
 	}
 }
 
-// **The prefab editor.** A design is four numbers, so the editor is four
-// widgets and a bill of materials -- and the bill is the part worth having on
-// screen, because it is the only place the whole pipeline shows up as one
-// figure. Twenty-six boards is two and a half logs is most of a tree.
+// **The prefab editor: a plan view of the bench.**
+//
+// The grid is one board wide a cell, so a piece is a whole number of cells and
+// the arithmetic never leaves integers. Left button puts a piece down, right
+// button takes one up, and the two courses -- the face and the ledgers under
+// it -- are edited one at a time, because there is no way to click on
+// something that is underneath something else.
+//
+// The bill is the part worth having on screen. It is the only place the whole
+// pipeline shows as one figure: twenty-six boards is two and a half logs is
+// most of a tree.
 inline void TerrainLab::DrawPrefabEditor()
 {
-	ImGui::Separator();
-
 	float reach = glm::length(m_Camera.GetPosition() - CraftTable());
 
 	int stock = Stockpile();
@@ -6262,45 +6584,176 @@ inline void TerrainLab::DrawPrefabEditor()
 	ImGui::Text("Prefabs: %d built, %d placed", m_Built, m_Placed);
 
 	if (reach > s_TableReach)
-	{
-		ImGui::TextDisabled("  the crafting table is in the shed, on the left");
-		ImGui::TextDisabled("  as you come in; the design can be edited from");
-		ImGui::TextDisabled("  anywhere but only built standing at it");
-	}
+		ImGui::TextDisabled("  draw anywhere; build at the table in the shed");
 
 	ImGui::InputText("Name", m_Draft.Name, sizeof(m_Draft.Name));
 
-	ImGui::SliderInt("Boards across", &m_Draft.Across, 1, 32);
-	ImGui::SliderInt("Courses", &m_Draft.Courses, 1, 4);
+	// --- The bill -------------------------------------------------------------
+	//
+	// **Above the canvas, because the pane is shorter than both.** The demo
+	// panel is a docked column about 430 px high and the plan view wants most
+	// of that; something had to be below the fold. The numbers are what you
+	// check while drawing, so the drawing is what scrolls -- and anyone
+	// working in here for real drags the panel taller, which is what docking
+	// is for.
+
 	ImGui::Checkbox("Stand it up (wall)", &m_Draft.Upright);
 
-	ImGui::Text("%.2f x %.2f m %s, %.0f kg", span.x, span.y,
+	ImGui::Text("%d of %d pieces, %.2f x %.2f m %s, %.0f kg",
+		PartCount(m_Draft), s_MaxParts, span.x, span.y,
 		m_Draft.Upright ? "wall" : "floor", PanelMass(m_Draft));
 
-	// The bill, spelled out. `Across x Courses` boards for the face and the
-	// rest for the ledgers, which is where the size dependence lives.
-	ImGui::Text("%d boards: %d face + %d for %d ledgers", cost,
-		m_Draft.Across * m_Draft.Courses, cost - m_Draft.Across * m_Draft.Courses,
-		Ledgers(m_Draft));
+	// The cap is the registered-parameter budget, and hitting it silently
+	// would look like the editor dropping pieces.
+	if (PartCount(m_Draft) >= s_MaxParts)
+		ImGui::TextDisabled("  full -- lift a piece before laying another");
 
-	ImGui::TextDisabled("  a ledger is %.2f m, so %d come out of one board",
-		span.y, LedgersPerBoard(m_Draft));
+	// Longest piece first into the first board it fits, so the count depends
+	// on the shape and not on a multiplication.
+	ImGui::Text("%d boards to cut them from, %.2f m offcut", cost,
+		PanelOffcut(m_Draft));
 
 	ImGui::Text("Stock at the table: %d of %d", stock, cost);
 
-	if (reach <= s_TableReach && stock >= cost)
+	if (reach <= s_TableReach && stock >= cost && cost > 0)
 		ImGui::Text("C builds it, B puts it down where you look");
-	else if (reach <= s_TableReach)
+	else if (reach <= s_TableReach && cost > 0)
 		ImGui::TextDisabled("  carry %d more boards to the table", cost - stock);
 
-	ImGui::TextDisabled("  boards count within %.1f m of the table, and the",
-		s_StockRadius);
-	ImGui::TextDisabled("  saw bench is 6.2 m from it -- so they are carried");
+	// --- The canvas ---------------------------------------------------------
 
-	// **Saving and loading a design is editor state, not simulation state.**
-	// The sliders above are registered parameters, so a replay writes the
-	// recorded numbers back whatever these buttons did; that is what lets
-	// them be buttons at all, when `C` had to be a key.
+	ImGui::Checkbox("Ledger", &m_EditLedger);
+
+	ImGui::SameLine();
+	ImGui::Checkbox("Along Z", &m_EditAlongZ);
+
+	ImGui::SliderInt("Cut to", &m_EditLength, 1, s_BoardCells);
+
+	ImVec2 origin = ImGui::GetCursorScreenPos();
+
+	// Capped, because the panel is a docked column and a canvas that takes all
+	// of it pushes the bill -- the thing worth reading -- below the fold.
+	float width = glm::clamp(ImGui::GetContentRegionAvail().x, 120.0f, 200.0f);
+
+	float cell = width / (float)s_GridCells;
+
+	ImVec2 size(width, width);
+
+	ImGui::InvisibleButton("##plan", size);
+
+	ImDrawList* draw = ImGui::GetWindowDrawList();
+
+	draw->AddRectFilled(origin,
+		ImVec2(origin.x + size.x, origin.y + size.y),
+		IM_COL32(28, 26, 24, 255));
+
+	// A line every four cells. Every cell is a thicket at this scale, and what
+	// matters is reading the count, not the individual line.
+	for (int i = 0; i <= s_GridCells; i += 4)
+	{
+		float at = (float)i * cell;
+
+		ImU32 tint = (i % s_BoardCells) == 0
+			? IM_COL32(90, 84, 74, 255) : IM_COL32(52, 48, 44, 255);
+
+		draw->AddLine(ImVec2(origin.x + at, origin.y),
+			ImVec2(origin.x + at, origin.y + size.y), tint);
+
+		draw->AddLine(ImVec2(origin.x, origin.y + at),
+			ImVec2(origin.x + size.x, origin.y + at), tint);
+	}
+
+	auto paint = [&](const Part& part, ImU32 tint)
+	{
+		float w = part.AlongZ ? cell : (float)part.Length * cell;
+		float h = part.AlongZ ? (float)part.Length * cell : cell;
+
+		ImVec2 from(origin.x + (float)part.X * cell,
+			origin.y + (float)part.Z * cell);
+
+		draw->AddRectFilled(from, ImVec2(from.x + w, from.y + h), tint);
+		draw->AddRect(from, ImVec2(from.x + w, from.y + h),
+			IM_COL32(20, 18, 16, 200));
+	};
+
+	// Ledgers first, so the face draws over them the way it lies over them.
+	for (const Part& part : PartsOf(m_Draft))
+		if (!part.Face)
+			paint(part, IM_COL32(112, 84, 52, 255));
+
+	for (const Part& part : PartsOf(m_Draft))
+		if (part.Face)
+			paint(part, IM_COL32(168, 130, 82, 255));
+
+	// The piece about to go down, and red where it will not go.
+	if (ImGui::IsItemHovered())
+	{
+		ImVec2 mouse = ImGui::GetIO().MousePos;
+
+		Part want;
+		want.X = (int)((mouse.x - origin.x) / cell);
+		want.Z = (int)((mouse.y - origin.y) / cell);
+		want.Length = m_EditLength;
+		want.AlongZ = m_EditAlongZ;
+		want.Face = !m_EditLedger;
+
+		bool room = PartFits(m_Draft, want)
+			&& PartCount(m_Draft) < s_MaxParts;
+
+		paint(want, room ? IM_COL32(210, 190, 140, 130)
+			: IM_COL32(190, 70, 60, 130));
+
+		if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && room)
+			AddPart(m_Draft, want);
+
+		if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+		{
+			int hit = PartAt(m_Draft, want.X, want.Z, want.Face);
+
+			if (hit >= 0)
+				m_Draft.Code[hit] = 0;
+		}
+	}
+
+	ImGui::TextDisabled("left lays a piece, right lifts one");
+
+
+	// --- Templates and saved designs ----------------------------------------
+	//
+	// **The old two-slider panel, demoted to a starting point.** It is still
+	// the quickest way to a floor or a wall, and now it is something to cut
+	// about rather than the only shape there is.
+	ImGui::SliderInt("Template courses", &m_FillCourses, 1, 2);
+
+	// **Bounded so a fill can never truncate.** A course is `across` face
+	// boards and two ledgers, so the widest template that still fits the piece
+	// cap depends on how many courses there are -- and a fill that quietly
+	// stopped half way would look like a bug in the template rather than in
+	// the arithmetic of the slider above it.
+	// Two bounds, not one: the piece cap, and the grid the pieces sit on --
+	// a single course of 62 boards fits the cap and runs 14 cells off the
+	// edge, which truncates just as quietly.
+	int widest = glm::min((s_MaxParts - 2 * m_FillCourses) / m_FillCourses,
+		s_GridCells);
+
+	m_FillAcross = glm::min(m_FillAcross, widest);
+
+	ImGui::SliderInt("Template across", &m_FillAcross, 1, widest);
+
+	if (ImGui::Button("Fill"))
+		FillPanel(m_Draft, m_FillAcross, m_FillCourses);
+
+	ImGui::SameLine();
+
+	if (ImGui::Button("Clear"))
+		ClearDesign(m_Draft);
+
+	ImGui::SameLine();
+
+	// **Saving and loading is editor state, not simulation state.** The pieces
+	// themselves are registered parameters, so a replay writes the recorded
+	// design back whatever these buttons did -- which is what lets them be
+	// buttons at all, when `C` had to be a key.
 	if (ImGui::Button("Save as new") && (int)m_Designs.size() < s_MaxDesigns)
 		m_Designs.push_back(m_Draft);
 
@@ -6312,9 +6765,10 @@ inline void TerrainLab::DrawPrefabEditor()
 			m_Draft = m_Designs[i];
 
 		ImGui::SameLine();
-		ImGui::Text("%s -- %d x %d%s, %d boards", m_Designs[i].Name,
-			m_Designs[i].Across, m_Designs[i].Courses,
-			m_Designs[i].Upright ? ", upright" : "", PanelCost(m_Designs[i]));
+		ImGui::Text("%s -- %d pieces%s, %d boards", m_Designs[i].Name,
+			PartCount(m_Designs[i]),
+			m_Designs[i].Upright ? ", upright" : "",
+			PanelCost(m_Designs[i]));
 
 		ImGui::PopID();
 	}
@@ -6673,6 +7127,14 @@ inline void TerrainLab::OnDemoImGui()
 
 	// --- Developer tools ---------------------------------------------------
 
+	// **First in the panel, and its own section.** It lived at the bottom of
+	// "Dev tools" behind four other subsystems, and the panel is a docked
+	// column half the window high -- so it was below the fold and might as
+	// well not have been there. An editor is a place you work, not a readout,
+	// and it goes where the thing being worked on goes.
+	if (ImGui::CollapsingHeader("Prefab editor", ImGuiTreeNodeFlags_DefaultOpen))
+		DrawPrefabEditor();
+
 	if (ImGui::CollapsingHeader("Dev tools", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		ImGui::Checkbox("No clip (V)", &m_NoClip);
@@ -6719,8 +7181,6 @@ inline void TerrainLab::OnDemoImGui()
 			m_Milled, BoardsPerLog());
 		ImGui::TextDisabled("  0.60 x pi r^2 L / (50 x 100 x 2400 mm): a mill");
 		ImGui::TextDisabled("  loses the slabs, the edgings and the kerf");
-
-		DrawPrefabEditor();
 
 		ImGui::Separator();
 		ImGui::Text("Weights placed: %d of %d", m_Stacked, s_WeightCount);

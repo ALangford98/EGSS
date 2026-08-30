@@ -1264,6 +1264,69 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-30 (the prefab editor becomes an editor, and the bill becomes bin packing)
+
+The first version was two sliders -- boards across, boards along -- which makes
+a rectangle and nothing else. That is a **configurator**: a floor and a wall
+were two settings of one object and there was no third thing you could
+describe. The crafting table has a plan view now. The grid is one board wide a
+cell (100 mm), left button lays a piece cut to whatever length you asked for,
+right button lifts one, and the two courses -- the face and the ledgers under
+it -- are edited one at a time, because there is no way to click on something
+underneath something else.
+
+**The bill stopped being a multiplication and became a cutting-stock problem.**
+What a design costs is how few 2.4 m boards its pieces can be got out of, which
+is bin packing -- solved first-fit-decreasing, longest piece into the first
+board it fits, which is within 11/9 of optimal and is what a person at a saw
+bench does anyway.
+
+That gives the check worth having. The old formula and the packer share no
+arithmetic, and they agree on all three designs the old one could express:
+
+| design | old formula | packed | why |
+| --- | --- | --- | --- |
+| 24 x 1 floor | 26 | **26** | every piece a full board |
+| 20 x 1 wall | 22 | **22** | two 2.0 m ledgers, one board each |
+| 8 x 2 | 18 | **18** | three 0.8 m ledgers out of one board |
+
+Agreeing three times by different means is evidence; re-deriving the same
+multiplication would only have proved it was copied twice. Thirty-one checks in
+all, including that the bill can never come in under `total length / 2.4 m`
+over forty random designs -- a packer that beat that bound would be creating
+timber -- and a T-shaped prefab, a 2.4 m bar with a 1.2 m stem, which is 12
+pieces, 2.40 x 1.60 m, 40 kg, seven boards and 0.80 m of offcut, and which the
+old editor could not have described at all.
+
+**The design is registered piece by piece, and that is why pieces are capped.**
+What the editor draws reaches the simulation -- it decides what `C` consumes
+and what `B` puts in the world -- so it has to be in the recording, and
+`ReplayParams` takes fixed pointers to plain values. One integer a piece, and
+the packed code *is* the stored form rather than a copy of one, so there is no
+second representation to fall out of step. Sixty-four registered slots sounds
+expensive and is not: the recorder only writes parameters that **changed**, and
+a design sits still except in the moment a piece goes down.
+
+Two real faults, both found by the numbers rather than by looking:
+
+- **A packed field one bit too narrow does not fail, it forgets.** `Length` had
+  five bits, which holds 0 to 31. A 32-cell piece masked to 0, decoded as an
+  empty slot, and vanished without a word -- the design simply had one fewer
+  piece than it was given. Six bits now, and the round-trip test covers every
+  length the grid allows rather than only up to a board.
+
+- **A piece longer than a board was billed as one board.** Clamping the length
+  charged 2.4 m for a 3.2 m ledger, which made wide designs quietly cheaper
+  than they are. It is scarfed from two now: a full board and a 0.8 m offcut,
+  and two of them cost three boards rather than two.
+
+The editor also moved to the top of the panel and into its own section. It had
+been at the bottom of "Dev tools" behind four other subsystems, in a docked
+column about 430 px high -- below the fold, and might as well not have been
+there. The bill sits above the plan view for the same reason: the pane is
+shorter than both, the numbers are what you check while drawing, so the drawing
+is what scrolls.
+
 ### 2026-08-30 (an armful, measured in kilograms so strength has somewhere to land)
 
 One board at a time was honest and unusable: a 26-board floor panel is 26 walks
