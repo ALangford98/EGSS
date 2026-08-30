@@ -142,7 +142,6 @@ public:
 		// middle cell is the bottom of the lake and opens you underwater.
 		// From the rim you are looking across it.
 		GoTo(spawn);
-
 	}
 
 private:
@@ -1900,6 +1899,14 @@ private:
 
 		// In your hands, so gravity and water are somebody else's problem.
 		bool Carried = false;
+
+		// **Which slot of which pile it is stacked in, or -1 for loose.**
+		// A stacked board is a static body sitting exactly where the layout
+		// puts it -- not a dynamic one that happens to have settled there.
+		// Eighty boards off one log will not settle into a stack; they will
+		// find a way out of each other and go down the hill.
+		int Stack = -1;
+		int Pile = 0;
 	};
 
 	// **A fixed pool, because bodies can be rewritten and not removed.**
@@ -2795,6 +2802,168 @@ private:
 		return ShedCentre() + glm::vec3(-(s_ShedHalf - 0.9f), 0.45f, 1.6f);
 	}
 
+	// --- The piles ------------------------------------------------------------
+	//
+	// **Boards are stacked, not dropped.**
+	//
+	// A board off the saw is a dynamic body, and eighty of them out of one
+	// butt log will not settle into a pile: they find a way out of each other,
+	// spread across the floor and go out of the door. Trying to make them
+	// settle is the wrong fix -- a stack of sawn timber is *stacked*, by hand,
+	// one board at a time, and a person putting boards down does not leave
+	// them where they land either.
+	//
+	// So a board that reaches a pile is placed: it goes to the next slot of a
+	// layout and becomes static. That is the same trick the bedded boulders
+	// use -- a thing that is where it is put and never simulated -- and it is
+	// what makes the pile readable. Take one off the top and it is a dynamic
+	// body again.
+	//
+	// Two piles, because the timber comes off the saw at one bench and is
+	// spent at the other: green off the mill beside the saw, seasoned stock
+	// beside the crafting table where the editor is. Carrying between them is
+	// the work.
+	enum class Pile { Mill = 0, Stock = 1 };
+
+	static constexpr int s_PileAcross = 8;      // boards to a course
+	static constexpr float s_PileGap = 0.004f;  // sticker between boards
+
+	glm::vec3 PileAt(Pile pile) const
+	{
+		// Clear of the bench and against the wall behind it, so the pile is
+		// beside the work rather than under it.
+		// Lifted by the bearers, which is where sawn timber sits: off the
+		// floor, so air gets under the bottom course.
+		return ShedCentre() + (pile == Pile::Mill
+			? glm::vec3(s_ShedHalf - 1.1f, 0.06f, -1.3f)
+			: glm::vec3(-(s_ShedHalf - 1.1f), 0.06f, -1.3f));
+	}
+
+	// Where the n-th board of a pile sits. Boards lie along the room's x axis,
+	// courses run across it, and the layers go up.
+	glm::vec3 PileSlot(Pile pile, int n) const
+	{
+		int across = n % s_PileAcross;
+		int layer = n / s_PileAcross;
+
+		float wide = BoardWide() + s_PileGap;
+
+		return PileAt(pile) + glm::vec3(0.0f,
+			BoardThick() * ((float)layer + 0.5f),
+			((float)across - 0.5f * (float)(s_PileAcross - 1)) * wide);
+	}
+
+	// How far from a pile counts as reaching it.
+	static constexpr float s_PileReach = 2.2f;
+
+	int PileCount(Pile pile) const
+	{
+		int total = 0;
+
+		for (const Loose& loose : m_Loose)
+			if (loose.Stack >= 0 && loose.Pile == (int)pile)
+				total++;
+
+		return total;
+	}
+
+	// The lowest slot nobody is in, so a pile taken from the top and added to
+	// again fills the hole rather than leaving a gap in the air.
+	int NextPileSlot(Pile pile) const
+	{
+		for (int slot = 0; slot < s_LoosePool; slot++)
+		{
+			bool taken = false;
+
+			for (const Loose& loose : m_Loose)
+				if (loose.Stack == slot && loose.Pile == (int)pile)
+				{
+					taken = true;
+					break;
+				}
+
+			if (!taken)
+				return slot;
+		}
+
+		return -1;
+	}
+
+	// The topmost board of a pile, which is the one a hand reaches first.
+	int TopOfPile(Pile pile) const
+	{
+		int best = -1, highest = -1;
+
+		for (size_t i = 0; i < m_Loose.size(); i++)
+			if (m_Loose[i].Stack > highest && m_Loose[i].Pile == (int)pile)
+			{
+				highest = m_Loose[i].Stack;
+				best = (int)i;
+			}
+
+		return best;
+	}
+
+	void PutOnPile(int which, Pile pile)
+	{
+		int slot = NextPileSlot(pile);
+
+		if (slot < 0)
+			return;
+
+		Loose& board = m_Loose[(size_t)which];
+
+		board.Stack = slot;
+		board.Pile = (int)pile;
+
+		Egss::RigidBody3D& body = m_World.GetBody(board.Body);
+
+		body.Position = PileSlot(pile, slot);
+		body.Orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+		body.Velocity = glm::vec3(0.0f);
+		body.AngularVelocity = glm::vec3(0.0f);
+		body.Type = Egss::BodyType::Static;
+		body.Awake = false;
+
+		body.UpdateInertiaWorld();
+	}
+
+	void TakeOffPile(int which)
+	{
+		Loose& board = m_Loose[(size_t)which];
+
+		board.Stack = -1;
+
+		Egss::RigidBody3D& body = m_World.GetBody(board.Body);
+
+		body.Type = Egss::BodyType::Dynamic;
+		body.Awake = true;
+	}
+
+	// Which pile, if any, you are standing at.
+	int PileHere(Pile& pile) const
+	{
+		float best = s_PileReach;
+		int found = -1;
+
+		glm::vec3 at = m_Camera.GetPosition();
+
+		for (int i = 0; i < 2; i++)
+		{
+			float range = glm::length(at - PileAt((Pile)i)
+				- glm::vec3(0.0f, s_EyeHeight, 0.0f));
+
+			if (range > best)
+				continue;
+
+			best = range;
+			found = i;
+			pile = (Pile)i;
+		}
+
+		return found;
+	}
+
 	float LogVolume() const
 	{
 		return glm::pi<float>() * s_LogRadius * s_LogRadius * s_LogLength;
@@ -3136,6 +3305,29 @@ private:
 		body.Velocity = glm::vec3(0.0f);
 		body.AngularVelocity = glm::vec3(0.0f);
 		body.Awake = true;
+
+		// **Nothing is ever put down below the floor you are standing on.**
+		//
+		// Asked at the *eye* rather than under the load: you cannot be
+		// standing inside rock, so the surface under your feet is the one a
+		// thing put down in front of you lands on. Asked under the load it
+		// finds whatever is below *that*, which for a board pushed under the
+		// shed floor is the hillside beneath the plinth -- a correct answer to
+		// the wrong question.
+		float floor = m_World.GroundHeightBelow(m_Camera.GetPosition(),
+			m_Walker, -1000.0f);
+
+		float reach = glm::max(glm::max(held.Half.x, held.Half.y), held.Half.z);
+
+		if (body.Position.y - reach < floor)
+			body.Position.y = floor + reach + 0.02f;
+
+		// **Put down at a pile means stacked, not dropped.** A person setting
+		// boards down beside a stack sets them on it.
+		Pile pile = Pile::Stock;
+
+		if (held.Kind == Flotsam::Plank && PileHere(pile) >= 0)
+			PutOnPile(slot, pile);
 	}
 
 	// The first carried piece of a kind, which is what the bench mills.
@@ -3202,14 +3394,49 @@ private:
 			return;
 		}
 
+		// **Reaching into a pile takes off the top of it**, whichever board
+		// you were pointing at. Pulling one out of the middle of a stack
+		// leaves a hole in the air, and nobody does that.
+		int from = m_Loose[(size_t)best].Stack >= 0
+			? m_Loose[(size_t)best].Pile : -1;
+
+		if (from >= 0)
+		{
+			int top = TopOfPile((Pile)from);
+
+			if (top >= 0)
+				best = top;
+		}
+
 		Take(best);
+
+		Flotsam kind = m_Loose[(size_t)best].Kind;
+
+		// Off a pile, an armful comes off the top course by course.
+		if (from >= 0)
+		{
+			for (;;)
+			{
+				int top = TopOfPile((Pile)from);
+
+				if (top < 0)
+					break;
+
+				if (CarriedMass()
+					+ m_World.GetBody(m_Loose[(size_t)top].Body).GetMass()
+					> CarryLimit())
+					break;
+
+				Take(top);
+			}
+
+			return;
+		}
 
 		// The rest of the armful, nearest to the first piece outwards, while
 		// there is budget left. Same kind only: an armful of boards with a log
 		// balanced on it is not a thing anybody does.
 		glm::vec3 pile = m_World.GetBody(m_Loose[(size_t)best].Body).Position;
-
-		Flotsam kind = m_Loose[(size_t)best].Kind;
 
 		for (;;)
 		{
@@ -3247,6 +3474,9 @@ private:
 
 	void Take(int slot)
 	{
+		if (m_Loose[(size_t)slot].Stack >= 0)
+			TakeOffPile(slot);
+
 		m_Carry.push_back(slot);
 
 		m_Loose[(size_t)slot].Carried = true;
@@ -3256,6 +3486,75 @@ private:
 		body.Type = Egss::BodyType::Kinematic;
 		body.Velocity = glm::vec3(0.0f);
 		body.AngularVelocity = glm::vec3(0.0f);
+	}
+
+	// **How far in front of the eye a load can be held.**
+	//
+	// Carried timber is kinematic and parked at a fixed distance in front of
+	// the eye, and that is exactly why it went through walls and into the
+	// ground: a kinematic body is a body the solver has been told not to move,
+	// so nothing pushes back on it. Put it down there and it is released
+	// *inside* the world, penetrating on every side, and the solver's way out
+	// of that is whichever side is shallowest -- often downward, which is the
+	// board falling through the floor.
+	//
+	// So the arm shortens, which is what anyone carrying a plank into a
+	// doorway does. Terrain by its own raycast; static boxes by a slab test in
+	// each box's own frame, so an oriented panel is tested as the box it is
+	// rather than as the box that contains it.
+	float CarryReach(float want) const
+	{
+		glm::vec3 eye = m_Camera.GetPosition();
+		glm::vec3 direction = m_Camera.GetForward();
+
+		float reach = want;
+
+		float distance = 0.0f;
+		glm::vec3 point, normal;
+
+		if (m_Field && m_Field->Raycast(eye, direction, want, distance, point,
+			normal))
+			reach = glm::min(reach, distance);
+
+		for (const Egss::RigidBody3D& body : m_World.GetBodies())
+		{
+			if (body.Type != Egss::BodyType::Static
+				|| body.Shape != Egss::ColliderShape3D::Box)
+				continue;
+
+			glm::mat3 frame = glm::mat3_cast(glm::conjugate(body.Orientation));
+
+			glm::vec3 origin = frame * (eye - body.Position);
+			glm::vec3 along = frame * direction;
+
+			float entry = 0.0f, leave = reach;
+			bool hit = true;
+
+			for (int a = 0; a < 3 && hit; a++)
+			{
+				if (std::abs(along[a]) < 1e-6f)
+				{
+					hit = std::abs(origin[a]) <= body.HalfExtents[a];
+					continue;
+				}
+
+				float t0 = (-body.HalfExtents[a] - origin[a]) / along[a];
+				float t1 = (body.HalfExtents[a] - origin[a]) / along[a];
+
+				if (t0 > t1)
+					std::swap(t0, t1);
+
+				entry = glm::max(entry, t0);
+				leave = glm::min(leave, t1);
+
+				hit = entry <= leave;
+			}
+
+			if (hit)
+				reach = glm::min(reach, entry);
+		}
+
+		return reach;
 	}
 
 	// Held out in front, turned to lie across the view the way anyone carries a
@@ -3282,7 +3581,12 @@ private:
 			// Carried low enough that a full armful tops out below the sight
 			// line: six boards stack 0.32 m, and starting at the old 0.35 m
 			// put the top one across the middle of the screen.
-			body.Position = m_Camera.GetPosition() + forward * 1.6f
+			//
+			// The arm gives way at a wall rather than pushing the load into
+			// it, and never folds up shorter than the body itself.
+			float arm = glm::max(CarryReach(1.6f) - 0.30f, 0.55f);
+
+			body.Position = m_Camera.GetPosition() + forward * arm
 				- glm::vec3(0.0f, 0.62f - lift, 0.0f);
 
 			body.Orientation = glm::angleAxis(yaw,
@@ -3314,8 +3618,6 @@ private:
 
 		int boards = BoardsFrom(held);
 
-		glm::vec3 stack = SawBench() + glm::vec3(0.0f, 0.35f, 0.0f);
-
 		// Put down the log and nothing else: the rest of the armful stays in
 		// your hands, and the slot it was in becomes the first board.
 		Release(slot);
@@ -3325,24 +3627,38 @@ private:
 		held.Fill = 1.0f;
 		held.Colour = glm::vec3(0.66f, 0.51f, 0.32f);
 
-		Egss::RigidBody3D& first = m_World.GetBody(held.Body);
-
 		float mass = s_Pine * 8.0f * s_BoardHalf[0] * s_BoardHalf[1]
 			* s_BoardHalf[2];
 
-		first = Egss::RigidBody3D::MakeBox(
-			stack + glm::vec3(0.0f, 2.0f * s_BoardHalf[1], 0.0f),
-			held.Half, mass);
+		Egss::RigidBody3D& first = m_World.GetBody(held.Body);
+
+		first = Egss::RigidBody3D::MakeBox(PileSlot(Pile::Mill, 0), held.Half,
+			mass);
 
 		first.Friction = 0.7f;
-		first.Awake = true;
+
+		PutOnPile(slot, Pile::Mill);
+
+		// **Straight onto the pile, because eighty loose boards is not a
+		// pile.** A butt log is worth dozens of them; dropped as dynamic
+		// bodies at the bench they push each other apart and half of them end
+		// up outside the shed. Timber comes off a saw and is stacked, and the
+		// stacking is the same one board at a time either way.
+		int made = 1;
 
 		for (int i = 1; i < boards; i++)
-			AddLoose(stack + glm::vec3(0.0f,
-				2.0f * s_BoardHalf[1] * (float)(i + 1) + 0.004f * (float)i,
-				0.0f), held.Half, s_Pine, Flotsam::Plank, held.Colour);
+		{
+			int entry = AddLoose(PileSlot(Pile::Mill, i), held.Half, s_Pine,
+				Flotsam::Plank, held.Colour);
 
-		m_Milled += boards;
+			if (entry < 0)
+				break;
+
+			PutOnPile(entry, Pile::Mill);
+			made++;
+		}
+
+		m_Milled += made;
 	}
 
 	// --- Prefabs --------------------------------------------------------------
@@ -3369,12 +3685,9 @@ private:
 	static constexpr int s_MaxDesigns = 6;
 	static constexpr int s_PanelPool = 32;
 
-	// Reach at the table, and how far from it a board still counts as being in
-	// the pile. The stock radius is deliberately shorter than the shed: the saw
-	// bench is 6.2 m from the crafting table, so boards have to be *carried*
-	// across the room rather than counted where they fell.
+	// Reach at the table. The two piles are 6.2 m apart, so timber has to be
+	// carried across the room rather than counted where it fell.
 	static constexpr float s_TableReach = 3.0f;
-	static constexpr float s_StockRadius = 2.5f;
 
 	// The grid is measured in board widths, so a piece is always a whole number
 	// of cells across and the arithmetic stays in integers. 48 cells is 4.8 m,
@@ -3731,24 +4044,12 @@ private:
 		}
 	}
 
-	// **How many boards are stacked at the table.** Carried timber does not
-	// count: it is in your hands, not in the pile.
-	int Stockpile() const
-	{
-		int total = 0;
-
-		for (size_t i = 0; i < m_Loose.size(); i++)
-		{
-			if (m_Loose[i].Kind != Flotsam::Plank || m_Loose[i].Carried)
-				continue;
-
-			if (glm::length(m_World.GetBody(m_Loose[i].Body).Position
-				- CraftTable()) <= s_StockRadius)
-				total++;
-		}
-
-		return total;
-	}
+	// **How many boards are on the pile beside the table.**
+	//
+	// It used to be "every loose plank within 2.5 m of the table", which
+	// counted whatever had rolled under it and could not tell a stack from a
+	// mess. Boards on a pile are in slots, so the pile knows its own size.
+	int Stockpile() const { return PileCount(Pile::Stock); }
 
 	// **Removing one keeps the pool indexed by position.** `AddLoose` hands
 	// out `m_LoosePool[m_Loose.size()]`, so an entry cannot simply be erased --
@@ -3803,31 +4104,16 @@ private:
 		if (Stockpile() < cost)
 			return;
 
-		// Nearest first, so the pile empties from the table outwards.
+		// Off the top, so the pile goes down course by course rather than
+		// leaving a hole somewhere in the middle of it.
 		for (int taken = 0; taken < cost; taken++)
 		{
-			int best = -1;
-			float nearest = s_StockRadius;
+			int top = TopOfPile(Pile::Stock);
 
-			for (size_t i = 0; i < m_Loose.size(); i++)
-			{
-				if (m_Loose[i].Kind != Flotsam::Plank || m_Loose[i].Carried)
-					continue;
-
-				float range = glm::length(
-					m_World.GetBody(m_Loose[i].Body).Position - CraftTable());
-
-				if (range > nearest)
-					continue;
-
-				nearest = range;
-				best = (int)i;
-			}
-
-			if (best < 0)
+			if (top < 0)
 				return;
 
-			RemoveLoose((size_t)best);
+			RemoveLoose((size_t)top);
 		}
 
 		while ((int)m_PanelPool.size() < s_PanelPool)
@@ -7333,15 +7619,20 @@ inline void TerrainLab::DrawShed()
 
 	// The wall with the door in it: two posts and a lintel, and the lintel
 	// sits at `s_DoorTop` so the opening matches the panel in the field.
+	//
+	// **The same numbers the collider uses.** The drawn lintel used to stop at
+	// 3.0 m while the wall it sits in goes to 3.25, which left a quarter-metre
+	// band above the door with nothing in it. Invisible while the ceiling was
+	// also at 3.0; a slit of daylight over the doorway the moment the roof
+	// went up to meet the walls.
 	float side = 0.5f * (h - s_DoorHalf);
-	float lintel = 0.5f * (3.0f - s_DoorTop);
 
 	DrawBox(centre + glm::vec3(-(s_DoorHalf + side), 1.5f, -h),
 		{ side, 1.75f, 0.25f }, 0.0f, plank);
 	DrawBox(centre + glm::vec3(s_DoorHalf + side, 1.5f, -h),
 		{ side, 1.75f, 0.25f }, 0.0f, plank);
-	DrawBox(centre + glm::vec3(0.0f, s_DoorTop + lintel, -h),
-		{ s_DoorHalf, lintel, 0.25f }, 0.0f, plank);
+	DrawBox(centre + glm::vec3(0.0f, 2.85f, -h),
+		{ s_DoorHalf, 0.4f, 0.25f }, 0.0f, plank);
 
 	// **The rack, on the wall you face as you walk in.** Two pegs and, when it
 	// is not in your hands, the axe on them -- so the wall tells you both that
@@ -7379,6 +7670,17 @@ inline void TerrainLab::DrawShed()
 
 	bench(SawBench(), glm::vec3(0.40f, 0.31f, 0.20f));
 	bench(CraftTable(), glm::vec3(0.36f, 0.28f, 0.19f));
+
+	// **The bearers.** Two sticks on the floor under each pile, so an empty
+	// pile is still a place to put boards rather than a patch of floor.
+	for (int i = 0; i < 2; i++)
+	{
+		glm::vec3 pile = PileAt((Pile)i);
+
+		for (int j = 0; j < 2; j++)
+			DrawBox(pile + glm::vec3(j ? 0.9f : -0.9f, -0.03f, 0.0f),
+				{ 0.07f, 0.03f, 0.55f }, 0.0f, glm::vec3(0.33f, 0.26f, 0.18f));
+	}
 
 	// The blade, so the saw bench reads as one rather than as a table.
 	DrawBox(SawBench() + glm::vec3(0.0f, 0.16f, 0.0f),
