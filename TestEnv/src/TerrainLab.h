@@ -3504,9 +3504,12 @@ private:
 	// rather than as the box that contains it.
 	float CarryReach(float want) const
 	{
-		glm::vec3 eye = m_Camera.GetPosition();
-		glm::vec3 direction = m_Camera.GetForward();
+		return Clearance(m_Camera.GetPosition(), m_Camera.GetForward(), want);
+	}
 
+	float Clearance(const glm::vec3& eye, const glm::vec3& direction,
+		float want) const
+	{
 		float reach = want;
 
 		float distance = 0.0f;
@@ -3565,7 +3568,62 @@ private:
 		glm::vec3 forward = m_Camera.GetForward();
 		glm::vec3 right = m_Camera.GetRight();
 
-		float yaw = std::atan2(right.x, right.z) - glm::half_pi<float>();
+		// The arm gives way at a wall rather than pushing the load into it,
+		// and never folds up shorter than the body itself.
+		float arm = glm::max(CarryReach(1.6f) - 0.30f, 0.55f);
+
+		glm::vec3 hold = m_Camera.GetPosition() + forward * arm;
+
+		// **And it turns lengthways when there is no room across.**
+		//
+		// Shortening the arm does nothing about the *ends*: a 2.4 m board held
+		// across the shoulders is still half a metre into the jamb either side
+		// of a 2.2 m doorway. Anyone carrying timber through a door turns it.
+		//
+		// **Asked along the whole segment you occupy, not at the hold point.**
+		// One sample there is a window 0.5 m wide -- the thickness of the wall
+		// -- which at walking pace is eight hundredths of a second, so the
+		// board flicked round and back and never turned while you were
+		// actually in the doorway. Sampling from the eye out to a little past
+		// the load keeps it turned for as long as any part of the load is
+		// between the jambs, which is what "it does not fit" means.
+		float span = 0.0f;
+
+		for (int slot : m_Carry)
+			if (slot >= 0 && slot < (int)m_Loose.size())
+				span = glm::max(span, m_Loose[(size_t)slot].Half.x);
+
+		bool lengthways = false;
+
+		if (span > 0.05f)
+		{
+			glm::vec3 eye = m_Camera.GetPosition();
+			glm::vec3 out = hold + forward * 0.6f;
+
+			float least = span + 0.15f;
+
+			// Six of them, because the samples have to be closer together than
+			// the thinnest thing they must not step over. The shed's walls are
+			// 0.5 m and three samples were 0.95 m apart, so the board walked
+			// straight through the doorway between two of them.
+			const int taken = 6;
+
+			for (int i = 0; i < taken; i++)
+			{
+				glm::vec3 at = glm::mix(eye, out,
+					(float)i / (float)(taken - 1));
+
+				least = glm::min(least, glm::min(
+					Clearance(at, right, span + 0.15f),
+					Clearance(at, -right, span + 0.15f)));
+			}
+
+			lengthways = least < span;
+		}
+
+		float yaw = lengthways
+			? std::atan2(forward.x, forward.z) - glm::half_pi<float>()
+			: std::atan2(right.x, right.z) - glm::half_pi<float>();
 
 		float lift = 0.0f;
 
@@ -3581,13 +3639,7 @@ private:
 			// Carried low enough that a full armful tops out below the sight
 			// line: six boards stack 0.32 m, and starting at the old 0.35 m
 			// put the top one across the middle of the screen.
-			//
-			// The arm gives way at a wall rather than pushing the load into
-			// it, and never folds up shorter than the body itself.
-			float arm = glm::max(CarryReach(1.6f) - 0.30f, 0.55f);
-
-			body.Position = m_Camera.GetPosition() + forward * arm
-				- glm::vec3(0.0f, 0.62f - lift, 0.0f);
+			body.Position = hold - glm::vec3(0.0f, 0.62f - lift, 0.0f);
 
 			body.Orientation = glm::angleAxis(yaw,
 				glm::vec3(0.0f, 1.0f, 0.0f));
