@@ -276,7 +276,11 @@ private:
 
 		float ground = 0.0f;
 		glm::vec3 normal(0.0f, 1.0f, 0.0f);
-		bool found = m_World.GroundBelow(body.Position, ground, normal, m_Walker);
+		// The last argument is the initial best, not a floor to search from,
+		// and leaving it at its default of zero rejects every surface below
+		// sea level. See the note in `TerrainLab::MoveWalker`.
+		bool found = m_World.GroundBelow(body.Position, ground, normal,
+			m_Walker, -1000.0f);
 
 		m_Grounded = found && (feet - ground) < 0.25f;
 

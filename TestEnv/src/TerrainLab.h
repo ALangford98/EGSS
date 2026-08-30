@@ -4685,9 +4685,22 @@ private:
 
 		float feet = body.Position.y - (s_WalkerHalfHeight + s_WalkerRadius);
 
+		// **The last argument is the initial best, not a floor to search
+		// from**, and it defaults to zero -- so every surface below y = 0 was
+		// rejected and `found` came back false over most of the map. The
+		// walker was therefore *never* grounded on low ground: nothing zeroed
+		// its horizontal velocity, so it kept whatever the contact response
+		// gave it and slid. Standing still on a 28.8-degree slope it went
+		// 27.5 m in ten seconds and reached 8.1 m/s, and on an undulating
+		// surface that momentum can be turned uphill, which is the other half
+		// of what this looked like.
+		//
+		// This same trap is in HANDOVER for `GroundHeightBelow` and it caught
+		// the panel placement first. It is one argument in both places.
 		float ground = 0.0f;
 		glm::vec3 normal(0.0f, 1.0f, 0.0f);
-		bool found = m_World.GroundBelow(body.Position, ground, normal, m_Walker);
+		bool found = m_World.GroundBelow(body.Position, ground, normal,
+			m_Walker, -1000.0f);
 
 		m_Grounded = found && (feet - ground) < 0.25f;
 
