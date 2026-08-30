@@ -343,6 +343,33 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **Snap the lower corner to a lattice, never the centre.** A piece an odd
+  number of cells across has its centre on a half cell, so snapping centres
+  puts odd and even pieces on two different lattices and they never meet.
+  Snapping the heading to a right angle first is what makes "the lower
+  corner" well defined at all -- and it pays again, because an axis-aligned
+  box is one whose AABB *is* its shape, so `GroundHeightBelow` reports its
+  top exactly rather than "slightly high".
+
+- **"Is it in that plane" is not "is its face on that plane".** The check
+  that measured the workshop's doorway asked only whether a piece's near
+  face lay in the front wall, and a 4 m floor bay whose edge touches that
+  plane said yes -- so a deck was counted as the wall beside the door and the
+  doorway measured 0.000 m wide. A piece in a wall is also *thin through* it.
+
+- **A whole number of cells apart is a question per axis, not a distance.**
+  Two pieces offset 2.7 m across and 0.4 m along are both on the lattice and
+  2.73 m apart, which is not a multiple of anything.
+
+- **A `max` seeded at zero can only ever report zero for a negative answer.**
+  "How far past the jamb is the worst end" started at 0.0 and reported 0.000
+  for a board clearing by 1.1 m. Seed a running extreme below anything real.
+
+- **When a unit changes with the axis, say so in the field's name or its
+  comment.** A part's `Length` is in 100 mm cells along the plan and in 50 mm
+  courses up it, because those are the two grids it can lie on. Billing an
+  upright post by its `Length` in cells would charge twice the timber.
+
 - **`GroundBelow`'s and `GroundHeightBelow`'s last argument is the *initial
   best*, not a floor to search from, and it defaults to `0.0`.** It has now
   cost time three times. Left out, every surface below sea level is rejected

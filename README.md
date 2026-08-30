@@ -1264,6 +1264,90 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-30 (a design has courses, axes and two stocks, and the workshop is built of them)
+
+**Placement lands on a lattice.** It used to be three metres ahead at whatever
+heading you happened to be facing. Two walls put down side by side were never
+quite in line and never quite touching, and there was no way to make them: the
+odds of hitting the same heading twice with a mouse are nil. Three snaps, and
+each earns its place — the heading to a right angle, because anything else
+meets at a wedge no position snapping closes; the **lower corner** to the cell,
+not the centre, because a design an odd number of cells across has its centre on
+a half cell and would sit on a different lattice from an even one; and the base
+to a course, where the base is whatever is under the aim. That last is the whole
+of what makes a second course sit on the first.
+
+Snapping the heading also pays for itself twice: every placed panel is
+axis-aligned, so `GroundHeightBelow` — an **AABB** query — reports a panel's top
+*exactly* rather than "slightly high", which is what stacking needs.
+
+Measured: two panels laid from headings a few degrees apart come out on the same
+heading, 25 and −11 whole cells apart, every lower corner within 0.000015 of a
+cell of the lattice, and a piece put down on another has its underside at
+0.1000 against the other's top of 0.1000.
+
+**The piece model was a panel and could not be a building.** A part was a run of
+board with one bit saying which of two courses it sat in. A pillar is a piece
+standing on end and a log wall is ten pieces stacked, and neither can be said
+with one bit. A part now carries a **course** (six bits, 3.2 m of height), an
+**axis** (along x, along z, or upright) and a **stock** (a 100×50 sawn board, or
+a 300 mm round log). Twenty-eight bits of thirty-one, round-tripped across the
+whole range of every field — 73440 packed pieces — because a packed field one bit
+too narrow does not fail, it forgets. Fitting is a question about boxes now: a
+log is six courses thick, so one laid two courses under a board still fouls it.
+
+`Length` is in cells along the plan and in courses up it, because the two axes
+have different units — 100 mm across, 50 mm up. Quoting an upright post in cells
+would make its length mean something the grid it stands on does not.
+
+**The bill is two materials and only one of them is bin packing.** Boards come in
+2.4 m lengths and have to be cut out of them; a log is spent as *volume*, because
+the logs on the deck are whatever thickness they grew and the design's log is one
+standard round. Same rule the mill counts by, and the reason riving loses
+nothing. Hence a third pile — a deck of round timber against the back wall,
+because a log wall is spent whole and a log has to be somewhere the table can
+count it without sawing it first. Neither material is spent until both are
+there: a design half built out of boards you had and logs you did not is a pile
+of boards you no longer have.
+
+**And the workshop is put up out of the kit.** It was eleven hand-written static
+boxes, which was honest while there was nothing else to build it from. Now there
+is: the same designs the crafting table makes, at the same sizes, placed the way
+`B` places one. That is the only way to know the editor can describe a *building*
+and not just a panel — if a piece in the kit were wrong the shed would show it,
+because the shed **is** those pieces.
+
+It comes to **24 pieces of kit, 461 timbers, 756 boards and 22.04 m³ of round
+timber**: a log cabin on a plinth with a board deck, a board roof, plates over
+the door and a porch on two pillars. Corners are not notched — perpendicular
+walls cross, and two round sections crossing read as a saddle notch, which is
+what that is.
+
+The strongest check here is a regression one. Nothing about boards was meant to
+change, and the two designs the table has always opened with still cost **26 and
+22 boards** — the same numbers measured before any of it. Measured off the
+placed panels rather than off the constants they were placed from: the doorway is
+2.200 m wide with its head at 2.400 m, which is the opening the portal's plane
+test has always assumed; the deck brings the floor to the shed's datum to
+0.0000 m; the threshold in from the pad is a 0.150 m step. It costs **2.3 ms a
+frame** in release with all 461 timbers in view.
+
+Four checks were wrong before they were right, and all four were the
+measurement, not the code:
+
+- The lattice test placed its panels on a hillside where the second landed on
+  ground 1.45 m higher, then compared a piece that had correctly stacked on
+  *that* one against the height of the other.
+- It then asked whether two pieces were a whole number of cells apart as a
+  Pythagorean **distance**. 2.7 m across and 0.4 m along are both on the lattice
+  and 2.73 m apart, which is not a multiple of anything.
+- The doorway read **0.000 m wide**, because "in the plane of the front wall" was
+  asked only of a piece's near face — and a 4 m floor bay whose edge touches that
+  plane answered yes, so a deck was counted as the wall beside the door. It has
+  to be thin *through* the wall as well as on it.
+- A clearance check started its `max` at 0.0, so a board clearing the jamb by a
+  metre could only ever report zero.
+
 ### 2026-08-30 (the toolshed comes onto the map, and the ground under it is levelled)
 
 The shed was a pocket dimension four hundred metres above the block --
