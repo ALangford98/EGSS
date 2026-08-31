@@ -3,18 +3,45 @@
 A game engine written from scratch in C++17, following the shape of TheCherno's
 Hazel series but diverging where it made sense. `EGSS/` is the engine, built as
 a shared library; `TestEnv/` is a sandbox app that links against it and holds
-six demos.
+seventeen demos.
 
 This is built to be **understood**, not to ship a game. A working black box is
 worth less here than a mechanism that can be followed. Explain the load-bearing
 idea; skip the ceremony.
 
-**Read `docs/HANDOVER.md` before doing anything substantial.** It holds the
-working context and the specific traps that have cost time more than once —
-depth ordering in 2D, `OnAttach` running for every layer, undefined fragment
-outputs in multi-attachment framebuffers, and about twenty more. `docs/ENGINE.md`
-is the orientation doc. `README.md` is the reference, and its changelog records
-*why* things are the way they are, including the wrong turns.
+## Reading this repo without drowning in it
+
+**Load context in tiers, and expand only on a trigger.** This section used to
+say "read `docs/HANDOVER.md` before anything substantial". Obeying that
+literally cost ~252k tokens across the handover and the README, and still
+answered "what are we working on" **wrong** — because the expensive documents
+were the stale ones and `git log` went unread. Cheap and live beats large and
+cached.
+
+**Tier 0 — always.** This file and `memory/MEMORY.md`. ~2.9k tokens, automatic.
+
+**Tier 1 — every session, before anything else.** `git log --oneline -15`,
+`git status --short`, and `docs/STATE.md`. **~1k tokens, and it answers "what
+are we working on" by itself.** Nothing above this tier is needed for that
+question. Where `docs/STATE.md` and git disagree, **git wins**.
+
+**Tier 2 — one area, on a named trigger:**
+
+| Trigger | Read | Cost |
+| --- | --- | --- |
+| About to edit a file | `grep -n` its symbols against the traps body | ~1k |
+| First time in an area | The trap index in `docs/HANDOVER.md`, then that area's `docs/ENGINE.md` section | ~4k + ~2k |
+| "Why is it like this?" | `grep -n '^### ' README.md \| head -30`, then `sed` out the one entry | ~1.5k |
+| Picking the next task | `README.md` "Still outstanding" only | ~9k |
+| A measurement disagrees with arithmetic | The traps body in full | 31k |
+
+**Tier 3 — never read whole.** The README changelog is ~170k tokens; the traps
+body is ~31k over 254 entries. Both are newest-first and both are
+meant to be **grepped**. Reading either end to end is the failure this ladder
+exists to prevent.
+
+**Say which trigger fired when you expand a tier**, so the cost is visible and
+the ladder can be corrected when it is wrong.
 
 ## Git
 

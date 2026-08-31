@@ -38,6 +38,10 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
+- **The context pipeline.** This file, a generated trap index
+  (`./egss.py traps`, `--check` to detect drift), and a tiered read ladder in
+  `CLAUDE.md`. Answering "what are we working on" cold went from ~252k tokens
+  and wrong to ~3.9k and right.
 - **Instancing.** Panels and animals batched: 764 draw calls → 33, submission
   1420 µs → 66 µs. Verified by rendering both ways and comparing pixels —
   byte-identical, 3,686,400 of 3,686,400 samples. Frame time did not move,

@@ -1264,6 +1264,63 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-31 (the docs cost 252k tokens and answered the question wrong)
+
+A session opened in this folder and asked "what are we working on" was, by
+following its own instructions, reading about **252k tokens** before touching
+any code -- `docs/HANDOVER.md` at 53k because `CLAUDE.md` said to, and
+`README.md` at 188k as "the reference". The interesting part is not the size.
+
+**It answered wrong.** `HANDOVER.md` opened with a "Current state" section
+naming the commit `main` sat at: `3ddef51`, with 3D rigid bodies in flight on a
+worktree branch. Reality was 22 commits further on, in `TerrainLab.h`, and the
+worktree workflow had been deleted from `CLAUDE.md` some time before -- which
+`HANDOVER.md` was still describing, so the two documents every session reads
+contradicted each other. Meanwhile `git log --oneline -15` costs about **200
+tokens**, cannot drift, and is right.
+
+So the defect was never the volume: **the most expensive source in the repo was
+the least current one**, and the cheapest was unread. Three changes, in that
+order of importance.
+
+**The volatile half moved out.** `docs/STATE.md`, one screen, ~750 tokens, and
+explicitly the only doc allowed to go stale -- kept short so that fixing it is
+cheap, and it says outright that where it disagrees with `git`, git wins. What
+stayed in the handover is the part that does not rot: the subsystem table. Two
+things in *that* had also gone stale, found while certifying it as the durable
+half -- Renderer 3D still read "no batching" two commits after `SubmitInstanced`
+landed, and the entire `Voxel` subsystem had never been listed.
+
+**The traps got an index, generated.** 254 traps at 31k tokens is a section
+sessions skip, which is exactly how the same wall gets hit twice. One line per
+trap -- the bold opening clause, which is the trap stated once -- comes to
+4,262 tokens against 31,223, a factor of **7.3**, enough to decide whether to
+`grep -n` for the body. It is built by `./egss.py traps` rather than kept by
+hand, because a hand-kept index of a list that grows every session is a second
+thing to forget, and forgetting is the failure being fixed one level up.
+`./egss.py traps --check` exits 1 on drift. Verified by adding a trap, watching
+`--check` fail, seeing the regenerated index pick it up, and watching the count
+return to 254 when it was removed.
+
+**`CLAUDE.md` gained a read ladder** in place of "read `docs/HANDOVER.md`
+before anything substantial", which is the line that made 53k the default.
+Tier 0 is this file, always. Tier 1 is `git log`, `git status` and
+`docs/STATE.md` -- ~1k tokens, and it answers the question on its own. Tier 2
+is one area on a named trigger, with the cost of each written down. Tier 3 --
+the changelog and the traps body -- is grepped and never read whole. The ladder
+costs ~320 tokens in the always-loaded file and removes ~249k from a cold
+start.
+
+Answering "what are we working on" went from **~252k tokens and wrong** to
+**~3.9k and right** -- Tier 0 at 2,856 plus Tier 1 at 1,009, both measured
+rather than estimated.
+
+Two corrections worth recording, both estimates made before the thing existed
+and both low: the trap index was guessed at 2.5k tokens and measured 4,262, and
+Tier 1 was guessed at ~800 and measured 1,009. Neither changed a decision --
+the ratios they were justified on survived -- but a design argued from
+estimates should say so once the numbers arrive.
+
 ### 2026-08-31 (`./egss.py prune`, and where 8.2 of 9.7 GB was going)
 
 The checkout was 9.7 GB against 1.2 MB of engine source, so it was worth
