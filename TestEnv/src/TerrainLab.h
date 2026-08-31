@@ -4381,6 +4381,11 @@ private:
 		glm::vec3 At = glm::vec3(0.0f);
 		float Yaw = 0.0f;
 		bool Placed = false;
+
+		// **Whether you put it there.** The workshop is 32 pieces of the same
+		// kit, raised before you arrived, so lifting one of its walls must not
+		// decrement a count that never included it.
+		bool Mine = false;
 	};
 
 	float BoardLength() const { return 2.0f * s_BoardHalf[0]; }
@@ -5256,6 +5261,49 @@ private:
 	}
 
 	// **Placing one puts it on the ground in front of you, square to the view.**
+	// **A placed panel's box in the world.** Right-angle yaws only, which is
+	// all placement produces -- so the box *is* its axis-aligned bounds and
+	// there is no separating-axis test to write.
+	void PanelBox(const Panel& panel, glm::vec3& low, glm::vec3& high) const
+	{
+		glm::vec3 half = PanelWorldHalf(panel.Plan, panel.Yaw);
+
+		low = panel.At - half;
+		high = panel.At + half;
+	}
+
+	// **Would it land inside something already there?**
+	//
+	// Touching is the whole point of the lattice, so the test has to allow a
+	// shared face and refuse a shared volume. A millimetre of slack does both:
+	// two pieces butted on the grid overlap by exactly zero, and anything that
+	// genuinely interpenetrates does so by a course or a cell.
+	bool PanelClear(const Design& plan, const glm::vec3& at, float yaw,
+		int ignore) const
+	{
+		glm::vec3 half = PanelWorldHalf(plan, yaw);
+
+		glm::vec3 low = at - half, high = at + half;
+
+		const float slack = 0.001f;
+
+		for (size_t i = 0; i < m_Panels.size(); i++)
+		{
+			if (!m_Panels[i].Placed || (int)i == ignore)
+				continue;
+
+			glm::vec3 theirLow, theirHigh;
+			PanelBox(m_Panels[i], theirLow, theirHigh);
+
+			if (low.x < theirHigh.x - slack && high.x > theirLow.x + slack
+				&& low.y < theirHigh.y - slack && high.y > theirLow.y + slack
+				&& low.z < theirHigh.z - slack && high.z > theirLow.z + slack)
+				return false;
+		}
+
+		return true;
+	}
+
 	// The first panel that has been made and not yet put down.
 	int NextPanel() const
 	{
@@ -5376,9 +5424,25 @@ private:
 
 		glm::vec3 half = PanelHalf(panel.Plan);
 
-		PanelStance(panel.Plan, panel.At, panel.Yaw);
+		glm::vec3 at;
+		float yaw;
 
+		PanelStance(panel.Plan, at, yaw);
+
+		// **Nothing is put down inside something else.** It used to be
+		// possible to stand in a wall and lay another one through it, and the
+		// only sign was the picture -- the collider is one box a side, so two
+		// walls sharing a volume is two colliders sharing it too.
+		if (!PanelClear(panel.Plan, at, yaw, -1))
+		{
+			m_NoRoom = 1.2f;
+			return;
+		}
+
+		panel.At = at;
+		panel.Yaw = yaw;
 		panel.Placed = true;
+		panel.Mine = true;
 
 		Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(panel.At, half,
 			0.0f);
@@ -5392,6 +5456,178 @@ private:
 		m_World.GetBody(panel.Body) = body;
 
 		m_Placed++;
+	}
+
+	// --- Taking it back down --------------------------------------------------
+	//
+	// **Building was one way, and that is not a loop.** You could put a panel
+	// down and never move it, never correct it, and never get the timber back
+	// -- so one misjudged wall was a misjudged wall for ever, and the only
+	// remedy was to regenerate the terrain and lose everything else with it.
+	//
+	// Two steps rather than one, and they are the same step twice: `N` aimed
+	// at a placed panel lifts it, which puts it back in your hands where `B`
+	// can set it down somewhere better; `N` again, with it in hand, breaks it
+	// up and the timber goes on the piles.
+	//
+	// **The workshop is not exempt**, and that is deliberate. It is built out
+	// of the same kit, so its walls really are 756 boards and 22 m3 of round
+	// timber -- salvaging them mints nothing that was not already standing
+	// there, which is exactly what taking a building down gives you. It is
+	// also how anybody without an axe would start.
+	int AimedPanel() const
+	{
+		glm::vec3 eye = m_Camera.GetPosition();
+		glm::vec3 direction = m_Camera.GetForward();
+
+		int best = -1;
+		float nearest = s_PlaceReach;
+
+		for (size_t i = 0; i < m_Panels.size(); i++)
+		{
+			if (!m_Panels[i].Placed)
+				continue;
+
+			glm::vec3 low, high;
+			PanelBox(m_Panels[i], low, high);
+
+			float entry = 0.0f, leave = nearest;
+			bool hit = true;
+
+			for (int axis = 0; axis < 3 && hit; axis++)
+			{
+				if (std::abs(direction[axis]) < 1e-6f)
+				{
+					hit = eye[axis] >= low[axis] && eye[axis] <= high[axis];
+					continue;
+				}
+
+				float t0 = (low[axis] - eye[axis]) / direction[axis];
+				float t1 = (high[axis] - eye[axis]) / direction[axis];
+
+				if (t0 > t1)
+					std::swap(t0, t1);
+
+				entry = glm::max(entry, t0);
+				leave = glm::min(leave, t1);
+
+				hit = entry <= leave;
+			}
+
+			if (!hit)
+				continue;
+
+			nearest = entry;
+			best = (int)i;
+		}
+
+		return best;
+	}
+
+	void LiftPanel()
+	{
+		// Holding one already: break that up instead. The two are one gesture
+		// -- undo, then undo again -- rather than two meanings for a key.
+		int held = NextPanel();
+
+		if (held >= 0)
+		{
+			BreakUpPanel(held);
+			return;
+		}
+
+		int which = AimedPanel();
+
+		if (which < 0)
+			return;
+
+		Panel& panel = m_Panels[(size_t)which];
+
+		if (panel.Mine)
+			m_Placed = glm::max(m_Placed - 1, 0);
+
+		panel.Placed = false;
+
+		// Its body goes back under the world, or the collider stays where the
+		// panel used to be and you walk into a wall that is in your hands.
+		m_World.GetBody(panel.Body) = Egss::RigidBody3D::MakeStaticSphere(
+			glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f);
+
+		// **Unplaced panels are taken in order, so the one just lifted has to
+		// be the first of them.** Otherwise lifting a wall hands you whichever
+		// panel you crafted an hour ago and puts *that* down instead.
+		Panel lifted = panel;
+
+		m_Panels.erase(m_Panels.begin() + (long)which);
+		m_Panels.insert(m_Panels.begin(), lifted);
+	}
+
+	// **The timber comes back, less nothing.** The offcut was lost at the saw
+	// when the boards were cut, which is where a loss belongs; what is in the
+	// assembly is what comes out of it.
+	void BreakUpPanel(int which)
+	{
+		if (which < 0 || which >= (int)m_Panels.size())
+			return;
+
+		Bill bill = PanelBill(m_Panels[(size_t)which].Plan);
+
+		int made = 0;
+
+		auto give = [&](Pile pile, const glm::vec3& half, float density,
+			Flotsam kind, const glm::vec3& colour, float fill)
+		{
+			int slot = NextPileSlot(pile);
+
+			if (slot < 0)
+				return false;
+
+			int entry = AddLoose(PileSlot(pile, slot, half.y), half, density,
+				kind, colour, 0.0f, fill);
+
+			if (entry < 0)
+				return false;
+
+			PutOnPile(entry, pile);
+			made++;
+
+			return true;
+		};
+
+		for (int i = 0; i < bill.Boards; i++)
+			if (!give(Pile::Stock, glm::vec3(s_BoardHalf[0], s_BoardHalf[1],
+				s_BoardHalf[2]), s_Pine, Flotsam::Plank,
+				glm::vec3(0.66f, 0.51f, 0.32f), 1.0f))
+				break;
+
+		// **Round timber comes back in whole handling lengths, rounded down.**
+		//
+		// A wall log is 4.0 m and a log you can shoulder is 2.5 m, so what
+		// comes off a dismantled wall is nine standard logs and a short end
+		// nobody keeps. Rounding *up* -- which is what a loop written as
+		// `while (owed > 0)` does -- returned 1.767 m3 out of an assembly that
+		// held 1.640, and a salvage that mints timber is a woodpile with a
+		// perpetual motion machine in it.
+		float logHalf = 0.5f * (float)s_LogCells * Cell();
+
+		float perLog = glm::pi<float>() * logHalf * logHalf * s_LogLength;
+
+		for (int i = 0; i < (int)(bill.Logs / perLog); i++)
+			if (!give(Pile::Deck, glm::vec3(0.5f * s_LogLength, logHalf,
+				logHalf), s_Pine, Flotsam::Log,
+				glm::vec3(0.44f, 0.31f, 0.18f), glm::quarter_pi<float>()))
+				break;
+
+		float perBlock = s_StoneBlock * s_StoneBlock * s_StoneBlock;
+
+		for (int i = 0; i < (int)(bill.Stone / perBlock); i++)
+			if (!give(Pile::Stone, glm::vec3(0.5f * s_StoneBlock), s_Granite,
+				Flotsam::Cobble, glm::vec3(0.44f, 0.43f, 0.42f), 1.0f))
+				break;
+
+		m_Panels.erase(m_Panels.begin() + (long)which);
+
+		m_Salvaged += made;
 	}
 
 	void DrawPanels();
@@ -6233,6 +6469,15 @@ private:
 
 		m_WasPlace = place;
 
+		bool lift = Egss::Input::IsKeyPressed(EGSS_KEY_N);
+
+		if (lift && !m_WasLift)
+			LiftPanel();
+
+		m_WasLift = lift;
+
+		m_NoRoom = glm::max(m_NoRoom - (float)step, 0.0f);
+
 		// **The bench opens at the bench and closes when you leave it.** A
 		// menu you can carry across the map is a developer panel with a key
 		// bound to it, which is the thing this replaced.
@@ -6442,6 +6687,10 @@ private:
 	int m_Bucked = 0;
 	int m_Riven = 0;
 	int m_Quarried = 0;
+	int m_Salvaged = 0;
+
+	// Seconds left on "it will not go there", so a refusal says something.
+	float m_NoRoom = 0.0f;
 	int m_Milled = 0;
 
 	// Seconds left on "that is too heavy", so the refusal says something.
@@ -6491,6 +6740,7 @@ private:
 	bool m_WasCraft = false;
 	bool m_WasPlace = false;
 	bool m_WasBench = false;
+	bool m_WasLift = false;
 
 	// The workbench menu, and what the pointer was doing before it opened.
 	bool m_Bench = false;
@@ -9273,7 +9523,17 @@ inline void TerrainLab::DrawHud()
 		lines.push_back("[T] saw the log into boards");
 
 	if (NextPanel() >= 0)
+	{
 		lines.push_back("[B] put the panel down where the outline is");
+		lines.push_back("[N] break it up -- the timber goes back on the piles");
+	}
+	else if (AimedPanel() >= 0)
+	{
+		lines.push_back("[N] take this down");
+	}
+
+	if (m_NoRoom > 0.0f)
+		lines.push_back("It will not go there -- something is in the way");
 
 	if (lines.empty())
 		return;
@@ -9617,6 +9877,10 @@ inline void TerrainLab::DrawPanelGhost()
 
 	PanelStance(ghost.Plan, ghost.At, ghost.Yaw);
 
+	// Red where it will not go, which is the same question `PlacePanel` asks
+	// -- not a second one that could answer differently.
+	bool room = PanelClear(ghost.Plan, ghost.At, ghost.Yaw, -1);
+
 	m_TreeMaterial->Set("u_SunColor", glm::vec3(0.0f));
 	m_TreeMaterial->Set("u_SkyColor", glm::vec3(1.0f));
 	m_TreeMaterial->Set("u_SunDirection", glm::vec3(0.0f, -1.0f, 0.0f));
@@ -9631,7 +9895,8 @@ inline void TerrainLab::DrawPanelGhost()
 	m_TreeMaterial->Set("u_AimY", 1.0e9f);
 
 	DrawOutline(PanelFrame(ghost), PanelHalf(ghost.Plan), 0.022f,
-		glm::vec3(0.95f, 0.78f, 0.30f));
+		room ? glm::vec3(0.95f, 0.78f, 0.30f)
+			: glm::vec3(0.92f, 0.30f, 0.24f));
 }
 
 // **One tool, drawn from its middle**, so the same three boxes serve the rack
@@ -10309,8 +10574,9 @@ inline void TerrainLab::OnDemoImGui()
 				LiftLimit());
 			ImGui::TextDisabled("  slowly, and past that the answer is the axe");
 		}
-		ImGui::Text("%d logs bucked, %d riven, %d boards sawn", m_Bucked,
-			m_Riven, m_Milled);
+		ImGui::Text("%d logs bucked, %d riven, %d boards sawn, %d quarried",
+			m_Bucked, m_Riven, m_Milled, m_Quarried);
+		ImGui::Text("%d pieces salvaged out of what came down", m_Salvaged);
 		ImGui::TextDisabled("  a nominal %.2f m log is %d boards;"
 			" a real one is its own volume", s_LogLength, BoardsPerLog());
 		ImGui::TextDisabled("  0.60 x pi r^2 L / (50 x 100 x 2400 mm): a mill");
