@@ -1264,6 +1264,38 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-31 (`./egss.py prune`, and where 8.2 of 9.7 GB was going)
+
+The checkout was 9.7 GB against 1.2 MB of engine source, so it was worth
+finding out where. Three answers, and none of them is the engine:
+
+- **5.7 GB in four sanitizer build trees.** An instrumented `libEGSS.so`
+  carries so much debug info that one config's shared library alone is 293 MB,
+  and nothing reads any of them between sweeps — `./egss.py sanitize` rebuilds
+  whichever it needs.
+- **2.5 GB in two abandoned worktrees.** The handover workflow that
+  `CLAUDE.md` says is gone left behind a full checkout *and* a second clone of
+  every submodule for each one — `.git/worktrees/*/modules` was 527 MB on its
+  own, which is more than the history, the engine and the assets together.
+  Both branches are 0 commits ahead of `main` and both trees are clean.
+- **175 MB of `planet-Earth.site` caches**, one per config, each about eleven
+  seconds to regenerate.
+
+`prune` reports all of it and deletes only the stale build trees, and only with
+`--delete`. Reporting is the default because the cost of getting a tree back is
+a full rebuild and only the person at the keyboard knows whether they are about
+to want one — and because **`./egss.py sanitize` runs out of one of those
+trees**, so deleting them while a sweep is in flight is a confusing way to
+fail.
+
+Worktrees are listed and not touched. A worktree is git's to remove:
+`git worktree remove` unregisters it as well as unlinking it, and an `rmtree`
+would leave git believing in a directory that is not there.
+
+Also worth knowing: `profile.json` is **tracked**, and has been since "Added a
+2D lighting demo". It is a 16.8 MB profiler trace and the largest blob in the
+history by four times.
+
 ### 2026-08-31 (a panel can be lifted, moved and broken up)
 
 Building was one way, and one way is not a loop. You could put a panel down and
