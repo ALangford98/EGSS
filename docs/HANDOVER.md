@@ -343,6 +343,45 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **A mean is the wrong statistic for a rule with a radius.** Boid separation
+  does nothing at all beyond its own bubble, so the *mean* nearest-neighbour
+  spacing over sixty birds mostly measures how big the flock is -- turning
+  separation off moved it by a fifth. What the rule promises is that nobody
+  gets close, so the **closest pair** is the measurement: 1.64 m against
+  0.05 m, which is decisive. Measure the thing the mechanism claims.
+
+- **A random walk's noise has to be scaled by the square root of the
+  timestep**, or its diffusion depends on the step size and every measurement
+  of it is a measurement of the integrator. A heading increment with variance
+  `2 D_r dt`; an OU kick with `sigma sqrt(dt)`. And a uniform draw on
+  `[-sqrt3, sqrt3]` has variance one, so it stands in for a normal wherever
+  only the second moment matters.
+
+- **Step a flock from a copy of where it was, not in place.** Updating in
+  place makes the last boid steer against a flock that has already moved and
+  the first against one that has not. That is a bias with no meaning, and it
+  makes the result depend on the order of the list.
+
+- **A file format needs a version before it needs anything else.** A prefab
+  is a packed integer, and the packing has already changed shape twice. A
+  stale code does not decode as an error -- it decodes as a *plausible piece
+  somewhere else*, which is the worst kind of wrong.
+
+- **Keep a built-in kit separate from the list the user edits.** The workshop
+  is raised from *named* pieces of the kit; with one list, importing somebody
+  else's prefabs would knock the building down the next time the terrain was
+  regenerated.
+
+- **A function's parameter type must be complete where the function is
+  declared**, unlike its body, which is compiled as though after the whole
+  class. `enum class Tool` had to move to the top of the private section the
+  moment a member function took one.
+
+- **Dark metal indoors comes out black.** The shader has no specular, so
+  anything with a low albedo lit by the sky dome alone is unreadable -- the
+  tools on the rack had to be painted a good deal paler than iron. Same class
+  of problem as the shed's missing ground bounce, from the other direction.
+
 - **Snap the lower corner to a lattice, never the centre.** A piece an odd
   number of cells across has its centre on a half cell, so snapping centres
   puts odd and even pieces on two different lattices and they never meet.

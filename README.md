@@ -1264,6 +1264,77 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-31 (three tools, stone, a 3D bench, and four kinds of life)
+
+**A shovel and a pickaxe beside the axe.** `m_HasAxe` was a bool, which is the
+right shape for one tool and the wrong one for three. Taken by *aim* rather
+than by cycling: stand at the rack, look at the peg, press F — a key that
+cycles is a key you press twice by mistake. One button in use, and what it does
+is what you are holding.
+
+Which of the two digging tools the ground wants is a question the ground
+already answers. Above the angle of repose soil does not stay, so what is there
+is rock — that is `outcrop`, the same test that decides where boulders sit —
+and under the mantle there is rock everywhere. Neither refuses outright: the
+wrong tool takes a third of the bite, because nothing is more annoying than a
+tool that does nothing and does not say why.
+
+**A pick in rock leaves a block, and the block is one course of walling.**
+300 mm cubed of granite is **72 kg** against the 160 kg lift ceiling, and it is
+exactly the section the log walls course at — so a stone footing sits under a
+log wall without anything having to be told. `Stock` grows a third member and
+`Kind` a second bit. The workshop stands on eight footing courses now, which
+puts stone in its own bill: 756 boards, 22.04 m³ of round timber, 2.88 m³ of
+block.
+
+**The bench renders the design it is building.** A plan view could not say what
+a design *was*: ten courses of log read as one rectangle, a post read as a dot,
+and the only way to tell a wall from a floor was to read the numbers beside it.
+Now the draft is drawn from the same meshes, the same shader and the same
+`PartFrame` the world builds it with, into a framebuffer the panel shows — so
+what you look at while you design is the thing that gets built and not a second
+drawing of it that can disagree.
+
+And a click is a ray. The ray against every piece's box gives what the right
+button removes and, when it came in through a **top face**, where the next
+piece goes — at that piece's own course, without touching a slider. A log cabin
+is ten courses, and setting a slider for each of them is nine presses that say
+nothing. A drag turns the model and a click lays a piece, told apart by how far
+the mouse moved between press and release.
+
+**Designs go to a text file, because a design is a list of integers.** The
+packed code *is* the design — the same integer the recorder stores — so there
+is nothing to serialise and nothing that can drift. The first line carries a
+version and the piece count, and a file from another packing is refused rather
+than read: a stale code does not decode as an error, it decodes as a plausible
+piece somewhere else. Nine designs survive a write and a read intact; a version
+1 file is turned away with the list left as it was.
+
+**And four kinds of life, which are three rules.**
+
+- **Birds and fish are boids** — Reynolds' three, differing only in speed,
+  sight and what confines them. Checked as an A/B on the mechanism: with
+  alignment on the flock's order parameter is **0.589**, with it off **0.087**;
+  with separation on the closest pair in sixty birds is **1.64 m**, with it off
+  **0.05 m**. The first version of that check measured *mean* nearest-neighbour
+  spacing and it moved by a fifth — which says nothing, because separation does
+  nothing beyond its own radius and a mean over sixty birds mostly measures how
+  big the flock is.
+- **Midges are an Ornstein–Uhlenbeck process.** A lek swarm is a cloud of
+  insects each doing a damped random walk about a marker: a spring, a drag and
+  a noise. Its stationary spread is `σ²/(2γk)` per axis, so the swarm's radius
+  is a thing the parameters *predict* rather than a constant somebody set.
+  Measured **0.5739 m rms against 0.5505**.
+- **Beetles are an active Brownian particle.** Constant speed, heading
+  diffusing, so `⟨Δr²⟩ = 4Dt` with `D = v²/(2D_r)`. Measured **6.95 m² against
+  6.87** over 40 s and 400 walkers.
+
+One noise stream per animal rather than one shared, so a path does not depend
+on how many others there are or what order they were stepped in. Draws are
+uniform on `[-√3, √3]`, which has variance one and can stand in for a normal
+wherever only the second moment matters — which, for a linear system, is
+everywhere.
+
 ### 2026-08-30 (a design has courses, axes and two stocks, and the workshop is built of them)
 
 **Placement lands on a lattice.** It used to be three metres ahead at whatever
