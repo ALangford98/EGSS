@@ -1264,6 +1264,46 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-31 (a panel can be lifted, moved and broken up)
+
+Building was one way, and one way is not a loop. You could put a panel down and
+never move it, never correct it and never get the timber back — so one
+misjudged wall was a misjudged wall for ever, and the only remedy was to
+regenerate the terrain and lose everything else with it.
+
+Two steps, and they are the same step twice. `N` aimed at a placed panel lifts
+it, which puts it back in your hands where `B` can set it down somewhere
+better; `N` again, with it in hand, breaks it up and the timber goes on the
+piles. That is an undo ladder rather than two meanings for one key, which is
+the objection this file has raised before about `E`.
+
+**The workshop is not exempt, and that is deliberate.** It is built out of the
+same kit, so its walls really are 756 boards and 22 m³ of round timber.
+Salvaging them mints nothing that was not already standing there, which is
+exactly what taking a building down gives you — and it is how anybody without
+an axe would have to start.
+
+**Nothing is put down inside something else.** It used to be possible to stand
+in a wall and lay another one through it, and the only sign was the picture:
+the collider is one box a side, so two walls sharing a volume share a collider
+too. Right-angle yaws mean a panel's box *is* its axis-aligned bounds, so there
+is no separating-axis test to write; a millimetre of slack lets two pieces
+butted on the lattice share a face while refusing anything that shares a
+volume. The ghost turns red on the same call the placement makes, not on a
+second one that could answer differently.
+
+**And the salvage was minting timber.** A wall log is 4.0 m and a log you can
+shoulder is 2.5 m, so a dismantled 1.640 m³ wall gives nine standard logs and a
+short end nobody keeps. Written as `while (owed > 0)` it rounded *up* and
+returned **1.767 m³** — a woodpile with a perpetual motion machine in it.
+Rounded down it returns 1.590, and the check that caught it compares what came
+out against the assembly's own bill rather than against the counter the salvage
+keeps.
+
+The touching test had to move out onto an empty hillside. Beside the workshop,
+"one panel's width along" can land inside a *third* piece, so the first version
+measured whether the shed was crowded rather than whether butting works.
+
 ### 2026-08-31 (three tools, stone, a 3D bench, and four kinds of life)
 
 **A shovel and a pickaxe beside the axe.** `m_HasAxe` was a bool, which is the

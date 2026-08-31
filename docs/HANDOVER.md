@@ -343,6 +343,21 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **A conversion loop written as `while (owed > 0)` rounds up, and rounding
+  up in a salvage mints material.** Dismantling a 1.640 m3 log wall into
+  2.5 m handling lengths returned 1.767 m3. What comes out of an assembly is
+  `floor(volume / piece)`; the remainder is the short end nobody keeps.
+
+- **Test a geometric predicate somewhere empty.** "Is a panel butted against
+  this one allowed" was asked *beside the workshop*, where one panel's width
+  along lands inside a third piece -- so the check measured whether the shed
+  was crowded rather than whether butting works.
+
+- **A counter of what the player did must not be decremented by undoing
+  something they did not do.** The workshop is 32 pieces of the same kit,
+  raised before you arrive; lifting one of its walls was reducing a
+  placed-count that never included it. `Panel::Mine`.
+
 - **A mean is the wrong statistic for a rule with a radius.** Boid separation
   does nothing at all beyond its own bubble, so the *mean* nearest-neighbour
   spacing over sixty birds mostly measures how big the flock is -- turning
