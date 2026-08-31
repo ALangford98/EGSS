@@ -1296,6 +1296,54 @@ Also worth knowing: `profile.json` is **tracked**, and has been since "Added a
 2D lighting demo". It is a 16.8 MB profiler trace and the largest blob in the
 history by four times.
 
+### 2026-08-31 (the workshop and the life go from 764 draw calls to 33)
+
+Every timber in the building and every box of every animal was a draw call: a
+bind, five uniforms and six triangles. That is the shape of problem instancing
+exists for, and the machinery has been in the engine since the planet's forest
+— a divisor on `BufferLayout`, `mat4` as a vertex attribute, and
+`Renderer::SubmitInstanced`.
+
+**One fragment shader, two ways of getting a colour into it.** A lit board is
+the same lit board whether it was drawn on its own or as one of five hundred,
+and a second copy of that arithmetic is a second thing to keep in step. So the
+instanced shader is the *same source string* with its colour turned from a
+uniform into a varying, by substitution — and it fails to compile rather than
+quietly lighting things differently from its twin if the substitution ever
+misses.
+
+**The panels are baked, not walked.** A placed panel does not move, so its
+pieces are gathered only when the set of them changes; rebuilding 461
+transforms a frame to save 461 draw calls would be trading one cost for
+another. The animals do move, so their buffer is refilled every frame — but a
+transform that has to be computed anyway costs nothing extra to write down
+instead of submitting.
+
+**Measured by rendering the same frame both ways.** With the old path kept
+behind a flag long enough to compare, the two images are **byte-identical**:
+same MD5, 3,686,400 of 3,686,400 channel samples equal, worst channel
+difference 0. That is what says the instance layout, the attribute locations
+and the normal transform are all right, and it is a stronger statement than any
+of them checked separately.
+
+| | one at a time | instanced |
+|---|---|---|
+| draw calls | 764 | **33** |
+| submitting it | 1420.9 µs, 1724.9 µs | **66.1 µs, 69.8 µs** |
+
+The frame time does not move, and it is worth saying why rather than quoting a
+number that did not change: it is 16.667 ms either way, which is vsync. The
+1.4 ms is budget freed, not frames gained.
+
+Two details that would have been silent bugs. The tint sits at attribute
+location **7, not 4** — a `mat4` takes four locations, and putting it at 4
+reads the second column of somebody else's matrix, which is a colour that
+changes as the thing turns. And the batches use **separate meshes** from
+`m_Cube` and `m_Log`: an instance buffer becomes part of a mesh's vertex array,
+and while a shader that does not read those attributes is unharmed by them,
+relying on that is the sort of quiet coupling this project keeps a list of. A
+second cube costs 24 vertices.
+
 ### 2026-08-31 (a panel can be lifted, moved and broken up)
 
 Building was one way, and one way is not a loop. You could put a panel down and

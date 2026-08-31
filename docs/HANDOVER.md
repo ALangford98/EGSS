@@ -343,6 +343,32 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **A `mat4` vertex attribute occupies four locations.** An instanced layout
+  of `{ Mat4, Float3 }` puts the second element at location **7**, not 4.
+  Declaring it at 4 in the shader reads the matrix's second column as a
+  colour, which changes as the object turns and looks like a lighting bug.
+
+- **An instance buffer becomes part of a mesh's vertex array**, so attaching
+  one changes that mesh everywhere it is drawn. A shader that does not read
+  the extra attributes is unharmed, but relying on that couples two draw
+  paths silently. Give the batched draw its own `Mesh` built from the same
+  `MeshData` -- a cube costs 24 vertices.
+
+- **Instancing a thing that moves every frame saves draw calls and not CPU;
+  instancing a thing that stands still saves both.** The workshop's 461
+  timbers are baked and re-uploaded only when a panel is placed or lifted,
+  because walking them every frame to avoid walking them every frame is not a
+  saving.
+
+- **The way to check a rendering refactor is to render it both ways and
+  compare the pixels.** Keeping the old path behind a flag for one session
+  turned "the layout, the locations and the normal transform are probably all
+  right" into a single byte-identical MD5 over 3,686,400 samples.
+
+- **A frame time that does not move may be vsync.** 16.667 ms is 1/60 exactly.
+  Measure the thing that changed -- here, the submission -- or the measurement
+  reports the display's refresh rate rather than the work.
+
 - **The generated project files are global state, and a sanitizer sweep takes
   minutes.** `generate` rewrites the makefiles for whichever mode it was
   asked for, so a plain `./egss.py build` started while a sweep is running
