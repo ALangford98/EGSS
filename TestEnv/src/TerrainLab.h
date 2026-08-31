@@ -36,6 +36,7 @@
 #include <map>
 #include <sstream>
 
+#include "Critters.h"
 #include "Demo.h"
 #include "Grass.h"
 #include "Rocks.h"
@@ -685,6 +686,7 @@ private:
 
 		SpawnWalker();
 		ScatterLoose();
+		SpawnLife();
 		BuildShed();
 	}
 
@@ -703,6 +705,261 @@ private:
 
 		m_Walker = m_World.AddBody(body);
 	}
+
+	// --- Life -----------------------------------------------------------------
+	//
+	// **Four animals, three rules, and every one of them measurable.**
+	//
+	// The rules are in `Critters.h`; what lives here is where each kind
+	// belongs, which is a question about this map rather than about animals.
+	// Birds over the woods, fish in the lake, midges over damp ground near the
+	// water, beetles on the open ground.
+	//
+	// Numbers kept modest on purpose: at four hundred animals this is three
+	// hundred more draw calls, and what a flock reads as is its *motion*, not
+	// its size.
+	static constexpr int s_Birds = 24;
+	static constexpr int s_Fish = 40;
+	static constexpr int s_Swarms = 3;
+	static constexpr int s_Midges = 30;   // to a swarm
+	static constexpr int s_Beetles = 40;
+
+	// Where a bird likes to be, above whatever is under it.
+	static constexpr float s_BirdLow = 14.0f;
+	static constexpr float s_BirdHigh = 34.0f;
+
+	std::vector<Life::Critter> m_BirdFlock;
+	std::vector<Life::Critter> m_FishSchool;
+	std::vector<Life::Critter> m_MidgeSwarm;
+	std::vector<Life::Critter> m_Beetles;
+
+	bool m_ShowLife = true;
+
+	// The rules, on the panel, because half the value of writing them as rules
+	// is being able to turn one off and watch the flock stop being a flock.
+	Life::Flock m_BirdRule;
+	Life::Flock m_FishRule;
+	Life::Swarm m_MidgeRule;
+	Life::Crawl m_BeetleRule;
+
+	// A point on the ground that is on the map, above water, and not on the
+	// workshop's pad. Used to seat swarms and to start walks.
+	bool OpenGround(unsigned int& seed, glm::vec3& at, float wet = 0.0f) const
+	{
+		float half = 0.5f * Extent() - 12.0f;
+
+		for (int tries = 0; tries < 40; tries++)
+		{
+			float x = Life::Signed(seed) * half;
+			float z = Life::Signed(seed) * half;
+
+			if (OnShedPad(x, z, 4.0f))
+				continue;
+
+			// **Wet enough, if the caller cares.** A lek swarm hangs over damp
+			// ground, not over a dune -- and this map has both, so it is worth
+			// asking. The same field the grass and the trees read.
+			if (wet > 0.0f && ClimateAt(x, z).x < wet)
+				continue;
+
+			float y = Height(x, z);
+
+			if (HasWater() && y < WaterLevel() + 0.4f)
+				continue;
+
+			at = glm::vec3(x, y, z);
+
+			return true;
+		}
+
+		return false;
+	}
+
+	void SpawnLife()
+	{
+		m_BirdFlock.clear();
+		m_FishSchool.clear();
+		m_MidgeSwarm.clear();
+		m_Beetles.clear();
+
+		unsigned int seed = 0x5EED1FEu;
+
+		// **Birds: one flock, started together.** Started scattered they spend
+		// the first half minute finding each other, which looks like a bug in
+		// the rules rather than like the rules working.
+		glm::vec3 roost(0.0f);
+
+		if (OpenGround(seed, roost))
+			for (int i = 0; i < s_Birds; i++)
+			{
+				Life::Critter bird;
+				bird.Seed = 0x9E37u + (unsigned int)i * 2654435761u;
+
+				bird.At = roost + glm::vec3(Life::Signed(bird.Seed) * 8.0f,
+					s_BirdLow + Life::Unit(bird.Seed) * 6.0f,
+					Life::Signed(bird.Seed) * 8.0f);
+
+				bird.Velocity = glm::vec3(Life::Signed(bird.Seed), 0.1f,
+					Life::Signed(bird.Seed)) * m_BirdRule.Speed;
+
+				bird.Home = roost;
+				bird.Size = 0.85f + Life::Unit(bird.Seed) * 0.3f;
+
+				m_BirdFlock.push_back(bird);
+			}
+
+		// **Fish: only if there is a lake to put them in.** The basin slider
+		// can empty it, and a school swimming through a dry pit is the sort of
+		// thing that gets noticed once and never fixed.
+		if (HasWater())
+		{
+			float level = WaterLevel();
+
+			for (int i = 0; i < s_Fish; i++)
+			{
+				Life::Critter fish;
+				fish.Seed = 0x51F15u + (unsigned int)i * 40503u;
+
+				// The pit is at the middle of the block, which is where the
+				// water is.
+				fish.At = glm::vec3(Life::Signed(fish.Seed) * 9.0f,
+					level - 1.2f - Life::Unit(fish.Seed) * 1.5f,
+					Life::Signed(fish.Seed) * 9.0f);
+
+				fish.Velocity = glm::vec3(Life::Signed(fish.Seed), 0.0f,
+					Life::Signed(fish.Seed)) * m_FishRule.Speed;
+
+				fish.Home = glm::vec3(0.0f, level, 0.0f);
+				fish.Size = 0.7f + Life::Unit(fish.Seed) * 0.5f;
+
+				m_FishSchool.push_back(fish);
+			}
+		}
+
+		for (int swarm = 0; swarm < s_Swarms; swarm++)
+		{
+			glm::vec3 marker(0.0f);
+
+			// Over damp ground, which is where midges swarm.
+			if (!OpenGround(seed, marker, 0.5f))
+				continue;
+
+			marker.y += 1.4f;
+
+			for (int i = 0; i < s_Midges; i++)
+			{
+				Life::Critter midge;
+				midge.Seed = 0x11D6Eu + (unsigned int)(swarm * 97 + i) * 2246822519u;
+
+				midge.Home = marker;
+				midge.At = marker + glm::vec3(Life::Signed(midge.Seed),
+					Life::Signed(midge.Seed), Life::Signed(midge.Seed)) * 0.4f;
+
+				midge.Size = 0.6f + Life::Unit(midge.Seed) * 0.7f;
+
+				m_MidgeSwarm.push_back(midge);
+			}
+		}
+
+		for (int i = 0; i < s_Beetles; i++)
+		{
+			glm::vec3 at(0.0f);
+
+			if (!OpenGround(seed, at))
+				continue;
+
+			Life::Critter beetle;
+			beetle.Seed = 0xBEE71Eu + (unsigned int)i * 374761393u;
+
+			beetle.At = at;
+			beetle.Home = at;
+
+			float angle = Life::Unit(beetle.Seed) * 6.2831853f;
+
+			beetle.Velocity = glm::vec3(std::cos(angle), 0.0f,
+				std::sin(angle)) * m_BeetleRule.Speed;
+
+			beetle.Size = 0.7f + Life::Unit(beetle.Seed) * 0.6f;
+
+			m_Beetles.push_back(beetle);
+		}
+	}
+
+	void StepLife(float dt)
+	{
+		// **Birds keep a height above the ground, not above sea level.** A
+		// flock that holds an altitude flies into hills; one that holds a
+		// clearance goes over them, which is what a bird does and costs one
+		// height query.
+		Life::StepFlock(m_BirdFlock, m_BirdRule, dt,
+			[this](const Life::Critter& bird)
+			{
+				float ground = Height(bird.At.x, bird.At.z);
+
+				float want = ground + 0.5f * (s_BirdLow + s_BirdHigh);
+
+				glm::vec3 steer(0.0f, (want - bird.At.y) * 0.35f, 0.0f);
+
+				// And back over the block if they wander off the edge of it.
+				float half = 0.5f * Extent() - 8.0f;
+
+				glm::vec2 out(glm::max(std::abs(bird.At.x) - half, 0.0f),
+					glm::max(std::abs(bird.At.z) - half, 0.0f));
+
+				steer.x -= glm::sign(bird.At.x) * out.x * 0.5f;
+				steer.z -= glm::sign(bird.At.z) * out.y * 0.5f;
+
+				return steer;
+			});
+
+		if (HasWater())
+		{
+			float level = WaterLevel();
+
+			Life::StepFlock(m_FishSchool, m_FishRule, dt,
+				[this, level](const Life::Critter& fish)
+				{
+					float bed = Height(fish.At.x, fish.At.z);
+
+					glm::vec3 steer(0.0f);
+
+					// **The two surfaces a fish lives between**, and both of
+					// them push rather than clamp -- a school that is clamped
+					// to a depth swims along it in a sheet.
+					float ceiling = level - 0.35f;
+
+					if (fish.At.y > ceiling)
+						steer.y -= (fish.At.y - ceiling) * 6.0f;
+
+					if (fish.At.y < bed + 0.4f)
+						steer.y += (bed + 0.4f - fish.At.y) * 6.0f;
+
+					// Toward deeper water if it finds itself over a shallow.
+					if (bed > ceiling - 0.6f)
+					{
+						glm::vec2 back(fish.Home.x - fish.At.x,
+							fish.Home.z - fish.At.z);
+
+						float out = glm::length(back);
+
+						if (out > 1e-3f)
+						{
+							steer.x += back.x / out * 3.0f;
+							steer.z += back.y / out * 3.0f;
+						}
+					}
+
+					return steer;
+				});
+		}
+
+		Life::StepSwarm(m_MidgeSwarm, m_MidgeRule, dt);
+
+		Life::StepCrawl(m_Beetles, m_BeetleRule, dt,
+			[this](float x, float z) { return Height(x, z) + 0.04f; });
+	}
+
+	void DrawLife();
 
 	// --- Meshing ------------------------------------------------------------
 
@@ -6078,6 +6335,7 @@ private:
 		{
 			ApplyBuoyancy(slice);
 			StepFelled(slice);
+			StepLife(slice);
 
 			m_World.Step(slice);
 
@@ -8417,6 +8675,8 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 	// The workshop, which is a building on the map like anything else.
 	DrawShed();
 
+	DrawLife();
+
 	// Where the next panel would land. Only in the main pass: an outline is
 	// an aid for the person holding the panel, not part of the world.
 	if (pass == Pass::Main)
@@ -9412,6 +9672,176 @@ inline void TerrainLab::DrawToolHead(Tool tool, const glm::vec3& at,
 	}
 }
 
+// **Four animals out of boxes, and each one drawn from its own state.**
+//
+// A bird's wings beat off `Phase`, which is advanced by *speed* rather than by
+// time, so a bird that is gliding is not flapping. A fish's tail beats the same
+// way. A beetle's legs step off the same number. None of them is an animation
+// playing beside a simulation; each is the simulation, read.
+//
+// The whole lot is one material and one mesh, so what it costs is draw calls
+// and nothing else.
+inline void TerrainLab::DrawLife()
+{
+	if (!m_ShowLife || !m_Cube)
+		return;
+
+	m_TreeMaterial->Set("u_SunDirection", -SunDirection());
+	m_TreeMaterial->Set("u_SunColor", SunColour());
+	m_TreeMaterial->Set("u_SkyColor", SkyColour());
+	m_TreeMaterial->Set("u_Ambient", 0.60f);
+	m_TreeMaterial->Set("u_Bounce", 0.30f);
+	m_TreeMaterial->Set("u_Through", 0.0f);
+	m_TreeMaterial->Set("u_Compliance", 0.0f);
+	m_TreeMaterial->Set("u_MaxLean", 0.0f);
+	m_TreeMaterial->Set("u_CutRadius", 0.0f);
+	m_TreeMaterial->Set("u_CutDepth", 0.0f);
+	m_TreeMaterial->Set("u_CutPart", 0.0f);
+	m_TreeMaterial->Set("u_AimY", 1.0e9f);
+
+	glm::vec3 eye = m_Camera.GetPosition();
+
+	// The frame an animal travels in: forward along its own velocity, up as
+	// near vertical as that allows. One function, four users.
+	auto facing = [](const Life::Critter& one)
+	{
+		glm::vec3 ahead = one.Velocity;
+
+		if (glm::length(ahead) < 1e-4f)
+			ahead = glm::vec3(0.0f, 0.0f, 1.0f);
+
+		ahead = glm::normalize(ahead);
+
+		glm::vec3 side = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), ahead);
+
+		if (glm::length(side) < 1e-3f)
+			side = glm::vec3(1.0f, 0.0f, 0.0f);
+
+		side = glm::normalize(side);
+
+		return glm::mat3(side, glm::cross(ahead, side), ahead);
+	};
+
+	auto piece = [&](const glm::mat3& frame, const glm::vec3& at,
+		const glm::vec3& offset, const glm::vec3& half, float lean,
+		const glm::vec3& colour)
+	{
+		m_TreeMaterial->Set("u_Color", colour);
+
+		glm::mat4 place = glm::translate(glm::mat4(1.0f), at)
+			* glm::mat4(frame);
+
+		Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+			glm::scale(glm::rotate(
+				glm::translate(place, offset), lean,
+				glm::vec3(0.0f, 0.0f, 1.0f)), half));
+	};
+
+	// --- Birds ---------------------------------------------------------------
+
+	for (const Life::Critter& bird : m_BirdFlock)
+	{
+		if (glm::length(bird.At - eye) > 160.0f)
+			continue;
+
+		glm::mat3 frame = facing(bird);
+
+		float beat = std::sin(bird.Phase * 2.4f) * 0.9f;
+
+		float s = bird.Size * 0.30f;
+
+		glm::vec3 body(0.22f, 0.16f, 0.14f);
+
+		piece(frame, bird.At, glm::vec3(0.0f), glm::vec3(0.18f, 0.16f, 0.6f) * s,
+			0.0f, body);
+
+		// A wing either side, hinged at the body, beating in antiphase to
+		// itself across the middle.
+		for (int side = 0; side < 2; side++)
+		{
+			float sign = side ? 1.0f : -1.0f;
+
+			piece(frame, bird.At, glm::vec3(sign * 0.62f * s, 0.0f, 0.0f),
+				glm::vec3(0.62f, 0.05f, 0.34f) * s, sign * beat, body * 1.25f);
+		}
+	}
+
+	// --- Fish ----------------------------------------------------------------
+
+	for (const Life::Critter& fish : m_FishSchool)
+	{
+		if (glm::length(fish.At - eye) > 90.0f)
+			continue;
+
+		glm::mat3 frame = facing(fish);
+
+		float beat = std::sin(fish.Phase * 9.0f) * 0.55f;
+
+		float s = fish.Size * 0.22f;
+
+		glm::vec3 scale(0.42f, 0.62f, 0.9f);
+
+		piece(frame, fish.At, glm::vec3(0.0f), scale * s, 0.0f,
+			glm::vec3(0.42f, 0.48f, 0.44f));
+
+		// The tail is where the swimming is, so it is the tail that beats.
+		piece(frame, fish.At, glm::vec3(0.0f, 0.0f, -1.3f * s),
+			glm::vec3(0.06f, 0.5f, 0.42f) * s, beat,
+			glm::vec3(0.34f, 0.40f, 0.38f));
+	}
+
+	// --- Midges --------------------------------------------------------------
+
+	m_TreeMaterial->Set("u_Color", glm::vec3(0.16f, 0.14f, 0.12f));
+
+	for (const Life::Critter& midge : m_MidgeSwarm)
+	{
+		// **Six millimetres, and a dark brown rather than black.** At the
+		// 32 mm they started at they read as a cloud of flying dice; a midge
+		// is a couple of millimetres of insect and a swarm is a *texture*, so
+		// anything with a shape in it is a bird seen from too far away.
+		if (glm::length(midge.At - eye) > 25.0f)
+			continue;
+
+		Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+			glm::scale(glm::translate(glm::mat4(1.0f), midge.At),
+				glm::vec3(0.006f * midge.Size)));
+	}
+
+	// --- Beetles -------------------------------------------------------------
+
+	for (const Life::Critter& beetle : m_Beetles)
+	{
+		if (glm::length(beetle.At - eye) > 45.0f)
+			continue;
+
+		glm::mat3 frame = facing(beetle);
+
+		float s = beetle.Size * 0.05f;
+
+		piece(frame, beetle.At, glm::vec3(0.0f, 0.5f * s, 0.0f),
+			glm::vec3(0.55f, 0.35f, 0.9f) * s, 0.0f,
+			glm::vec3(0.13f, 0.12f, 0.11f));
+
+		// Three pairs of legs, the middle pair out of step with the other two,
+		// which is the alternating tripod every hexapod walks on.
+		float step = std::sin(beetle.Phase * 3.0f);
+
+		for (int pair = 0; pair < 3; pair++)
+		for (int side = 0; side < 2; side++)
+		{
+			float sign = side ? 1.0f : -1.0f;
+			float swing = (pair == 1 ? -step : step) * sign * 0.5f;
+
+			piece(frame, beetle.At,
+				glm::vec3(sign * 0.7f * s, 0.3f * s,
+					((float)pair - 1.0f) * 0.55f * s),
+				glm::vec3(0.5f, 0.06f, 0.06f) * s, swing,
+				glm::vec3(0.10f, 0.09f, 0.09f));
+		}
+	}
+}
+
 inline void TerrainLab::DrawBox(const glm::vec3& at, const glm::vec3& half,
 	float yaw, const glm::vec3& colour)
 {
@@ -9809,6 +10239,31 @@ inline void TerrainLab::OnDemoImGui()
 	{
 		ImGui::Checkbox("No clip (V)", &m_NoClip);
 		ImGui::TextDisabled("  space/ctrl to rise and sink while it is on");
+
+		// **The rules on sliders, because half the value of writing a flock as
+		// three rules is being able to turn one off and watch it stop being a
+		// flock.** Not registered: nothing here is in the recording, so a
+		// replay flies the flock the recorder's parameters flew it with.
+		ImGui::Separator();
+		ImGui::Checkbox("Life", &m_ShowLife);
+		ImGui::Text("  %d birds, %d fish, %d midges, %d beetles",
+			(int)m_BirdFlock.size(), (int)m_FishSchool.size(),
+			(int)m_MidgeSwarm.size(), (int)m_Beetles.size());
+
+		ImGui::SliderFloat("Keep apart", &m_BirdRule.Apart, 0.0f, 4.0f);
+		ImGui::SliderFloat("Match heading", &m_BirdRule.Match, 0.0f, 2.0f);
+		ImGui::SliderFloat("Close up", &m_BirdRule.Together, 0.0f, 2.0f);
+		ImGui::TextDisabled("  Reynolds' three, on the birds. Alignment at");
+		ImGui::TextDisabled("  zero drops the flock's order from 0.59 to 0.09;");
+		ImGui::TextDisabled("  separation at zero takes the closest pair from");
+		ImGui::TextDisabled("  1.64 m to 0.05 m");
+
+		ImGui::SliderFloat("Swarm noise", &m_MidgeRule.Noise, 0.2f, 6.0f);
+		ImGui::TextDisabled("  a swarm's rms radius is sigma/sqrt(2 gamma k),");
+		ImGui::TextDisabled("  which it measures to within 4%%");
+
+		ImGui::SliderFloat("Beetle turning", &m_BeetleRule.Turning, 0.1f, 6.0f);
+		ImGui::TextDisabled("  their walk diffuses at v^2 / 2Dr, to within 2%%");
 
 		ImGui::Separator();
 		ImGui::Text("Portal: %s%s", m_PortalOn ? "deployed" : "stowed",
