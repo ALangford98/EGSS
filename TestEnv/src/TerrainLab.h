@@ -136,9 +136,30 @@ public:
 		// middle cell is the bottom of the lake and opens you underwater.
 		// From the rim you are looking across it.
 		GoTo(spawn);
+
+
 	}
 
 private:
+	// **Three tools on one rack, and one pair of hands.**
+	//
+	// It was a bool, which is the right shape for one tool and the wrong one
+	// for three. Taking is by *aim* rather than by cycling: stand at the rack,
+	// look at the peg you want, press F. A key that cycles is a key you press
+	// twice by mistake, and the rack is a metre in front of your face anyway.
+	//
+	// Declared here rather than beside the state it belongs to, because a
+	// function's *parameter* type has to be complete where the function is
+	// declared -- unlike its body, which is compiled as though after the whole
+	// class.
+	enum class Tool { None = 0, Axe, Shovel, Pick };
+
+	// **A 300 mm cube of stone**: 70 kg of granite, a heavy but real lift, and
+	// exactly one course of the walling the crafting table builds with. The
+	// blocks that come off a pickaxe are the blocks a wall is made of, which
+	// is the same rule the boards and logs already follow.
+	static constexpr float s_StoneBlock = 0.30f;
+
 	// --- The block ----------------------------------------------------------
 
 	// **Three chunks a side, and the three is the same three as the grid.**
@@ -1335,6 +1356,86 @@ private:
 
 	// --- Editing ------------------------------------------------------------
 
+	// **Where the ground is rock rather than soil**, which is what decides
+	// whether a shovel or a pick is the right tool for it.
+	//
+	// Two rules, and both are already used elsewhere in this file for the same
+	// reason. Above the angle of repose soil does not stay, so what is there
+	// is rock -- that is `outcrop`, the same test that decides where boulders
+	// sit. And under the mantle there is rock everywhere; the mantle is thin,
+	// so anything much more than a metre down is rock whatever the slope.
+	static constexpr float s_SoilDepth = 1.2f;
+
+	float Rockness(const glm::vec3& at) const
+	{
+		glm::vec2 slope = Slope(at.x, at.z);
+
+		float outcrop = glm::smoothstep(s_Repose, s_Repose * 1.5f,
+			glm::length(slope));
+
+		float under = glm::smoothstep(0.35f * s_SoilDepth, s_SoilDepth,
+			Height(at.x, at.z) - at.y);
+
+		return glm::max(outcrop, under);
+	}
+
+	// **A shovel moves soil and a pick breaks rock, and the ground says which
+	// it is.** Neither refuses outright -- a pick will shift dirt and a shovel
+	// will scrape stone, they are just bad at it -- so what changes is how
+	// much comes away, and whether there is a block left over worth carrying.
+	static constexpr float s_ShovelBite = 1.5f;   // a shovel's radius, in digs
+	static constexpr float s_PickBite = 0.9f;
+
+	void DigWith(bool pick)
+	{
+		glm::vec3 origin = m_Camera.GetPosition();
+		glm::vec3 direction = m_Camera.GetForward();
+
+		float distance = 0.0f;
+		glm::vec3 point(0.0f), normal(0.0f);
+
+		if (!m_Field->Raycast(origin, direction, s_AxeReach, distance, point,
+			normal))
+			return;
+
+		m_Swing = 1.0f;
+
+		float rock = Rockness(point);
+
+		// The wrong tool takes a third of the bite. That is a rule about
+		// effort, not a refusal: nothing is more annoying than a tool that
+		// does nothing and does not say why.
+		float suits = pick ? rock : 1.0f - rock;
+
+		float radius = m_DigRadius * (pick ? s_PickBite : s_ShovelBite)
+			* (0.35f + 0.65f * suits);
+
+		if (m_Field->EditSphere(point, radius, false) == 0)
+			return;
+
+		RebuildDirtyMeshes();
+
+		Egss::RigidBody3D& ground = m_World.GetBody(m_Ground);
+		ground = Egss::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
+
+		// **Rock breaks into blocks; soil does not.** A picked block is a
+		// 300 mm cube of stone -- 70 kg, a heavy but real lift, and exactly
+		// one course of the walling the table builds with.
+		if (!pick || rock < 0.5f)
+			return;
+
+		glm::vec3 half(0.5f * s_StoneBlock);
+
+		glm::vec3 at = point + normal * (s_StoneBlock * 0.8f);
+
+		AddLoose(at, half, s_Granite, Flotsam::Cobble,
+			glm::vec3(0.44f, 0.43f, 0.42f),
+			Veg::Hash2DUnit((int)(point.x * 8.0f), (int)(point.z * 8.0f),
+				4211u) * 6.2831853f);
+
+		m_Quarried++;
+	}
+
 	void Dig(bool add)
 	{
 		glm::vec3 origin = m_Camera.GetPosition();
@@ -2340,14 +2441,70 @@ private:
 		return ShedCentre() + glm::vec3(0.0f, 1.55f, s_ShedHalf - 0.32f);
 	}
 
-	void ToggleAxe()
+	// The three pegs, spaced along the rack. One function, so the drawing and
+	// the reaching cannot disagree about where a tool hangs.
+	glm::vec3 ToolPeg(Tool tool) const
+	{
+		return AxeRack() + glm::vec3(((float)(int)tool - 2.0f) * 0.85f,
+			0.0f, 0.0f);
+	}
+
+	static const char* ToolName(Tool tool)
+	{
+		switch (tool)
+		{
+			case Tool::Axe:    return "axe";
+			case Tool::Shovel: return "shovel";
+			case Tool::Pick:   return "pickaxe";
+			default:           return "nothing";
+		}
+	}
+
+	// **Taken by aim, not by cycling.** Stand at the rack, look at the peg you
+	// want, press F. A key that cycles is a key you press twice by mistake,
+	// and the rack is a metre in front of your face anyway. Holding something
+	// already, F hangs it back wherever you are standing at the rack.
+	void TakeTool()
 	{
 		const Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
 
-		// Taken and returned at the rack, so the axe cannot be dropped in a
-		// field and lost. There is one of it, the way there is one portal.
-		if (glm::length(body.Position - AxeRack()) < 2.6f)
-			m_HasAxe = !m_HasAxe;
+		// Taken and returned at the rack, so a tool cannot be dropped in a
+		// field and lost. There is one of each, the way there is one portal.
+		if (glm::length(body.Position - AxeRack()) > 2.6f)
+			return;
+
+		if (m_Tool != Tool::None)
+		{
+			m_Tool = Tool::None;
+			return;
+		}
+
+		glm::vec3 eye = m_Camera.GetPosition();
+		glm::vec3 direction = m_Camera.GetForward();
+
+		Tool best = Tool::None;
+		float nearest = 0.45f;
+
+		for (int i = 1; i <= 3; i++)
+		{
+			glm::vec3 to = ToolPeg((Tool)i) - eye;
+
+			float along = glm::dot(to, direction);
+
+			if (along < 0.1f)
+				continue;
+
+			// Perpendicular distance from the line of sight to the peg.
+			float off = glm::length(to - direction * along);
+
+			if (off > nearest)
+				continue;
+
+			nearest = off;
+			best = (Tool)i;
+		}
+
+		m_Tool = best;
 	}
 
 	// **A tree's frame, from world space.** The instance transform is
@@ -2378,7 +2535,7 @@ private:
 	{
 		m_AimTree = -1;
 
-		if (!m_HasAxe)
+		if (m_Tool != Tool::Axe)
 			return;
 
 		glm::vec3 origin = m_Camera.GetPosition();
@@ -2821,9 +2978,9 @@ private:
 	// deck of round timber between them.** The deck is the third because logs
 	// became a building material -- a log wall is spent whole, so a log has to
 	// be somewhere the table can count it without being sawn first.
-	enum class Pile { Mill = 0, Stock = 1, Deck = 2 };
+	enum class Pile { Mill = 0, Stock = 1, Deck = 2, Stone = 3 };
 
-	static constexpr int s_Piles = 3;
+	static constexpr int s_Piles = 4;
 	static constexpr int s_PileAcross = 8;      // boards to a course
 	static constexpr float s_PileGap = 0.004f;  // sticker between boards
 	static constexpr int s_DeckAcross = 4;      // logs to a course
@@ -2844,8 +3001,16 @@ private:
 				return ShedCentre() + glm::vec3(s_ShedHalf - 1.1f, 0.06f, -1.3f);
 			case Pile::Stock:
 				return ShedCentre() + glm::vec3(-(s_ShedHalf - 1.1f), 0.06f, -1.3f);
-			default:
+			case Pile::Deck:
 				return ShedCentre() + glm::vec3(0.0f, 0.02f, 2.6f);
+
+			// **Outside, under the porch.** Stone is quarried out on the hill
+			// and it is not carried through a building to be stacked; the
+			// crafting table counts a pile wherever it is, so the pile can be
+			// where a pile of stone belongs.
+			default:
+				return ShedCentre() + glm::vec3(0.0f, -s_ShedFloor,
+					-s_ShedHalf - 1.6f);
 		}
 	}
 
@@ -2853,7 +3018,13 @@ private:
 	// to be told what it is holding.
 	static Pile PileFor(Flotsam kind, Pile near)
 	{
-		return kind == Flotsam::Log ? Pile::Deck : near;
+		if (kind == Flotsam::Log)
+			return Pile::Deck;
+
+		if (kind == Flotsam::Cobble)
+			return Pile::Stone;
+
+		return near;
 	}
 
 	// Where the n-th piece of a pile sits. Boards lie along the room's x axis,
@@ -2863,6 +3034,20 @@ private:
 	// diameter would float the thin ones.
 	glm::vec3 PileSlot(Pile pile, int n, float radius = 0.0f) const
 	{
+		// Blocks stack square, four to a course, which is what a stone pile
+		// looks like when somebody built it rather than tipped it.
+		if (pile == Pile::Stone)
+		{
+			int across = n % s_DeckAcross;
+			int layer = n / s_DeckAcross;
+
+			float pitch = s_StoneBlock + 0.02f;
+
+			return PileAt(pile) + glm::vec3(0.0f,
+				pitch * ((float)layer + 0.5f),
+				((float)across - 0.5f * (float)(s_DeckAcross - 1)) * pitch);
+		}
+
 		if (pile == Pile::Deck)
 		{
 			int across = n % s_DeckAcross;
@@ -2892,16 +3077,19 @@ private:
 	// The round timber on the deck, which is what a log design is billed
 	// against. Volume rather than a count, for the same reason the mill counts
 	// a log's own volume.
-	float DeckWood() const
+	float PileVolume(Pile pile) const
 	{
-		float wood = 0.0f;
+		float held = 0.0f;
 
 		for (const Loose& loose : m_Loose)
-			if (loose.Stack >= 0 && loose.Pile == (int)Pile::Deck)
-				wood += LooseVolume(loose);
+			if (loose.Stack >= 0 && loose.Pile == (int)pile)
+				held += LooseVolume(loose);
 
-		return wood;
+		return held;
 	}
+
+	float DeckWood() const { return PileVolume(Pile::Deck); }
+	float StonePile() const { return PileVolume(Pile::Stone); }
 
 	// How far from a pile counts as reaching it.
 	static constexpr float s_PileReach = 2.2f;
@@ -3377,8 +3565,8 @@ private:
 		// deck rather than leaving it where it fell.
 		Pile pile = Pile::Stock;
 
-		if ((held.Kind == Flotsam::Plank || held.Kind == Flotsam::Log)
-			&& PileHere(pile) >= 0)
+		if ((held.Kind == Flotsam::Plank || held.Kind == Flotsam::Log
+			|| held.Kind == Flotsam::Cobble) && PileHere(pile) >= 0)
 			PutOnPile(slot, PileFor(held.Kind, pile));
 	}
 
@@ -3829,9 +4017,15 @@ private:
 	// it is why `Length` is not always in the same unit -- see `PartSize`.
 	enum class Run { AlongX = 0, AlongZ = 1, Upright = 2 };
 
-	// What it is cut from. A board is 100 x 50 mm sawn; a log is a 300 mm
-	// round. Everything else about a piece is the same either way.
-	enum class Stock { Board = 0, Log = 1 };
+	// What a piece is made of. A board is 100 x 50 mm sawn; a log is a 300 mm
+	// round; a stone is a 300 mm squared block. Everything else about a piece
+	// is the same whichever it is -- which is the point of there being a
+	// stock at all rather than three kinds of part.
+	//
+	// Log and stone share a section deliberately, so a stone plinth courses
+	// with the log wall standing on it. That is how a cabin is actually built,
+	// and it costs one constant to say.
+	enum class Stock { Board = 0, Log = 1, Stone = 2 };
 
 	struct Part
 	{
@@ -3869,7 +4063,7 @@ private:
 	{
 		return 1 | ((part.X & 63) << 1) | ((part.Z & 63) << 7)
 			| ((part.Length & 63) << 13) | ((part.Layer & 63) << 19)
-			| (((int)part.Axis & 3) << 25) | (((int)part.Kind & 1) << 27);
+			| (((int)part.Axis & 3) << 25) | (((int)part.Kind & 3) << 27);
 	}
 
 	static bool UnpackPart(int code, Part& out)
@@ -3882,9 +4076,9 @@ private:
 		out.Length = (code >> 13) & 63;
 		out.Layer = (code >> 19) & 63;
 		out.Axis = (Run)((code >> 25) & 3);
-		out.Kind = (Stock)((code >> 27) & 1);
+		out.Kind = (Stock)((code >> 27) & 3);
 
-		return out.Length > 0 && (int)out.Axis < 3;
+		return out.Length > 0 && (int)out.Axis < 3 && (int)out.Kind < 3;
 	}
 
 	// **How big a piece is, in grid units: cells across, courses up.**
@@ -3895,12 +4089,12 @@ private:
 	// without anything else knowing which.
 	static int PartAcross(const Part& part)
 	{
-		return part.Kind == Stock::Log ? s_LogCells : 1;
+		return part.Kind == Stock::Board ? 1 : s_LogCells;
 	}
 
 	static int PartTall(const Part& part)
 	{
-		return part.Kind == Stock::Log ? s_LogLayers : 1;
+		return part.Kind == Stock::Board ? 1 : s_LogLayers;
 	}
 
 	static glm::ivec3 PartSize(const Part& part)
@@ -4041,6 +4235,8 @@ private:
 		float box = (float)size.x * cell * (float)size.y * layer
 			* (float)size.z * cell;
 
+		// A log is round in the two axes across its run, so it fills pi/4 of
+		// the box it is quoted in. A squared stone fills all of it.
 		return part.Kind == Stock::Log
 			? box * glm::quarter_pi<float>() : box;
 	}
@@ -4074,7 +4270,8 @@ private:
 	struct Bill
 	{
 		int Boards = 0;
-		float Logs = 0.0f;   // cubic metres of round timber
+		float Logs = 0.0f;    // cubic metres of round timber
+		float Stone = 0.0f;   // and of squared block
 	};
 
 	Bill PanelBill(const Design& plan) const
@@ -4093,6 +4290,12 @@ private:
 			if (part.Kind == Stock::Log)
 			{
 				bill.Logs += PartVolume(part, Cell(), LayerHeight());
+				continue;
+			}
+
+			if (part.Kind == Stock::Stone)
+			{
+				bill.Stone += PartVolume(part, Cell(), LayerHeight());
 				continue;
 			}
 
@@ -4142,12 +4345,13 @@ private:
 	// the difference is the offcut left on the bench.
 	float PanelMass(const Design& plan) const
 	{
-		float wood = 0.0f;
+		float mass = 0.0f;
 
 		for (const Part& part : PartsOf(plan))
-			wood += PartVolume(part, Cell(), LayerHeight());
+			mass += PartVolume(part, Cell(), LayerHeight())
+				* (part.Kind == Stock::Stone ? s_Granite : s_Pine);
 
-		return s_Pine * wood;
+		return mass;
 	}
 
 	// What is left over of the *boards*, in metres of length. A log is spent by
@@ -4386,6 +4590,26 @@ private:
 			AddPart(plate, log);
 		}
 
+		// **Stone.** A footing course under a wall and a pier under a post,
+		// which are the two things masonry does in a timber building: keep the
+		// wood off the ground, and carry a point load into it.
+		Design footing = named("Stone footing");
+		{
+			Part block;
+			block.Length = s_BayCells;
+			block.Kind = Stock::Stone;
+			AddPart(footing, block);
+		}
+
+		Design pier = named("Stone pier");
+		{
+			Part block;
+			block.Length = s_LogLayers * 2;   // 0.60 m, two blocks high
+			block.Axis = Run::Upright;
+			block.Kind = Stock::Stone;
+			AddPart(pier, block);
+		}
+
 		Design pillar = named("Pillar");
 		{
 			Part post;
@@ -4402,6 +4626,8 @@ private:
 		m_Designs.push_back(plate);
 		m_Designs.push_back(pillar);
 		m_Designs.push_back(deck("Deck bay", s_BayCells));
+		m_Designs.push_back(footing);
+		m_Designs.push_back(pier);
 	}
 
 	// The kit by name, so the shed's assembly reads as a bill rather than as
@@ -4475,7 +4701,8 @@ private:
 		// **Both materials, and neither is spent until both are there.** A
 		// design half built out of boards you had and logs you did not is a
 		// pile of boards you no longer have.
-		if (Stockpile() < cost.Boards || DeckWood() < cost.Logs)
+		if (Stockpile() < cost.Boards || DeckWood() < cost.Logs
+			|| StonePile() < cost.Stone)
 			return;
 
 		// Off the top, so the pile goes down course by course rather than
@@ -4494,17 +4721,23 @@ private:
 		// until the debt is met and whatever the last log had left over is
 		// wasted -- which is what happens when you cut a wall log out of a
 		// stem that was longer than the wall.
-		for (float owed = cost.Logs; owed > 1e-6f; )
+		auto spend = [&](Pile pile, float owed)
 		{
-			int top = TopOfPile(Pile::Deck);
+			while (owed > 1e-6f)
+			{
+				int top = TopOfPile(pile);
 
-			if (top < 0)
-				return;
+				if (top < 0)
+					return;
 
-			owed -= LooseVolume(m_Loose[(size_t)top]);
+				owed -= LooseVolume(m_Loose[(size_t)top]);
 
-			RemoveLoose((size_t)top);
-		}
+				RemoveLoose((size_t)top);
+			}
+		};
+
+		spend(Pile::Deck, cost.Logs);
+		spend(Pile::Stone, cost.Stone);
 
 		while ((int)m_PanelPool.size() < s_PanelPool)
 			m_PanelPool.push_back(m_World.AddBody(
@@ -4975,6 +5208,27 @@ private:
 		const float deck = (float)s_BayCells * Cell();      // 4.00 m
 		const float floor = LayerHeight() * 2.0f;           // a deck's thickness
 
+		// **A stone footing ring**, which is what keeps the bottom log off the
+		// ground. It sits below the datum, so nothing above it has to move to
+		// make room -- the plinth was already down there holding the terrace
+		// back, and this is the course between the two.
+		float foot = (float)s_LogLayers * LayerHeight();   // 0.30 m
+
+		for (int i = 0; i < 2; i++)
+		{
+			raise("Stone footing", glm::vec3(-h + (float)i * deck,
+				-floor - foot, h - log), 0.0f);
+
+			raise("Stone footing", glm::vec3(-h + (float)i * deck,
+				-floor - foot, -h), 0.0f);
+
+			raise("Stone footing", glm::vec3(-h, -floor - foot,
+				-h + (float)i * deck), quarter);
+
+			raise("Stone footing", glm::vec3(h - log, -floor - foot,
+				-h + (float)i * deck), quarter);
+		}
+
 		// **The floor: four bays over the plinth**, their top surface at the
 		// shed's own datum so everything else measures off zero.
 		for (int i = 0; i < 2; i++)
@@ -5045,9 +5299,12 @@ private:
 		// carpentry: it retains the levelled pad and carries the floor. Its top
 		// is a deck's thickness below the datum, so the deck laid on it brings
 		// the floor to zero.
+		// Its top is a deck and a footing course down, so the stone ring sits
+		// on it and the deck sits on the ring.
+		float under = LayerHeight() * (2.0f + (float)s_LogLayers);
+
 		Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(
-			centre - glm::vec3(0.0f,
-				LayerHeight() * 2.0f + 0.5f * s_ShedSlab, 0.0f),
+			centre - glm::vec3(0.0f, under + 0.5f * s_ShedSlab, 0.0f),
 			glm::vec3(s_ShedHalf, 0.5f * s_ShedSlab, s_ShedHalf), 0.0f);
 
 		body.Type = Egss::BodyType::Static;
@@ -5410,7 +5667,7 @@ private:
 		bool axe = Egss::Input::IsKeyPressed(EGSS_KEY_F);
 
 		if (axe && !m_WasAxe)
-			ToggleAxe();
+			TakeTool();
 
 		m_WasAxe = axe;
 
@@ -5504,17 +5761,21 @@ private:
 		bool dig = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
 		bool add = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_RIGHT);
 
-		// An axe in your hands is not a shovel. Swinging where the dig would
-		// have gone means there is one button for "use what you are holding",
-		// which is also why picking the axe up has to be deliberate.
+		// **One button, and what it does is what you are holding.** An axe in
+		// your hands is not a shovel, which is also why taking a tool has to
+		// be deliberate. Empty-handed it is still the developer's terrain
+		// brush, which is what this demo was before any of the rest.
 		if (dig && !m_WasDigging)
 		{
-			if (m_HasAxe)
-				Swing();
-			else
-				Dig(false);
+			switch (m_Tool)
+			{
+				case Tool::Axe:    Swing(); break;
+				case Tool::Shovel: DigWith(false); break;
+				case Tool::Pick:   DigWith(true); break;
+				default:           Dig(false); break;
+			}
 		}
-		else if (add && !m_WasAdding && !m_HasAxe)
+		else if (add && !m_WasAdding && m_Tool == Tool::None)
 		{
 			Dig(true);
 		}
@@ -5580,6 +5841,9 @@ private:
 	// shed are boxes, and none of them is worth a mesh of its own.
 	void DrawBox(const glm::vec3& at, const glm::vec3& half, float yaw,
 		const glm::vec3& colour);
+
+	void DrawToolHead(Tool tool, const glm::vec3& at, const glm::vec3& haft,
+		const glm::vec3& iron);
 
 	void DrawOutline(const glm::mat4& frame, const glm::vec3& half,
 		float thick, const glm::vec3& colour);
@@ -5649,6 +5913,7 @@ private:
 	std::vector<int> m_Carry;
 	int m_Bucked = 0;
 	int m_Riven = 0;
+	int m_Quarried = 0;
 	int m_Milled = 0;
 
 	// Seconds left on "that is too heavy", so the refusal says something.
@@ -5751,7 +6016,7 @@ private:
 
 	static constexpr int s_FelledMax = 16;
 
-	bool m_HasAxe = false;
+	Tool m_Tool = Tool::None;
 	float m_Swing = 0.0f;          // 1 at the top of the stroke, 0 at rest
 	int m_Chopped = 0;
 	int m_Felled = 0;
@@ -8047,6 +8312,7 @@ inline void TerrainLab::DrawPanels()
 			}
 
 			bool log = part.Kind == Stock::Log;
+			bool stone = part.Kind == Stock::Stone;
 
 			// **Every piece a slightly different brown.** In one colour the
 			// assembly is a single pale slab: the pieces are butted, there is
@@ -8057,11 +8323,13 @@ inline void TerrainLab::DrawPanels()
 			float tone = 0.86f + 0.28f * Veg::Hash2DUnit(part.X + part.Layer * 7,
 				part.Z * 2 + (int)part.Axis, 0x9E3779B9u);
 
-			m_TreeMaterial->Set("u_Color", (log
-				? glm::vec3(0.46f, 0.34f, 0.21f)
-				: part.Layer & 1
-					? glm::vec3(0.66f, 0.51f, 0.32f)
-					: glm::vec3(0.52f, 0.39f, 0.24f)) * tone);
+			m_TreeMaterial->Set("u_Color", (stone
+				? glm::vec3(0.47f, 0.46f, 0.44f)
+				: log
+					? glm::vec3(0.46f, 0.34f, 0.21f)
+					: part.Layer & 1
+						? glm::vec3(0.66f, 0.51f, 0.32f)
+						: glm::vec3(0.52f, 0.39f, 0.24f)) * tone);
 
 			Egss::Renderer::Submit(m_TreeMaterial, log ? m_Log : m_Cube,
 				frame * glm::translate(glm::mat4(1.0f), at)
@@ -8251,6 +8519,7 @@ inline void TerrainLab::DrawPrefabEditor()
 	Bill cost = PanelBill(m_Draft);
 
 	float deck = DeckWood();
+	float stones = StonePile();
 
 	glm::vec3 size3 = PanelSize(m_Draft);
 
@@ -8283,9 +8552,15 @@ inline void TerrainLab::DrawPrefabEditor()
 		ImGui::Text("%.3f m3 of round timber  (deck has %.3f)", cost.Logs,
 			deck);
 
-	bool enough = stock >= cost.Boards && deck >= cost.Logs;
+	if (cost.Stone > 1e-6f)
+		ImGui::Text("%.3f m3 of block  (pile has %.3f)", cost.Stone, stones);
 
-	if (enough && (cost.Boards > 0 || cost.Logs > 1e-6f))
+	bool enough = stock >= cost.Boards && deck >= cost.Logs
+		&& stones >= cost.Stone;
+
+	bool wanted = cost.Boards > 0 || cost.Logs > 1e-6f || cost.Stone > 1e-6f;
+
+	if (enough && wanted)
 		ImGui::Text("[C] cut it -- then [B] puts it down where you look");
 	else if (cost.Boards > stock)
 		ImGui::TextDisabled("  carry %d more boards to the pile",
@@ -8293,6 +8568,9 @@ inline void TerrainLab::DrawPrefabEditor()
 	else if (cost.Logs > deck)
 		ImGui::TextDisabled("  carry %.3f m3 more log to the deck",
 			cost.Logs - deck);
+	else if (cost.Stone > stones)
+		ImGui::TextDisabled("  quarry %.3f m3 more block",
+			cost.Stone - stones);
 
 	// **Why this is a key and the buttons below are not.** Input is polled per
 	// fixed step and goes into the recording; an ImGui click does neither. The
@@ -8323,7 +8601,8 @@ inline void TerrainLab::DrawPrefabEditor()
 	int kind = (int)m_EditKind;
 
 	ImGui::RadioButton("Board", &kind, 0); ImGui::SameLine();
-	ImGui::RadioButton("Log", &kind, 1);
+	ImGui::RadioButton("Log", &kind, 1); ImGui::SameLine();
+	ImGui::RadioButton("Stone", &kind, 2);
 
 	m_EditKind = (Stock)kind;
 
@@ -8396,7 +8675,8 @@ inline void TerrainLab::DrawPrefabEditor()
 			continue;
 
 		ImU32 tint = here
-			? (part.Kind == Stock::Log ? IM_COL32(150, 108, 62, 255)
+			? (part.Kind == Stock::Stone ? IM_COL32(132, 130, 126, 255)
+				: part.Kind == Stock::Log ? IM_COL32(150, 108, 62, 255)
 				: IM_COL32(168, 130, 82, 255))
 			: IM_COL32(78, 64, 48, 190);
 
@@ -8570,6 +8850,44 @@ inline void TerrainLab::DrawPanelGhost()
 		glm::vec3(0.95f, 0.78f, 0.30f));
 }
 
+// **One tool, drawn from its middle**, so the same three boxes serve the rack
+// and the hand. A haft and a head is all any of these are; what tells them
+// apart is the shape of the head, which is also the only thing that tells them
+// apart in use.
+inline void TerrainLab::DrawToolHead(Tool tool, const glm::vec3& at,
+	const glm::vec3& haft, const glm::vec3& iron)
+{
+	DrawBox(at, { 0.36f, 0.028f, 0.028f }, 0.0f, haft);
+
+	switch (tool)
+	{
+		// A wedge on one side of the haft: a felling axe.
+		case Tool::Axe:
+			DrawBox(at + glm::vec3(0.34f, 0.0f, 0.0f),
+				{ 0.06f, 0.10f, 0.02f }, 0.0f, iron);
+			break;
+
+		// A blade square to the haft, wide and shallow -- what moves soil is
+		// area, not edge.
+		case Tool::Shovel:
+			DrawBox(at + glm::vec3(0.38f, 0.0f, 0.0f),
+				{ 0.10f, 0.13f, 0.012f }, 0.0f, iron);
+			break;
+
+		// A bar across the haft with a point at each end. A pick works by
+		// concentrating a swing onto almost no area, which is why it breaks
+		// rock and a shovel does not.
+		default:
+			DrawBox(at + glm::vec3(0.36f, 0.0f, 0.0f),
+				{ 0.022f, 0.022f, 0.20f }, 0.0f, iron);
+			DrawBox(at + glm::vec3(0.36f, 0.0f, 0.20f),
+				{ 0.016f, 0.016f, 0.05f }, 0.0f, iron * 0.85f);
+			DrawBox(at + glm::vec3(0.36f, 0.0f, -0.20f),
+				{ 0.016f, 0.016f, 0.05f }, 0.0f, iron * 0.85f);
+			break;
+	}
+}
+
 inline void TerrainLab::DrawBox(const glm::vec3& at, const glm::vec3& half,
 	float yaw, const glm::vec3& colour)
 {
@@ -8606,28 +8924,33 @@ inline void TerrainLab::DrawShed()
 	// crafting table makes. What is left is the fixed furniture: the plinth
 	// the building stands on, the two benches, the rack and the bearers.
 	DrawBox(centre - glm::vec3(0.0f,
-		LayerHeight() * 2.0f + 0.5f * s_ShedSlab, 0.0f),
+		LayerHeight() * (2.0f + (float)s_LogLayers) + 0.5f * s_ShedSlab, 0.0f),
 		{ s_ShedHalf, 0.5f * s_ShedSlab, s_ShedHalf }, 0.0f,
 		glm::vec3(0.34f, 0.31f, 0.28f));
 
-	// **The rack, on the wall you face as you walk in.** Two pegs and, when it
-	// is not in your hands, the axe on them -- so the wall tells you both that
-	// there is a tool and where it goes back.
-	glm::vec3 rack = AxeRack();
+	// **The rack, on the wall you face as you walk in.** Three pairs of pegs
+	// and, when it is not in your hands, the tool on them -- so the wall tells
+	// you both what there is and where it goes back.
+	// **Lighter than real iron, because the room is dim.** The shader has no
+	// specular, so a dark metal indoors is lit by the sky dome alone and comes
+	// out near black -- a tool you cannot see is a tool nobody knows is there.
+	glm::vec3 iron(0.58f, 0.60f, 0.63f);
+	glm::vec3 haft(0.66f, 0.49f, 0.29f);
 
-	glm::vec3 iron(0.30f, 0.31f, 0.33f);
-	glm::vec3 haft(0.52f, 0.38f, 0.22f);
-
-	DrawBox(rack + glm::vec3(-0.30f, -0.05f, 0.06f), { 0.035f, 0.035f, 0.09f },
-		0.0f, glm::vec3(0.20f, 0.15f, 0.10f));
-	DrawBox(rack + glm::vec3(0.30f, -0.05f, 0.06f), { 0.035f, 0.035f, 0.09f },
-		0.0f, glm::vec3(0.20f, 0.15f, 0.10f));
-
-	if (!m_HasAxe)
+	for (int i = 1; i <= 3; i++)
 	{
-		DrawBox(rack, { 0.36f, 0.028f, 0.028f }, 0.0f, haft);
-		DrawBox(rack + glm::vec3(0.34f, 0.0f, 0.0f),
-			{ 0.06f, 0.10f, 0.02f }, 0.0f, iron);
+		Tool tool = (Tool)i;
+		glm::vec3 peg = ToolPeg(tool);
+
+		DrawBox(peg + glm::vec3(-0.26f, -0.05f, 0.06f),
+			{ 0.035f, 0.035f, 0.09f }, 0.0f, glm::vec3(0.20f, 0.15f, 0.10f));
+		DrawBox(peg + glm::vec3(0.26f, -0.05f, 0.06f),
+			{ 0.035f, 0.035f, 0.09f }, 0.0f, glm::vec3(0.20f, 0.15f, 0.10f));
+
+		if (m_Tool == tool)
+			continue;
+
+		DrawToolHead(tool, peg, haft, iron);
 	}
 
 	// **The saw bench and the crafting table**, two benches against the side
@@ -8672,7 +8995,7 @@ inline void TerrainLab::DrawShed()
 // slowly -- which is what a swing does and what a linear ramp never looks like.
 inline void TerrainLab::DrawHeldAxe(const Egss::PerspectiveCamera& camera)
 {
-	if (!m_HasAxe)
+	if (m_Tool == Tool::None)
 		return;
 
 	m_TreeMaterial->Set("u_SunDirection", -SunDirection());
@@ -8699,17 +9022,42 @@ inline void TerrainLab::DrawHeldAxe(const Egss::PerspectiveCamera& camera)
 	hand = glm::rotate(hand, angle, glm::vec3(1.0f, 0.0f, 0.0f));
 	hand = glm::rotate(hand, glm::radians(-18.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 
-	m_TreeMaterial->Set("u_Color", glm::vec3(0.52f, 0.38f, 0.22f));
+	// The haft runs up the hand's own y, so the head is drawn where the rack
+	// draws it after a quarter turn -- one shape, two places.
+	glm::mat4 held = glm::rotate(hand, glm::half_pi<float>(),
+		glm::vec3(0.0f, 0.0f, 1.0f));
 
-	Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
-		glm::scale(glm::translate(hand, glm::vec3(0.0f, 0.20f, 0.0f)),
-			glm::vec3(0.022f, 0.24f, 0.022f)));
+	auto piece = [&](const glm::vec3& at, const glm::vec3& half,
+		const glm::vec3& colour)
+	{
+		m_TreeMaterial->Set("u_Color", colour);
 
-	m_TreeMaterial->Set("u_Color", glm::vec3(0.30f, 0.31f, 0.33f));
+		Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+			glm::scale(glm::translate(held, at), half));
+	};
 
-	Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
-		glm::scale(glm::translate(hand, glm::vec3(0.0f, 0.44f, 0.0f)),
-			glm::vec3(0.05f, 0.075f, 0.016f)));
+	glm::vec3 haft(0.66f, 0.49f, 0.29f);
+	glm::vec3 iron(0.58f, 0.60f, 0.63f);
+
+	piece(glm::vec3(0.20f, 0.0f, 0.0f), glm::vec3(0.26f, 0.022f, 0.022f), haft);
+
+	switch (m_Tool)
+	{
+		case Tool::Axe:
+			piece(glm::vec3(0.44f, 0.0f, 0.0f),
+				glm::vec3(0.05f, 0.075f, 0.016f), iron);
+			break;
+
+		case Tool::Shovel:
+			piece(glm::vec3(0.50f, 0.0f, 0.0f),
+				glm::vec3(0.08f, 0.10f, 0.010f), iron);
+			break;
+
+		default:
+			piece(glm::vec3(0.46f, 0.0f, 0.0f),
+				glm::vec3(0.018f, 0.018f, 0.16f), iron);
+			break;
+	}
 }
 
 inline void TerrainLab::DrawDoorFrame()
@@ -8947,7 +9295,7 @@ inline void TerrainLab::OnDemoImGui()
 			ShedCentre().x, ShedCentre().z, m_ShedMoved);
 
 		ImGui::Separator();
-		ImGui::Text("Axe: %s", m_HasAxe ? "in hand" : "on the shed wall");
+		ImGui::Text("In hand: %s", ToolName(m_Tool));
 		ImGui::TextDisabled("  F at the rack to take it or hang it back;");
 		ImGui::TextDisabled("  left mouse swings, and the line on the trunk");
 		ImGui::TextDisabled("  is where the stroke will land");
