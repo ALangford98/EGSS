@@ -343,6 +343,20 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **The generated project files are global state, and a sanitizer sweep takes
+  minutes.** `generate` rewrites the makefiles for whichever mode it was
+  asked for, so a plain `./egss.py build` started while a sweep is running
+  points the *same* makefiles at the plain output directory. The sweep then
+  builds successfully into a tree it is not about to look in, and dies much
+  later with a `FileNotFoundError` naming a path that existed when it checked.
+  Run a sweep on its own. `sanitize_sweep` now re-asks
+  `generated_with_sanitize()` before the demo loop and says so.
+
+- **A Python traceback quotes the source file as it is *now*.** Having edited
+  `egss.py` while a sweep was running, every line the traceback quoted came
+  from somewhere else entirely -- it pointed at a function that did not exist
+  when the process started. Read the exception, not the quoted lines.
+
 - **A conversion loop written as `while (owed > 0)` rounds up, and rounding
   up in a salvage mints material.** Dismantling a 1.640 m3 log wall into
   2.5 m handling lengths returned 1.767 m3. What comes out of an assembly is

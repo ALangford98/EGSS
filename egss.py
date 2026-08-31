@@ -495,6 +495,30 @@ def sanitize_sweep(config, jobs, steps, mode="address", allow_fetch=True,
     if not os.path.isfile(executable):
         sys.exit(f"No binary at {executable}")
 
+    # **The generated project files are global state, and a sweep takes
+    # minutes.**
+    #
+    # `generate` rewrites the makefiles for whichever mode it was asked for, so
+    # a plain `./egss.py build` started while a sweep is running points the
+    # *same* makefiles at the plain output directory. The sweep then builds --
+    # successfully -- into a tree it is not about to look in, and dies much
+    # later with a `FileNotFoundError` naming a path that was there when it
+    # checked.
+    #
+    # That is exactly what happened on 2026-08-31, and the traceback was worse
+    # than useless: Python reads source lazily when it *formats* a traceback,
+    # so having edited this file in the meantime, every quoted line was from
+    # somewhere else entirely.
+    #
+    # Asking again here cannot make the race impossible -- nothing short of a
+    # lock can -- but it turns a puzzle into a sentence.
+    if generated_with_sanitize() != mode:
+        sys.exit("The project files were regenerated for "
+                 + str(generated_with_sanitize()) + " while this sweep was "
+                 "building for " + mode + ".\nSomething else ran egss.py at "
+                 "the same time; the makefiles are shared. Run the sweep on "
+                 "its own.")
+
     demos = demo_shortnames()
     if not demos:
         sys.exit("No demos found in TestEnv/src/DemoRegistry.h")
