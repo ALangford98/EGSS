@@ -673,6 +673,7 @@ private:
 		// back owning the walker.
 		m_Fell.clear();
 		m_Panels.clear();
+		TouchPanels();
 		m_PanelPool.clear();
 		m_Carry.clear();
 
@@ -5444,6 +5445,8 @@ private:
 		panel.Placed = true;
 		panel.Mine = true;
 
+		TouchPanels();
+
 		Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(panel.At, half,
 			0.0f);
 
@@ -5560,6 +5563,8 @@ private:
 
 		m_Panels.erase(m_Panels.begin() + (long)which);
 		m_Panels.insert(m_Panels.begin(), lifted);
+
+		TouchPanels();
 	}
 
 	// **The timber comes back, less nothing.** The offcut was lost at the saw
@@ -5626,6 +5631,8 @@ private:
 				break;
 
 		m_Panels.erase(m_Panels.begin() + (long)which);
+
+		TouchPanels();
 
 		m_Salvaged += made;
 	}
@@ -5963,6 +5970,8 @@ private:
 			m_World.GetBody(made.Body) = body;
 
 			m_Panels.push_back(made);
+
+			TouchPanels();
 		};
 
 		const float h = s_ShedHalf;
@@ -6821,6 +6830,95 @@ private:
 
 	std::shared_ptr<Egss::Shader> m_TreeShader;
 	std::shared_ptr<Egss::Material> m_TreeMaterial;
+
+	// --- Everything that is a box or a log, drawn in two calls ----------------
+	//
+	// **The workshop is 461 timbers and the life is 522 boxes**, and each of
+	// them was a draw call: a bind, five uniforms and six triangles. That is
+	// the shape of problem instancing exists for, and the machinery has been
+	// in the engine since the planet's forest -- a divisor on `BufferLayout`,
+	// `mat4` as a vertex attribute, and `Renderer::SubmitInstanced`.
+	//
+	// **Separate meshes from `m_Cube` and `m_Log`, not the same ones.** An
+	// instance buffer becomes part of a mesh's vertex array, and while a
+	// shader that does not read those attributes is unharmed by them, relying
+	// on that is exactly the sort of quiet coupling this file keeps a list of.
+	// A second cube costs 24 vertices.
+	struct Piece
+	{
+		glm::mat4 Model = glm::mat4(1.0f);
+		glm::vec3 Tint = glm::vec3(1.0f);
+	};
+
+	// The workshop alone is 32 panels of up to 64 pieces; the cap is what the
+	// pools allow rather than what today happens to need.
+	static constexpr int s_PieceCap = s_PanelPool * s_MaxParts;
+	static constexpr int s_LifeCap = 1024;
+
+	std::shared_ptr<Egss::Shader> m_PieceShader;
+	std::shared_ptr<Egss::Material> m_PieceMaterial;
+
+	std::shared_ptr<Egss::Mesh> m_CubeBatch;
+	std::shared_ptr<Egss::Mesh> m_LogBatch;
+
+	std::shared_ptr<Egss::VertexBuffer> m_CubeInstances;
+	std::shared_ptr<Egss::VertexBuffer> m_LogInstances;
+	std::shared_ptr<Egss::VertexBuffer> m_LifeInstances;
+
+	std::shared_ptr<Egss::Mesh> m_LifeBatch;
+
+	std::vector<Piece> m_PanelCubes;
+	std::vector<Piece> m_PanelLogs;
+	std::vector<Piece> m_LifePieces;
+
+	// **The panels are baked, not rebuilt.** A placed panel does not move, so
+	// walking the whole workshop's pieces every frame would be the CPU cost
+	// instancing was meant to remove -- kept and re-uploaded only when the set
+	// of placed panels actually changes.
+	unsigned int m_PanelRevision = 1;
+	unsigned int m_PanelBaked = 0;
+
+	void TouchPanels() { m_PanelRevision++; }
+
+	// The lighting every instanced draw shares. Split out because there are
+	// three callers and a missed uniform reads as the last thing that set it.
+	void SetPieceLighting(float ambient, float bounce)
+	{
+		m_PieceMaterial->Set("u_SunDirection", -SunDirection());
+		m_PieceMaterial->Set("u_SunColor", SunColour());
+		m_PieceMaterial->Set("u_SkyColor", SkyColour());
+		m_PieceMaterial->Set("u_Ambient", ambient);
+		m_PieceMaterial->Set("u_Bounce", bounce);
+		m_PieceMaterial->Set("u_Through", 0.0f);
+
+		// The tree shader's cut, aim line and sapwood are all gated on
+		// `u_CutRadius`, and a zero switches off all three at once. A piece is
+		// not a trunk.
+		m_PieceMaterial->Set("u_CutRadius", 0.0f);
+		m_PieceMaterial->Set("u_CutDepth", 0.0f);
+		m_PieceMaterial->Set("u_CutPart", 0.0f);
+		m_PieceMaterial->Set("u_CutY", 0.0f);
+		m_PieceMaterial->Set("u_CutKerf", 1.0f);
+		m_PieceMaterial->Set("u_CutSide", glm::vec3(1.0f, 0.0f, 0.0f));
+		m_PieceMaterial->Set("u_AimY", 1.0e9f);
+	}
+
+	// Upload and draw. One place, so the "did you set the layout before the
+	// buffer joined the array" question has one answer.
+	void DrawBatch(const std::shared_ptr<Egss::Mesh>& mesh,
+		const std::shared_ptr<Egss::VertexBuffer>& buffer,
+		const std::vector<Piece>& pieces, bool upload)
+	{
+		if (pieces.empty() || !mesh || !buffer)
+			return;
+
+		if (upload)
+			buffer->SetData(pieces.data(),
+				(unsigned int)(pieces.size() * sizeof(Piece)));
+
+		Egss::Renderer::SubmitInstanced(m_PieceMaterial, mesh,
+			(unsigned int)pieces.size());
+	}
 
 	bool m_ShowTrees = true;
 	float m_TreeDensity = 0.012f;   // trees per square metre where fully wooded
@@ -8044,6 +8142,85 @@ inline void TerrainLab::BuildTrees()
 	m_TreeShader.reset(Egss::Shader::Create("LabTree", vertexSrc, fragmentSrc));
 	m_TreeMaterial = Egss::Material::Create(m_TreeShader);
 
+	// --- The same surface, drawn a thousand at a time ------------------------
+	//
+	// **One fragment shader, two ways of getting a colour into it.**
+	//
+	// A lit board is the same lit board whether it was drawn on its own or as
+	// one of five hundred, and a second copy of that arithmetic is a second
+	// thing to keep in step -- which this file has been caught by more than
+	// once. So the instanced shader is the *same source string* with its
+	// colour turned from a uniform into a varying, by substitution rather than
+	// by hand. If either substitution ever misses, the shader fails to compile
+	// rather than quietly lighting things differently from its twin.
+	std::string pieceFragment = fragmentSrc;
+
+	auto swap = [&](const std::string& from, const std::string& to)
+	{
+		size_t at = pieceFragment.find(from);
+
+		if (at == std::string::npos)
+		{
+			EGSS_ERROR("LabPiece: '{0}' is not in the lit fragment source any"
+				" more -- the two shaders have come apart", from);
+
+			return;
+		}
+
+		pieceFragment.replace(at, from.size(), to);
+	};
+
+	swap("uniform vec3 u_Color;", "in vec3 u_Color;");
+
+	std::string pieceVertex = R"(
+		#version 330 core
+
+		layout(location = 0) in vec3 a_Position;
+		layout(location = 1) in vec3 a_Normal;
+		layout(location = 2) in vec2 a_TexCoord;
+
+		// **Per instance, and a mat4 takes four locations.** The tint lands at
+		// 7, not at 4 -- putting it at 4 reads the second column of somebody
+		// else's matrix, which is a colour that changes as the thing turns.
+		layout(location = 3) in mat4 a_Model;
+		layout(location = 7) in vec3 a_Tint;
+
+		uniform mat4 u_ViewProjection;
+		uniform mat4 u_Transform;
+
+		out vec3 v_Normal;
+		out float v_Up;
+		out vec3 v_Object;
+		out vec3 u_Color;
+
+		void main()
+		{
+			mat4 model = u_Transform * a_Model;
+
+			vec4 world = model * vec4(a_Position, 1.0);
+
+			// **No inverse transpose, and that is not a shortcut.** Every mesh
+			// drawn this way is a box or a cylinder scaled on its own axes, so
+			// each normal is either along an axis -- where a non-uniform scale
+			// only changes its length -- or in the plane the cylinder is
+			// scaled uniformly across. `normalize` recovers both exactly. The
+			// same reasoning already holds for the tree shader beside this
+			// one, which does the same thing for the same reason.
+			v_Normal = mat3(model) * a_Normal;
+
+			v_Object = a_Position;
+			v_Up = world.y;
+			u_Color = a_Tint;
+
+			gl_Position = u_ViewProjection * world;
+		}
+	)";
+
+	m_PieceShader.reset(Egss::Shader::Create("LabPiece", pieceVertex,
+		pieceFragment));
+
+	m_PieceMaterial = Egss::Material::Create(m_PieceShader);
+
 	// One boulder mesh for every rock and every log. The shape is a jittered
 	// sphere either way -- what tells a granite boulder from a floating log
 	// here is its density and its colour, not its silhouette, and that is
@@ -8195,6 +8372,7 @@ inline void TerrainLab::BuildTrees()
 		log.RecalculateBounds();
 
 		m_Log = std::make_shared<Egss::Mesh>(log, "LabLog");
+		m_LogBatch = std::make_shared<Egss::Mesh>(log, "LabLogBatch");
 	}
 
 	// A unit cube, scaled by whatever draws it. The doorway and the shed are
@@ -8233,7 +8411,40 @@ inline void TerrainLab::BuildTrees()
 		cube.RecalculateBounds();
 
 		m_Cube = std::make_shared<Egss::Mesh>(cube, "LabCube");
+		m_CubeBatch = std::make_shared<Egss::Mesh>(cube, "LabCubeBatch");
+		m_LifeBatch = std::make_shared<Egss::Mesh>(cube, "LabLifeBatch");
 	}
+
+	// **Three instance buffers, allocated once at full size.**
+	//
+	// Once, because growing one would mean adding it to the vertex array a
+	// second time, and the attribute locations are assigned in the order
+	// buffers are added -- the new one would land past 7 and the shader would
+	// still be reading 3. The planet's forest learned that first.
+	//
+	// Three rather than two because a buffer belongs to a vertex array: the
+	// panels' cubes and the animals' cubes are the same *mesh data* but they
+	// are refilled on different schedules, so they get a mesh each.
+	auto instanced = [](const std::shared_ptr<Egss::Mesh>& mesh, int cap)
+	{
+		std::shared_ptr<Egss::VertexBuffer> buffer(
+			Egss::VertexBuffer::Create((unsigned int)(cap * sizeof(Piece))));
+
+		// The divisor is what makes it per-instance, and it has to be set
+		// before the buffer joins a vertex array -- that is when the attribute
+		// pointers are declared.
+		buffer->SetLayout(Egss::BufferLayout({
+			{ Egss::ShaderDataType::Mat4, "a_Model" },
+			{ Egss::ShaderDataType::Float3, "a_Tint" } }, 1));
+
+		mesh->SetInstanceBuffer(buffer);
+
+		return buffer;
+	};
+
+	m_CubeInstances = instanced(m_CubeBatch, s_PieceCap);
+	m_LogInstances = instanced(m_LogBatch, s_PieceCap);
+	m_LifeInstances = instanced(m_LifeBatch, s_LifeCap);
 }
 
 // **Water is one quad, and the depth buffer does the rest.**
@@ -9041,43 +9252,56 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 // count.
 inline void TerrainLab::DrawPanels()
 {
-	if (!m_Cube || m_Panels.empty())
+	if (!m_CubeBatch || m_Panels.empty())
 		return;
 
-	m_TreeMaterial->Set("u_Compliance", 0.0f);
-	m_TreeMaterial->Set("u_MaxLean", 0.0f);
-	m_TreeMaterial->Set("u_Through", 0.0f);
+	// **Baked, not walked.** A placed panel does not move, so the pieces are
+	// gathered only when the set of them changes -- which is what makes this
+	// worth doing at all. Rebuilding 461 transforms a frame to save 461 draw
+	// calls would be trading one cost for another.
+	bool bake = m_PanelBaked != m_PanelRevision;
 
-	// **A panel is not a trunk.** The tree shader gates the axe wedge, the aim
-	// line and the pale sapwood on `axis < u_CutRadius * 3.0`, and that uniform
-	// is left set by whichever tree was drawn last. A zero makes the test fail
-	// for every fragment, which switches off all three at once.
-	m_TreeMaterial->Set("u_CutRadius", 0.0f);
-
-	for (const Panel& panel : m_Panels)
+	if (bake)
 	{
-		if (!panel.Placed)
-			continue;
+		m_PanelCubes.clear();
+		m_PanelLogs.clear();
 
-		glm::mat4 frame = glm::translate(PanelFrame(panel),
-			-GridOffset(panel.Plan));
-
-		for (const Part& part : PartsOf(panel.Plan))
+		for (const Panel& panel : m_Panels)
 		{
-			glm::vec3 at, half, mesh;
-			glm::quat turn;
+			if (!panel.Placed)
+				continue;
 
-			PartFrame(part, at, half, turn, mesh);
+			glm::mat4 frame = glm::translate(PanelFrame(panel),
+				-GridOffset(panel.Plan));
 
-			m_TreeMaterial->Set("u_Color", PartColour(part));
+			for (const Part& part : PartsOf(panel.Plan))
+			{
+				glm::vec3 at, half, mesh;
+				glm::quat turn;
 
-			Egss::Renderer::Submit(m_TreeMaterial,
-				part.Kind == Stock::Log ? m_Log : m_Cube,
-				frame * glm::translate(glm::mat4(1.0f), at)
-				* glm::mat4_cast(turn)
-				* glm::scale(glm::mat4(1.0f), mesh));
+				PartFrame(part, at, half, turn, mesh);
+
+				Piece piece;
+				piece.Tint = PartColour(part);
+				piece.Model = frame * glm::translate(glm::mat4(1.0f), at)
+					* glm::mat4_cast(turn)
+					* glm::scale(glm::mat4(1.0f), mesh);
+
+				std::vector<Piece>& into = part.Kind == Stock::Log
+					? m_PanelLogs : m_PanelCubes;
+
+				if ((int)into.size() < s_PieceCap)
+					into.push_back(piece);
+			}
 		}
+
+		m_PanelBaked = m_PanelRevision;
 	}
+
+	SetPieceLighting(0.55f, 0.22f);
+
+	DrawBatch(m_CubeBatch, m_CubeInstances, m_PanelCubes, bake);
+	DrawBatch(m_LogBatch, m_LogInstances, m_PanelLogs, bake);
 }
 
 // **The prefab editor: a plan view of the bench.**
@@ -9948,21 +10172,15 @@ inline void TerrainLab::DrawToolHead(Tool tool, const glm::vec3& at,
 // and nothing else.
 inline void TerrainLab::DrawLife()
 {
-	if (!m_ShowLife || !m_Cube)
+	if (!m_ShowLife || !m_LifeBatch)
 		return;
 
-	m_TreeMaterial->Set("u_SunDirection", -SunDirection());
-	m_TreeMaterial->Set("u_SunColor", SunColour());
-	m_TreeMaterial->Set("u_SkyColor", SkyColour());
-	m_TreeMaterial->Set("u_Ambient", 0.60f);
-	m_TreeMaterial->Set("u_Bounce", 0.30f);
-	m_TreeMaterial->Set("u_Through", 0.0f);
-	m_TreeMaterial->Set("u_Compliance", 0.0f);
-	m_TreeMaterial->Set("u_MaxLean", 0.0f);
-	m_TreeMaterial->Set("u_CutRadius", 0.0f);
-	m_TreeMaterial->Set("u_CutDepth", 0.0f);
-	m_TreeMaterial->Set("u_CutPart", 0.0f);
-	m_TreeMaterial->Set("u_AimY", 1.0e9f);
+	// **Every animal is boxes, so every animal is one draw.** Birds are three
+	// each, beetles seven, and at two hundred head that was 522 draw calls a
+	// frame for six triangles apiece. Gathered into one buffer instead, and
+	// refilled every frame -- unlike the panels, these do move, and a transform
+	// that has to be recomputed anyway costs nothing extra to write down.
+	m_LifePieces.clear();
 
 	glm::vec3 eye = m_Camera.GetPosition();
 
@@ -9991,15 +10209,19 @@ inline void TerrainLab::DrawLife()
 		const glm::vec3& offset, const glm::vec3& half, float lean,
 		const glm::vec3& colour)
 	{
-		m_TreeMaterial->Set("u_Color", colour);
+		if ((int)m_LifePieces.size() >= s_LifeCap)
+			return;
 
 		glm::mat4 place = glm::translate(glm::mat4(1.0f), at)
 			* glm::mat4(frame);
 
-		Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
-			glm::scale(glm::rotate(
-				glm::translate(place, offset), lean,
-				glm::vec3(0.0f, 0.0f, 1.0f)), half));
+		Piece one;
+		one.Tint = colour;
+		one.Model = glm::scale(glm::rotate(
+			glm::translate(place, offset), lean,
+			glm::vec3(0.0f, 0.0f, 1.0f)), half);
+
+		m_LifePieces.push_back(one);
 	};
 
 	// --- Birds ---------------------------------------------------------------
@@ -10057,20 +10279,18 @@ inline void TerrainLab::DrawLife()
 
 	// --- Midges --------------------------------------------------------------
 
-	m_TreeMaterial->Set("u_Color", glm::vec3(0.16f, 0.14f, 0.12f));
-
 	for (const Life::Critter& midge : m_MidgeSwarm)
 	{
-		// **Six millimetres, and a dark brown rather than black.** At the
-		// 32 mm they started at they read as a cloud of flying dice; a midge
-		// is a couple of millimetres of insect and a swarm is a *texture*, so
+		// Six millimetres, and a dark brown rather than black. At the 32 mm
+		// they started at they read as a cloud of flying dice; a midge is a
+		// couple of millimetres of insect and a swarm is a *texture*, so
 		// anything with a shape in it is a bird seen from too far away.
 		if (glm::length(midge.At - eye) > 25.0f)
 			continue;
 
-		Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
-			glm::scale(glm::translate(glm::mat4(1.0f), midge.At),
-				glm::vec3(0.006f * midge.Size)));
+		piece(glm::mat3(1.0f), midge.At, glm::vec3(0.0f),
+			glm::vec3(0.006f * midge.Size), 0.0f,
+			glm::vec3(0.16f, 0.14f, 0.12f));
 	}
 
 	// --- Beetles -------------------------------------------------------------
@@ -10105,6 +10325,10 @@ inline void TerrainLab::DrawLife()
 				glm::vec3(0.10f, 0.09f, 0.09f));
 		}
 	}
+
+	SetPieceLighting(0.60f, 0.30f);
+
+	DrawBatch(m_LifeBatch, m_LifeInstances, m_LifePieces, true);
 }
 
 inline void TerrainLab::DrawBox(const glm::vec3& at, const glm::vec3& half,
