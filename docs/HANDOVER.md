@@ -343,6 +343,342 @@ look caught immediately.
 
 ## Traps that have bitten more than once
 
+- **A `mat4` vertex attribute occupies four locations.** An instanced layout
+  of `{ Mat4, Float3 }` puts the second element at location **7**, not 4.
+  Declaring it at 4 in the shader reads the matrix's second column as a
+  colour, which changes as the object turns and looks like a lighting bug.
+
+- **An instance buffer becomes part of a mesh's vertex array**, so attaching
+  one changes that mesh everywhere it is drawn. A shader that does not read
+  the extra attributes is unharmed, but relying on that couples two draw
+  paths silently. Give the batched draw its own `Mesh` built from the same
+  `MeshData` -- a cube costs 24 vertices.
+
+- **Instancing a thing that moves every frame saves draw calls and not CPU;
+  instancing a thing that stands still saves both.** The workshop's 461
+  timbers are baked and re-uploaded only when a panel is placed or lifted,
+  because walking them every frame to avoid walking them every frame is not a
+  saving.
+
+- **The way to check a rendering refactor is to render it both ways and
+  compare the pixels.** Keeping the old path behind a flag for one session
+  turned "the layout, the locations and the normal transform are probably all
+  right" into a single byte-identical MD5 over 3,686,400 samples.
+
+- **A frame time that does not move may be vsync.** 16.667 ms is 1/60 exactly.
+  Measure the thing that changed -- here, the submission -- or the measurement
+  reports the display's refresh rate rather than the work.
+
+- **The generated project files are global state, and a sanitizer sweep takes
+  minutes.** `generate` rewrites the makefiles for whichever mode it was
+  asked for, so a plain `./egss.py build` started while a sweep is running
+  points the *same* makefiles at the plain output directory. The sweep then
+  builds successfully into a tree it is not about to look in, and dies much
+  later with a `FileNotFoundError` naming a path that existed when it checked.
+  Run a sweep on its own. `sanitize_sweep` now re-asks
+  `generated_with_sanitize()` before the demo loop and says so.
+
+- **A Python traceback quotes the source file as it is *now*.** Having edited
+  `egss.py` while a sweep was running, every line the traceback quoted came
+  from somewhere else entirely -- it pointed at a function that did not exist
+  when the process started. Read the exception, not the quoted lines.
+
+- **A conversion loop written as `while (owed > 0)` rounds up, and rounding
+  up in a salvage mints material.** Dismantling a 1.640 m3 log wall into
+  2.5 m handling lengths returned 1.767 m3. What comes out of an assembly is
+  `floor(volume / piece)`; the remainder is the short end nobody keeps.
+
+- **Test a geometric predicate somewhere empty.** "Is a panel butted against
+  this one allowed" was asked *beside the workshop*, where one panel's width
+  along lands inside a third piece -- so the check measured whether the shed
+  was crowded rather than whether butting works.
+
+- **A counter of what the player did must not be decremented by undoing
+  something they did not do.** The workshop is 32 pieces of the same kit,
+  raised before you arrive; lifting one of its walls was reducing a
+  placed-count that never included it. `Panel::Mine`.
+
+- **A mean is the wrong statistic for a rule with a radius.** Boid separation
+  does nothing at all beyond its own bubble, so the *mean* nearest-neighbour
+  spacing over sixty birds mostly measures how big the flock is -- turning
+  separation off moved it by a fifth. What the rule promises is that nobody
+  gets close, so the **closest pair** is the measurement: 1.64 m against
+  0.05 m, which is decisive. Measure the thing the mechanism claims.
+
+- **A random walk's noise has to be scaled by the square root of the
+  timestep**, or its diffusion depends on the step size and every measurement
+  of it is a measurement of the integrator. A heading increment with variance
+  `2 D_r dt`; an OU kick with `sigma sqrt(dt)`. And a uniform draw on
+  `[-sqrt3, sqrt3]` has variance one, so it stands in for a normal wherever
+  only the second moment matters.
+
+- **Step a flock from a copy of where it was, not in place.** Updating in
+  place makes the last boid steer against a flock that has already moved and
+  the first against one that has not. That is a bias with no meaning, and it
+  makes the result depend on the order of the list.
+
+- **A file format needs a version before it needs anything else.** A prefab
+  is a packed integer, and the packing has already changed shape twice. A
+  stale code does not decode as an error -- it decodes as a *plausible piece
+  somewhere else*, which is the worst kind of wrong.
+
+- **Keep a built-in kit separate from the list the user edits.** The workshop
+  is raised from *named* pieces of the kit; with one list, importing somebody
+  else's prefabs would knock the building down the next time the terrain was
+  regenerated.
+
+- **A function's parameter type must be complete where the function is
+  declared**, unlike its body, which is compiled as though after the whole
+  class. `enum class Tool` had to move to the top of the private section the
+  moment a member function took one.
+
+- **Dark metal indoors comes out black.** The shader has no specular, so
+  anything with a low albedo lit by the sky dome alone is unreadable -- the
+  tools on the rack had to be painted a good deal paler than iron. Same class
+  of problem as the shed's missing ground bounce, from the other direction.
+
+- **Snap the lower corner to a lattice, never the centre.** A piece an odd
+  number of cells across has its centre on a half cell, so snapping centres
+  puts odd and even pieces on two different lattices and they never meet.
+  Snapping the heading to a right angle first is what makes "the lower
+  corner" well defined at all -- and it pays again, because an axis-aligned
+  box is one whose AABB *is* its shape, so `GroundHeightBelow` reports its
+  top exactly rather than "slightly high".
+
+- **"Is it in that plane" is not "is its face on that plane".** The check
+  that measured the workshop's doorway asked only whether a piece's near
+  face lay in the front wall, and a 4 m floor bay whose edge touches that
+  plane said yes -- so a deck was counted as the wall beside the door and the
+  doorway measured 0.000 m wide. A piece in a wall is also *thin through* it.
+
+- **A whole number of cells apart is a question per axis, not a distance.**
+  Two pieces offset 2.7 m across and 0.4 m along are both on the lattice and
+  2.73 m apart, which is not a multiple of anything.
+
+- **A `max` seeded at zero can only ever report zero for a negative answer.**
+  "How far past the jamb is the worst end" started at 0.0 and reported 0.000
+  for a board clearing by 1.1 m. Seed a running extreme below anything real.
+
+- **When a unit changes with the axis, say so in the field's name or its
+  comment.** A part's `Length` is in 100 mm cells along the plan and in 50 mm
+  courses up it, because those are the two grids it can lie on. Billing an
+  upright post by its `Length` in cells would charge twice the timber.
+
+- **`GroundBelow`'s and `GroundHeightBelow`'s last argument is the *initial
+  best*, not a floor to search from, and it defaults to `0.0`.** It has now
+  cost time three times. Left out, every surface below sea level is rejected
+  and the query reports "nothing there" -- which for the walker meant it was
+  **never grounded** on low ground, so the branch that zeroes horizontal
+  velocity when you are standing still never ran and the player slid 27.5 m
+  down a 28.8-degree slope in ten seconds, sometimes uphill. Pass `-1000.0f`
+  unless you genuinely mean "and it must be above y = 0".
+
+- **A body drawn about a different point than it is simulated about needs that
+  offset stored somewhere.** The felled crown is a capsule about the middle of
+  the stem and a mesh drawn from the *cut*, and for a long time nothing carried
+  the distance between them -- so the crown jumped half its own length the
+  instant it came off the stump. If a draw transform and a collider disagree
+  about the origin, the disagreement is a field, not a comment.
+
+- **A spin and a linear velocity picked separately describe two different
+  motions.** A felled tree given `omega` about its centre and a nudge along the
+  ground has no stationary point, so its butt slides off the stump. If a body
+  is meant to pivot about a point, `v = omega x (centre - point)` is not a
+  refinement -- it is what "pivot" means.
+
+- **A post-step projection applied before the step is a projection the step
+  undoes.** `StepFelled` runs before `m_World.Step` because it applies a
+  torque, and forces belong to the step they act over. The hinge constraint had
+  to be a separate pass *after* it. Getting this backwards produces a
+  constraint that appears to do nothing.
+
+- **A kinematic body is a body the solver has been told not to move**, so
+  nothing pushes back on it. Carried timber parked at a fixed distance in front
+  of the eye went through walls and into the ground, and releasing it inside
+  geometry hands the solver penetration on every side -- its way out is
+  whichever side is shallowest, which is often downward. Shorten the hold
+  instead of expecting a collision that cannot happen.
+
+- **"Where is the ground under this thing" is usually the wrong question.**
+  Asked under a load that has been pushed inside a wall, the honest answer is
+  the hillside beneath the floor. Ask at the *eye*: you cannot be standing
+  inside rock, so the surface under your feet is the one a thing put down in
+  front of you lands on.
+
+- **Dropping many small dynamic bodies in one place does not make a pile.**
+  Eighty boards off one butt log push each other apart, spread across the room
+  and go out of the door. A stack of sawn timber is *stacked* -- placed into
+  slots and made static, the same as the bedded boulders. Trying to make them
+  settle is solving the wrong problem.
+
+- **A per-object lighting term missing from a shader can hide for months
+  behind what the shader happens to draw.** The tree shader had a sky dome and
+  no ground bounce, which is invisible on trees and on a room nobody can see
+  from outside. The moment a building stood in a field its shaded wall came out
+  at 4% of the sunlit ground beside it. If a shader is about to be used for a
+  new *kind* of thing, ask what it never had to model before.
+
+- **Two boxes that span the same range interpenetrate, and coplanar faces
+  z-fight.** The shed's roof ran through its wall tops and the eaves were a row
+  of stripes; the drawn lintel stopped 0.25 m short of the wall it sits in and
+  left a slit of daylight over the door. Both were invisible from inside a dark
+  room. When the collider and the drawing use separate literals for the same
+  surface, they will drift.
+
+- **A terrain modifier belongs in `Height`, not in `Density`.** Everything in
+  the lab -- slope, the distance field, the mesh, the grass, the trees, the
+  boulders, the walker's ground query -- reads the terrain through `Height`, so
+  the workshop's terrace needed no other line changed anywhere. Anything that
+  needs the *bare* terrain (the siting search that chooses where the terrace
+  goes) calls `RawHeight` explicitly.
+
+- **A packed bit field one bit too narrow does not fail, it forgets.** The
+  prefab editor stores a piece as one integer and gave `Length` five bits,
+  which holds 0 to 31. A 32-cell piece masked to zero, decoded as an empty
+  slot, and disappeared -- no warning, no crash, just a design with fewer
+  pieces than it was given. If a packed field's range is derived from a
+  constant (here the grid size), test the round trip across that whole range,
+  not across the value you happened to have in mind.
+
+- **Clamping a quantity to make it fit is a silent discount.** Billing a piece
+  longer than a board as `min(length, board)` charged 2.4 m for 3.2 m of
+  timber. Split it instead -- the real answer is that you scarf it from two
+  boards, and the offcut is part of the cost.
+
+- **Never write to a registered replay parameter from the simulation.**
+  `m_WalkSpeed` is registered, so scaling it by the carried load would have
+  written the weight of whatever the player happened to be holding into every
+  recording, and a replay would then walk at a speed the recorder never chose.
+  Apply the modifier where the value is *used*.
+
+- **A pool of bodies is not cleared by `PhysicsWorld3D::Clear`, it is
+  *orphaned* by it.** `Clear` empties the body list and the next `AddBody`
+  starts again at zero, so a handle kept across a world rebuild is not stale --
+  it is aimed at somebody else's body. `BuildWorld` cleared the loose timber
+  and not the felled tops, the panels or the panel pool, and a panel that
+  survived a slider drag came back owning the walker.
+
+- **An index into `m_Loose` held anywhere else has to survive a removal.**
+  `RemoveLoose` moves the last entry into the freed slot, so `m_Carry` is fixed
+  up in the same function -- erase the removed one, repoint any that referred to
+  the last. Crafting a panel while holding an armful is the case that finds it,
+  and the symptom would be carrying a board that is also in the pile.
+
+- **A registered replay parameter is a raw pointer kept for the life of the
+  demo.** `RegisterParam` stores the address, so registering a field of a
+  `std::vector` element dangles the first time that vector grows. Anything
+  registered belongs in a member that never moves -- `TerrainLab::m_Draft` is
+  the edited prefab design for exactly this reason, with the saved designs in a
+  vector beside it. The same rule is why anything that changes the simulation
+  has to be on a *key*: an ImGui button is not recorded, so a session that used
+  one can never replay itself.
+
+- **`GroundHeightBelow`'s last argument is the initial best, not a floor to
+  search from.** Passing 0.0 does not mean "start at sea level", it means "no
+  surface below zero counts" -- and it silently returns 0.0 as though it had
+  found something. On terrain that sits 17 m under sea level this reads as an
+  object placed 17 m in the air.
+
+- **A constant reading across a changing input is a bug in the measurement more
+  often than in the code.** A wall read (21, 23, 21) at every hour while the
+  ground beside it went from 18 to 89. It was correct: the sun's azimuth in
+  `TerrainLab` is fixed with a +z bias, so a face turned the other way is shaded
+  all day, and the daytime sky colour hardly moves. Check what is *supposed* to
+  vary before concluding the shader is stuck.
+
+- **A pool of bodies, not a growing list.** `PhysicsWorld3D` lets a body be
+  rewritten but never removed, so anything that respawns has to reserve its
+  slots once and write into them. `TerrainLab`'s flotsam appended instead, and
+  every press of "Reset the water" doubled the world's body count with the old
+  ones still simulating out of sight. `m_LoosePool` and `ParkLoose` are the
+  shape to copy.
+
+- **A self-test that counts a converted thing twice.** `MillLog` turns the
+  carried log's *own body* into the first board rather than making a new one,
+  so the change in the plank count already includes it. The test added one for
+  it and reported twelve boards from a log that yields eleven -- a 63 % mill
+  recovery, which would mean wood had been created. That impossible number is
+  the only reason it was caught. When a conservation check comes out *above*
+  the bound, suspect the counting before the code.
+
+- **Indexing a lazily filled pool from a test.** `m_Fell` is empty until a tree
+  actually falls, so `m_Fell[0]` in a harness that fabricates a felled crown is
+  out of range. Under `-O2` it did not crash loudly: the run simply ended
+  between two log lines with an exit code of zero, which reads as the test
+  never having run.
+
+- **Never seed scattered things on a triangle's index.** Marching cubes emits
+  triangles in lattice order, so editing the field anywhere in a chunk
+  renumbers every triangle after the edit and the entire chunk's grass, trees
+  and boulders reseed -- a 2 m dig moved instances 4.25 to 12.9 m away. Hash
+  the triangle's *position* (`Veg::ScatterKey`) and the scatter becomes a
+  property of the ground, so only what actually changed can move.
+
+- **Placement rules that read the mesh describe something the player can
+  edit.** `TerrainLab` put boulders where the surface is too steep to hold
+  soil, taken from the triangle's normal -- and the wall of a freshly dug hole
+  is exactly that, so every dig grew an outcrop round its rim. Rules about the
+  *landscape* want the generator's own height field; the mesh is only for what
+  a thing is bedded against.
+
+- **Buoyancy applied at the centre of mass can never tip anything**, and it
+  looks completely right until something has to. A force through the centre of
+  mass has no moment about it, so the model gets every draft right and every
+  attitude wrong -- and there is no symptom at all until a load goes on one end
+  of something. The fix is to sample the submerged volume rather than compute
+  it: a lattice through the body, each cell pushing up at its own position, so
+  the centre of buoyancy moves as the body heels. `TerrainLab::ApplyBuoyancy`.
+  The check worth keeping is `GM = KB + BM - KG` with `BM = I/displacement`:
+  its sign change predicted exactly which loadings the plank kept and which it
+  threw off.
+
+- **A 38 mm plank is thinner than a body moves in one step.** At 1.5 m/s a
+  sixtieth of a second is 25 mm, so anything landing on thin geometry tunnels
+  through it -- there is no continuous collision and no speculative contact in
+  `PhysicsWorld3D`. Substepping the world (four slices in `TerrainLab`) is the
+  fix, and forces that belong to the step -- buoyancy, rolling resistance --
+  have to be applied inside the loop rather than once outside it.
+
+- **Viscous damping gives a terminal speed, not a stop.** Twice now something
+  round has been left rolling downhill for ever, and turning up
+  `AngularDamping` does not fix it -- set against gravity on a slope it settles
+  wherever the two balance. What stops a real cylinder is rolling resistance,
+  which is *Coulomb*: `torque = mu_r N R`, set by the weight and not by the
+  speed, with mu_r near 0.25 for timber or rock on soil. `TerrainLab::
+  StepFelled` has it, capped so it can only bring the spin to zero and never
+  reverse it. The prediction to check against is that a cylinder rolls only
+  where the slope exceeds `atan(mu_r)`.
+
+- **A tree's foliage is at chest height, and anything keyed to a height on the
+  tree will find it there.** The lab's habits put leaf clusters down to 1.0 m
+  off the ground and out to 6 m sideways, so the axe's aim line -- a band at a
+  given height in the tree's own frame -- painted itself across a canopy thirty
+  metres away and looked for all the world like a uniform leaking between
+  trees. It was the right tree. Anything indexed by height on a tree wants
+  `length(object.xz) < trunkRadius * k` as well.
+
+- **A basis matrix built from `cross` twice is left-handed as often as not, and
+  a left-handed transform draws the mesh inside out.** `mat3(east, up, north)`
+  with `east = cross(reference, up)` and `north = cross(up, east)` has
+  determinant **-1**: the winding of every triangle is reversed, back-face
+  culling keeps the far surface, and from any distance the object still looks
+  broadly right. The third column must be `cross(column0, column1)`. The test
+  that settles it in one run: **back-face culling should change nothing** --
+  render once with `CullFace::Back` and once with `CullFace::None` and compare
+  the files, because every visible face being a front face is exactly what
+  correct winding means. Byte-identical when right; 4066 pixels apart when not.
+
+- **A portal's second camera needs its near plane in the plane of the doorway,
+  or it draws what is between it and the door.** Nothing else fixes it -- not
+  sorting, not culling, not a shorter near clip. The construction is Eric
+  Lengyel's oblique frustum (*Oblique View Frustum Depth Projection and
+  Clipping*, Journal of Game Development 1(2), 2005): replace the projection's
+  third row with the wanted plane, scaled by the frustum corner furthest from
+  it. `TerrainLab::ObliqueNearPlane` has it with the derivation. The
+  alternative, a `gl_ClipDistance[0]` user clip plane, needs every vertex
+  shader in the pass to write it; the oblique projection needs none of them to
+  change.
+
 - **`0.5 + 0.5 * n.y` is not an ambient term, it is half of one.** It is the
   share of the *sky* a surface can see, and it is zero for anything facing
   down -- so a canopy from beneath, a lintel's underside, the roof of a hole
@@ -1702,7 +2038,10 @@ look caught immediately.
   solver pushes bodies upward without limit. A toolshed placed 400 m underground
   threw the player out at ninety-five metres a step, and the placement was
   correct the whole time. Above the field the same query reads as air, so
-  anything that needs to live off the block belongs *up*.
+  anything that needs to live off the block belongs *up*. (The terrain lab's
+  shed is on the terrain now and levels the ground under it, so it no longer
+  needs to live off the block at all -- but the asymmetry is still there for
+  the next thing that does.)
 
 - **The editor viewport is a `glViewport` call, not a framebuffer, and that
   is deliberate.** `EditorShell` publishes the central dock node's rect and

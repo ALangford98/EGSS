@@ -7,6 +7,8 @@
     ./egss.py build all       build all three configs
     ./egss.py run [config]    build, then run from the binary's own directory
     ./egss.py clean [config]
+    ./egss.py prune           report what the build trees cost, and offer to
+                              delete the ones nothing is using
     ./egss.py gen             regenerate project files only
     ./egss.py sanitize        build instrumented and run every demo under it
     ./egss.py windows         bridge KWin's window list to the wallpaper
@@ -493,6 +495,30 @@ def sanitize_sweep(config, jobs, steps, mode="address", allow_fetch=True,
     if not os.path.isfile(executable):
         sys.exit(f"No binary at {executable}")
 
+    # **The generated project files are global state, and a sweep takes
+    # minutes.**
+    #
+    # `generate` rewrites the makefiles for whichever mode it was asked for, so
+    # a plain `./egss.py build` started while a sweep is running points the
+    # *same* makefiles at the plain output directory. The sweep then builds --
+    # successfully -- into a tree it is not about to look in, and dies much
+    # later with a `FileNotFoundError` naming a path that was there when it
+    # checked.
+    #
+    # That is exactly what happened on 2026-08-31, and the traceback was worse
+    # than useless: Python reads source lazily when it *formats* a traceback,
+    # so having edited this file in the meantime, every quoted line was from
+    # somewhere else entirely.
+    #
+    # Asking again here cannot make the race impossible -- nothing short of a
+    # lock can -- but it turns a puzzle into a sentence.
+    if generated_with_sanitize() != mode:
+        sys.exit("The project files were regenerated for "
+                 + str(generated_with_sanitize()) + " while this sweep was "
+                 "building for " + mode + ".\nSomething else ran egss.py at "
+                 "the same time; the makefiles are shared. Run the sweep on "
+                 "its own.")
+
     demos = demo_shortnames()
     if not demos:
         sys.exit("No demos found in TestEnv/src/DemoRegistry.h")
@@ -578,10 +604,151 @@ def sanitize_sweep(config, jobs, steps, mode="address", allow_fetch=True,
     return 1 if findings else 0
 
 
+# Every build tree premake can produce, whether or not it exists today. The
+# sanitizer suffixes come from `binary_dir`, so this list and that function have
+# to agree -- which is why it is built from `CONFIGS` rather than written out.
+def build_trees():
+    trees = []
+
+    for config in CONFIGS:
+        name = config.capitalize() + "-linux-x86_64"
+
+        trees.append((name, False))
+
+        for mode in ("address", "thread"):
+            trees.append((name + "-sanitize-" + mode, True))
+
+        # The suffix used before the mode was part of the name. Still on disk
+        # for anyone who built one back then, and nothing regenerates it.
+        trees.append((name + "-sanitize", True))
+
+    return trees
+
+
+def tree_size(path):
+    """Bytes under a directory, or 0 if it is not there.
+
+    `du` would be one line and one process, but this script runs on Windows
+    too and the whole point of it is that there is one entry point.
+    """
+    total = 0
+
+    for root, _, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+
+    return total
+
+
+def megabytes(value):
+    return f"{value / (1024.0 * 1024.0):,.0f} MB"
+
+
+def prune(keep, delete):
+    """**What the build trees cost, and which of them nothing is using.**
+
+    Build output is gitignored and entirely regenerable, and it is also by far
+    the largest thing in the checkout -- 7.1 GB against 1.2 MB of engine
+    source, when this was written. Most of it is sanitizer trees: an
+    instrumented `libEGSS.so` carries so much debug info that one config's
+    shared library alone is 293 MB, and there are four such configs.
+
+    Reporting is the default and deleting is opt-in, because the cost of
+    getting a tree back is a full rebuild of it and only the person at the
+    keyboard knows whether they are about to want one. **Check that a sweep
+    is not running first**: `./egss.py sanitize` runs out of one of these
+    trees, and deleting it underneath itself is a confusing way to fail.
+    """
+    rows = []
+
+    for name, instrumented in build_trees():
+        size = tree_size(os.path.join(ROOT, "bin", name)) \
+            + tree_size(os.path.join(ROOT, "bin-int", name))
+
+        if size > 0:
+            rows.append((name, size, instrumented))
+
+    if not rows:
+        print("No build trees on disk.")
+        return 0
+
+    rows.sort(key=lambda row: -row[1])
+
+    total = sum(row[1] for row in rows)
+
+    print(f"\n{len(rows)} build trees, {megabytes(total)} in bin and bin-int\n")
+
+    going = 0
+
+    for name, size, instrumented in rows:
+        # A sanitizer tree is rebuilt by `./egss.py sanitize` whenever it is
+        # next wanted, and nothing else reads it. Keeping one between sweeps
+        # buys a faster sweep and costs about 700 MB.
+        stale = instrumented and name not in keep
+
+        going += size if stale else 0
+
+        print(f"  {'delete' if stale and delete else 'keep  ' if not stale else 'stale '}"
+              f"  {name:<44} {megabytes(size):>10}")
+
+    print(f"\n{megabytes(going)} in trees nothing is using.")
+
+    # **Worktrees, reported and not touched.** The abandoned handover
+    # workflow left a full checkout *and* a second clone of every submodule
+    # behind each one, which came to 2.5 GB -- more than the engine, the
+    # history and the assets put together. They are not deleted here because
+    # a worktree is git's to remove: `git worktree remove` unregisters it as
+    # well as unlinking it, and an `rmtree` would leave git believing in a
+    # directory that is not there.
+    strays = []
+
+    for parent in (os.path.join(ROOT, ".claude", "worktrees"),):
+        if not os.path.isdir(parent):
+            continue
+
+        for name in sorted(os.listdir(parent)):
+            path = os.path.join(parent, name)
+
+            if os.path.isdir(path):
+                strays.append((name, tree_size(path)
+                    + tree_size(os.path.join(ROOT, ".git", "worktrees", name))))
+
+    if strays:
+        print("\nWorktrees, with their own build output and submodules:\n")
+
+        for name, size in strays:
+            print(f"  {name:<52} {megabytes(size):>10}")
+
+        print("\n  git worktree remove --force .claude/worktrees/<name>")
+        print("  git worktree prune\n")
+
+    if not delete:
+        print("Pass --delete to remove the stale build trees. They rebuild on"
+              " the next sweep.\n")
+        return 0
+
+    for name, _, instrumented in rows:
+        if not instrumented or name in keep:
+            continue
+
+        for parent in ("bin", "bin-int"):
+            path = os.path.join(ROOT, parent, name)
+
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+
+    print("Removed.\n")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build and run EGSS.")
     parser.add_argument("command", nargs="?", default="run",
-                        choices=["build", "run", "clean", "gen", "sanitize", "windows"])
+                        choices=["build", "run", "clean", "gen", "sanitize",
+                                 "prune", "windows"])
     parser.add_argument("config", nargs="?", default="debug",
                         choices=CONFIGS + ["all"])
     parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
@@ -595,6 +762,12 @@ def main():
     parser.add_argument("--thread", action="store_true",
                         help="build with TSan instead -- races rather than "
                              "memory errors. The two cannot be combined")
+    parser.add_argument("--delete", action="store_true",
+                        help="with `prune`, actually remove the trees it "
+                             "lists rather than only reporting them")
+    parser.add_argument("--keep", action="append", metavar="TREE",
+                        help="with `prune`, a tree to spare by name; may be "
+                             "given more than once")
     parser.add_argument("--steps", type=int, default=SANITIZE_STEPS,
                         help=f"fixed steps per demo in a sweep (default {SANITIZE_STEPS})")
     # Everything after a bare -- goes to TestEnv rather than to this script,
@@ -650,6 +823,9 @@ def main():
                               generate_first=not skip_gen)
 
     configs = CONFIGS if args.config == "all" else [args.config]
+
+    if args.command == "prune":
+        return prune(keep=set(args.keep or []), delete=args.delete)
 
     if args.command == "clean":
         for config in configs:

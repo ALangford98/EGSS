@@ -1264,6 +1264,966 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-08-31 (`./egss.py prune`, and where 8.2 of 9.7 GB was going)
+
+The checkout was 9.7 GB against 1.2 MB of engine source, so it was worth
+finding out where. Three answers, and none of them is the engine:
+
+- **5.7 GB in four sanitizer build trees.** An instrumented `libEGSS.so`
+  carries so much debug info that one config's shared library alone is 293 MB,
+  and nothing reads any of them between sweeps — `./egss.py sanitize` rebuilds
+  whichever it needs.
+- **2.5 GB in two abandoned worktrees.** The handover workflow that
+  `CLAUDE.md` says is gone left behind a full checkout *and* a second clone of
+  every submodule for each one — `.git/worktrees/*/modules` was 527 MB on its
+  own, which is more than the history, the engine and the assets together.
+  Both branches are 0 commits ahead of `main` and both trees are clean.
+- **175 MB of `planet-Earth.site` caches**, one per config, each about eleven
+  seconds to regenerate.
+
+`prune` reports all of it and deletes only the stale build trees, and only with
+`--delete`. Reporting is the default because the cost of getting a tree back is
+a full rebuild and only the person at the keyboard knows whether they are about
+to want one — and because **`./egss.py sanitize` runs out of one of those
+trees**, so deleting them while a sweep is in flight is a confusing way to
+fail.
+
+Worktrees are listed and not touched. A worktree is git's to remove:
+`git worktree remove` unregisters it as well as unlinking it, and an `rmtree`
+would leave git believing in a directory that is not there.
+
+Also worth knowing: `profile.json` is **tracked**, and has been since "Added a
+2D lighting demo". It is a 16.8 MB profiler trace and the largest blob in the
+history by four times.
+
+### 2026-08-31 (the workshop and the life go from 764 draw calls to 33)
+
+Every timber in the building and every box of every animal was a draw call: a
+bind, five uniforms and six triangles. That is the shape of problem instancing
+exists for, and the machinery has been in the engine since the planet's forest
+— a divisor on `BufferLayout`, `mat4` as a vertex attribute, and
+`Renderer::SubmitInstanced`.
+
+**One fragment shader, two ways of getting a colour into it.** A lit board is
+the same lit board whether it was drawn on its own or as one of five hundred,
+and a second copy of that arithmetic is a second thing to keep in step. So the
+instanced shader is the *same source string* with its colour turned from a
+uniform into a varying, by substitution — and it fails to compile rather than
+quietly lighting things differently from its twin if the substitution ever
+misses.
+
+**The panels are baked, not walked.** A placed panel does not move, so its
+pieces are gathered only when the set of them changes; rebuilding 461
+transforms a frame to save 461 draw calls would be trading one cost for
+another. The animals do move, so their buffer is refilled every frame — but a
+transform that has to be computed anyway costs nothing extra to write down
+instead of submitting.
+
+**Measured by rendering the same frame both ways.** With the old path kept
+behind a flag long enough to compare, the two images are **byte-identical**:
+same MD5, 3,686,400 of 3,686,400 channel samples equal, worst channel
+difference 0. That is what says the instance layout, the attribute locations
+and the normal transform are all right, and it is a stronger statement than any
+of them checked separately.
+
+| | one at a time | instanced |
+|---|---|---|
+| draw calls | 764 | **33** |
+| submitting it | 1420.9 µs, 1724.9 µs | **66.1 µs, 69.8 µs** |
+
+The frame time does not move, and it is worth saying why rather than quoting a
+number that did not change: it is 16.667 ms either way, which is vsync. The
+1.4 ms is budget freed, not frames gained.
+
+Two details that would have been silent bugs. The tint sits at attribute
+location **7, not 4** — a `mat4` takes four locations, and putting it at 4
+reads the second column of somebody else's matrix, which is a colour that
+changes as the thing turns. And the batches use **separate meshes** from
+`m_Cube` and `m_Log`: an instance buffer becomes part of a mesh's vertex array,
+and while a shader that does not read those attributes is unharmed by them,
+relying on that is the sort of quiet coupling this project keeps a list of. A
+second cube costs 24 vertices.
+
+### 2026-08-31 (a panel can be lifted, moved and broken up)
+
+Building was one way, and one way is not a loop. You could put a panel down and
+never move it, never correct it and never get the timber back — so one
+misjudged wall was a misjudged wall for ever, and the only remedy was to
+regenerate the terrain and lose everything else with it.
+
+Two steps, and they are the same step twice. `N` aimed at a placed panel lifts
+it, which puts it back in your hands where `B` can set it down somewhere
+better; `N` again, with it in hand, breaks it up and the timber goes on the
+piles. That is an undo ladder rather than two meanings for one key, which is
+the objection this file has raised before about `E`.
+
+**The workshop is not exempt, and that is deliberate.** It is built out of the
+same kit, so its walls really are 756 boards and 22 m³ of round timber.
+Salvaging them mints nothing that was not already standing there, which is
+exactly what taking a building down gives you — and it is how anybody without
+an axe would have to start.
+
+**Nothing is put down inside something else.** It used to be possible to stand
+in a wall and lay another one through it, and the only sign was the picture:
+the collider is one box a side, so two walls sharing a volume share a collider
+too. Right-angle yaws mean a panel's box *is* its axis-aligned bounds, so there
+is no separating-axis test to write; a millimetre of slack lets two pieces
+butted on the lattice share a face while refusing anything that shares a
+volume. The ghost turns red on the same call the placement makes, not on a
+second one that could answer differently.
+
+**And the salvage was minting timber.** A wall log is 4.0 m and a log you can
+shoulder is 2.5 m, so a dismantled 1.640 m³ wall gives nine standard logs and a
+short end nobody keeps. Written as `while (owed > 0)` it rounded *up* and
+returned **1.767 m³** — a woodpile with a perpetual motion machine in it.
+Rounded down it returns 1.590, and the check that caught it compares what came
+out against the assembly's own bill rather than against the counter the salvage
+keeps.
+
+The touching test had to move out onto an empty hillside. Beside the workshop,
+"one panel's width along" can land inside a *third* piece, so the first version
+measured whether the shed was crowded rather than whether butting works.
+
+### 2026-08-31 (three tools, stone, a 3D bench, and four kinds of life)
+
+**A shovel and a pickaxe beside the axe.** `m_HasAxe` was a bool, which is the
+right shape for one tool and the wrong one for three. Taken by *aim* rather
+than by cycling: stand at the rack, look at the peg, press F — a key that
+cycles is a key you press twice by mistake. One button in use, and what it does
+is what you are holding.
+
+Which of the two digging tools the ground wants is a question the ground
+already answers. Above the angle of repose soil does not stay, so what is there
+is rock — that is `outcrop`, the same test that decides where boulders sit —
+and under the mantle there is rock everywhere. Neither refuses outright: the
+wrong tool takes a third of the bite, because nothing is more annoying than a
+tool that does nothing and does not say why.
+
+**A pick in rock leaves a block, and the block is one course of walling.**
+300 mm cubed of granite is **72 kg** against the 160 kg lift ceiling, and it is
+exactly the section the log walls course at — so a stone footing sits under a
+log wall without anything having to be told. `Stock` grows a third member and
+`Kind` a second bit. The workshop stands on eight footing courses now, which
+puts stone in its own bill: 756 boards, 22.04 m³ of round timber, 2.88 m³ of
+block.
+
+**The bench renders the design it is building.** A plan view could not say what
+a design *was*: ten courses of log read as one rectangle, a post read as a dot,
+and the only way to tell a wall from a floor was to read the numbers beside it.
+Now the draft is drawn from the same meshes, the same shader and the same
+`PartFrame` the world builds it with, into a framebuffer the panel shows — so
+what you look at while you design is the thing that gets built and not a second
+drawing of it that can disagree.
+
+And a click is a ray. The ray against every piece's box gives what the right
+button removes and, when it came in through a **top face**, where the next
+piece goes — at that piece's own course, without touching a slider. A log cabin
+is ten courses, and setting a slider for each of them is nine presses that say
+nothing. A drag turns the model and a click lays a piece, told apart by how far
+the mouse moved between press and release.
+
+**Designs go to a text file, because a design is a list of integers.** The
+packed code *is* the design — the same integer the recorder stores — so there
+is nothing to serialise and nothing that can drift. The first line carries a
+version and the piece count, and a file from another packing is refused rather
+than read: a stale code does not decode as an error, it decodes as a plausible
+piece somewhere else. Nine designs survive a write and a read intact; a version
+1 file is turned away with the list left as it was.
+
+**And four kinds of life, which are three rules.**
+
+- **Birds and fish are boids** — Reynolds' three, differing only in speed,
+  sight and what confines them. Checked as an A/B on the mechanism: with
+  alignment on the flock's order parameter is **0.589**, with it off **0.087**;
+  with separation on the closest pair in sixty birds is **1.64 m**, with it off
+  **0.05 m**. The first version of that check measured *mean* nearest-neighbour
+  spacing and it moved by a fifth — which says nothing, because separation does
+  nothing beyond its own radius and a mean over sixty birds mostly measures how
+  big the flock is.
+- **Midges are an Ornstein–Uhlenbeck process.** A lek swarm is a cloud of
+  insects each doing a damped random walk about a marker: a spring, a drag and
+  a noise. Its stationary spread is `σ²/(2γk)` per axis, so the swarm's radius
+  is a thing the parameters *predict* rather than a constant somebody set.
+  Measured **0.5739 m rms against 0.5505**.
+- **Beetles are an active Brownian particle.** Constant speed, heading
+  diffusing, so `⟨Δr²⟩ = 4Dt` with `D = v²/(2D_r)`. Measured **6.95 m² against
+  6.87** over 40 s and 400 walkers.
+
+One noise stream per animal rather than one shared, so a path does not depend
+on how many others there are or what order they were stepped in. Draws are
+uniform on `[-√3, √3]`, which has variance one and can stand in for a normal
+wherever only the second moment matters — which, for a linear system, is
+everywhere.
+
+### 2026-08-30 (a design has courses, axes and two stocks, and the workshop is built of them)
+
+**Placement lands on a lattice.** It used to be three metres ahead at whatever
+heading you happened to be facing. Two walls put down side by side were never
+quite in line and never quite touching, and there was no way to make them: the
+odds of hitting the same heading twice with a mouse are nil. Three snaps, and
+each earns its place — the heading to a right angle, because anything else
+meets at a wedge no position snapping closes; the **lower corner** to the cell,
+not the centre, because a design an odd number of cells across has its centre on
+a half cell and would sit on a different lattice from an even one; and the base
+to a course, where the base is whatever is under the aim. That last is the whole
+of what makes a second course sit on the first.
+
+Snapping the heading also pays for itself twice: every placed panel is
+axis-aligned, so `GroundHeightBelow` — an **AABB** query — reports a panel's top
+*exactly* rather than "slightly high", which is what stacking needs.
+
+Measured: two panels laid from headings a few degrees apart come out on the same
+heading, 25 and −11 whole cells apart, every lower corner within 0.000015 of a
+cell of the lattice, and a piece put down on another has its underside at
+0.1000 against the other's top of 0.1000.
+
+**The piece model was a panel and could not be a building.** A part was a run of
+board with one bit saying which of two courses it sat in. A pillar is a piece
+standing on end and a log wall is ten pieces stacked, and neither can be said
+with one bit. A part now carries a **course** (six bits, 3.2 m of height), an
+**axis** (along x, along z, or upright) and a **stock** (a 100×50 sawn board, or
+a 300 mm round log). Twenty-eight bits of thirty-one, round-tripped across the
+whole range of every field — 73440 packed pieces — because a packed field one bit
+too narrow does not fail, it forgets. Fitting is a question about boxes now: a
+log is six courses thick, so one laid two courses under a board still fouls it.
+
+`Length` is in cells along the plan and in courses up it, because the two axes
+have different units — 100 mm across, 50 mm up. Quoting an upright post in cells
+would make its length mean something the grid it stands on does not.
+
+**The bill is two materials and only one of them is bin packing.** Boards come in
+2.4 m lengths and have to be cut out of them; a log is spent as *volume*, because
+the logs on the deck are whatever thickness they grew and the design's log is one
+standard round. Same rule the mill counts by, and the reason riving loses
+nothing. Hence a third pile — a deck of round timber against the back wall,
+because a log wall is spent whole and a log has to be somewhere the table can
+count it without sawing it first. Neither material is spent until both are
+there: a design half built out of boards you had and logs you did not is a pile
+of boards you no longer have.
+
+**And the workshop is put up out of the kit.** It was eleven hand-written static
+boxes, which was honest while there was nothing else to build it from. Now there
+is: the same designs the crafting table makes, at the same sizes, placed the way
+`B` places one. That is the only way to know the editor can describe a *building*
+and not just a panel — if a piece in the kit were wrong the shed would show it,
+because the shed **is** those pieces.
+
+It comes to **24 pieces of kit, 461 timbers, 756 boards and 22.04 m³ of round
+timber**: a log cabin on a plinth with a board deck, a board roof, plates over
+the door and a porch on two pillars. Corners are not notched — perpendicular
+walls cross, and two round sections crossing read as a saddle notch, which is
+what that is.
+
+The strongest check here is a regression one. Nothing about boards was meant to
+change, and the two designs the table has always opened with still cost **26 and
+22 boards** — the same numbers measured before any of it. Measured off the
+placed panels rather than off the constants they were placed from: the doorway is
+2.200 m wide with its head at 2.400 m, which is the opening the portal's plane
+test has always assumed; the deck brings the floor to the shed's datum to
+0.0000 m; the threshold in from the pad is a 0.150 m step. It costs **2.3 ms a
+frame** in release with all 461 timbers in view.
+
+Four checks were wrong before they were right, and all four were the
+measurement, not the code:
+
+- The lattice test placed its panels on a hillside where the second landed on
+  ground 1.45 m higher, then compared a piece that had correctly stacked on
+  *that* one against the height of the other.
+- It then asked whether two pieces were a whole number of cells apart as a
+  Pythagorean **distance**. 2.7 m across and 0.4 m along are both on the lattice
+  and 2.73 m apart, which is not a multiple of anything.
+- The doorway read **0.000 m wide**, because "in the plane of the front wall" was
+  asked only of a piece's near face — and a 4 m floor bay whose edge touches that
+  plane answered yes, so a deck was counted as the wall beside the door. It has
+  to be thin *through* the wall as well as on it.
+- A clearance check started its `max` at 0.0, so a board clearing the jamb by a
+  metre could only ever report zero.
+
+### 2026-08-30 (the toolshed comes onto the map, and the ground under it is levelled)
+
+The shed was a pocket dimension four hundred metres above the block --
+somewhere the terrain was not, so it needed no hole cut in the ground and no
+clipping against the world. That was the cheap version and it worked, and it
+made the only building in the demo a place that **did not exist until you
+deployed a door to it**: you could not see it, walk to it, or put a panel down
+beside it.
+
+Siting it on the terrain first tried to find ground flat enough to build on,
+and the measurement killed that idea outright. The flattest 8 m square anywhere
+on a ring 22 m out still varied **4.16 m** -- a five-metre plinth and a doorway
+two metres above the path. There is no flat ground on this terrain.
+
+So the site is **cut and filled** instead, which is what happens when a
+building goes on a hill. And once it is going to be levelled anyway, "flattest"
+stops being the question: what a real siting minimises is earth moved, which is
+smallest when the pad sits at the **mean** ground height over the footprint.
+That number has units. The chosen spot costs **0.901 m³/m²**, against 2.228 at
+the worst of 95 dry candidates.
+
+**The terrace lives in `Height`, not in `Density`, and that is the whole
+trick.** The slope, the distance field, the mesh, the grass, the trees, the
+boulders and the walker's ground query all read the terrain through that one
+function, so every one of them saw the pad and **not one of them needed a line
+changed**. Measured afterwards at 81×81 across the room: flat to 0.00000 m, at
+the pad level to 0.00000 m, a 0.150 m step at the door, and the hill untouched
+40 m away.
+
+Two things the move exposed, both invisible while the shed was somewhere nobody
+could see:
+
+- **The shader had no ground bounce.** The sky dome only lights what faces up;
+  outdoors the other half of the sphere is ground, and ground returns a good
+  part of what the sun puts on it. The moment the shed stood in a field its
+  door wall came out at **11/255 against sunlit sand at 192** — 4%, a
+  night-time number in full daylight. With the bounce term it is 28, and with
+  cladding picked for daylight rather than for a dim interior, about 50.
+- **The roof spanned the same heights the wall tops ran through**, so their
+  faces interpenetrated and the eaves were a row of z-fighting stripes. The
+  drawn lintel also stopped 0.25 m short of the wall it sits in, which became a
+  slit of daylight over the doorway the moment the roof went up to meet the
+  walls.
+
+`m_InShed` is `m_ViaPortal` now, because "am I in the shed" became a question
+about position that the portal has no business answering. **None of the portal
+transform changed:** the second camera and the plane test never cared that the
+two doorways were in different worlds, only that they were two doorways.
+
+Also: `BuildWorld` cleared the loose timber but not the felled tops, the panels
+or the panel pool. `Clear` empties the body list and the next `AddBody` starts
+again at zero, so a panel that survived a slider drag came back **owning the
+walker**.
+
+### 2026-08-30 (a felled tree turns on its hinge, and a log is the stem it was cut from)
+
+Three things were wrong with felling, and the report was that it looked
+"choppy" -- the crown disappears and comes back about a metre in the air.
+
+**The crown moved when it came off the stump.** The body is a capsule about the
+middle of the fallen stem; the mesh is drawn from its *cut*. Nothing carried the
+distance between the two, so the drawing put the mesh origin at the body's
+position and the crown jumped half its own length -- eleven metres on a
+standard -- straight up. `Felled::Lift` is that distance, and the check asks
+the matrix the renderer uses where the mesh origin lands: **0.000 m** from
+where the standing tree left it.
+
+**It fell backwards.** `ω × r` for a point at `(0, h, 0)` under `ω = (0, 0, w)`
+is `(-wh, 0, 0)`, so tipping the top toward `+x` wants `w` negative -- and
+`cross(up, +x)` is already `(0, 0, -1)`. Negating it as well sent every tree
+over *away* from its own notch, while a separate linear nudge pushed the centre
+the other way. The two disagreed, which is most of why it read as a glitch.
+
+**Nothing was holding the butt.** The stump is not a collider, so the crown
+free-fell the cut height, landed upright and toppled from there. Damping cannot
+fix that; the problem is the constraint. What holds a real tree is the hinge --
+the strip of uncut wood on the far side of the notch -- and with it the crown is
+a rod pivoted at one end:
+
+    α = (3g / 2L) sin θ
+
+`HoldFalling` supplies that torque and puts the butt back on the stump, **after**
+the solver has integrated, because a projection applied before the step is one
+the step undoes. It lets go at 75° and the rest is an ordinary body landing.
+
+Checked against **energy**, not against the equation of motion. Integrating α
+once gives `ω² = ω₀² + (3g/L)(cos θ₀ − cos θ)`, which is the same physics
+reached a different way and is exactly what a numerical integration gets wrong.
+Through 75° of a 22.9 m fall the two disagree by **0.166%**, and the butt
+drifts **0.00000 m**.
+
+The initial push is quoted in metres a second **at the tip** rather than radians
+a second at the middle: a fixed spin gave a 27 m standard a crown already doing
+nine metres a second at the instant of the cut, about the speed it should be
+doing when it lands.
+
+**The trees grew rather than the trunks thickening.** The first answer to "make
+them thicker" was to fatten them, and the measurement said not to: the biggest
+standard already stood at **H/D 29 on an 0.80 m butt**, which is a stout tree --
+a forest conifer runs H/D 40 to 60. Nothing was slender. What was wrong was the
+mix: nearly half the wood was the smallest class, and the smallest class of a
+scrub is a 2 cm stick. Classes and shares both moved, and radius follows height
+as H^(3/2), so **growing a tree is a better lever on its thickness than
+thickening it** and it keeps the allometry honest. The stand now runs from 4 cm
+scrub to an 0.86 m conifer 24 m tall, all of it between 0.18 and 0.32 of its own
+buckling height.
+
+**Bucking follows the taper.** It used to make N identical 0.17 m logs, so a
+24 m conifer and a 5 m pole gave the same timber and only the count differed. A
+stem is a cone near enough: the butt log carries the trunk's radius at the cut
+and each one above it is thinner. Measured: **9 logs off a 26.25 m stem holding
+6.236 m³, against the 6.266 m³ cone they were cut from.** The mill counts the
+log's own volume, so a butt log off a standard is worth eighty boards and a top
+log off a pole is worth two, and the **top diameter limit** (100 mm at the small
+end) is why the tip is left in the wood and a sapling yields nothing at all.
+
+**Riving**, because a butt log is six hundred kilograms and the alternative to
+splitting it is felling only small trees. Each half keeps the length and half
+the cross-section, so the volume -- and the board count -- is exactly conserved:
+1.6239 m³ to 1.6239 m³, 81 boards to 80. And a ceiling on a single lift, because
+there is no reading of "a struggle rather than a refusal" that covers half a
+tonne.
+
+### 2026-08-30 (timber is stacked on piles, and a carried load stops at the wall)
+
+**Boards are placed, not dropped.** A board off the saw is a dynamic body, and
+eighty of them out of one butt log will not settle into a stack: they find a way
+out of each other, spread across the floor and go out of the door. Making them
+settle is the wrong fix. A stack of sawn timber is *stacked*, by hand, one board
+at a time, and a person putting boards down does not leave them where they land
+either.
+
+So a board that reaches a pile goes into the next slot of a layout and becomes
+**static** -- the same trick the bedded boulders use, a thing that is where it is
+put and never simulated. Take one off the top and it is dynamic again. Two
+piles: green beside the mill, seasoned stock beside the crafting table, 6.2 m
+apart, and carrying between them is the work. Reaching into a pile takes off the
+**top** whichever board you pointed at, and crafting spends from the top for the
+same reason -- it used to take nearest-first from "every loose plank within
+2.5 m of the table", which counted whatever had rolled under it.
+
+Measured: a log milled to 7 boards puts 7 on the pile, no two in a slot, the
+bottom course clear of the floor, the stack no wider than its course. An armful
+off it is **6 boards at 36.0 kg of the 40 kg budget** -- which is the "40 kg is
+six rough 2×4s" the carry comment has claimed since it was written, arrived at
+from the other end.
+
+**And a carried load stops at the wall.** Carried timber is kinematic and was
+parked at a fixed 1.6 m in front of the eye, which is exactly why it went
+through walls and into the ground: a kinematic body is one the solver has been
+told not to move. Put it down there and it is released *inside* the world,
+penetrating on every side, and the solver's way out is whichever side is
+shallowest -- often downward, which is the board falling through the floor.
+
+The arm shortens instead. Terrain by its own raycast, static boxes by a slab
+test **in each box's own frame**, so an oriented panel is tested as the box it
+is rather than the box that contains it. Measured at 0.950 m against a wall
+0.950 m away, and 1.600 m across an empty room. Releasing also refuses to put
+anything below the floor, and asks for that floor **at the eye**: you cannot be
+standing inside rock, so the surface under your feet is the one a thing put down
+in front of you lands on. Asked under the load it finds the hillside beneath the
+plinth, which is a correct answer to the wrong question.
+
+### 2026-08-30 (the walker was never grounded below sea level, so it slid down every hill)
+
+Standing perfectly still on a 28.8° slope, the player travelled **27.5 m in ten
+seconds** and reached 8.1 m/s. It also sometimes slid *uphill*, which is what
+put the measurement on the right thing: momentum that is never cleared can be
+turned any direction the ground turns it.
+
+`GroundBelow`'s last argument is the **initial best**, not a floor to search
+from, and it defaults to `0.0` -- so a surface is accepted only if it is above
+sea level. Over most of this map the terrain is not, so `found` came back false,
+`m_Grounded` was false, and the branch that zeroes horizontal velocity when you
+are standing still **never ran**. Nothing was wrong with the friction, the
+solver or the slope: the walker did not know it was on the ground.
+
+Same trap already in HANDOVER for `GroundHeightBelow`, which caught the panel
+placement earlier. One argument, in three places -- `FirstPersonController` and
+`VoxelTerrain` had the identical line.
+
+Over the same six seconds on the same slope: **27.46 m becomes 0.024 m**, 8.14
+m/s becomes 0.000, and `grounded` reads 1 throughout. What is left is a
+millimetre a second of downhill creep from the position correction pushing along
+the contact normal -- 7 cm in a minute of standing perfectly still.
+
+Worth recording: **the slope limit here is emergent, not written.** Being
+grounded needs the ground within 0.25 m of the feet, and a capsule resting on a
+slope of θ sits `r(1/cos θ − 1)` above the surface directly below it — 0.049 m
+at 29°, measured 0.041. That reaches 0.25 m at about **54°**, which is where
+standing stops working.
+
+### 2026-08-30 (the prefab editor moves to the crafting table, with an outline and prompts)
+
+**A menu the character opens, not a panel the developer reads.** The editor was
+first in the demo's docked column, between the terrain sliders and the profiler,
+which made designing a floor panel something you did in the *tool* rather than
+in the workshop. Same widgets; what changed is that it belongs to the bench.
+Walk up to the crafting table, press `Q`, and it opens over the view in its own
+styling; walk away and it closes behind you.
+
+`C` and `B` stay keys, and that is not laziness. Input is polled per fixed step
+and goes into the recording; an ImGui click does neither, so a session that
+built something from a button could never play itself back. What the editor
+*draws* is safe either way, because the design is registered parameters -- the
+plan replays whatever the mouse did to it, and only the moment of committing it
+has to be a key.
+
+**An outline where the panel will land.** Placing one was guesswork: press `B`
+and find out. `PanelStance` is the placement, factored out, so the outline is
+not a prediction of where the panel will go -- it *is* where it will go, drawn a
+moment early. Twelve bars round the box in the panel's own frame, each
+overshooting by its own thickness so the corners close, and lit flat rather than
+shaded: a mark on the view that goes dark on the shaded side of a hill is a mark
+you cannot follow.
+
+**And prompts**, because this demo has nine keys and they were all in a
+paragraph of grey text in the developer panel -- a place a player never looks.
+One line at the foot of the view, and nothing when there is nothing to say.
+
+### 2026-08-30 (the prefab editor becomes an editor, and the bill becomes bin packing)
+
+The first version was two sliders -- boards across, boards along -- which makes
+a rectangle and nothing else. That is a **configurator**: a floor and a wall
+were two settings of one object and there was no third thing you could
+describe. The crafting table has a plan view now. The grid is one board wide a
+cell (100 mm), left button lays a piece cut to whatever length you asked for,
+right button lifts one, and the two courses -- the face and the ledgers under
+it -- are edited one at a time, because there is no way to click on something
+underneath something else.
+
+**The bill stopped being a multiplication and became a cutting-stock problem.**
+What a design costs is how few 2.4 m boards its pieces can be got out of, which
+is bin packing -- solved first-fit-decreasing, longest piece into the first
+board it fits, which is within 11/9 of optimal and is what a person at a saw
+bench does anyway.
+
+That gives the check worth having. The old formula and the packer share no
+arithmetic, and they agree on all three designs the old one could express:
+
+| design | old formula | packed | why |
+| --- | --- | --- | --- |
+| 24 x 1 floor | 26 | **26** | every piece a full board |
+| 20 x 1 wall | 22 | **22** | two 2.0 m ledgers, one board each |
+| 8 x 2 | 18 | **18** | three 0.8 m ledgers out of one board |
+
+Agreeing three times by different means is evidence; re-deriving the same
+multiplication would only have proved it was copied twice. Thirty-one checks in
+all, including that the bill can never come in under `total length / 2.4 m`
+over forty random designs -- a packer that beat that bound would be creating
+timber -- and a T-shaped prefab, a 2.4 m bar with a 1.2 m stem, which is 12
+pieces, 2.40 x 1.60 m, 40 kg, seven boards and 0.80 m of offcut, and which the
+old editor could not have described at all.
+
+**The design is registered piece by piece, and that is why pieces are capped.**
+What the editor draws reaches the simulation -- it decides what `C` consumes
+and what `B` puts in the world -- so it has to be in the recording, and
+`ReplayParams` takes fixed pointers to plain values. One integer a piece, and
+the packed code *is* the stored form rather than a copy of one, so there is no
+second representation to fall out of step. Sixty-four registered slots sounds
+expensive and is not: the recorder only writes parameters that **changed**, and
+a design sits still except in the moment a piece goes down.
+
+Two real faults, both found by the numbers rather than by looking:
+
+- **A packed field one bit too narrow does not fail, it forgets.** `Length` had
+  five bits, which holds 0 to 31. A 32-cell piece masked to 0, decoded as an
+  empty slot, and vanished without a word -- the design simply had one fewer
+  piece than it was given. Six bits now, and the round-trip test covers every
+  length the grid allows rather than only up to a board.
+
+- **A piece longer than a board was billed as one board.** Clamping the length
+  charged 2.4 m for a 3.2 m ledger, which made wide designs quietly cheaper
+  than they are. It is scarfed from two now: a full board and a 0.8 m offcut,
+  and two of them cost three boards rather than two.
+
+The editor also moved to the top of the panel and into its own section. It had
+been at the bottom of "Dev tools" behind four other subsystems, in a docked
+column about 430 px high -- below the fold, and might as well not have been
+there. The bill sits above the plan view for the same reason: the pane is
+shorter than both, the numbers are what you check while drawing, so the drawing
+is what scrolls.
+
+### 2026-08-30 (an armful, measured in kilograms so strength has somewhere to land)
+
+One board at a time was honest and unusable: a 26-board floor panel is 26 walks
+across the shed. `R` takes an **armful** now -- whatever you are looking at, plus
+every piece of the same kind within 1.6 m of it that still fits.
+
+**Capacity is a mass, not a number of items**, and that is the whole point. When
+characters have attributes, strength needs somewhere to land; a kilogram budget
+is somewhere it can land without anything else being told, since the armful, the
+pace penalty and the panel readout all follow from `s_Strength`. A count would
+have had to be re-derived per item type by hand.
+
+Forty kilograms at strength 1. A rough 2x4 is 2.4 x 0.10 x 0.05 m of pine at
+500 kg/m^3 = **6.00 kg**, so an armful is six of them and not seven -- 36 kg
+fits, 42 does not.
+
+**A log is over the budget and is carried anyway.** pi r^2 L x 500 makes a 2.5 m
+log **113.5 kg**, which is a two-person lift in real life; refusing it would
+take away something that already worked, and a struggle reads better than a
+refusal. So the first piece is always allowed and the excess costs pace instead:
+113.5 kg on a 40 kg budget walks at **55 %**. That is the second thing the
+strength attribute will pull on, and it is applied where the velocity is
+computed rather than to `m_WalkSpeed` -- which is a registered parameter, so
+writing to it would put the weight of whatever you were holding into every
+recording.
+
+Fifteen checks, all passing, including the one worth having: **the carry list
+survives its own boards being eaten.** `RemoveLoose` moves the last loose entry
+into the freed slot, so an index held anywhere else has to move with it --
+crafting a 26-board panel while holding an armful is exactly that case, and the
+test confirms the held indices still point at the same two bodies afterwards.
+
+Also: the armful is carried 0.62 m below the eye rather than 0.35 m. Six boards
+stack 0.32 m, and the old height put the top one straight across the middle of
+the screen.
+
+### 2026-08-30 (a panel is boards on ledgers, and the bill of materials is arithmetic)
+
+The end of the pipeline: boards carried to the crafting table in the shed
+become panels, and a panel can be put down in the world and stood on.
+
+**A design is a rectangle measured in boards** -- `Across` of them edge to edge,
+`Courses` of them end to end. Lay that rectangle down and it is a floor; stand
+it on edge and it is a wall. That is one design type and not two, and it is why
+`Upright` is a rotation in `PanelFrame` rather than a second kind of object.
+
+What makes it a panel rather than a pile is the **ledgers**, two across the back
+of every course. They are boards too, cut to the panel's width -- so a narrow
+panel gets several of them out of one board while a wide one needs a whole board
+for each, and the bill depends on the shape. That is the whole reason to compute the bill
+instead of naming a number:
+
+| design | face | ledgers | boards | panel |
+| --- | --- | --- | --- | --- |
+| floor, 24 across x 1 | 24 | 2 x 2.4 m, 1 a board | **26** | 2.4 x 2.4 m, 156 kg |
+| wall, 20 across x 1 | 20 | 2 x 2.0 m, 1 a board | **22** | 2.4 x 2.0 m, 130 kg |
+| 8 across x 2 | 16 | 4 x 0.8 m, 3 a board | **18** | 4.8 x 0.8 m, 104 kg |
+
+Twenty-six boards is two and a half logs is most of a tree, which is the figure
+the whole pipeline was for. Twenty-two checks, all passing, against arithmetic
+done by hand: a board is 0.012 m^3 and pine is 500 kg/m^3, so a board is 6.00 kg
+and the 22-board wall weighs 130 kg rather than 132 -- the 2 kg difference is
+0.4 m of offcut off each of two ledgers, and the panel weighing *less* than the
+wood it cost is the check that the offcut is real.
+
+The rest is placement. `C` at the table builds the design, `B` puts it down
+three metres in front of you, square to the view and resting on the ground.
+Verified: a floor panel's underside sits exactly on the shed floor, it is two
+boards thick (100 mm), and `GroundBelow` from above it returns its top face --
+so it is something to stand on and not scenery. A wall's foot is on the terrain
+it was placed on and it stands 2.0 m.
+
+**Boards are drawn one at a time and each is a slightly different brown.** In
+one colour a panel is a single pale slab: the boards are butted, there is no gap
+to cast a shadow, and nothing tells one from the next -- so the object whose
+entire cost is a board count showed no boards. Sawn timber does vary board to
+board, which makes the variation the honest fix rather than a fake gap.
+
+Three things this turned up:
+
+- **Removing one loose item has to keep the pool indexed by position.**
+  `AddLoose` hands out `m_LoosePool[m_Loose.size()]`, so erasing an entry would
+  give the next thing added a body another entry was still using. The last
+  entry's contents move into the freed slot instead, and the test checks
+  `m_Loose[i].Body == m_LoosePool[i]` for every i afterwards -- a pairing that
+  would otherwise only show up as two objects moving as one.
+
+- **A registered parameter is a raw pointer held for the life of the demo.** The
+  design being edited is a member and the saved designs are a vector, not the
+  other way round: registering `&m_Designs[0].Across` would dangle the first
+  time somebody saved a seventh design. `C` is a key rather than a button in the
+  panel for the related reason -- a click is not recorded, so a session that
+  built something from a button could never replay itself.
+
+- **A panel placed in the shed hung in the sky over the map.** Everything else
+  in the shed is drawn only while you are in it; panels were drawn in every
+  pass. They carry which room they are in now.
+
+And one measurement that was wrong twice before the code was. A wall photographed
+outdoors read (21, 23, 21) at *every* time of day while the ground went from 18
+to 89 -- a constant across a fivefold change in light, which is the shape of a
+bug. It was not one: the sun's azimuth is fixed here with a +z bias, so a face
+pointing the other way is in shade all day, and the daytime sky colour barely
+moves. The panel had been placed square to a camera heading left over from
+indoors. Earlier in the same test `GroundHeightBelow`'s last argument was read as
+a floor to search *from* when it is the initial best -- passing 0.0 rejected
+every surface below sea level, and that ground is 17 m under it.
+
+### 2026-08-30 (a tree becomes logs, a log becomes boards, and nothing is spawned)
+
+The question was whether the floating planks are 2x4s. They are -- **38 x 89 mm,
+which is the *dressed* size** of a nominal 2x4, and dressed is why they look
+thin. Rough off the saw a 2x4 is a full 50 x 100 mm, so that is what the mill
+now cuts, and the difference is visible standing next to both.
+
+Between the standing tree and the plank there are now three steps and each is
+work:
+
+- **Felling** was already there: the axe cuts where the line says it will.
+- **Bucking.** Swing at a felled crown and it is cut into 2.5 m logs along its
+  own axis. How many is how long the tree was, so a big tree is worth more than
+  a small one without any rule saying so.
+- **Milling.** Carry a log to the saw bench in the shed and `T` rips it into
+  boards.
+
+`R` picks a log or a board up and puts it down again -- one slot, because the
+other hand is holding the axe. A carried thing is kinematic and parked in front
+of the eye, so it neither falls nor shoves you downhill while you walk. A
+stockpile is simply wherever you carried them to.
+
+**The yield is arithmetic, not a number someone picked.** A log is
+`pi r^2 L` = pi x 0.17^2 x 2.5 = **0.226980 m^3**. A rough-sawn board is
+2.4 x 0.05 x 0.10 = **0.012 m^3**. A small mill recovers about **60 %** by
+volume -- the slabs off the round, the edgings, and 4 mm of kerf on every cut
+are all sawdust and firewood. So:
+
+    0.60 x 0.226980 / 0.012 = 11.35  ->  eleven boards
+
+Verified against that arithmetic rather than against the code's own copy of it,
+with the pipeline driven from a temporary test so nobody had to hold the keys:
+
+| | measured | expected |
+| --- | --- | --- |
+| logs from an 8.30 m crown | 3 | floor(8.30 / 2.50) = 3 |
+| boards from one log | 11 | 11 |
+| log volume | 0.226980 m^3 | pi r^2 L |
+| board volume | 0.012000 m^3 | 50 x 100 x 2400 mm |
+| realised recovery | 0.5816 | <= 0.60, and 11 x 0.012 / 0.226980 |
+| pine in water | 0.500 | 500 / 1000, half submerged |
+
+Nine checks, nine passed -- but only after the *measurement* was fixed twice.
+The first run said **twelve** boards and a 63 % recovery, which would have meant
+the mill created wood. It had not: `MillLog` turns the carried log's own body
+into the first board, so that one is already inside the change in the plank
+count, and the test added it again. The second was `m_Fell[0]` on a pool that is
+filled lazily when the first tree actually falls, so it was empty and the run
+died silently between two log lines.
+
+**A log is a cylinder in a square collider.** The collider, the mass and the
+displaced volume are all the box; a `Fill` of `pi/4` on the `Loose` entry is
+what makes each of them a cylinder's instead. Same trick the buoyancy sampler
+already used, now doing something.
+
+Two other things fell out of building it. The `Loose` bodies are drawn from a
+**pool of 200** now: they used to be appended to the physics world, and since a
+body can be rewritten but not removed, every press of "Reset the water" doubled
+them. And the boards come off the bench and slide onto the shed floor, because
+the bench is drawn and not a collider -- which looks right and was not planned.
+
+### 2026-08-29 (digging a hole stops rearranging the county)
+
+Reported: digging seems to re-run the terrain generation -- things shift well
+outside the dig radius, and rocks appear in the hole. Both are real, and they
+are two different faults with one measurement between them.
+
+**The scatter was keyed to the triangle's index.** Grass, trees and boulders are
+all placed by walking the terrain's triangles and hashing on the triangle's
+position *in the list*. Marching cubes emits triangles in lattice order, so
+removing a few near the start renumbers every triangle after them -- and the
+whole chunk reseeds. Measured, for one 2 m dig that changed fourteen voxels:
+
+| | before | after |
+| --- | --- | --- |
+| instances moved or gone | 6 | **0** |
+| nearest one, from the dig | 4.25 m | -- |
+| farthest | 12.9 m | -- |
+
+Hashing the triangle's own *position* instead makes the scatter a property of
+the ground. Ground that did not change gets the same triangles in the same
+places and so the same seed, whatever happened elsewhere in the chunk.
+
+**And the placement rules were reading the mesh rather than the landscape.** A
+boulder goes where the slope is too steep to hold soil -- and the wall of a hole
+two metres across is exactly that, so every dig sprouted an outcrop round its
+rim. Three of them, at 1.9 to 2.4 m from the centre. The slope now comes from
+the height field's own gradient, which says where the crags are and which no
+amount of digging changes. The mesh's normal is still what a stone is *bedded*
+against; it is only the rule that comes from the landscape.
+
+Surface scatter also asks whether it is on the surface at all, at the instance's
+own position rather than at its triangle's centre -- a big triangle on the rim
+of a hole can have its centre above the ground and its corners well under.
+
+With both in, a **6 m** dig on top of a boulder field:
+
+| | |
+| --- | --- |
+| moved or gone | 3, at 0.03 to 4.71 m -- all inside the hole |
+| appeared | 1, at 5.95 m -- on the rim |
+| anything beyond the hole | untouched |
+
+Which is the behaviour asked for: what you dug away goes, what you exposed can
+grow something, and nothing you did not touch moves.
+
+### 2026-08-29 (buoyancy that has a shape, and planks that capsize when they should)
+
+There are five 2x4s floating in the lake and twelve concrete blocks on the
+shore. `G` puts one where you are looking. The point of them is the thing the
+old buoyancy could not do.
+
+**Archimedes gives the force; it does not give the moment.** A force applied
+through the centre of mass has no moment about the centre of mass, whatever the
+shape is doing, so the old model could get the *draft* of anything right and the
+*attitude* of nothing. What produces the moment is that the displaced volume is
+not centred on the body: heel a plank and more of one side goes under, the
+centre of buoyancy shifts that way, and the upward force through the new
+centroid is a couple. That is metacentric stability, and it is a property of the
+*shape* of the submerged part rather than of its size.
+
+So the submerged volume is sampled -- a 4x4x4 lattice through each body, each
+cell carrying its share of the volume, asking how much of *itself* is under the
+surface and pushing up there. The share is a smooth fraction rather than
+in-or-out; a 38 mm plank three cells thick would otherwise float in visible
+steps.
+
+**Real timber, because the numbers are the point.** A 2x4 is 38 x 89 mm; at
+2.4 m that is 8.117 litres, so pine at 500 kg/m^3 makes it 4.058 kg with 4.058 kg
+of reserve. Each block is a 70 mm cube of concrete at 2400, which is 823 g.
+
+Everything below follows from those sizes and appears nowhere in the code, which
+is the whole reason it is worth measuring. `GM = KB + BM - KG`, with
+`BM = I/displacement` and `I = L w^3 / 12` the second moment of the waterplane:
+
+| blocks | GM predicted | draft predicted | draft measured | roll | still aboard |
+| --- | --- | --- | --- | --- | --- |
+| 0 | +25.2 mm | 0.000 mm | 0.074 mm | -0.01 deg | -- |
+| 1 | +12.2 mm | 3.854 mm | **3.852 mm** | -0.18 deg | 1 |
+| 2 | +3.5 mm | 7.708 mm | 7.969 mm | +2.20 deg | 2 |
+| 3 | **-2.6 mm** | -- | capsized | -- | **0** |
+| 4 | **-6.8 mm** | -- | capsized | -- | **0** |
+| 5 | sinks: 8.174 kg against 8.117 kg of displacement | -- | -- | -- | 0 |
+
+**The sign change in GM falls exactly where the plank stops keeping its load.**
+Nothing in the demo computes a metacentric height; it has densities and a
+lattice, and the stability is whatever comes out of the two. One block is right
+to three microns. Two is 0.26 mm out and sitting over at 2.2 degrees, which is
+what a GM of three and a half millimetres looks like -- marginal, and heeled.
+
+And where the load goes matters as much as how much it is. One block a metre off
+centre trims the plank by a measured **0.475 degrees** against
+`m g d / (rho g I)` = **0.460**, with the draft unchanged, as it must be, because
+moving a load does not change what it displaces.
+
+**Four substeps, because a 2x4 is 38 mm thick.** A discrete solver moves a body
+`v dt` between collision tests, and a block settling at a metre and a half a
+second covers 25 mm in a sixtieth -- comparable with the plank it is meant to
+land on. The blocks went straight through: four sat correctly for a moment and
+were three metres below two seconds later. There is no continuous collision here
+and no speculative contact, so the honest fix is a shorter step, and buoyancy is
+applied inside the loop because a force belongs to the step it acts over.
+
+That is not what was making three blocks fall off, though -- **three blocks
+genuinely capsize the plank**, and the substepping is what let the difference
+between the two failures be seen at all.
+
+Cost: 8.79 s against 8.43 s over 400 frames, which is 0.9 ms a frame for four
+times the physics and a 64-sample lattice on every floating body. Captures are
+still bit-reproducible.
+
+### 2026-08-29 (an axe, and a cut where the axe landed)
+
+There is an axe on the wall of the toolshed. `F` at the rack takes it or hangs
+it back; left mouse swings it; a line round the trunk says where the stroke will
+land. **The cut is a place, not an event** -- a tree cut high leaves a tall
+stump and a tree cut low leaves a low one, because what a stroke does is take a
+wedge out of the trunk at the height it hit, and the tree comes down when the
+wedge is through. The same shape of idea as breaking a rock in the open-world
+demo: damage where it landed, rather than a felling animation.
+
+**No mesh is rebuilt and nothing is pre-authored.** The cut is three numbers in
+the tree's own frame -- a height on its axis, the direction the axe is going in,
+how far through it is -- and the fragments inside that wedge are discarded. A
+severed tree is the *same mesh drawn twice*: the stump keeps everything below
+the cut, and the top keeps everything above it and rides a rigid body down.
+
+Checked against the geometry rather than against itself. The camera stood
+1.99 m out and 1.81 m above the base of a trunk of radius 0.1615 m, looking down
+12 degrees; solving the ray against the aim cylinder by hand puts the strike at
+**1.3978721 m** up the trunk, and the stump came out at **1.3978717 m** -- four
+ten-thousandths of a millimetre. Six strokes felled it, against `2r/bite` =
+2 x 0.1615 / 0.055 = 5.87, so six.
+
+Four things went wrong and three of them are about geometry nobody was thinking
+about.
+
+**The aim line ran along the foliage as well as the trunk.** It painted a bright
+band right across a canopy thirty metres off, which looked exactly like the line
+leaking onto other trees. It was not: it was on the right tree, and this habit's
+leaf clusters hang down to **1.015 m** off the ground and out to **six metres**
+sideways, so they really are at chest height. The notch had the same reach and
+was quietly taking a disc out of the leaves at the same time. Both are limited
+to the trunk now.
+
+**A cut trunk is an open tube.** Take a wedge out of one side and the far wall's
+*inside* is what faces you -- with back-face culling on there is nothing there
+and you see through the tree. Cut trees are drawn two-sided, the normal flips on
+back faces, and the exposed face is sapwood rather than bark, which is the whole
+point of having cut into it.
+
+**A box round the canopy left the felled top four metres in the air.** Its
+half-extents have to cover the crown, so a wide top rests on a cube four metres
+across and the tree floats on a collider nothing can see. A felled tree is a
+long cylinder that happens to have twigs on it, and the twigs are not what it
+lies on -- so it is a capsule along the trunk.
+
+**And then it rolled.** Fourteen metres downhill, still doing six metres a
+second ten seconds later. Turning up the angular damping does not fix that, and
+the reason is worth keeping: **viscous damping gives a terminal speed, not a
+stop.** Against gravity on a slope it settles wherever the two balance and stays
+there, and raising it far enough to look stopped makes the tree fall as though
+through treacle.
+
+What stops a real log is rolling resistance, which is **Coulomb, not viscous**:
+the ground deforms under the load, the contact patch sits ahead of the axis, and
+the couple that results is set by the *weight* rather than by the speed --
+`torque = mu_r N R`, with mu_r near a quarter for timber on soil against a
+hundredth for a tyre on tarmac. That is why a log does not roll away and a wheel
+does, and it gives a prediction: a cylinder rolls only where the slope exceeds
+`atan(mu_r)`, about 14 degrees.
+
+Measured: the top now stops **3.17 m** from the stump -- about right for a
+6.6 m trunk toppling -- and is bit-identical at ticks 400, 700 and 1150, on
+ground of slope **0.087** against the 0.25 the model says it would still be
+rolling above.
+
+Cuts are lost when a chunk is remeshed, which digging under a wood does. Honest
+for a lab and not for a game.
+
+### 2026-08-29 (the doorway's near plane, and boulders drawn inside out)
+
+**Every boulder was mirrored.** The frame each one comes to rest in was built
+as `mat3(east, up, north)` with `north = cross(up, east)`, which is
+*left*-handed -- so the transform had determinant -1, every triangle's winding
+was reversed, and back-face culling showed you the inside of the rock. Measured
+-1.0000 at every spin angle. The third column has to be `cross(X, Y)`.
+
+From a distance a rock is a rock either way, which is why this survived a
+capture and a set of numbers; up close you are standing inside it looking at the
+far wall. The check that settles it is that **back-face culling should make no
+difference at all**: with the winding corrected the frame is byte-identical to
+one rendered with culling disabled, and with the old winding 4066 pixels differ.
+
+`Grass.h` builds `east` and `north` the same way and is fine -- it only uses
+them as offset directions. Handedness starts mattering the moment they become
+the columns of a transform.
+
+**And the portal drew things that were between the second camera and the
+doorway.** Plant it in front of a boulder, walk through, look back from inside
+the shed, and the boulder is in the doorway blocking a view it cannot possibly
+be in. The second camera was an ordinary camera standing a couple of metres
+behind the door, so it drew everything an ordinary camera there would.
+
+This is a known problem with a known answer, and the answer is not to sort or to
+cull: **move the near plane off the axis so it lies exactly in the plane of the
+doorway**, and let the hardware clip against it as against any near plane. The
+projection matrix that does it is Eric Lengyel's oblique frustum, from *Oblique
+View Frustum Depth Projection and Clipping* (Journal of Game Development 1(2),
+2005) -- the standard construction, and what every portal renderer since Portal
+has used.
+
+The trick is that a projection matrix's third row *is* its near plane up to a
+scale, because a vertex survives clipping when `z_clip > -w_clip` and both come
+out of rows two and three. Replace row two with the plane you want, scaled so
+the opposite corner of the frustum still lands at w, and you have a frustum with
+that plane as its near plane and the four sides and the far plane untouched. The
+cost is that depth precision now varies across the frame, which is the accepted
+price and has not been visible here.
+
+With a boulder planted between the far camera and the doorway: **21811 pixels of
+it visible before, 0 after.**
+
+`Camera::SetProjectionMatrix` is the one engine change -- no combination of
+field of view, aspect and clip distances can describe an oblique frustum, so
+there had to be a way to hand one over. Set it last; setting the lens overwrites
+it.
+
+**`./egss.py sanitize` had not run since some earlier edit**: `unexpected_exit`
+was assigned at the bottom of the sweep's loop and read at the top, so the first
+demo raised `UnboundLocalError`, and the traceback goes to stdout with an exit
+code of zero -- so from outside it looked like a sweep that passed quietly. It
+runs now: **17 demos, 0 sanitizer reports.**
+
 ### 2026-08-29 (a big tree is not a small tree made bigger)
 
 Every tree was one mesh per habit with a uniform scale on it, which says a

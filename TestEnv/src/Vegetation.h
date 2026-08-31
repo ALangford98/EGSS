@@ -37,6 +37,37 @@ namespace Veg {
 		return (float)(Hash2D(x, y, seed) & 0xFFFFFF) / (float)0xFFFFFF;
 	}
 
+	// **A seed for scattered things, keyed to the ground rather than to the
+	// triangle list.**
+	//
+	// Everything scattered here -- grass, trees, boulders -- is placed by
+	// walking the terrain's triangles and hashing on the triangle's *index*.
+	// That is fine until the terrain is edited, and then it is badly wrong:
+	// marching cubes emits triangles in lattice order, so removing a few near
+	// the start renumbers every triangle after them, and the whole chunk
+	// reseeds. Measured, for one 2 m dig that changed fourteen voxels: six
+	// trees and boulders moved, the nearest **4.25 m** from the hole and the
+	// farthest **12.9 m**, and two appeared out of nothing.
+	//
+	// Hashing the triangle's own position instead makes the scatter a property
+	// of the ground. Ground that did not change gets the same triangles at the
+	// same places and so the same seed, whatever happened elsewhere in the
+	// chunk, and only what was actually dug can move.
+	//
+	// The quantisation has to be fine enough that two distinct triangles do
+	// not share a cell and coarse enough that floating-point noise in the
+	// mesher cannot straddle one. A centimetre and a half against half-metre
+	// triangles is comfortably both.
+	inline int ScatterKey(float x, float y, float z)
+	{
+		int cx = (int)std::floor(x * 64.0f);
+		int cy = (int)std::floor(y * 64.0f);
+		int cz = (int)std::floor(z * 64.0f);
+
+		return (int)Hash2D(cx, Hash2D(cy, cz, 0x9E3779B9u) & 0x7FFFFFF,
+			0x85EBCA6Bu);
+	}
+
 	// The ratios are the whole model. Length and radius shrinking by a
 	// constant factor per generation is what makes the thing read as a tree
 	// rather than as a bundle of sticks, and it also means the result has

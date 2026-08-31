@@ -260,7 +260,13 @@ public:
 
 		float ground = 0.0f;
 		glm::vec3 normal(0.0f, 1.0f, 0.0f);
-		bool found = world.GroundBelow(body.Position, ground, normal, handle);
+		// **The last argument is the initial best, not a floor to search
+		// from**, and it defaults to zero. Left out, every surface below
+		// y = 0 is rejected and the character is never grounded on low ground
+		// -- so nothing stops its horizontal velocity and it slides down every
+		// hill. Found in the terrain lab, which is not the only user of this.
+		bool found = world.GroundBelow(body.Position, ground, normal, handle,
+			-1000.0f);
 
 		bool grounded = found && (feet - ground) < Cfg.GroundedTolerance;
 
