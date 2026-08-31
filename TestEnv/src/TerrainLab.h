@@ -32,7 +32,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <cstring>
+#include <fstream>
 #include <map>
+#include <sstream>
 
 #include "Demo.h"
 #include "Grass.h"
@@ -136,8 +138,6 @@ public:
 		// middle cell is the bottom of the lake and opens you underwater.
 		// From the rim you are looking across it.
 		GoTo(spawn);
-
-
 	}
 
 private:
@@ -4225,6 +4225,86 @@ private:
 		return 0.5f * PanelSize(plan);
 	}
 
+	// **One piece's box in its design's own grid space.**
+	//
+	// Metres from the grid origin, not from the design's centre: the centring
+	// is a property of a *placed panel*, not of the piece. The editor wants
+	// the raw grid so a click can be turned back into a cell; the world wants
+	// it centred so a panel lands where you were looking. Both want the same
+	// box, and this is it.
+	//
+	// `mesh` is the same box quoted in the *mesh's* axes rather than the
+	// world's. The log cylinder runs along its local x and a cube does not
+	// care, so one rotation serves every stock and the scale follows it.
+	void PartFrame(const Part& part, glm::vec3& at, glm::vec3& half,
+		glm::quat& turn, glm::vec3& mesh) const
+	{
+		glm::ivec3 span = PartSize(part);
+
+		half = glm::vec3(0.5f * (float)span.x * Cell(),
+			0.5f * (float)span.y * LayerHeight(),
+			0.5f * (float)span.z * Cell());
+
+		at = glm::vec3((float)part.X * Cell() + half.x,
+			(float)part.Layer * LayerHeight() + half.y,
+			(float)part.Z * Cell() + half.z);
+
+		turn = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+		mesh = half;
+
+		if (part.Axis == Run::AlongZ)
+		{
+			turn = glm::angleAxis(glm::half_pi<float>(),
+				glm::vec3(0.0f, 1.0f, 0.0f));
+
+			mesh = glm::vec3(half.z, half.y, half.x);
+		}
+		else if (part.Axis == Run::Upright)
+		{
+			turn = glm::angleAxis(glm::half_pi<float>(),
+				glm::vec3(0.0f, 0.0f, 1.0f));
+
+			mesh = glm::vec3(half.y, half.x, half.z);
+		}
+	}
+
+	// Where a design's grid origin sits relative to the panel's own centre.
+	// A placed panel is centred on its bounding box so it lands where you were
+	// looking rather than offset by wherever on the grid it was drawn.
+	glm::vec3 GridOffset(const Design& plan) const
+	{
+		glm::ivec3 low, high;
+		DesignBounds(plan, low, high);
+
+		glm::vec3 size = PanelSize(plan);
+
+		return glm::vec3((float)low.x * Cell(), (float)low.y * LayerHeight(),
+			(float)low.z * Cell()) + 0.5f * size;
+	}
+
+	// The colour a piece is drawn in, so the editor and the world agree.
+	glm::vec3 PartColour(const Part& part) const
+	{
+		// **Every piece a slightly different brown.** In one colour the
+		// assembly is a single pale slab: the pieces are butted, there is no
+		// gap to cast a shadow, and nothing tells one from the next -- so the
+		// object whose entire cost is a board count showed no boards. Sawn
+		// timber does vary piece to piece, which makes the variation the
+		// honest fix rather than a fake gap.
+		float tone = 0.86f + 0.28f * Veg::Hash2DUnit(part.X + part.Layer * 7,
+			part.Z * 2 + (int)part.Axis, 0x9E3779B9u);
+
+		glm::vec3 base = part.Kind == Stock::Stone
+			? glm::vec3(0.47f, 0.46f, 0.44f)
+			: part.Kind == Stock::Log
+				? glm::vec3(0.46f, 0.34f, 0.21f)
+				: part.Layer & 1
+					? glm::vec3(0.66f, 0.51f, 0.32f)
+					: glm::vec3(0.52f, 0.39f, 0.24f);
+
+		return base * tone;
+	}
+
 	// The wood in one piece. A log is round in the two axes across its run, so
 	// it fills pi/4 of the box it is quoted in -- the same factor the loose
 	// logs float at.
@@ -4508,7 +4588,7 @@ private:
 
 	void MakeKit()
 	{
-		m_Designs.clear();
+		m_Kit.clear();
 
 		auto named = [](const char* name)
 		{
@@ -4619,26 +4699,162 @@ private:
 			AddPart(pillar, post);
 		}
 
-		m_Designs.push_back(floorPanel);
-		m_Designs.push_back(wallPanel);
-		m_Designs.push_back(logWall("Log wall", s_BayCells, s_WallLogs));
-		m_Designs.push_back(logWall("Log wall, door", 29, s_DoorLogs));
-		m_Designs.push_back(plate);
-		m_Designs.push_back(pillar);
-		m_Designs.push_back(deck("Deck bay", s_BayCells));
-		m_Designs.push_back(footing);
-		m_Designs.push_back(pier);
+		m_Kit.push_back(floorPanel);
+		m_Kit.push_back(wallPanel);
+		m_Kit.push_back(logWall("Log wall", s_BayCells, s_WallLogs));
+		m_Kit.push_back(logWall("Log wall, door", 29, s_DoorLogs));
+		m_Kit.push_back(plate);
+		m_Kit.push_back(pillar);
+		m_Kit.push_back(deck("Deck bay", s_BayCells));
+		m_Kit.push_back(footing);
+		m_Kit.push_back(pier);
+
+		// **The kit is not the list you edit.** Importing a file replaces the
+		// saved designs, and the workshop is raised from *named* pieces of the
+		// kit -- so if the two were one list, importing somebody else's
+		// prefabs would knock the building down the next time the terrain was
+		// regenerated.
+		m_Designs = m_Kit;
 	}
 
 	// The kit by name, so the shed's assembly reads as a bill rather than as
 	// a set of indices nobody can check.
 	const Design& KitPart(const char* name) const
 	{
-		for (const Design& plan : m_Designs)
+		for (const Design& plan : m_Kit)
 			if (std::strcmp(plan.Name, name) == 0)
 				return plan;
 
-		return m_Designs[0];
+		return m_Kit[0];
+	}
+
+	// --- Designs on disk ------------------------------------------------------
+	//
+	// **A design is a list of integers, and a text file is exactly what a list
+	// of integers is good at.**
+	//
+	// The packed code *is* the design -- the same integer the recorder stores
+	// -- so there is nothing to serialise and nothing that can drift out of
+	// step with the thing it describes. One line a design: the upright flag,
+	// the codes, then the name, which goes last because it is the only field
+	// that can contain a space.
+	//
+	// The first line carries a version and the piece count. If the packing
+	// changes shape -- it has once already, when a piece gained a course, an
+	// axis and a stock -- a file written by the old one has to be refused
+	// rather than read as nonsense, because a stale code does not decode as an
+	// error. It decodes as a *plausible piece somewhere else*.
+	static constexpr int s_PrefabVersion = 2;
+
+	static const char* PrefabPath() { return "prefabs.txt"; }
+
+	bool ExportDesigns()
+	{
+		std::ofstream out(PrefabPath());
+
+		if (!out)
+		{
+			m_PrefabSaid = "could not write " + std::string(PrefabPath());
+			return false;
+		}
+
+		out << "egss-prefabs " << s_PrefabVersion << " " << s_MaxParts << "\n";
+
+		for (const Design& plan : m_Designs)
+		{
+			out << "design " << (plan.Upright ? 1 : 0);
+
+			for (int i = 0; i < s_MaxParts; i++)
+				out << ' ' << plan.Code[i];
+
+			out << ' ' << plan.Name << "\n";
+		}
+
+		m_PrefabSaid = "wrote " + std::to_string(m_Designs.size())
+			+ " designs to " + PrefabPath();
+
+		return true;
+	}
+
+	bool ImportDesigns()
+	{
+		std::ifstream in(PrefabPath());
+
+		if (!in)
+		{
+			m_PrefabSaid = "no " + std::string(PrefabPath()) + " to read";
+			return false;
+		}
+
+		std::string tag;
+		int version = 0, parts = 0;
+
+		in >> tag >> version >> parts;
+
+		if (tag != "egss-prefabs" || version != s_PrefabVersion
+			|| parts != s_MaxParts)
+		{
+			m_PrefabSaid = "that file is version " + std::to_string(version)
+				+ "; this build reads " + std::to_string(s_PrefabVersion);
+
+			return false;
+		}
+
+		std::vector<Design> read;
+		std::string line;
+
+		std::getline(in, line);
+
+		while (std::getline(in, line) && (int)read.size() < s_MaxDesigns)
+		{
+			std::istringstream fields(line);
+
+			std::string kind;
+			int upright = 0;
+
+			if (!(fields >> kind >> upright) || kind != "design")
+				continue;
+
+			Design plan;
+			plan.Upright = upright != 0;
+
+			bool whole = true;
+
+			for (int i = 0; i < s_MaxParts; i++)
+				if (!(fields >> plan.Code[i]))
+					whole = false;
+
+			if (!whole)
+				continue;
+
+			// Whatever is left of the line, less the space the codes left
+			// behind. A name can hold spaces, which is why it is last.
+			std::string name;
+			std::getline(fields, name);
+
+			size_t from = name.find_first_not_of(' ');
+
+			if (from != std::string::npos)
+				std::strncpy(plan.Name, name.c_str() + from,
+					sizeof(plan.Name) - 1);
+
+			plan.Name[sizeof(plan.Name) - 1] = 0;
+
+			read.push_back(plan);
+		}
+
+		if (read.empty())
+		{
+			m_PrefabSaid = "nothing readable in " + std::string(PrefabPath());
+			return false;
+		}
+
+		m_Designs = read;
+
+		m_PrefabSaid = "read " + std::to_string(m_Designs.size())
+			+ " designs from " + PrefabPath();
+
+		return true;
 	}
 
 	// **How many boards are on the pile beside the table.**
@@ -4993,6 +5209,60 @@ private:
 
 	void DrawBench();
 	void DrawHud();
+
+	// --- The bench's own view -------------------------------------------------
+	//
+	// **A plan view could not say what a design was.**
+	//
+	// The editor drew the assembly as coloured rectangles on a flat grid, one
+	// course at a time. That was honest while a design *was* flat -- a face and
+	// a ledger under it -- and it stopped being honest the moment a design had
+	// height: ten courses of log read as one rectangle, a post read as a dot,
+	// and there was no way to tell a wall from a floor except by reading the
+	// numbers beside it.
+	//
+	// So the bench renders the draft. Same meshes, same shader, same
+	// `PartFrame` the world draws it with, into a framebuffer the panel shows
+	// -- which means what you are looking at while you design it is the thing
+	// that gets built, and not a second drawing of it that can disagree.
+	//
+	// **And a click is a ray, which is what makes it less fidgety.** Clicking
+	// the top of a log puts the next log on it, at that log's own course,
+	// without touching a slider. The course selector is still there for
+	// placing in mid-air, and it is no longer the only way to say where.
+	void DrawBenchView();
+	void BenchPick(const ImVec2& at, const ImVec2& size);
+
+	Egss::PerspectiveCamera BenchCamera(float aspect) const;
+
+	// The ray through a point of the bench's image, in the design's own grid
+	// space. `u` and `v` run 0 to 1 from the top left, which is how ImGui
+	// reports a mouse and the opposite of how GL reports a pixel.
+	void BenchRay(float u, float v, float aspect, glm::vec3& from,
+		glm::vec3& direction) const;
+
+	std::shared_ptr<Egss::Framebuffer> m_BenchTarget;
+	glm::vec2 m_BenchSize = glm::vec2(0.0f);
+
+	// Where the bench's camera is looking from: an orbit, because a design is
+	// an object you walk round rather than a place you stand in.
+	float m_BenchYaw = 0.7f;
+	float m_BenchPitch = 0.55f;
+	float m_BenchRange = 2.4f;
+
+	// The piece under the cursor, worked out in the ImGui pass and drawn by
+	// the render pass on the next frame. One frame of lag on a ghost is not a
+	// thing anybody can see.
+	Part m_BenchGhost;
+	bool m_BenchGhostFits = false;
+	bool m_BenchGhostShown = false;
+	int m_BenchOver = -1;
+
+	// Where a left press landed, so a drag can be told from a click. A drag
+	// turns the model; a click lays a piece. Any other arrangement needs a
+	// second mouse button for what is plainly the same gesture.
+	ImVec2 m_BenchPress = ImVec2(0.0f, 0.0f);
+	bool m_BenchDragging = false;
 
 	// --- The portal and the toolshed ------------------------------------------
 	//
@@ -5927,6 +6197,15 @@ private:
 	// two things a panel can be and having both there is what makes the third
 	// one obviously editable.
 	std::vector<Design> m_Designs;
+
+	// The built-in kit, which the workshop is raised from and which importing
+	// never touches. See `MakeKit`.
+	std::vector<Design> m_Kit;
+
+	// What the last export or import did, said in the panel rather than in the
+	// log -- a file operation nobody can see the result of is one nobody
+	// trusts.
+	std::string m_PrefabSaid;
 
 	// What the editor is editing, and what `C` builds.
 	Design m_Draft;
@@ -7733,6 +8012,11 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	if (m_SeeThrough && (m_PortalOn || m_ViaPortal))
 		DrawPortalView();
 
+	// Before the main pass, like the portal, and for the same reason: it binds
+	// another target and the viewport has to be put back before anything draws
+	// into the window.
+	DrawBenchView();
+
 	DrawScene(m_Camera, Pass::Main);
 }
 
@@ -8265,73 +8549,20 @@ inline void TerrainLab::DrawPanels()
 		if (!panel.Placed)
 			continue;
 
-		glm::ivec3 low, high;
-		DesignBounds(panel.Plan, low, high);
-
-		glm::vec3 size = PanelSize(panel.Plan);
-		glm::mat4 frame = PanelFrame(panel);
+		glm::mat4 frame = glm::translate(PanelFrame(panel),
+			-GridOffset(panel.Plan));
 
 		for (const Part& part : PartsOf(panel.Plan))
 		{
-			glm::ivec3 span = PartSize(part);
+			glm::vec3 at, half, mesh;
+			glm::quat turn;
 
-			// Grid units to metres, with the design centred on its own
-			// bounding box so a panel is put down where you are looking rather
-			// than offset by wherever on the grid it happened to be drawn.
-			glm::ivec3 from = glm::ivec3(part.X, part.Layer, part.Z) - low;
+			PartFrame(part, at, half, turn, mesh);
 
-			glm::vec3 half(0.5f * (float)span.x * Cell(),
-				0.5f * (float)span.y * LayerHeight(),
-				0.5f * (float)span.z * Cell());
+			m_TreeMaterial->Set("u_Color", PartColour(part));
 
-			glm::vec3 at(
-				(float)from.x * Cell() + half.x - 0.5f * size.x,
-				(float)from.y * LayerHeight() + half.y - 0.5f * size.y,
-				(float)from.z * Cell() + half.z - 0.5f * size.z);
-
-			// **The mesh's own axis is x, so the piece is turned to it rather
-			// than the other way round.** The log cylinder runs along its
-			// local x, and a cube does not care -- so one rotation serves both
-			// stocks and the scale is quoted in the mesh's axes.
-			glm::quat turn(1.0f, 0.0f, 0.0f, 0.0f);
-			glm::vec3 mesh = half;
-
-			if (part.Axis == Run::AlongZ)
-			{
-				turn = glm::angleAxis(glm::half_pi<float>(),
-					glm::vec3(0.0f, 1.0f, 0.0f));
-
-				mesh = glm::vec3(half.z, half.y, half.x);
-			}
-			else if (part.Axis == Run::Upright)
-			{
-				turn = glm::angleAxis(glm::half_pi<float>(),
-					glm::vec3(0.0f, 0.0f, 1.0f));
-
-				mesh = glm::vec3(half.y, half.x, half.z);
-			}
-
-			bool log = part.Kind == Stock::Log;
-			bool stone = part.Kind == Stock::Stone;
-
-			// **Every piece a slightly different brown.** In one colour the
-			// assembly is a single pale slab: the pieces are butted, there is
-			// no gap to cast a shadow, and nothing tells one from the next --
-			// so the object whose entire cost is a board count showed no
-			// boards. Sawn timber does vary piece to piece, which makes the
-			// variation the honest fix rather than a fake gap.
-			float tone = 0.86f + 0.28f * Veg::Hash2DUnit(part.X + part.Layer * 7,
-				part.Z * 2 + (int)part.Axis, 0x9E3779B9u);
-
-			m_TreeMaterial->Set("u_Color", (stone
-				? glm::vec3(0.47f, 0.46f, 0.44f)
-				: log
-					? glm::vec3(0.46f, 0.34f, 0.21f)
-					: part.Layer & 1
-						? glm::vec3(0.66f, 0.51f, 0.32f)
-						: glm::vec3(0.52f, 0.39f, 0.24f)) * tone);
-
-			Egss::Renderer::Submit(m_TreeMaterial, log ? m_Log : m_Cube,
+			Egss::Renderer::Submit(m_TreeMaterial,
+				part.Kind == Stock::Log ? m_Log : m_Cube,
 				frame * glm::translate(glm::mat4(1.0f), at)
 				* glm::mat4_cast(turn)
 				* glm::scale(glm::mat4(1.0f), mesh));
@@ -8356,6 +8587,316 @@ inline void TerrainLab::DrawPanels()
 // because it is a tool, and this one is a board on a wall in a workshop. Same
 // widgets underneath -- what makes it a different thing is where it is, when it
 // appears, and that it goes away when you walk off.
+// **The bench's camera**, orbiting the draft rather than standing in it. The
+// design's own grid space, so a hit on the near plane is already a cell.
+inline Egss::PerspectiveCamera TerrainLab::BenchCamera(float aspect) const
+{
+	glm::vec3 size = PanelSize(m_Draft);
+	glm::vec3 middle = GridOffset(m_Draft);
+
+	// Far enough out that the whole assembly fits, whatever it is. The largest
+	// extent decides, because the camera can be looking along any of them.
+	float reach = glm::max(glm::max(size.x, size.y), size.z);
+
+	float range = m_BenchRange * glm::max(reach, 1.0f) * 0.5f;
+
+	glm::vec3 eye = middle + glm::vec3(
+		std::cos(m_BenchPitch) * std::sin(m_BenchYaw),
+		std::sin(m_BenchPitch),
+		std::cos(m_BenchPitch) * std::cos(m_BenchYaw)) * range;
+
+	Egss::PerspectiveCamera camera(38.0f, glm::max(aspect, 0.1f), 0.05f,
+		400.0f);
+
+	camera.SetPosition(eye);
+	camera.SetOrientation(glm::normalize(middle - eye),
+		glm::vec3(0.0f, 1.0f, 0.0f));
+
+	return camera;
+}
+
+inline void TerrainLab::BenchRay(float u, float v, float aspect,
+	glm::vec3& from, glm::vec3& direction) const
+{
+	Egss::PerspectiveCamera camera = BenchCamera(aspect);
+
+	glm::mat4 inverse = glm::inverse(camera.GetViewProjectionMatrix());
+
+	// ImGui counts v down the image and clip space counts it up.
+	glm::vec4 near = inverse * glm::vec4(2.0f * u - 1.0f, 1.0f - 2.0f * v,
+		-1.0f, 1.0f);
+
+	glm::vec4 far = inverse * glm::vec4(2.0f * u - 1.0f, 1.0f - 2.0f * v,
+		1.0f, 1.0f);
+
+	from = glm::vec3(near) / near.w;
+
+	direction = glm::normalize(glm::vec3(far) / far.w - from);
+}
+
+// **What the bench is looking at, rendered into its own target.**
+//
+// Drawn with the same material and the same `PartFrame` the world uses, so the
+// picture in the panel cannot drift from the thing that gets built. Lit from a
+// fixed direction rather than from the sun: a design you are working on at
+// midnight is still a design you have to see.
+inline void TerrainLab::DrawBenchView()
+{
+	if (!m_Bench || m_BenchSize.x < 4.0f || m_BenchSize.y < 4.0f)
+		return;
+
+	unsigned int width = (unsigned int)m_BenchSize.x;
+	unsigned int height = (unsigned int)m_BenchSize.y;
+
+	if (!m_BenchTarget || m_BenchTarget->GetSpecification().Width != width
+		|| m_BenchTarget->GetSpecification().Height != height)
+	{
+		Egss::FramebufferSpecification spec;
+		spec.Width = width;
+		spec.Height = height;
+		spec.Attachments = { Egss::FramebufferTextureFormat::RGBA8,
+			Egss::FramebufferTextureFormat::DEPTH24STENCIL8 };
+
+		// **The attachment's handle straight into ImGui, with no `Texture2D`
+		// wrapper in between.** The portal needs one because it samples the
+		// view in a shader; ImGui takes a raw GL name, so wrapping it would be
+		// an object whose only job is to be unwrapped again -- and one more
+		// thing to rebuild every time the panel is resized.
+		m_BenchTarget.reset(Egss::Framebuffer::Create(spec));
+	}
+
+	float aspect = m_BenchSize.x / glm::max(m_BenchSize.y, 1.0f);
+
+	Egss::PerspectiveCamera camera = BenchCamera(aspect);
+
+	m_BenchTarget->Bind();
+
+	Egss::RenderCommand::SetViewport(0, 0, width, height);
+	Egss::RenderCommand::SetClearColor({ 0.09f, 0.08f, 0.07f, 1.0f });
+	Egss::RenderCommand::Clear();
+
+	Egss::Renderer::BeginScene(camera);
+
+	m_TreeMaterial->Set("u_SunDirection",
+		glm::normalize(glm::vec3(-0.45f, -0.8f, -0.4f)));
+	m_TreeMaterial->Set("u_SunColor", glm::vec3(0.85f));
+	m_TreeMaterial->Set("u_SkyColor", glm::vec3(0.62f, 0.66f, 0.74f));
+	m_TreeMaterial->Set("u_Ambient", 0.75f);
+	m_TreeMaterial->Set("u_Bounce", 0.45f);
+	m_TreeMaterial->Set("u_Through", 0.0f);
+	m_TreeMaterial->Set("u_Compliance", 0.0f);
+	m_TreeMaterial->Set("u_MaxLean", 0.0f);
+	m_TreeMaterial->Set("u_Time", m_Time);
+	m_TreeMaterial->Set("u_CutRadius", 0.0f);
+	m_TreeMaterial->Set("u_CutDepth", 0.0f);
+	m_TreeMaterial->Set("u_CutPart", 0.0f);
+	m_TreeMaterial->Set("u_AimY", 1.0e9f);
+
+	// **The course you are working in, as a grid on the air.** Not the whole
+	// 48 cells -- every fourth line, which is the same thinning the plan view
+	// used, because at this scale every cell is a thicket.
+	float span = (float)s_GridCells * Cell();
+	float level = (float)m_EditLayer * LayerHeight();
+
+	m_TreeMaterial->Set("u_Color", glm::vec3(0.30f, 0.29f, 0.26f));
+
+	for (int i = 0; i <= s_GridCells; i += 4)
+	{
+		bool board = (i % s_BoardCells) == 0;
+
+		m_TreeMaterial->Set("u_Color", board
+			? glm::vec3(0.46f, 0.44f, 0.38f) : glm::vec3(0.26f, 0.25f, 0.23f));
+
+		float at = (float)i * Cell();
+		float thick = board ? 0.012f : 0.006f;
+
+		Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+			glm::scale(glm::translate(glm::mat4(1.0f),
+				glm::vec3(at, level, 0.5f * span)),
+				glm::vec3(thick, thick, 0.5f * span)));
+
+		Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+			glm::scale(glm::translate(glm::mat4(1.0f),
+				glm::vec3(0.5f * span, level, at)),
+				glm::vec3(0.5f * span, thick, thick)));
+	}
+
+	for (const Part& part : PartsOf(m_Draft))
+	{
+		glm::vec3 at, half, mesh;
+		glm::quat turn;
+
+		PartFrame(part, at, half, turn, mesh);
+
+		m_TreeMaterial->Set("u_Color", PartColour(part));
+
+		Egss::Renderer::Submit(m_TreeMaterial,
+			part.Kind == Stock::Log ? m_Log : m_Cube,
+			glm::translate(glm::mat4(1.0f), at) * glm::mat4_cast(turn)
+			* glm::scale(glm::mat4(1.0f), mesh));
+	}
+
+	// The piece the cursor is offering, and red where it will not go.
+	if (m_BenchGhostShown)
+	{
+		glm::vec3 at, half, mesh;
+		glm::quat turn;
+
+		PartFrame(m_BenchGhost, at, half, turn, mesh);
+
+		DrawOutline(glm::translate(glm::mat4(1.0f), at) * glm::mat4_cast(turn),
+			mesh, 0.012f, m_BenchGhostFits
+				? glm::vec3(0.95f, 0.84f, 0.42f)
+				: glm::vec3(0.90f, 0.28f, 0.22f));
+	}
+
+	Egss::Renderer::EndScene();
+
+	m_BenchTarget->Unbind();
+
+	// `Unbind` restores the default target and not the viewport, so this has
+	// to go back by hand or the main pass draws into the whole window.
+	if (g_Viewport.Valid())
+		Egss::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
+			(unsigned int)g_Viewport.Y, (unsigned int)g_Viewport.Width,
+			(unsigned int)g_Viewport.Height);
+}
+
+// **A click is a ray, and what it hits decides where the piece goes.**
+//
+// Two answers, and the nearer one wins. The ray against every existing piece's
+// box gives the piece under the cursor -- which is what the right button
+// removes, and whose *top* is where the next piece goes if you clicked one.
+// The ray against the plane of the current course gives a cell in open air,
+// which is what the course selector is still for.
+//
+// Laying on top of what you clicked is the whole of why this is less fidgety
+// than the plan view was: a log cabin is ten courses, and setting a slider for
+// each of them is nine presses that say nothing.
+inline void TerrainLab::BenchPick(const ImVec2& at, const ImVec2& size)
+{
+	m_BenchGhostShown = false;
+	m_BenchOver = -1;
+
+	if (size.x < 4.0f || size.y < 4.0f)
+		return;
+
+	ImVec2 mouse = ImGui::GetIO().MousePos;
+
+	float u = (mouse.x - at.x) / size.x;
+	float v = (mouse.y - at.y) / size.y;
+
+	if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f)
+		return;
+
+	glm::vec3 from, direction;
+	BenchRay(u, v, size.x / size.y, from, direction);
+
+	// The nearest piece the ray enters, and which of its faces it came in by.
+	float nearest = 1.0e9f;
+	int hit = -1;
+	int face = 1;
+	float sign = 1.0f;
+
+	for (int i = 0; i < s_MaxParts; i++)
+	{
+		Part part;
+
+		if (!UnpackPart(m_Draft.Code[i], part))
+			continue;
+
+		glm::vec3 centre, half, mesh;
+		glm::quat turn;
+
+		PartFrame(part, centre, half, turn, mesh);
+
+		glm::vec3 origin = from - centre;
+
+		float entry = -1.0e9f, leave = 1.0e9f;
+		int entryAxis = 1;
+		float entrySign = 1.0f;
+		bool inside = true;
+
+		for (int axis = 0; axis < 3 && inside; axis++)
+		{
+			if (std::abs(direction[axis]) < 1e-6f)
+			{
+				inside = std::abs(origin[axis]) <= half[axis];
+				continue;
+			}
+
+			float t0 = (-half[axis] - origin[axis]) / direction[axis];
+			float t1 = (half[axis] - origin[axis]) / direction[axis];
+
+			float low = glm::min(t0, t1);
+
+			if (low > entry)
+			{
+				entry = low;
+				entryAxis = axis;
+				entrySign = direction[axis] < 0.0f ? 1.0f : -1.0f;
+			}
+
+			leave = glm::min(leave, glm::max(t0, t1));
+
+			inside = entry <= leave;
+		}
+
+		if (!inside || leave < 0.0f || entry >= nearest)
+			continue;
+
+		nearest = entry;
+		hit = i;
+		face = entryAxis;
+		sign = entrySign;
+	}
+
+	m_BenchOver = hit;
+
+	Part want;
+	want.Length = m_EditLength;
+	want.Axis = m_EditAxis;
+	want.Kind = m_EditKind;
+
+	// Clicked a piece, top face up: the next one goes on it, at that piece's
+	// own course rather than at whatever the slider says.
+	if (hit >= 0 && face == 1 && sign > 0.0f)
+	{
+		Part under;
+		UnpackPart(m_Draft.Code[hit], under);
+
+		glm::vec3 point = from + direction * nearest;
+
+		want.X = (int)std::floor(point.x / Cell());
+		want.Z = (int)std::floor(point.z / Cell());
+		want.Layer = under.Layer + PartSize(under).y;
+	}
+	else
+	{
+		// Otherwise the plane of the course you are working in.
+		float level = (float)m_EditLayer * LayerHeight();
+
+		if (std::abs(direction.y) < 1e-5f)
+			return;
+
+		float along = (level - from.y) / direction.y;
+
+		if (along < 0.0f)
+			return;
+
+		glm::vec3 point = from + direction * along;
+
+		want.X = (int)std::floor(point.x / Cell());
+		want.Z = (int)std::floor(point.z / Cell());
+		want.Layer = m_EditLayer;
+	}
+
+	m_BenchGhost = want;
+	m_BenchGhostShown = true;
+	m_BenchGhostFits = PartFits(m_Draft, want)
+		&& PartCount(m_Draft) < s_MaxParts;
+}
+
 inline void TerrainLab::DrawBench()
 {
 	if (!m_Bench)
@@ -8577,18 +9118,14 @@ inline void TerrainLab::DrawPrefabEditor()
 	// design itself is registered parameters, so what the mouse draws replays
 	// -- only the moment of committing it has to be a key.
 
-	// --- The canvas ---------------------------------------------------------
+	// --- The view -------------------------------------------------------------
 	//
-	// **The plan is one course at a time.** A design has height now, so the
-	// canvas has to say which slice it is showing: the current course is drawn
-	// solid, everything else faint underneath it, and the piece you lay goes
-	// into the course the slider names. That is the only honest way to draw a
-	// three-dimensional assembly on a flat plan, and it is what every set of
-	// building drawings does.
-
-	ImGui::SliderInt("Course", &m_EditLayer, 0, s_MaxLayers - 1);
-	ImGui::TextDisabled("  course %d is %.2f m up", m_EditLayer,
-		(float)m_EditLayer * LayerHeight());
+	// **A plan view could not say what a design was.** Ten courses of log read
+	// as one rectangle and a post read as a dot, and the only way to tell a
+	// wall from a floor was to read the numbers beside it. So the bench shows
+	// the draft itself, rendered from the same meshes and the same `PartFrame`
+	// the world builds it with -- what you look at while you design is the
+	// thing that gets built, not a second drawing of it that can disagree.
 
 	int run = (int)m_EditAxis;
 
@@ -8613,108 +9150,79 @@ inline void TerrainLab::DrawPrefabEditor()
 	ImGui::SliderInt(m_EditAxis == Run::Upright ? "Courses tall" : "Cut to",
 		&m_EditLength, 1, limit);
 
+	ImGui::SliderInt("Course", &m_EditLayer, 0, s_MaxLayers - 1);
+
 	ImVec2 origin = ImGui::GetCursorScreenPos();
 
-	// Capped, so the templates and the saved designs below it stay on screen.
-	float width = glm::clamp(ImGui::GetContentRegionAvail().x, 140.0f, 240.0f);
+	float width = glm::max(ImGui::GetContentRegionAvail().x, 120.0f);
+	ImVec2 size(width, glm::min(width * 0.72f, 250.0f));
 
-	float cell = width / (float)s_GridCells;
+	ImGui::InvisibleButton("##view", size,
+		ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
 
-	ImVec2 size(width, width);
-
-	ImGui::InvisibleButton("##plan", size);
+	// What the render pass will draw into next frame. Asked here because here
+	// is where the panel's own size is known.
+	m_BenchSize = glm::vec2(size.x, size.y);
 
 	ImDrawList* draw = ImGui::GetWindowDrawList();
 
-	draw->AddRectFilled(origin,
-		ImVec2(origin.x + size.x, origin.y + size.y),
-		IM_COL32(28, 26, 24, 255));
+	// Flipped in v, because GL's first row is the bottom one and ImGui's is
+	// the top.
+	if (m_BenchTarget)
+		draw->AddImage((ImTextureID)(intptr_t)
+			m_BenchTarget->GetColorAttachmentRendererID(),
+			origin, ImVec2(origin.x + size.x, origin.y + size.y),
+			ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+	else
+		draw->AddRectFilled(origin,
+			ImVec2(origin.x + size.x, origin.y + size.y),
+			IM_COL32(22, 20, 18, 255));
 
-	// A line every four cells. Every cell is a thicket at this scale, and what
-	// matters is reading the count, not the individual line.
-	for (int i = 0; i <= s_GridCells; i += 4)
+	draw->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y),
+		IM_COL32(96, 74, 48, 255));
+
+	// **A drag turns the model and a click lays a piece**, told apart by how
+	// far the mouse moved between press and release. Any other arrangement
+	// spends a second button on what is plainly one gesture, and this is the
+	// idiom every 3D editor already uses.
+	if (ImGui::IsItemActive()
+		&& ImGui::IsMouseDragging(ImGuiMouseButton_Left, 3.0f))
 	{
-		float at = (float)i * cell;
+		ImVec2 moved = ImGui::GetIO().MouseDelta;
 
-		ImU32 tint = (i % s_BoardCells) == 0
-			? IM_COL32(90, 84, 74, 255) : IM_COL32(52, 48, 44, 255);
+		m_BenchYaw -= moved.x * 0.008f;
+		m_BenchPitch = glm::clamp(m_BenchPitch + moved.y * 0.008f,
+			-1.45f, 1.45f);
 
-		draw->AddLine(ImVec2(origin.x + at, origin.y),
-			ImVec2(origin.x + at, origin.y + size.y), tint);
-
-		draw->AddLine(ImVec2(origin.x, origin.y + at),
-			ImVec2(origin.x + size.x, origin.y + at), tint);
+		m_BenchDragging = true;
 	}
 
-	auto paint = [&](const Part& part, ImU32 tint, bool outline)
-	{
-		glm::ivec3 span = PartSize(part);
-
-		ImVec2 from(origin.x + (float)part.X * cell,
-			origin.y + (float)part.Z * cell);
-
-		ImVec2 to(from.x + (float)span.x * cell, from.y + (float)span.z * cell);
-
-		draw->AddRectFilled(from, to, tint);
-
-		if (outline)
-			draw->AddRect(from, to, IM_COL32(20, 18, 16, 200));
-	};
-
-	// Everything not in this course, faintly, so the plan shows what it is
-	// being built on. Lower courses first, so the nearest one reads strongest.
-	for (int pass = 0; pass < 2; pass++)
-	for (const Part& part : PartsOf(m_Draft))
-	{
-		glm::ivec3 low, high;
-		PartBox(part, low, high);
-
-		bool here = m_EditLayer >= low.y && m_EditLayer < high.y;
-
-		if (here != (pass == 1))
-			continue;
-
-		ImU32 tint = here
-			? (part.Kind == Stock::Stone ? IM_COL32(132, 130, 126, 255)
-				: part.Kind == Stock::Log ? IM_COL32(150, 108, 62, 255)
-				: IM_COL32(168, 130, 82, 255))
-			: IM_COL32(78, 64, 48, 190);
-
-		paint(part, tint, here);
-	}
-
-	// The piece about to go down, and red where it will not go.
 	if (ImGui::IsItemHovered())
 	{
-		ImVec2 mouse = ImGui::GetIO().MousePos;
+		BenchPick(origin, size);
 
-		Part want;
-		want.X = (int)((mouse.x - origin.x) / cell);
-		want.Z = (int)((mouse.y - origin.y) / cell);
-		want.Length = m_EditLength;
-		want.Layer = m_EditLayer;
-		want.Axis = m_EditAxis;
-		want.Kind = m_EditKind;
+		float wheel = ImGui::GetIO().MouseWheel;
 
-		bool room = PartFits(m_Draft, want)
-			&& PartCount(m_Draft) < s_MaxParts;
-
-		paint(want, room ? IM_COL32(210, 190, 140, 130)
-			: IM_COL32(190, 70, 60, 130), true);
-
-		if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && room)
-			AddPart(m_Draft, want);
-
-		if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
-		{
-			int hit = PartAt(m_Draft, want.X, want.Z, m_EditLayer);
-
-			if (hit >= 0)
-				m_Draft.Code[hit] = 0;
-		}
+		if (std::abs(wheel) > 0.0f)
+			m_BenchRange = glm::clamp(m_BenchRange - wheel * 0.35f,
+				0.6f, 12.0f);
 	}
 
-	ImGui::TextDisabled("left lays a piece, right lifts one");
+	if (ImGui::IsItemDeactivated())
+	{
+		bool turned = m_BenchDragging;
+		m_BenchDragging = false;
+
+		if (!turned && m_BenchGhostShown && m_BenchGhostFits)
+			AddPart(m_Draft, m_BenchGhost);
+	}
+
+	if (ImGui::IsItemHovered()
+		&& ImGui::IsMouseClicked(ImGuiMouseButton_Right) && m_BenchOver >= 0)
+		m_Draft.Code[m_BenchOver] = 0;
+
+	ImGui::TextDisabled("drag turns it, click lays a piece on what you point");
+	ImGui::TextDisabled("at, right button lifts one, wheel pulls back");
 
 
 	// --- Templates and saved designs ----------------------------------------
@@ -8755,6 +9263,22 @@ inline void TerrainLab::DrawPrefabEditor()
 	// buttons at all, when `C` had to be a key.
 	if (ImGui::Button("Save as new") && (int)m_Designs.size() < s_MaxDesigns)
 		m_Designs.push_back(m_Draft);
+
+	if (ImGui::Button("Export"))
+		ExportDesigns();
+
+	ImGui::SameLine();
+
+	if (ImGui::Button("Import"))
+		ImportDesigns();
+
+	ImGui::SameLine();
+
+	if (ImGui::Button("Reset to kit"))
+		m_Designs = m_Kit;
+
+	if (!m_PrefabSaid.empty())
+		ImGui::TextDisabled("  %s", m_PrefabSaid.c_str());
 
 	for (size_t i = 0; i < m_Designs.size(); i++)
 	{
