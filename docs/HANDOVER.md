@@ -30,46 +30,16 @@ Reading order for a newcomer:
 
 ## Current state
 
-**Check `git log` and `git status` first — this section goes stale quickly.**
-At the time of writing `main` was at `3ddef51` "Added working demo recording
-and replay", with **3D rigid bodies** in flight on the worktree branch.
+**Volatile state lives in `docs/STATE.md` now, not here.** This section used to
+name the commit `main` sat at and what was in flight. It drifted 22 commits
+behind, and went on describing a worktree handover that `CLAUDE.md` had already
+removed -- so a session following its instructions read 53k tokens and came away
+*confidently wrong* about what the project was doing. A stale answer bought at
+that price is worse than no answer.
 
-Landed in `main` already: 2D rotation joined into the solver, in-engine frame
-capture, and replay. Each has a changelog entry worth reading before touching
-that area — the `Step` reordering and the frame-rate-dependence findings in
-particular were pre-existing bugs, not new work.
-
-In flight, on the branch, **built in three separable pieces the way 2D was**:
-
-- **Piece one, done.** `RigidBody3D` / `PhysicsWorld3D`: quaternion
-  orientation, a real inertia tensor rotated into world space each step, and
-  midpoint angular integration. 31 checks.
-- **Piece two, done.** `Sat3D`: fifteen candidate axes, clipped manifolds of up
-  to eight points. 40 checks.
-- **Piece three, done.** The join: a narrowphase calling `Sat3D`, contacts with
-  lever arms, and the solver's angular terms. Boxes and spheres collide, stack,
-  roll and settle. 21 checks.
-
-**3D stacking is fixed.** It was `Sat3D`, not the solver: `MostFacingFace` wound
-a face pointing down a negative axis backwards relative to its own outward
-normal, so every clip plane pointed inward and the reference face clipped to
-nothing whenever the *upper* box of a pair won the near-tie. The manifold
-dropped from four points to one without saying so, and one point cannot hold a
-box level. Four boxes now stand at every setting from 4 to 24 velocity
-iterations with sleeping on or off, against 11/20 and 4/20 before. The
-changelog entry has the sweep and the arithmetic.
-
-3D also still has a brute-force broadphase, as 2D did until a profile asked
-otherwise.
-
-The owner commits their own work, often between sessions and sometimes while
-a reply is being written. **Never commit to `main` and never push**, and do not
-assume something is still outstanding because a previous message said so.
-
-Finished work is handed over as commits on the **isolated worktree branch**,
-reviewed with `git log -p main..worktree-<name>` and merged, cherry-picked or
-dropped by the owner. This replaced handing over patch files, which went stale
-as soon as one was applied.
+What is left here is the half that does not go stale: what the subsystems are
+and where they live. **Check `git log` and `git status` before trusting even
+that.**
 
 ### Subsystems, roughly in the order they were built
 
@@ -77,7 +47,7 @@ as soon as one was applied.
 | --- | --- | --- |
 | Core loop | `Application`, `Layer`, `LayerStack` | Fixed timestep + render interpolation. `OnFixedUpdate` is simulation, `OnUpdate` is presentation |
 | Renderer 2D | `Renderer2D` | Three batches: quads (indexed), lines, triangles. One draw call each. Blend modes: Alpha, Additive, Multiply |
-| Renderer 3D | `Renderer`, `Mesh`, `Material`, `ObjLoader` | `Submit` per mesh, no batching. `.obj` loading with smoothing groups. Materials with instance overrides; shaders by name via `ShaderLibrary` |
+| Renderer 3D | `Renderer`, `Mesh`, `Material`, `ObjLoader`, `GltfLoader` | `Submit` per mesh, and `SubmitInstanced` against a per-instance buffer attached with `Mesh::SetInstanceBuffer`. `.obj` with smoothing groups and glTF. Materials with instance overrides; shaders by name via `ShaderLibrary` |
 | Cameras | `Camera` base, `Orthographic`, `Perspective` | `BeginScene` takes any `Camera` |
 | Framebuffers | `Framebuffer` | `RED_INTEGER` attachment drives pixel-exact picking |
 | Scene | `Scene`, `Entity`, `ComponentStore` | ECS-lite: dense arrays, generational handles |
@@ -88,6 +58,8 @@ as soon as one was applied.
 | Audio | `AudioEngine` | Lock-free mixer, positional, occlusion, early reflections, three-band convolution reverb behind a 4th-order Butterworth splitter |
 | Acoustics | `Acoustics2D` | Ray-traced room response feeding all of the above. Specular *and* diffuse reflection |
 | Machine diagnostics | `PumpSignal.h`, `PumpDiagnostics` demo | Single-microphone fault attribution: FFT/Welch/cepstrum/envelope, two-channel NNLS against per-machine baselines. `PumpSignal.h` is engine-free and checkable without a build |
+| Voxels | `VoxelField3D`, `MarchingCubes`, `MarchingTetrahedra`, `VoxelIslands`, `VoxelTransition` | Density fields meshed by marching cubes and tetrahedra. **Sampled in double**, which is what lets a planet-sized field hold 1:1 precision at the surface |
+| Culling | `Frustum` | Plane extraction from a view-projection, tested against mesh bounds |
 | Profiling | `Instrumentor` | `EGSS_PROFILE_SCOPE`, live panel, Chrome trace |
 
 ---
