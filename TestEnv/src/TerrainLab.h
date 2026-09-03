@@ -5226,11 +5226,19 @@ private:
 		if (m_Panels.size() >= m_PanelPool.size())
 			return;
 
+		// Only reset the spin if this design is about to *become* the held
+		// one -- craft twice running and the second waits in queue behind
+		// the first, which is still the one your hands are turning.
+		bool wasEmpty = NextPanel() < 0;
+
 		Panel made;
 		made.Plan = plan;
 		made.Body = m_PanelPool[m_Panels.size()];
 
 		m_Panels.push_back(made);
+
+		if (wasEmpty)
+			m_HeldTurns = 0;
 
 		m_Built++;
 	}
@@ -5371,14 +5379,65 @@ private:
 	//     the whole of what makes a second course sit on the first.
 	static constexpr float s_PlaceReach = 6.0f;
 
+	// **A spin held in your hands applies whichever branch below picks the
+	// base heading.** It is added once, here, rather than in each branch, so
+	// the two cannot answer a quarter turn apart from each other.
+	float HeldSpin() const
+	{
+		return (float)m_HeldTurns * glm::half_pi<float>();
+	}
+
 	void PanelStance(const Design& plan, glm::vec3& at, float& yaw) const
 	{
 		glm::vec3 eye = m_Camera.GetPosition();
 		glm::vec3 forward = m_Camera.GetForward();
 
+		int axis = 0, sign = -1;
+		float range = 0.0f;
+
+		int onto = m_Attach ? AimedPanelFace(axis, sign, range) : -1;
+
+		// **Attach: flush against the face you're aiming at, instead of the
+		// ground and the world lattice.** The one axis running into that
+		// face is set exactly -- not rounded to a lattice, because a lattice
+		// point and a flush face only ever coincide by chance -- and the
+		// other two still snap to a grid, just one centred on the aim point
+		// on that face rather than on the world origin. Stacking on a roof
+		// falls out of this for free: straight down is axis 1, sign +1, the
+		// same "sits on the course below" the free-standing path gets from
+		// `GroundHeightBelow`.
+		if (onto >= 0)
+		{
+			const Panel& target = m_Panels[(size_t)onto];
+
+			yaw = target.Yaw + HeldSpin();
+
+			glm::vec3 half = PanelWorldHalf(plan, yaw);
+
+			glm::vec3 low, high;
+			PanelBox(target, low, high);
+
+			float face = sign > 0 ? high[axis] : low[axis];
+
+			at = eye + forward * range;
+			at[axis] = face + (float)sign * half[axis];
+
+			for (int a = 0; a < 3; a++)
+			{
+				if (a == axis)
+					continue;
+
+				float step = (a == 1) ? LayerHeight() : Cell();
+
+				at[a] = std::round((at[a] - half[a]) / step) * step + half[a];
+			}
+
+			return;
+		}
+
 		// Where you are actually looking, or as far out as the reach goes if
 		// there is nothing there.
-		float range = Clearance(eye, forward, s_PlaceReach);
+		range = Clearance(eye, forward, s_PlaceReach);
 
 		glm::vec3 aim = eye + forward * glm::max(range - 0.05f, 0.6f);
 
@@ -5392,7 +5451,8 @@ private:
 
 		float quarter = glm::half_pi<float>();
 
-		yaw = std::round(std::atan2(flat.x, flat.z) / quarter) * quarter;
+		yaw = std::round(std::atan2(flat.x, flat.z) / quarter) * quarter
+			+ HeldSpin();
 
 		glm::vec3 half = PanelWorldHalf(plan, yaw);
 
@@ -5459,6 +5519,9 @@ private:
 		m_World.GetBody(panel.Body) = body;
 
 		m_Placed++;
+
+		// Whichever panel queues up next is one you have not spun yet.
+		m_HeldTurns = 0;
 	}
 
 	// --- Taking it back down --------------------------------------------------
@@ -5478,13 +5541,20 @@ private:
 	// timber -- salvaging them mints nothing that was not already standing
 	// there, which is exactly what taking a building down gives you. It is
 	// also how anybody without an axe would start.
-	int AimedPanel() const
+	// **Which panel the aim would strike, which of its faces, and how far
+	// away that is.** `AimedPanel` (lifting) only ever wanted the first of
+	// these; attaching wants all three, so the ray-vs-box slab test is
+	// written once and both ask it, rather than a second copy of the same
+	// six comparisons drifting from this one the first time either changes.
+	int AimedPanelFace(int& axis, int& sign, float& range) const
 	{
 		glm::vec3 eye = m_Camera.GetPosition();
 		glm::vec3 direction = m_Camera.GetForward();
 
 		int best = -1;
 		float nearest = s_PlaceReach;
+		axis = 0;
+		sign = -1;
 
 		for (size_t i = 0; i < m_Panels.size(); i++)
 		{
@@ -5495,23 +5565,29 @@ private:
 			PanelBox(m_Panels[i], low, high);
 
 			float entry = 0.0f, leave = nearest;
+			int entryAxis = -1;
 			bool hit = true;
 
-			for (int axis = 0; axis < 3 && hit; axis++)
+			for (int a = 0; a < 3 && hit; a++)
 			{
-				if (std::abs(direction[axis]) < 1e-6f)
+				if (std::abs(direction[a]) < 1e-6f)
 				{
-					hit = eye[axis] >= low[axis] && eye[axis] <= high[axis];
+					hit = eye[a] >= low[a] && eye[a] <= high[a];
 					continue;
 				}
 
-				float t0 = (low[axis] - eye[axis]) / direction[axis];
-				float t1 = (high[axis] - eye[axis]) / direction[axis];
+				float t0 = (low[a] - eye[a]) / direction[a];
+				float t1 = (high[a] - eye[a]) / direction[a];
 
 				if (t0 > t1)
 					std::swap(t0, t1);
 
-				entry = glm::max(entry, t0);
+				if (t0 > entry)
+				{
+					entry = t0;
+					entryAxis = a;
+				}
+
 				leave = glm::min(leave, t1);
 
 				hit = entry <= leave;
@@ -5522,9 +5598,28 @@ private:
 
 			nearest = entry;
 			best = (int)i;
+
+			// The axis whose near plane the ray crossed last is the face it
+			// entered through; which of that axis's two planes it was
+			// follows from which way the ray was travelling along it. Left
+			// at the caller's chosen default when the eye starts inside the
+			// box on every axis -- already a degenerate aim, not a face.
+			if (entryAxis >= 0)
+			{
+				axis = entryAxis;
+				sign = direction[entryAxis] > 0.0f ? -1 : 1;
+			}
 		}
 
 		return best;
+	}
+
+	int AimedPanel() const
+	{
+		int axis, sign;
+		float range;
+
+		return AimedPanelFace(axis, sign, range);
 	}
 
 	void LiftPanel()
@@ -5563,6 +5658,10 @@ private:
 
 		m_Panels.erase(m_Panels.begin() + (long)which);
 		m_Panels.insert(m_Panels.begin(), lifted);
+
+		// A different panel is in your hands now, whatever spin the last one
+		// had.
+		m_HeldTurns = 0;
 
 		TouchPanels();
 	}
@@ -6478,6 +6577,20 @@ private:
 
 		m_WasPlace = place;
 
+		bool rotate = Egss::Input::IsKeyPressed(EGSS_KEY_X);
+
+		if (rotate && !m_WasRotate)
+			m_HeldTurns = (m_HeldTurns + 1) & 3;
+
+		m_WasRotate = rotate;
+
+		bool attach = Egss::Input::IsKeyPressed(EGSS_KEY_Z);
+
+		if (attach && !m_WasAttach)
+			m_Attach = !m_Attach;
+
+		m_WasAttach = attach;
+
 		bool lift = Egss::Input::IsKeyPressed(EGSS_KEY_N);
 
 		if (lift && !m_WasLift)
@@ -6746,10 +6859,27 @@ private:
 	int m_Built = 0;
 	int m_Placed = 0;
 
+	// **A quarter turn on top of whichever way you're facing.** Facing still
+	// picks the base heading -- see `PanelStance` -- this just adds to it, so
+	// spinning the held panel does not require spinning yourself. Reset
+	// whenever a *different* panel becomes the held one (placed, lifted, or
+	// freshly crafted into an empty hand), so a leftover spin never carries
+	// onto a panel you never touched.
+	int m_HeldTurns = 0;
+
+	// **Snap the held panel to whatever you're aiming at, instead of the
+	// ground and the world lattice.** Off by default -- see `PanelStance` --
+	// and it only changes anything while the aim is actually on a placed
+	// panel, so leaving it on costs nothing when you're building on open
+	// ground.
+	bool m_Attach = false;
+
 	bool m_WasCraft = false;
 	bool m_WasPlace = false;
 	bool m_WasBench = false;
 	bool m_WasLift = false;
+	bool m_WasRotate = false;
+	bool m_WasAttach = false;
 
 	// The workbench menu, and what the pointer was doing before it opened.
 	bool m_Bench = false;
@@ -9749,6 +9879,10 @@ inline void TerrainLab::DrawHud()
 	if (NextPanel() >= 0)
 	{
 		lines.push_back("[B] put the panel down where the outline is");
+		lines.push_back("[X] rotate it a quarter turn");
+		lines.push_back(m_Attach
+			? "[Z] stop snapping it to what you're aiming at"
+			: "[Z] snap it flush to what you're aiming at");
 		lines.push_back("[N] break it up -- the timber goes back on the piles");
 	}
 	else if (AimedPanel() >= 0)
