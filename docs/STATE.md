@@ -38,6 +38,11 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
+- **Chunk meshes merge into fixed 3x3x3 groups.** TerrainLab's terrain draws
+  93 chunks as 9 groups in the default view (27 at most). Verified
+  byte-identical before/after captures plus a self-test editing exactly on a
+  group seam. See the changelog, 2026-09-04. `VoxelPlanet.h`'s 963 chunks are
+  the harder half of the same roadmap item and still need it.
 - **The context pipeline.** This file, a generated trap index
   (`./egss.py traps`, `--check` to detect drift), and a tiered read ladder in
   `CLAUDE.md`. Answering "what are we working on" cold went from ~252k tokens
@@ -59,9 +64,10 @@ Nothing is in flight. Unstarted, in the order they were last discussed:
   constant with a hook where a stat should be — carry capacity trained by use.
   The owner deferred this ("further down the line"), so **ask before starting
   it**.
-- **Merge or LOD the chunk meshes.** 963 of the draw calls left after
-  instancing are terrain chunks. Roadmap item; see `README.md` "Still
-  outstanding".
+- **Merge or LOD the chunk meshes, on the planet.** The TerrainLab half is
+  done (above); `VoxelPlanet.h` still draws one call per chunk. Harder there —
+  chunks stream and already carry a stride-based LOD, so the merge has to
+  respect both. See `README.md` "Still outstanding".
 
 ## When this file is wrong
 

@@ -34,7 +34,9 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
+#include <tuple>
 
 #include "Critters.h"
 #include "Demo.h"
@@ -174,6 +176,12 @@ private:
 	// nothing on either side of it.
 	static constexpr int s_Chunks = 9;
 	static constexpr int s_Side = s_Chunks * 16 + 1;
+
+	// **Draw calls, not triangles.** A chunk's marching-cubes mesh is already
+	// cheap; what costs is one bind-and-submit per chunk. Nine divides evenly
+	// by three, so every group is the same full 3x3x3 -- no ragged edge to
+	// special-case. See RebuildChunkGroup.
+	static constexpr int s_GroupSize = 3;
 
 	// **The grid has nothing to do with the chunks.** `CellAt` is purely
 	// positional, so the two numbers are free of each other entirely -- which
@@ -971,6 +979,8 @@ private:
 		m_TriangleCount = 0;
 		m_GrassTriangles = 0;
 
+		std::set<std::tuple<int, int, int>> dirtyGroups;
+
 		for (const glm::ivec3& chunk : dirty)
 		{
 			glm::ivec3 min, max;
@@ -980,20 +990,23 @@ private:
 
 			size_t key = ChunkKey(chunk);
 
+			glm::ivec3 group = chunk / s_GroupSize;
+			dirtyGroups.insert({ group.x, group.y, group.z });
+
 			if (data.Indices.empty())
 			{
-				m_Chunks.erase(key);
+				m_ChunkData.erase(key);
 				m_Grass.erase(key);
 				m_Trees.erase(key);
 				m_Stones.erase(key);
 				continue;
 			}
 
-			m_Chunks[key] = std::make_shared<Egss::Mesh>(data, "LabChunk");
-
 			BuildChunkGrass(key, chunk, data);
 			BuildChunkTrees(key, chunk, data);
 			BuildChunkStones(key, chunk, data);
+
+			m_ChunkData[key] = std::move(data);
 		}
 
 		m_Field->ClearDirtyChunks();
@@ -1002,11 +1015,50 @@ private:
 		// of them and a per-chunk fill would keep overwriting the front.
 		SyncStoneBodies();
 
-		for (const auto& entry : m_Chunks)
-			m_TriangleCount += (int)entry.second->GetTriangleCount();
+		for (const auto& [gx, gy, gz] : dirtyGroups)
+			RebuildChunkGroup(glm::ivec3(gx, gy, gz));
+
+		for (const auto& entry : m_ChunkData)
+			m_TriangleCount += (int)(entry.second.Indices.size() / 3);
 
 		for (const auto& entry : m_Grass)
 			m_GrassTriangles += (int)entry.second->GetTriangleCount();
+	}
+
+	// One merged GPU mesh for every chunk in `group`, concatenated from
+	// `m_ChunkData` -- pure vertex/index append, since the chunks were already
+	// watertight against each other before batching. Erases the group's draw
+	// entirely if none of its members have geometry.
+	void RebuildChunkGroup(const glm::ivec3& group)
+	{
+		Egss::MeshData merged;
+		glm::ivec3 base = group * s_GroupSize;
+
+		for (int dz = 0; dz < s_GroupSize; dz++)
+			for (int dy = 0; dy < s_GroupSize; dy++)
+				for (int dx = 0; dx < s_GroupSize; dx++)
+				{
+					auto it = m_ChunkData.find(ChunkKey(
+						base + glm::ivec3(dx, dy, dz)));
+
+					if (it == m_ChunkData.end())
+						continue;
+
+					unsigned int offset = (unsigned int)merged.Vertices.size();
+
+					merged.Vertices.insert(merged.Vertices.end(),
+						it->second.Vertices.begin(), it->second.Vertices.end());
+
+					for (unsigned int index : it->second.Indices)
+						merged.Indices.push_back(index + offset);
+				}
+
+		size_t key = ChunkKey(group);
+
+		if (merged.Indices.empty())
+			m_ChunkGroups.erase(key);
+		else
+			m_ChunkGroups[key] = std::make_shared<Egss::Mesh>(merged, "LabChunkGroup");
 	}
 
 	// **Two passes of blades, long and short.**
@@ -6765,7 +6817,14 @@ private:
 	Egss::PhysicsWorld3D m_World;
 
 	std::shared_ptr<Egss::VoxelField3D> m_Field;
-	std::map<size_t, std::shared_ptr<Egss::Mesh>> m_Chunks;
+
+	// **Two levels: what a chunk meshed to, and what actually gets drawn.**
+	// A chunk's own mesh data is cheap and kept per chunk so an edit only
+	// remeshes the one chunk it touched; the GPU mesh is one per s_GroupSize^3
+	// group, so a frame draws groups instead of chunks. See RebuildChunkGroup.
+	std::map<size_t, Egss::MeshData> m_ChunkData;
+	std::map<size_t, std::shared_ptr<Egss::Mesh>> m_ChunkGroups;
+
 	std::map<size_t, std::shared_ptr<Egss::Mesh>> m_Grass;
 	std::map<size_t, std::vector<Tree>> m_Trees;
 
@@ -7130,6 +7189,8 @@ private:
 
 	float m_Time = 0.0f;
 	float m_FrameTime = 0.0f;
+
+	Egss::Renderer::Statistics m_Stats;
 
 	int m_TriangleCount = 0;
 	int m_GrassTriangles = 0;
@@ -8851,6 +8912,11 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	// zero is how you compare two shots of the same scene.
 	m_TimeOfDay = glm::fract(m_TimeOfDay + m_DayLength * (float)ts);
 
+	// One reset for the whole frame, not per pass -- the portal and bench
+	// views are real submissions too, and the panel wants what the frame
+	// actually cost, not just the main camera's share of it.
+	Egss::Renderer::ResetStats();
+
 	// **The other side of the doorway, drawn first.**
 	//
 	// A second camera, placed by the same rigid map that moves the player, and
@@ -8867,6 +8933,8 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	DrawBenchView();
 
 	DrawScene(m_Camera, Pass::Main);
+
+	m_Stats = Egss::Renderer::GetStats();
 }
 
 // **Everything in the world, from whichever camera is asked for.**
@@ -8966,7 +9034,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
 	}
 
-	for (const auto& entry : m_Chunks)
+	for (const auto& entry : m_ChunkGroups)
 		Egss::Renderer::Submit(m_Material, entry.second, glm::mat4(1.0f));
 
 	if (m_ShowWireframe)
@@ -10848,6 +10916,9 @@ inline void TerrainLab::OnDemoImGui()
 
 	ImGui::Text("%d x %d x %d chunks, %.0f m across, %.2f m a voxel",
 		s_Chunks, s_Chunks, s_Chunks, Extent(), m_Voxel);
+
+	ImGui::Text("%u draw calls (%zu chunk groups)",
+		m_Stats.DrawCalls, m_ChunkGroups.size());
 
 	ImGui::TextDisabled("Tab mouse look, WASD walk, LMB dig, RMB add, V noclip");
 

@@ -969,10 +969,14 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       tessellation so the near switch is invisible; level 2 is a generation
       shallower and grows its leaf clusters by the cube root of the tips it
       lost. Found by ablation: trees were 6.14 M of the frame's 9.07 M triangles
-- [ ] **Merge or LOD the chunk meshes.** 963 of the remaining 1,001 draw calls
-      are terrain chunks. They are distinct geometry so instancing does not
-      apply — they want merging into larger buffers, or a coarser mesh past a
-      distance, which is the same machinery terrain LOD needs anyway
+- [ ] **Merge or LOD the chunk meshes, on the planet.** 963 of the remaining
+      1,001 draw calls are terrain chunks — distinct geometry, so instancing
+      does not apply. Landed on TerrainLab first (see the changelog,
+      2026-09-04): fixed 3x3x3 chunk groups, 93 draws down to 9 in the default
+      view. `VoxelPlanet.h` still needs it, and is the harder case — chunks
+      stream in and out and already carry a stride-based LOD, so merging there
+      has to stay within one stride band and lean on the same `VoxelTransition`
+      stitching that already joins bands
 - [x] **Terrain LOD on a sphere** — stride 1/2/4 with hysteresis, scaled by the
       body's voxel size, which took a landed Earth's terrain from 2,774,250
       triangles to 500,825 and the frame from about 16.2 ms of GPU to about
@@ -1263,6 +1267,39 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-09-04 (chunk meshes merge into groups, 93 draws down to 9)
+
+**TerrainLab's terrain chunks now draw as fixed 3x3x3 groups instead of one
+call each** — 93 populated chunks came down to 9 draw calls in the default
+view, 27 at most across the whole field. Chunk meshes were the category
+instancing could not reach (see "Still outstanding" below): every chunk is
+distinct geometry, so the fix is concatenation, not a divisor. A chunk's own
+`MeshData` is still kept per chunk, cheap and rebuilt only when that chunk
+goes dirty; the GPU `Mesh` is one per group, rebuilt from its live members
+whenever a chunk inside it changes.
+
+**Nine chunks a side was chosen because it divides evenly by three** — every
+group is a full 3x3x3, so there is no ragged edge at the field's boundary to
+special-case.
+
+Verified two ways. A capture taken with `--lockstep --hide-ui --capture-step`
+is byte-identical before and after, and across Debug and Release —
+concatenation moves no vertex, so nothing should render differently, and
+nothing did. A temporary self-test then edited the field exactly on the seam
+between two groups (2,103 voxels changed) and checked every live group's
+triangle count against the sum of its member chunks' — 10 for 10, including
+both groups the edit touched.
+
+**TerrainLab exists to try planet features first**, so the same grouping is
+meant to carry over to `VoxelPlanet.h`'s 963 chunks next, where it composes
+with the stride-based LOD that already exists there — merging only within
+chunks that already share a stride, since a coarse and a fine chunk in one
+buffer would need the same seam-stitching `VoxelTransition` already does
+between bands.
+
+Also added: `Egss::Renderer::GetStats().DrawCalls` on the Terrain lab panel,
+which it didn't read before this.
 
 ### 2026-08-31 (the docs cost 252k tokens and answered the question wrong)
 
