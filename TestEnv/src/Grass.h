@@ -22,7 +22,7 @@
 // runtime one. The rule of thumb this project can use: **things called in a
 // loop are worth a template; things called once are worth a `.cpp`.**
 
-#include <Egss.h>
+#include <GS.h>
 
 #include "Vegetation.h"
 
@@ -87,10 +87,10 @@ namespace Grass {
 	// triangles where the surface is busier is also where more grass looks
 	// right.
 	template <typename Up, typename Allow>
-	Egss::MeshData Build(const Egss::MeshData& terrain, const Settings& settings,
+	GS::MeshData Build(const GS::MeshData& terrain, const Settings& settings,
 		unsigned int chunkSeed, Up up, Allow allow)
 	{
-		Egss::MeshData grass;
+		GS::MeshData grass;
 
 		if (settings.Density <= 0.0f || terrain.Indices.size() < 3)
 			return grass;
@@ -268,7 +268,7 @@ namespace Grass {
 		if (grass.Indices.empty())
 			return grass;
 
-		Egss::Submesh all;
+		GS::Submesh all;
 		all.IndexCount = (unsigned int)grass.Indices.size();
 
 		grass.Submeshes.push_back(all);

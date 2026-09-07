@@ -17,7 +17,7 @@
 // direct sound disappear while the echoes keep arriving through the doorway.
 // Then drop absorption to 0.05 and hear the room turn into a cathedral.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -51,12 +51,12 @@ public:
 
 	void OnDemoDeactivated() override
 	{
-		Egss::AudioEngine::Stop(m_Voice);
-		m_Voice = Egss::InvalidVoice;
+		GS::AudioEngine::Stop(m_Voice);
+		m_Voice = GS::InvalidVoice;
 
 		// The room this demo described is not the next demo's room.
-		Egss::AudioEngine::SetReverb(Egss::ReverbSettings());
-		Egss::AudioEngine::ClearReverbImpulse();
+		GS::AudioEngine::SetReverb(GS::ReverbSettings());
+		GS::AudioEngine::ClearReverbImpulse();
 	}
 
 	// ---------------------------------------------------------------------
@@ -76,7 +76,7 @@ public:
 			float absorption, float scattering)
 		{
 			unsigned int body = m_World.AddBody(
-				Egss::RigidBody2D::MakeStaticBox(centre, halfExtents));
+				GS::RigidBody2D::MakeStaticBox(centre, halfExtents));
 
 			if (m_Absorptions.size() <= body)
 			{
@@ -155,9 +155,9 @@ public:
 
 	// A tone with a little harmonic content, looping seamlessly: a whole
 	// number of cycles in the buffer means the end lines up with the start.
-	static std::shared_ptr<Egss::AudioClip> MakeTone(float frequency, float seconds)
+	static std::shared_ptr<GS::AudioClip> MakeTone(float frequency, float seconds)
 	{
-		const unsigned int rate = Egss::AudioEngine::GetSampleRate();
+		const unsigned int rate = GS::AudioEngine::GetSampleRate();
 
 		float cycles = std::round(frequency * seconds);
 		float exact = cycles / seconds;
@@ -176,14 +176,14 @@ public:
 			samples[i] = (std::sin(phase) * 0.7f + std::sin(phase * 2.0f) * 0.3f) * envelope * 0.5f;
 		}
 
-		return Egss::AudioClip::CreateFromSamples(std::move(samples), 1);
+		return GS::AudioClip::CreateFromSamples(std::move(samples), 1);
 	}
 
 	void StartSource()
 	{
-		Egss::AudioEngine::Stop(m_Voice);
+		GS::AudioEngine::Stop(m_Voice);
 
-		Egss::Audio3DParams params;
+		GS::Audio3DParams params;
 		params.Position = { m_Source.x, m_Source.y, 0.0f };
 		params.Volume = 0.7f;
 		params.Loop = true;
@@ -193,7 +193,7 @@ public:
 		params.MaxDistance = 60.0f;
 		params.DopplerFactor = 0.0f;
 
-		m_Voice = Egss::AudioEngine::PlayAt(m_Clip, params);
+		m_Voice = GS::AudioEngine::PlayAt(m_Clip, params);
 	}
 
 	// ---------------------------------------------------------------------
@@ -201,7 +201,7 @@ public:
 	// ---------------------------------------------------------------------
 	void Retrace()
 	{
-		Egss::AcousticsSettings settings;
+		GS::AcousticsSettings settings;
 		settings.RayCount = m_RayCount;
 		settings.MaxBounces = m_MaxBounces;
 		settings.Absorption = m_Absorption;
@@ -214,7 +214,7 @@ public:
 		// echoes come out systematically too loud or too quiet.
 		settings.MinDistance = s_SourceMinDistance;
 
-		for (int band = 0; band < Egss::AcousticBandCount; band++)
+		for (int band = 0; band < GS::AcousticBandCount; band++)
 			settings.BandAbsorptionScale[band] = m_FrequencyDependent
 				? m_BandScale[band] : 1.0f;
 
@@ -235,7 +235,7 @@ public:
 			settings.MinEnergy = 1e-14f;
 		}
 
-		m_Result = Egss::Acoustics2D::Trace(m_World, m_Source, m_Listener,
+		m_Result = GS::Acoustics2D::Trace(m_World, m_Source, m_Listener,
 			settings, m_DrawRays ? &m_Rays : nullptr);
 
 		m_LastTraceSource = m_Source;
@@ -247,19 +247,19 @@ public:
 	// Everything the mixer is told, it is told from the trace.
 	void ApplyToMixer()
 	{
-		if (!Egss::AudioEngine::IsPlaying(m_Voice))
+		if (!GS::AudioEngine::IsPlaying(m_Voice))
 			return;
 
-		Egss::AudioEngine::SetVoicePosition(m_Voice, { m_Source.x, m_Source.y, 0.0f });
-		Egss::AudioEngine::SetVoiceOcclusion(m_Voice, m_ApplyOcclusion ? m_Result.Occlusion : 0.0f);
+		GS::AudioEngine::SetVoicePosition(m_Voice, { m_Source.x, m_Source.y, 0.0f });
+		GS::AudioEngine::SetVoiceOcclusion(m_Voice, m_ApplyOcclusion ? m_Result.Occlusion : 0.0f);
 
 		// --- Early reflections ---
 		m_Taps.clear();
 		if (m_ApplyReflections)
 		{
-			for (const Egss::ReflectionPath& path : m_Result.Reflections)
+			for (const GS::ReflectionPath& path : m_Result.Reflections)
 			{
-				Egss::AudioReflection tap;
+				GS::AudioReflection tap;
 				tap.Delay = path.Delay;
 				tap.Gain = path.Gain * m_ReflectionGain;
 				// The listener faces up the screen, so world X is left/right.
@@ -267,31 +267,31 @@ public:
 				m_Taps.push_back(tap);
 			}
 		}
-		Egss::AudioEngine::SetVoiceReflections(m_Voice, m_Taps.data(), (unsigned int)m_Taps.size());
+		GS::AudioEngine::SetVoiceReflections(m_Voice, m_Taps.data(), (unsigned int)m_Taps.size());
 
 		// --- The tail ---
 		// Two ways to make it, from the same trace. The parametric reverb is
 		// told *about* the room; the convolution one is given the room.
 		if (m_ApplyReverb && m_UseConvolution)
 		{
-			Egss::ImpulseSettings impulse;
+			GS::ImpulseSettings impulse;
 			impulse.Density = m_TailDensity;
 			impulse.Gain = m_TailGain;
 			// Starts where the discrete early reflections stop, or the first
 			// 80 ms would be played twice.
 			impulse.StartSeconds = 0.08f;
 
-			m_ImpulseTaps = Egss::Acoustics2D::BuildImpulseTaps(m_Result, impulse);
-			Egss::AudioEngine::SetReverbImpulse(m_ImpulseTaps.data(),
+			m_ImpulseTaps = GS::Acoustics2D::BuildImpulseTaps(m_Result, impulse);
+			GS::AudioEngine::SetReverbImpulse(m_ImpulseTaps.data(),
 				(unsigned int)m_ImpulseTaps.size());
 		}
 		else
 		{
-			Egss::AudioEngine::ClearReverbImpulse();
+			GS::AudioEngine::ClearReverbImpulse();
 			m_ImpulseTaps.clear();
 		}
 
-		Egss::ReverbSettings reverb;
+		GS::ReverbSettings reverb;
 		if (m_ApplyReverb)
 		{
 			// RoomSize is comb feedback, which is not a time -- but it maps
@@ -306,7 +306,7 @@ public:
 			reverb.Damping = glm::clamp(m_Result.MeanAbsorption * 1.5f, 0.1f, 0.9f);
 			reverb.Width = 1.0f;
 		}
-		Egss::AudioEngine::SetReverb(reverb);
+		GS::AudioEngine::SetReverb(reverb);
 	}
 
 	// Movement belongs on the fixed step, not the frame. Driving it from
@@ -314,12 +314,12 @@ public:
 	// both wrong and unrecordable: a replay reproduces the input exactly, and
 	// then the demo moves a different distance with it. Measured -- this demo
 	// did not even reproduce itself run to run until this moved here.
-	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
+	void OnDemoFixedUpdate(GS::Timestep fixedStep) override
 	{
 		MoveThings(fixedStep);
 	}
 
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 		m_FrameTime = ts.GetMilliseconds();
 
@@ -339,17 +339,17 @@ public:
 
 		// The listener faces up the screen, so a reflection arriving from the
 		// left is heard on the left.
-		Egss::AudioListener listener;
+		GS::AudioListener listener;
 		listener.Position = { m_Listener.x, m_Listener.y, 0.0f };
 		listener.Forward = { 0.0f, 0.0f, -1.0f };
 		listener.Up = { 0.0f, 1.0f, 0.0f };
-		Egss::AudioEngine::SetListener(listener);
+		GS::AudioEngine::SetListener(listener);
 
-		Egss::RenderCommand::SetClearColor({ 0.05f, 0.05f, 0.07f, 1.0f });
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor({ 0.05f, 0.05f, 0.07f, 1.0f });
+		GS::RenderCommand::Clear();
 
-		Egss::Renderer2D::ResetStats();
-		Egss::Renderer2D::BeginScene(m_Camera);
+		GS::Renderer2D::ResetStats();
+		GS::Renderer2D::BeginScene(m_Camera);
 
 		DrawRoom();
 		if (m_DrawRays)
@@ -357,10 +357,10 @@ public:
 		DrawReflectionPaths();
 		DrawMarkers();
 
-		Egss::Renderer2D::EndScene();
+		GS::Renderer2D::EndScene();
 	}
 
-	void MoveThings(Egss::Timestep ts)
+	void MoveThings(GS::Timestep ts)
 	{
 		if (ImGui::GetIO().WantCaptureKeyboard)
 			return;
@@ -368,20 +368,20 @@ public:
 		// WASD drives the listener, because that is the thing whose point of
 		// view you are hearing from.
 		glm::vec2 move(0.0f);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) move.x -= 1.0f;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) move.x += 1.0f;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) move.y += 1.0f;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) move.y -= 1.0f;
+		if (GS::Input::IsKeyPressed(GS_KEY_A)) move.x -= 1.0f;
+		if (GS::Input::IsKeyPressed(GS_KEY_D)) move.x += 1.0f;
+		if (GS::Input::IsKeyPressed(GS_KEY_W)) move.y += 1.0f;
+		if (GS::Input::IsKeyPressed(GS_KEY_S)) move.y -= 1.0f;
 
 		if (glm::dot(move, move) > 0.0f)
 			m_Listener += glm::normalize(move) * m_MoveSpeed * (float)ts;
 
 		// Arrows drive the source.
 		glm::vec2 sourceMove(0.0f);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))  sourceMove.x -= 1.0f;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) sourceMove.x += 1.0f;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))    sourceMove.y += 1.0f;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))  sourceMove.y -= 1.0f;
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT))  sourceMove.x -= 1.0f;
+		if (GS::Input::IsKeyPressed(GS_KEY_RIGHT)) sourceMove.x += 1.0f;
+		if (GS::Input::IsKeyPressed(GS_KEY_UP))    sourceMove.y += 1.0f;
+		if (GS::Input::IsKeyPressed(GS_KEY_DOWN))  sourceMove.y -= 1.0f;
 
 		if (glm::dot(sourceMove, sourceMove) > 0.0f)
 			m_Source += glm::normalize(sourceMove) * m_MoveSpeed * (float)ts;
@@ -398,7 +398,7 @@ public:
 	{
 		for (size_t i = 0; i < m_World.GetBodyCount(); i++)
 		{
-			const Egss::RigidBody2D& body = m_World.GetBody((unsigned int)i);
+			const GS::RigidBody2D& body = m_World.GetBody((unsigned int)i);
 
 			// Shade by absorption, so what the room does to sound is visible
 			// rather than something you have to remember.
@@ -416,7 +416,7 @@ public:
 			glm::vec4 color(shade * (1.0f + scattering * 0.5f),
 				shade * 0.98f, shade * (1.1f - scattering * 0.7f), 1.0f);
 
-			Egss::Renderer2D::DrawQuad(glm::vec3(body.Position, -0.1f),
+			GS::Renderer2D::DrawQuad(glm::vec3(body.Position, -0.1f),
 				body.HalfExtents * 2.0f, color);
 		}
 	}
@@ -429,7 +429,7 @@ public:
 
 		for (size_t i = 0; i < m_Rays.size(); i += step)
 		{
-			const Egss::TracedRay& ray = m_Rays[i];
+			const GS::TracedRay& ray = m_Rays[i];
 
 			for (size_t p = 1; p < ray.Points.size(); p++)
 			{
@@ -441,7 +441,7 @@ public:
 					? glm::vec4(0.9f, 0.35f, 0.3f, alpha * 0.6f)
 					: glm::vec4(0.35f, 0.7f, 1.0f, alpha);
 
-				Egss::Renderer2D::DrawLine(glm::vec3(ray.Points[p - 1], 0.0f),
+				GS::Renderer2D::DrawLine(glm::vec3(ray.Points[p - 1], 0.0f),
 					glm::vec3(ray.Points[p], 0.0f), color);
 			}
 		}
@@ -452,18 +452,18 @@ public:
 	void DrawReflectionPaths()
 	{
 		float loudest = 0.0f;
-		for (const Egss::ReflectionPath& path : m_Result.Reflections)
+		for (const GS::ReflectionPath& path : m_Result.Reflections)
 			loudest = glm::max(loudest, path.Gain);
 
 		if (loudest <= 0.0f)
 			return;
 
-		for (const Egss::ReflectionPath& path : m_Result.Reflections)
+		for (const GS::ReflectionPath& path : m_Result.Reflections)
 		{
 			float length = 1.0f + 4.0f * (path.Gain / loudest);
 			glm::vec2 tip = m_Listener + path.Direction * length;
 
-			Egss::Renderer2D::DrawLine(glm::vec3(m_Listener, 0.1f), glm::vec3(tip, 0.1f),
+			GS::Renderer2D::DrawLine(glm::vec3(m_Listener, 0.1f), glm::vec3(tip, 0.1f),
 				{ 1.0f, 0.85f, 0.35f, 0.9f });
 		}
 	}
@@ -474,16 +474,16 @@ public:
 		glm::vec4 directColor = m_Result.DirectPathClear
 			? glm::vec4(0.4f, 1.0f, 0.5f, 0.8f)
 			: glm::vec4(1.0f, 0.35f, 0.35f, 0.6f);
-		Egss::Renderer2D::DrawLine(glm::vec3(m_Source, 0.1f), glm::vec3(m_Listener, 0.1f), directColor);
+		GS::Renderer2D::DrawLine(glm::vec3(m_Source, 0.1f), glm::vec3(m_Listener, 0.1f), directColor);
 
 		// How far the sound actually carries, which is the whole point of
 		// tracing rather than picking a falloff radius.
 		if (m_DrawRadius && m_Result.EffectiveRadius > 0.0f)
 			DrawRing(m_Source, m_Result.EffectiveRadius, { 1.0f, 0.6f, 0.2f, 0.5f });
 
-		Egss::Renderer2D::DrawQuad(glm::vec3(m_Source, 0.2f), glm::vec2(0.5f),
+		GS::Renderer2D::DrawQuad(glm::vec3(m_Source, 0.2f), glm::vec2(0.5f),
 			{ 1.0f, 0.75f, 0.25f, 1.0f });
-		Egss::Renderer2D::DrawQuad(glm::vec3(m_Listener, 0.2f), glm::vec2(0.5f),
+		GS::Renderer2D::DrawQuad(glm::vec3(m_Listener, 0.2f), glm::vec2(0.5f),
 			{ 0.4f, 0.9f, 1.0f, 1.0f });
 	}
 
@@ -496,16 +496,16 @@ public:
 		{
 			float angle = glm::two_pi<float>() * (float)i / (float)segments;
 			glm::vec2 point = centre + glm::vec2(std::cos(angle), std::sin(angle)) * radius;
-			Egss::Renderer2D::DrawLine(glm::vec3(previous, 0.05f), glm::vec3(point, 0.05f), color);
+			GS::Renderer2D::DrawLine(glm::vec3(previous, 0.05f), glm::vec3(point, 0.05f), color);
 			previous = point;
 		}
 	}
 
-	void OnDemoEvent(Egss::Event& e) override
+	void OnDemoEvent(GS::Event& e) override
 	{
-		Egss::EventDispatcher dispatcher(e);
+		GS::EventDispatcher dispatcher(e);
 
-		dispatcher.Dispatch<Egss::WindowResizeEvent>([this](Egss::WindowResizeEvent& e)
+		dispatcher.Dispatch<GS::WindowResizeEvent>([this](GS::WindowResizeEvent& e)
 		{
 			if (e.GetHeight() > 0)
 			{
@@ -602,7 +602,7 @@ public:
 			ImGui::Text("%zu taps, loudest first arriving:", m_Result.Reflections.size());
 			for (size_t i = 0; i < m_Result.Reflections.size(); i++)
 			{
-				const Egss::ReflectionPath& path = m_Result.Reflections[i];
+				const GS::ReflectionPath& path = m_Result.Reflections[i];
 				ImGui::Text("  %4.1f ms  gain %.3f  pan %+.2f  %d bounce%s  %.1f m",
 					path.Delay * 1000.0f, path.Gain, path.Direction.x,
 					path.Bounces, path.Bounces == 1 ? "" : "s", path.PathLength);
@@ -666,7 +666,7 @@ public:
 		}
 
 		m_Dirty |= ImGui::SliderInt("Max taps", &m_MaxTaps, 1,
-			(int)Egss::AudioEngine::GetMaxReflections());
+			(int)GS::AudioEngine::GetMaxReflections());
 
 		m_Dirty |= ImGui::Checkbox("Trace the whole tail", &m_TraceFullTail);
 		if (ImGui::IsItemHovered())
@@ -699,7 +699,7 @@ public:
 			m_Dirty |= ImGui::SliderFloat("Tail gain", &m_TailGain, 0.1f, 10.0f);
 
 			int perBand[4] = {};
-			for (const Egss::ReverbTap& tap : m_ImpulseTaps)
+			for (const GS::ReverbTap& tap : m_ImpulseTaps)
 				perBand[glm::min(tap.Band, 3u)]++;
 
 			ImGui::TextDisabled("%zu impulses over %.2f s of traced tail",
@@ -714,7 +714,7 @@ public:
 					"Tail is cut short -- turn on \"Trace the whole tail\".");
 		}
 
-		Egss::ReverbSettings reverb = Egss::AudioEngine::GetReverb();
+		GS::ReverbSettings reverb = GS::AudioEngine::GetReverb();
 		ImGui::TextDisabled("driving reverb: wet %.2f  size %.2f  damping %.2f",
 			reverb.Wet, reverb.RoomSize, reverb.Damping);
 
@@ -728,7 +728,7 @@ public:
 		ImGui::SliderInt("Rays drawn", &m_RaysDrawn, 4, 128);
 
 		ImGui::TextDisabled("Frame: %.2f ms   %d draw calls",
-			m_FrameTime, Egss::Renderer2D::GetStats().DrawCalls);
+			m_FrameTime, GS::Renderer2D::GetStats().DrawCalls);
 
 		ImGui::End();
 	}
@@ -742,9 +742,9 @@ private:
 	float m_Aspect = 16.0f / 9.0f;
 	float m_Zoom = 9.0f;
 
-	Egss::OrthographicCamera m_Camera;
+	GS::OrthographicCamera m_Camera;
 
-	Egss::PhysicsWorld2D m_World;
+	GS::PhysicsWorld2D m_World;
 	std::vector<float> m_Absorptions;
 	std::vector<float> m_Scatterings;
 
@@ -756,9 +756,9 @@ private:
 	glm::vec2 m_Listener = { 8.0f, 2.0f };
 	float m_MoveSpeed = 6.0f;
 
-	Egss::AcousticsResult m_Result;
-	std::vector<Egss::TracedRay> m_Rays;
-	std::vector<Egss::AudioReflection> m_Taps;
+	GS::AcousticsResult m_Result;
+	std::vector<GS::TracedRay> m_Rays;
+	std::vector<GS::AudioReflection> m_Taps;
 	std::vector<float> m_EchogramDb;
 
 	// Retracing is triggered by movement rather than by the clock, with the
@@ -781,12 +781,12 @@ private:
 	bool m_TraceFullTail = false;
 
 	bool m_FrequencyDependent = true;
-	float m_BandScale[Egss::AcousticBandCount] = { 0.55f, 1.0f, 1.9f };
+	float m_BandScale[GS::AcousticBandCount] = { 0.55f, 1.0f, 1.9f };
 
 	bool m_UseConvolution = true;
 	int m_TailDensity = 260;
 	float m_TailGain = 2.0f;
-	std::vector<Egss::ReverbTap> m_ImpulseTaps;
+	std::vector<GS::ReverbTap> m_ImpulseTaps;
 
 	// Shared by the voice and the trace so both agree what "close" means.
 	static constexpr float s_SourceMinDistance = 1.5f;
@@ -803,8 +803,8 @@ private:
 	bool m_DrawRadius = true;
 	int m_RaysDrawn = 48;
 
-	std::shared_ptr<Egss::AudioClip> m_Clip;
-	Egss::VoiceHandle m_Voice = Egss::InvalidVoice;
+	std::shared_ptr<GS::AudioClip> m_Clip;
+	GS::VoiceHandle m_Voice = GS::InvalidVoice;
 
 	float m_FrameTime = 0.0f;
 };

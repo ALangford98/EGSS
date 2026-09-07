@@ -44,7 +44,7 @@
 // position, because pushing agents directly moves them without changing what
 // they want, and the colony snaps back the moment you let go.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 #include "Demo.h"
@@ -112,7 +112,7 @@ public:
 
 	void OnDemoAttach() override
 	{
-		Egss::Application& app = Egss::Application::Get();
+		GS::Application& app = GS::Application::Get();
 
 		// **A window and a desk want different cell sizes.** In a 1280x720
 		// window, 8 px/cell is 160x90 cells and the veins come out as blocks;
@@ -126,7 +126,7 @@ public:
 		// ask for.
 		m_PixelsPerCell = app.IsWallpaper() ? 10 : 3;
 
-		const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
+		const std::vector<std::string>& arguments = GS::Application::GetCommandLine();
 
 		for (size_t i = 1; i + 1 < arguments.size(); i++)
 		{
@@ -169,7 +169,7 @@ public:
 		m_Camera.SetProjection(-aspect, aspect, -1.0f, 1.0f);
 		m_QuadSize = { 2.0f * aspect, 2.0f };
 
-		EGSS_TRACE("Slime mould: {0}x{1} cells over {2}x{3} pixels, {4} agents, {5} screens",
+		GS_TRACE("Slime mould: {0}x{1} cells over {2}x{3} pixels, {4} agents, {5} screens",
 			m_Width, m_Height, pixelWidth, pixelHeight, m_AgentCount, m_Screens.size());
 
 		size_t cells = (size_t)m_Width * m_Height;
@@ -180,7 +180,7 @@ public:
 		m_NextOwner.assign(cells, (unsigned char)0);
 		m_Pixels.assign(cells, 0u);
 
-		m_Texture.reset(Egss::Texture2D::Create(m_Width, m_Height));
+		m_Texture.reset(GS::Texture2D::Create(m_Width, m_Height));
 
 		BuildPalettes();
 		Reset();
@@ -188,7 +188,7 @@ public:
 
 	// --- The simulation -----------------------------------------------------
 
-	void OnDemoFixedUpdate(Egss::Timestep step) override
+	void OnDemoFixedUpdate(GS::Timestep step) override
 	{
 		float dt = step;
 
@@ -212,7 +212,7 @@ public:
 			for (unsigned char cell : m_Blocked)
 				blocked += cell;
 
-			EGSS_TRACE("Desk: {0} windows, {1} of {2} cells covered ({3:.1f}%)",
+			GS_TRACE("Desk: {0} windows, {1} of {2} cells covered ({3:.1f}%)",
 				m_Windows.Rects().size(), blocked, m_Blocked.size(),
 				100.0f * (float)blocked / (float)std::max<size_t>(1, m_Blocked.size()));
 		}
@@ -223,7 +223,7 @@ public:
 		m_Steps++;
 	}
 
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 		m_FrameTime = ts.GetMilliseconds();
 
@@ -231,12 +231,12 @@ public:
 		m_Texture->SetData(m_Pixels.data(),
 			(unsigned int)(m_Pixels.size() * sizeof(unsigned int)));
 
-		Egss::RenderCommand::SetClearColor({ 0.02f, 0.02f, 0.04f, 1.0f });
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor({ 0.02f, 0.02f, 0.04f, 1.0f });
+		GS::RenderCommand::Clear();
 
-		Egss::Renderer2D::BeginScene(m_Camera);
-		Egss::Renderer2D::DrawQuad(glm::vec2(0.0f), m_QuadSize, m_Texture);
-		Egss::Renderer2D::EndScene();
+		GS::Renderer2D::BeginScene(m_Camera);
+		GS::Renderer2D::DrawQuad(glm::vec2(0.0f), m_QuadSize, m_Texture);
+		GS::Renderer2D::EndScene();
 	}
 
 private:
@@ -321,9 +321,9 @@ private:
 		filigree.RivalWeight = -0.2f;
 	}
 
-	void BuildScreens(Egss::Application& app)
+	void BuildScreens(GS::Application& app)
 	{
-		m_Monitors = Egss::Window::GetMonitors();
+		m_Monitors = GS::Window::GetMonitors();
 
 		// Monitor rectangles are in the arrangement's coordinates and the
 		// window sits at the arrangement's top-left, so subtracting that origin
@@ -335,7 +335,7 @@ private:
 			originX = m_Monitors[0].X;
 			originY = m_Monitors[0].Y;
 
-			for (const Egss::MonitorInfo& monitor : m_Monitors)
+			for (const GS::MonitorInfo& monitor : m_Monitors)
 			{
 				originX = std::min(originX, monitor.X);
 				originY = std::min(originY, monitor.Y);
@@ -347,7 +347,7 @@ private:
 
 		m_Screens.clear();
 
-		for (const Egss::MonitorInfo& monitor : m_Monitors)
+		for (const GS::MonitorInfo& monitor : m_Monitors)
 		{
 			Screen screen;
 			screen.X = (float)(monitor.X - originX) / (float)m_PixelsPerCell;
@@ -788,21 +788,21 @@ private:
 		if (ImGui::GetIO().WantCaptureMouse)
 			return;
 
-		bool attract = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
-		bool repel = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_RIGHT);
-		bool feed = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_MIDDLE);
+		bool attract = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_LEFT);
+		bool repel = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_RIGHT);
+		bool feed = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_MIDDLE);
 
 		if (!attract && !repel && !feed)
 			return;
 
-		Egss::Window& window = Egss::Application::Get().GetWindow();
+		GS::Window& window = GS::Application::Get().GetWindow();
 		float width = (float)window.GetWidth();
 		float height = (float)window.GetHeight();
 
 		if (width <= 0.0f || height <= 0.0f)
 			return;
 
-		std::pair<float, float> mouse = Egss::Input::GetMousePosition();
+		std::pair<float, float> mouse = GS::Input::GetMousePosition();
 
 		// Straight from window pixels to grid cells: the quad fills the view,
 		// so the mapping is a scale.
@@ -987,7 +987,7 @@ private:
 
 	enum class PointerMode { None, Attract, Repel, Feed };
 
-	Egss::OrthographicCamera m_Camera;
+	GS::OrthographicCamera m_Camera;
 
 	Breed m_Breeds[s_BreedCount];
 
@@ -995,7 +995,7 @@ private:
 	std::vector<float> m_Strength, m_NextStrength;
 	std::vector<unsigned char> m_Owner, m_NextOwner;
 	std::vector<unsigned int> m_Pixels;
-	std::shared_ptr<Egss::Texture2D> m_Texture;
+	std::shared_ptr<GS::Texture2D> m_Texture;
 
 	unsigned int m_Palettes[s_BreedCount][256] = {};
 
@@ -1004,7 +1004,7 @@ private:
 	bool m_UseWindows = false;
 	int m_OriginX = 0, m_OriginY = 0;
 
-	std::vector<Egss::MonitorInfo> m_Monitors;
+	std::vector<GS::MonitorInfo> m_Monitors;
 	std::vector<Screen> m_Screens;
 	glm::vec2 m_QuadSize = { 3.2f, 1.8f };
 

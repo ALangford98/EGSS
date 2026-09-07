@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Egss.h>
+#include <GS.h>
 
 #include "VoxelPlanet.h"
 
@@ -52,7 +52,7 @@ class HorizonMesh
 public:
 	bool Valid() const { return m_Mesh != nullptr; }
 
-	const std::shared_ptr<Egss::Mesh>& Mesh() const { return m_Mesh; }
+	const std::shared_ptr<GS::Mesh>& Mesh() const { return m_Mesh; }
 
 	// The site the grid is centred on, in the planet's own frame. Every vertex
 	// is stored relative to it, so nothing in the buffer is a planet-sized
@@ -76,7 +76,7 @@ private:
 	// Metres of sink per metre out from the inner edge. See the note above.
 	static constexpr float s_Droop = 0.004f;
 
-	std::shared_ptr<Egss::Mesh> m_Mesh;
+	std::shared_ptr<GS::Mesh> m_Mesh;
 	glm::dvec3 m_Site { 0.0 };
 
 	float m_Inner = 0.0f;
@@ -115,7 +115,7 @@ inline void HorizonMesh::Build(const VoxelPlanet& planet, const glm::dvec3& site
 	glm::vec3 t = glm::normalize(glm::cross(pick, n));
 	glm::vec3 b = glm::cross(n, t);
 
-	Egss::MeshData data;
+	GS::MeshData data;
 
 	data.Vertices.reserve((size_t)s_Rings * s_Spokes);
 	data.Indices.reserve((size_t)(s_Rings - 1) * s_Spokes * 6);
@@ -195,7 +195,7 @@ inline void HorizonMesh::Build(const VoxelPlanet& planet, const glm::dvec3& site
 			if (glm::dot(normal, glm::vec3(glm::normalize(position[here]))) < 0.0f)
 				normal = -normal;
 
-			Egss::MeshVertex vertex;
+			GS::MeshVertex vertex;
 			vertex.Position = glm::vec3(position[here] - site);
 			vertex.Normal = normal;
 			vertex.TexCoord = glm::vec2(0.0f);
@@ -248,18 +248,18 @@ inline void HorizonMesh::Build(const VoxelPlanet& planet, const glm::dvec3& site
 
 	m_SeamDroop = s_Droop * (outer - inner);
 
-	m_Mesh = std::make_shared<Egss::Mesh>(data, "HorizonTerrain");
+	m_Mesh = std::make_shared<GS::Mesh>(data, "HorizonTerrain");
 }
 
 inline void HorizonMesh::Report() const
 {
 	if (!m_Mesh)
 	{
-		EGSS_TRACE("Horizon: none");
+		GS_TRACE("Horizon: none");
 		return;
 	}
 
-	EGSS_TRACE("Horizon: {0} m to {1} m, {2} vertices, {3} triangles; "
+	GS_TRACE("Horizon: {0} m to {1} m, {2} vertices, {3} triangles; "
 		"seam agrees with the generator to {4:.4f} m, far edge sunk {5:.1f} m",
 		(int)m_Inner, (int)m_Outer, m_Vertices, m_Triangles,
 		m_SeamError, m_SeamDroop);

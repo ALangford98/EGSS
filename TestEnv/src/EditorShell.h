@@ -28,7 +28,7 @@
 // viewport degrades correctly instead -- no panels means the rect is the whole
 // window, which is exactly what it was before this file existed.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 #include <imgui_internal.h>
 
@@ -39,7 +39,7 @@
 // debugging a single panel should not have to fight one.
 inline bool g_EditorShell = true;
 
-class EditorShell : public Egss::Layer
+class EditorShell : public GS::Layer
 {
 public:
 	EditorShell() : Layer("EditorShell") {}
@@ -47,7 +47,7 @@ public:
 	void OnAttach() override
 	{
 		const std::vector<std::string>& arguments =
-			Egss::Application::GetCommandLine();
+			GS::Application::GetCommandLine();
 
 		for (const std::string& argument : arguments)
 			if (argument == "--no-editor")

@@ -43,11 +43,11 @@
 //
 // Identical files, or something leaked.
 
-#include <Egss.h>
+#include <GS.h>
 
 #include "DemoRegistry.h"
 
-class DemoWarmup : public Egss::Layer
+class DemoWarmup : public GS::Layer
 {
 public:
 	DemoWarmup()
@@ -58,7 +58,7 @@ public:
 	// Both entry points initialise, because which one runs first depends on
 	// whether the accumulator had a whole step in it. Under `--lockstep` it is
 	// always the fixed one; interactively, frame zero can beat it.
-	void OnFixedUpdate(Egss::Timestep step) override
+	void OnFixedUpdate(GS::Timestep step) override
 	{
 		(void)step;
 
@@ -79,7 +79,7 @@ public:
 		m_Steps++;
 	}
 
-	void OnUpdate(Egss::Timestep ts) override
+	void OnUpdate(GS::Timestep ts) override
 	{
 		(void)ts;
 		Initialise();
@@ -95,7 +95,7 @@ private:
 
 		m_Initialised = true;
 
-		const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
+		const std::vector<std::string>& arguments = GS::Application::GetCommandLine();
 
 		auto valueOf = [&arguments](const std::string& flag) -> std::string
 		{
@@ -115,7 +115,7 @@ private:
 		int warmup = FindDemo(wanted);
 		if (warmup < 0)
 		{
-			EGSS_WARN("--warmup '{0}' matches no demo", wanted);
+			GS_WARN("--warmup '{0}' matches no demo", wanted);
 			return;
 		}
 
@@ -129,7 +129,7 @@ private:
 		m_Target = g_ActiveDemo;
 		g_ActiveDemo = warmup;
 
-		EGSS_INFO("Warmup: {0} for {1} steps, then {2}",
+		GS_INFO("Warmup: {0} for {1} steps, then {2}",
 			s_Demos[warmup].ShortName, m_WarmupSteps, s_Demos[m_Target].ShortName);
 	}
 

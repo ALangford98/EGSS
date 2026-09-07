@@ -3,7 +3,7 @@
 // **Silence from a race detector is only evidence if the race window was
 // actually open.** TSan reports pairs of accesses it *observed*; a sweep where
 // the demos happen to play three sounds proves very little about a voice pool
-// under churn. `./egss.py sanitize --thread` runs every demo with
+// under churn. `./gs.py sanitize --thread` runs every demo with
 // `--audio-stress` for exactly this reason.
 //
 // It earned its place on 2026-08-21: under this load TSan found eight racing
@@ -18,9 +18,9 @@
 // behind the buffer still being valid.
 #pragma once
 
-#include <Egss.h>
+#include <GS.h>
 
-class AudioRaceStress : public Egss::Layer
+class AudioRaceStress : public GS::Layer
 {
 public:
 	AudioRaceStress() : Layer("AudioRaceStress") {}
@@ -29,7 +29,7 @@ public:
 	// race detector and a nuisance in every other run.
 	static bool Requested()
 	{
-		for (const std::string& argument : Egss::Application::GetCommandLine())
+		for (const std::string& argument : GS::Application::GetCommandLine())
 			if (argument == "--audio-stress")
 				return true;
 
@@ -56,11 +56,11 @@ public:
 					* (1.0f - (float)i / (float)frames);
 			}
 
-			m_Clips[c] = Egss::AudioClip::CreateFromSamples(std::move(samples), 1);
+			m_Clips[c] = GS::AudioClip::CreateFromSamples(std::move(samples), 1);
 		}
 	}
 
-	void OnFixedUpdate(Egss::Timestep) override
+	void OnFixedUpdate(GS::Timestep) override
 	{
 		if (!m_Clips[0])
 			return;
@@ -72,37 +72,37 @@ public:
 		// wraps.
 		for (int i = 0; i < 6; i++)
 		{
-			Egss::Audio3DParams params;
+			GS::Audio3DParams params;
 			params.Position = { (float)(m_Step % 17) - 8.0f, 0.0f, 2.0f };
 			params.Velocity = { 1.0f, 0.0f, 0.0f };
 			params.Volume = 0.05f;
 
-			Egss::VoiceHandle voice = Egss::AudioEngine::PlayAt(
+			GS::VoiceHandle voice = GS::AudioEngine::PlayAt(
 				m_Clips[(m_Step + i) % 2], params);
 
 			m_Live.push_back(voice);
 
 			// Parameter writes from the main thread while the mixer reads them.
-			Egss::AudioEngine::SetVoicePitch(voice, 0.9f + 0.2f * (float)(i % 3));
-			Egss::AudioEngine::SetVoiceOcclusion(voice, 0.25f);
+			GS::AudioEngine::SetVoicePitch(voice, 0.9f + 0.2f * (float)(i % 3));
+			GS::AudioEngine::SetVoiceOcclusion(voice, 0.25f);
 		}
 
 		// Stop the oldest, so a slot is released and re-claimed as close
 		// together as the loop can manage.
 		while (m_Live.size() > 8)
 		{
-			Egss::AudioEngine::Stop(m_Live.front());
+			GS::AudioEngine::Stop(m_Live.front());
 			m_Live.erase(m_Live.begin());
 		}
 
 		// And occasionally the blunt instrument, which takes a different path
 		// through the mixer.
 		if (m_Step % 97 == 0)
-			Egss::AudioEngine::StopAll();
+			GS::AudioEngine::StopAll();
 	}
 
 private:
-	std::shared_ptr<Egss::AudioClip> m_Clips[2];
-	std::vector<Egss::VoiceHandle> m_Live;
+	std::shared_ptr<GS::AudioClip> m_Clips[2];
+	std::vector<GS::VoiceHandle> m_Live;
 	int m_Step = 0;
 };

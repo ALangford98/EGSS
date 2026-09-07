@@ -8,12 +8,12 @@
 // work and one doing 12ms both report 16.7ms. The only way to tell them apart
 // is to time the scopes inside the frame, which is what this shows.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 #include "Demo.h"
 
-class ProfilerPanel : public Egss::Layer
+class ProfilerPanel : public GS::Layer
 {
 public:
 	ProfilerPanel()
@@ -28,12 +28,12 @@ public:
 
 		ImGui::Begin("Profiler");
 
-		const auto& entries = Egss::Instrumentor::GetLastFrame();
+		const auto& entries = GS::Instrumentor::GetLastFrame();
 
 		// "Frame" wraps everything else, so it is the reference the other
 		// rows are measured against.
 		double frameMicros = 0.0;
-		for (const Egss::ProfileEntry& entry : entries)
+		for (const GS::ProfileEntry& entry : entries)
 		{
 			if (entry.Name == "Frame")
 			{
@@ -52,7 +52,7 @@ public:
 		// scopes that do no GL -- physics, in particular -- and treat anything
 		// that touches the driver as work plus an unknown wait.
 		double swapMicros = 0.0;
-		for (const Egss::ProfileEntry& entry : entries)
+		for (const GS::ProfileEntry& entry : entries)
 		{
 			if (entry.Name.rfind("Window::OnUpdate", 0) == 0)
 			{
@@ -74,7 +74,7 @@ public:
 			ImGui::TableSetupColumn("n");
 			ImGui::TableHeadersRow();
 
-			for (const Egss::ProfileEntry& entry : entries)
+			for (const GS::ProfileEntry& entry : entries)
 			{
 				ImGui::TableNextRow();
 
@@ -96,16 +96,16 @@ public:
 		// A trace answers a different question: not "what is slow now" but
 		// "what happened during those three bad seconds". Load the file into
 		// chrome://tracing or ui.perfetto.dev.
-		if (Egss::Instrumentor::IsSessionActive())
+		if (GS::Instrumentor::IsSessionActive())
 		{
 			ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Capturing...");
 			if (ImGui::Button("Stop capture"))
-				EGSS_PROFILE_END_SESSION();
+				GS_PROFILE_END_SESSION();
 		}
 		else
 		{
 			if (ImGui::Button("Capture trace"))
-				EGSS_PROFILE_BEGIN_SESSION("EGSS", "profile.json");
+				GS_PROFILE_BEGIN_SESSION("GS", "profile.json");
 			ImGui::TextDisabled("writes profile.json next to the exe");
 		}
 

@@ -1,7 +1,7 @@
 {
  "asset": {
   "version": "2.0",
-  "generator": "EGSS make_figure.py"
+  "generator": "GS make_figure.py"
  },
  "scene": 0,
  "scenes": [

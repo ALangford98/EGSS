@@ -15,7 +15,7 @@
 // call sites did not have to be rewritten in the same change that proves the
 // change did nothing.
 
-#include <Egss.h>
+#include <GS.h>
 
 namespace Veg {
 
@@ -124,7 +124,7 @@ namespace Veg {
 	// and coarser. Deliberately not leaf-shaped -- at the size these are drawn
 	// a cluster reads as foliage and a hundred individual leaves would be a
 	// hundred times the triangles to say the same thing.
-	inline void LeafCluster(Egss::MeshData& data, const glm::vec3& centre, float radius,
+	inline void LeafCluster(GS::MeshData& data, const glm::vec3& centre, float radius,
 		int segments, int rings, unsigned int seed, int path)
 	{
 		auto point = [&](int i, int j)
@@ -191,7 +191,7 @@ namespace Veg {
 			}
 	}
 
-	inline void Segment(Egss::MeshData& data, const glm::vec3& base, const glm::vec3& tip,
+	inline void Segment(GS::MeshData& data, const glm::vec3& base, const glm::vec3& tip,
 		float baseRadius, float tipRadius, int sides)
 	{
 		glm::vec3 dir = tip - base;
@@ -235,7 +235,7 @@ namespace Veg {
 		}
 	}
 
-	inline void Branch(Egss::MeshData& bark, Egss::MeshData& leaves, const TreeParams& tree,
+	inline void Branch(GS::MeshData& bark, GS::MeshData& leaves, const TreeParams& tree,
 		const glm::vec3& base, const glm::vec3& dir, float length, float radius,
 		int depth, unsigned int seed, int path)
 	{
@@ -276,12 +276,12 @@ namespace Veg {
 		}
 	}
 
-	inline void Finish(Egss::MeshData& data)
+	inline void Finish(GS::MeshData& data)
 	{
 		if (data.Indices.empty())
 			return;
 
-		Egss::Submesh all;
+		GS::Submesh all;
 		all.IndexCount = (unsigned int)data.Indices.size();
 		data.Submeshes.push_back(all);
 		data.RecalculateBounds();
@@ -291,7 +291,7 @@ namespace Veg {
 	// they are two different colours and the leaves are the half worth being
 	// able to turn off when counting triangles.
 	inline void MakeTreeMesh(unsigned int seed, const TreeParams& tree,
-		Egss::MeshData& outBark, Egss::MeshData& outLeaves)
+		GS::MeshData& outBark, GS::MeshData& outLeaves)
 	{
 		Branch(outBark, outLeaves, tree, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
 			tree.Length, tree.Radius, tree.Depth, seed, 0);

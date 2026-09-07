@@ -10,7 +10,7 @@
 //
 // Things marked TRY: are deliberate places to experiment.
 
-#include <Egss.h>
+#include <GS.h>
 
 #include <cstring>
 #include <imgui.h>
@@ -48,10 +48,10 @@ public:
 
 	void OnDemoDeactivated() override
 	{
-		for (Egss::VoiceHandle& emitter : m_Emitters)
+		for (GS::VoiceHandle& emitter : m_Emitters)
 		{
-			Egss::AudioEngine::Stop(emitter);
-			emitter = Egss::InvalidVoice;
+			GS::AudioEngine::Stop(emitter);
+			emitter = GS::InvalidVoice;
 		}
 	}
 
@@ -72,9 +72,9 @@ public:
 	// A looping clip has to be seamless or the loop point clicks. Using a
 	// whole number of cycles in the buffer means the end lines up with the
 	// start exactly.
-	static std::shared_ptr<Egss::AudioClip> MakeHum(float frequency, float seconds)
+	static std::shared_ptr<GS::AudioClip> MakeHum(float frequency, float seconds)
 	{
-		const unsigned int rate = Egss::AudioEngine::GetSampleRate();
+		const unsigned int rate = GS::AudioEngine::GetSampleRate();
 		unsigned int frames = (unsigned int)(seconds * rate);
 
 		float cycles = std::round(frequency * seconds);
@@ -90,16 +90,16 @@ public:
 				+ std::sin(glm::two_pi<float>() * exactFrequency * 2.0f * t) * 0.2f) * 0.5f;
 		}
 
-		return Egss::AudioClip::CreateFromSamples(std::move(samples), 1);
+		return GS::AudioClip::CreateFromSamples(std::move(samples), 1);
 	}
 
 	void StartEmitters()
 	{
 		for (int i = 0; i < 2; i++)
 		{
-			Egss::AudioEngine::Stop(m_Emitters[i]);
+			GS::AudioEngine::Stop(m_Emitters[i]);
 
-			Egss::Audio3DParams params;
+			GS::Audio3DParams params;
 			params.Position = m_EmitterPositions[i];
 			params.Volume = 0.5f;
 			params.Loop = true;
@@ -107,7 +107,7 @@ public:
 			params.MaxDistance = m_EmitterMaxDistance;
 			params.DopplerFactor = m_DopplerFactor;
 
-			m_Emitters[i] = Egss::AudioEngine::PlayAt(
+			m_Emitters[i] = GS::AudioEngine::PlayAt(
 				i == 0 ? m_HumClip : m_ChimeClip, params);
 		}
 	}
@@ -122,9 +122,9 @@ public:
 	// ---------------------------------------------------------------------
 	void BuildMeshes()
 	{
-		m_Primitives[0].reset(Egss::Mesh::CreateCube(1.0f));
-		m_Primitives[1].reset(Egss::Mesh::CreateSphere(0.6f, 32, 16));
-		m_Primitives[2].reset(Egss::Mesh::CreatePlane(2.0f));
+		m_Primitives[0].reset(GS::Mesh::CreateCube(1.0f));
+		m_Primitives[1].reset(GS::Mesh::CreateSphere(0.6f, 32, 16));
+		m_Primitives[2].reset(GS::Mesh::CreatePlane(2.0f));
 
 		// Anything in assets/models, so the path box starts somewhere useful
 		// rather than at whatever the working directory happens to be.
@@ -132,11 +132,11 @@ public:
 
 		// Loaded at startup so the scene has something that came off disk. A
 		// failure is not fatal -- the entity just gets a primitive instead.
-		m_Loaded.reset(Egss::Mesh::Load("assets/models/icosahedron.obj"));
+		m_Loaded.reset(GS::Mesh::Load("assets/models/icosahedron.obj"));
 
 		// And one model that brings its own materials, which is a different
 		// thing from bringing its own geometry.
-		m_Beacon.reset(Egss::Mesh::Load("assets/models/beacon.obj"));
+		m_Beacon.reset(GS::Mesh::Load("assets/models/beacon.obj"));
 	}
 
 	// Turns a mesh's `mtllib` references into one material per submesh.
@@ -145,34 +145,34 @@ public:
 	// up by name is all this does. A submesh naming a material the file does
 	// not define keeps the scene material, which reads as "wrong colour"
 	// rather than "missing object".
-	std::vector<std::shared_ptr<Egss::Material>> LoadMaterialsFor(
-		const std::shared_ptr<Egss::Mesh>& mesh, const std::string& modelPath)
+	std::vector<std::shared_ptr<GS::Material>> LoadMaterialsFor(
+		const std::shared_ptr<GS::Mesh>& mesh, const std::string& modelPath)
 	{
-		std::vector<std::shared_ptr<Egss::Material>> materials;
+		std::vector<std::shared_ptr<GS::Material>> materials;
 		if (!mesh)
 			return materials;
 
-		std::string directory = Egss::MtlLoader::DirectoryOf(modelPath);
+		std::string directory = GS::MtlLoader::DirectoryOf(modelPath);
 
-		std::vector<Egss::ObjMaterial> defined;
+		std::vector<GS::ObjMaterial> defined;
 		for (const std::string& library : mesh->GetMaterialLibraries())
 		{
-			std::vector<Egss::ObjMaterial> batch;
+			std::vector<GS::ObjMaterial> batch;
 			std::string error;
-			if (Egss::MtlLoader::Load(directory + library, batch, error))
+			if (GS::MtlLoader::Load(directory + library, batch, error))
 				defined.insert(defined.end(), batch.begin(), batch.end());
 			else
-				EGSS_WARN("Cube3D: {0}", error);
+				GS_WARN("Cube3D: {0}", error);
 		}
 
 		// One cache across the whole model: two materials sharing a texture
 		// would otherwise upload it twice.
-		std::unordered_map<std::string, std::shared_ptr<Egss::Texture2D>> textures;
+		std::unordered_map<std::string, std::shared_ptr<GS::Texture2D>> textures;
 
 		// This shader has no uniform for most of what an .mtl carries. Naming
 		// only what exists keeps FromObj from setting uniforms that are not
 		// there and logging about each one, every frame.
-		Egss::ObjMaterialUniforms names;
+		GS::ObjMaterialUniforms names;
 		names.Ambient.clear();
 		names.Specular.clear();
 		names.Emissive.clear();
@@ -180,14 +180,14 @@ public:
 		names.Opacity.clear();
 		names.DiffuseMap.clear();   // the demo's checkerboard stays on the base
 
-		for (const Egss::Submesh& submesh : mesh->GetSubmeshes())
+		for (const GS::Submesh& submesh : mesh->GetSubmeshes())
 		{
 			auto it = std::find_if(defined.begin(), defined.end(),
-				[&](const Egss::ObjMaterial& m) { return m.Name == submesh.Material; });
+				[&](const GS::ObjMaterial& m) { return m.Name == submesh.Material; });
 
 			materials.push_back(it != defined.end()
-				? Egss::Material::FromObj(*it, m_SceneMaterial, directory, names, &textures)
-				: Egss::Material::CreateInstance(m_SceneMaterial));
+				? GS::Material::FromObj(*it, m_SceneMaterial, directory, names, &textures)
+				: GS::Material::CreateInstance(m_SceneMaterial));
 		}
 
 		return materials;
@@ -203,19 +203,19 @@ public:
 	// ---------------------------------------------------------------------
 	void BuildScene()
 	{
-		auto add = [this](const char* name, const std::shared_ptr<Egss::Mesh>& mesh,
+		auto add = [this](const char* name, const std::shared_ptr<GS::Mesh>& mesh,
 			const glm::vec3& position, const glm::vec4& color, float scale = 1.0f)
 		{
-			Egss::Entity entity = m_Scene.CreateEntity(name);
+			GS::Entity entity = m_Scene.CreateEntity(name);
 
-			auto* transform = entity.Get<Egss::TransformComponent>();
+			auto* transform = entity.Get<GS::TransformComponent>();
 			transform->Position = position;
 			transform->Scale = glm::vec3(scale);
 
-			Egss::MeshComponent mesh_;
+			GS::MeshComponent mesh_;
 			mesh_.Geometry = mesh;
 			mesh_.Color = color;
-			entity.Add<Egss::MeshComponent>(mesh_);
+			entity.Add<GS::MeshComponent>(mesh_);
 
 			return entity;
 		};
@@ -223,9 +223,9 @@ public:
 		// A wide, flat cube rather than the plane primitive: a plane is one
 		// quad with a single normal, so it goes uniformly dark as the light
 		// moves, and a floor is where that is most obvious.
-		Egss::Entity floor = add("Floor", m_Primitives[0], { 0.0f, -1.2f, 0.0f },
+		GS::Entity floor = add("Floor", m_Primitives[0], { 0.0f, -1.2f, 0.0f },
 			{ 0.55f, 0.57f, 0.62f, 1.0f });
-		floor.Get<Egss::TransformComponent>()->Scale = { 12.0f, 0.2f, 12.0f };
+		floor.Get<GS::TransformComponent>()->Scale = { 12.0f, 0.2f, 12.0f };
 
 		add("Cube",   m_Primitives[0], { -2.2f, 0.0f,  0.0f }, { 1.00f, 0.55f, 0.35f, 1.0f });
 		add("Sphere", m_Primitives[1], {  0.0f, 0.0f,  0.0f }, { 0.45f, 0.75f, 1.00f, 1.0f });
@@ -240,10 +240,10 @@ public:
 		// and the Color below is never applied to them.
 		if (m_Beacon)
 		{
-			Egss::Entity beacon = add("Beacon", m_Beacon, { -2.2f, -1.1f, 1.6f },
+			GS::Entity beacon = add("Beacon", m_Beacon, { -2.2f, -1.1f, 1.6f },
 				{ 1.0f, 1.0f, 1.0f, 1.0f });
 
-			auto* component = beacon.Get<Egss::MeshComponent>();
+			auto* component = beacon.Get<GS::MeshComponent>();
 			component->Materials = LoadMaterialsFor(m_Beacon, "assets/models/beacon.obj");
 			component->MaterialsFromFile = true;
 		}
@@ -283,17 +283,17 @@ public:
 		auto wall = [this](const char* name, const glm::vec3& position,
 			const glm::vec3& scale)
 		{
-			Egss::Entity entity = m_Scene.CreateEntity(name);
+			GS::Entity entity = m_Scene.CreateEntity(name);
 
-			auto* transform = entity.Get<Egss::TransformComponent>();
+			auto* transform = entity.Get<GS::TransformComponent>();
 			transform->Position = position;
 			transform->Scale = scale;
 
-			Egss::MeshComponent mesh;
+			GS::MeshComponent mesh;
 			mesh.Geometry = m_Primitives[0];
 			mesh.Color = { 0.40f, 0.42f, 0.48f, 1.0f };
 			mesh.Visible = m_ShowEnclosure;
-			entity.Add<Egss::MeshComponent>(mesh);
+			entity.Add<GS::MeshComponent>(mesh);
 
 			m_Enclosure.push_back(entity.GetId());
 		};
@@ -329,8 +329,8 @@ public:
 	// collision boxes.
 	void SetEnclosureVisible(bool visible)
 	{
-		for (Egss::EntityId entity : m_Enclosure)
-			if (auto* mesh = m_Scene.GetComponent<Egss::MeshComponent>(entity))
+		for (GS::EntityId entity : m_Enclosure)
+			if (auto* mesh = m_Scene.GetComponent<GS::MeshComponent>(entity))
 				mesh->Visible = visible;
 
 		// The room changed, so the last trace describes a different one.
@@ -341,7 +341,7 @@ public:
 	// mesh alone -- a missing file should not empty the scene.
 	void LoadMeshFromPath()
 	{
-		Egss::Mesh* loaded = Egss::Mesh::Load(m_LoadPath);
+		GS::Mesh* loaded = GS::Mesh::Load(m_LoadPath);
 		if (!loaded)
 		{
 			m_LoadError = "Could not load '" + std::string(m_LoadPath) + "' -- see the log";
@@ -353,7 +353,7 @@ public:
 
 		// Assign it to whatever is selected, so loading a file has a visible
 		// effect rather than quietly filling a slot.
-		if (auto* mesh = m_Scene.GetComponent<Egss::MeshComponent>(m_Selected))
+		if (auto* mesh = m_Scene.GetComponent<GS::MeshComponent>(m_Selected))
 			mesh->Geometry = m_Loaded;
 
 		FrameMesh();
@@ -364,8 +364,8 @@ public:
 	// worth discovering by flying around looking for it.
 	void FrameMesh()
 	{
-		auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(m_Selected);
-		auto* mesh = m_Scene.GetComponent<Egss::MeshComponent>(m_Selected);
+		auto* transform = m_Scene.GetComponent<GS::TransformComponent>(m_Selected);
+		auto* mesh = m_Scene.GetComponent<GS::MeshComponent>(m_Selected);
 		if (!transform || !mesh || !mesh->Geometry)
 			return;
 
@@ -390,18 +390,18 @@ public:
 	// alongside the colour nobody would want it mixed with.
 	void BuildTarget()
 	{
-		Egss::Window& window = Egss::Application::Get().GetWindow();
+		GS::Window& window = GS::Application::Get().GetWindow();
 
-		Egss::FramebufferSpecification spec;
+		GS::FramebufferSpecification spec;
 		spec.Width = window.GetWidth();
 		spec.Height = window.GetHeight();
 		spec.Attachments = {
-			Egss::FramebufferTextureFormat::RGBA8,
-			Egss::FramebufferTextureFormat::RED_INTEGER,
-			Egss::FramebufferTextureFormat::DEPTH24STENCIL8
+			GS::FramebufferTextureFormat::RGBA8,
+			GS::FramebufferTextureFormat::RED_INTEGER,
+			GS::FramebufferTextureFormat::DEPTH24STENCIL8
 		};
 
-		m_Framebuffer.reset(Egss::Framebuffer::Create(spec));
+		m_Framebuffer.reset(GS::Framebuffer::Create(spec));
 	}
 
 	void BuildShader()
@@ -500,16 +500,16 @@ public:
 			}
 		)";
 
-		m_Shader.reset(Egss::Shader::Create("Cube3D", vertexSrc, fragmentSrc));
+		m_Shader.reset(GS::Shader::Create("Cube3D", vertexSrc, fragmentSrc));
 
 		// Into the library, so anything else that wants this program can ask
 		// for it by name instead of being handed the pointer.
-		Egss::Renderer::GetShaderLibrary().Add(m_Shader);
+		GS::Renderer::GetShaderLibrary().Add(m_Shader);
 
 		// The scene material: everything that is the same for every object
 		// drawn this frame. Its values are refreshed once per frame in
 		// RenderMeshes, not per mesh.
-		m_SceneMaterial = Egss::Material::Create(m_Shader);
+		m_SceneMaterial = GS::Material::Create(m_Shader);
 	}
 
 	// A checkerboard, so the cube's faces and their orientation are readable
@@ -529,7 +529,7 @@ public:
 			}
 		}
 
-		m_Texture.reset(Egss::Texture2D::Create(size, size));
+		m_Texture.reset(GS::Texture2D::Create(size, size));
 		m_Texture->SetData(pixels.data(), (unsigned int)(pixels.size() * sizeof(unsigned int)));
 	}
 
@@ -543,7 +543,7 @@ public:
 	// On the fixed step, so how far the camera travels does not depend on the
 	// frame rate. Anything driven by held keys belongs here -- it is also what
 	// lets a session be recorded and replayed and arrive in the same place.
-	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
+	void OnDemoFixedUpdate(GS::Timestep fixedStep) override
 	{
 		m_PreviousCameraPosition = m_Camera.GetPosition();
 		MoveCamera(fixedStep);
@@ -567,7 +567,7 @@ public:
 	// occlusion and its direct sound and no echoes, which is audible if you go
 	// looking and cheap enough to be worth it.
 	// ---------------------------------------------------------------------
-	void UpdateAcoustics(const Egss::AudioListener& listener)
+	void UpdateAcoustics(const GS::AudioListener& listener)
 	{
 		if (!m_ApplyAcoustics)
 		{
@@ -575,12 +575,12 @@ public:
 			{
 				// Put the mixer back the way it was found, or turning this off
 				// leaves the last traced room ringing behind everything.
-				Egss::AudioEngine::ClearReverbImpulse();
-				Egss::AudioEngine::SetReverb(Egss::ReverbSettings());
+				GS::AudioEngine::ClearReverbImpulse();
+				GS::AudioEngine::SetReverb(GS::ReverbSettings());
 
 				for (int i = 0; i < 2; i++)
-					if (Egss::AudioEngine::IsPlaying(m_Emitters[i]))
-						Egss::AudioEngine::SetVoiceReflections(m_Emitters[i], nullptr, 0);
+					if (GS::AudioEngine::IsPlaying(m_Emitters[i]))
+						GS::AudioEngine::SetVoiceReflections(m_Emitters[i], nullptr, 0);
 
 				m_AcousticsApplied = false;
 			}
@@ -610,9 +610,9 @@ public:
 
 		if (moved > m_RetraceDistance || nearest != m_TracedEmitter || !m_AcousticsApplied)
 		{
-			EGSS_PROFILE_SCOPE("Cube3D::Acoustics3D");
+			GS_PROFILE_SCOPE("Cube3D::Acoustics3D");
 
-			Egss::AcousticsSettings settings;
+			GS::AcousticsSettings settings;
 			settings.RayCount = m_AcousticRays;
 			settings.Absorption = m_AcousticAbsorption;
 			settings.Scattering = m_AcousticScattering;
@@ -622,7 +622,7 @@ public:
 			settings.MinDistance = m_EmitterMinDistance;
 
 			auto before = std::chrono::steady_clock::now();
-			m_Acoustics = Egss::Acoustics3D::Trace(m_Scene,
+			m_Acoustics = GS::Acoustics3D::Trace(m_Scene,
 				m_EmitterPositions[nearest], listener.Position, settings);
 			m_TraceMilliseconds = (float)std::chrono::duration<double, std::milli>(
 				std::chrono::steady_clock::now() - before).count();
@@ -636,12 +636,12 @@ public:
 		}
 	}
 
-	void ApplyAcousticsToMixer(const Egss::AudioListener& listener, int emitter)
+	void ApplyAcousticsToMixer(const GS::AudioListener& listener, int emitter)
 	{
 		// --- Early reflections, on the traced voice only ---
 		m_AcousticTaps.clear();
 
-		if (Egss::AudioEngine::IsPlaying(m_Emitters[emitter]))
+		if (GS::AudioEngine::IsPlaying(m_Emitters[emitter]))
 		{
 			// A pan needs a left and a right, and in 3D those come from the
 			// listener rather than from the world: the arrival direction is a
@@ -651,55 +651,55 @@ public:
 			// worked because that listener never turned.
 			glm::vec3 right = glm::normalize(glm::cross(listener.Forward, listener.Up));
 
-			for (const Egss::ReflectionPath3D& path : m_Acoustics.Reflections)
+			for (const GS::ReflectionPath3D& path : m_Acoustics.Reflections)
 			{
-				Egss::AudioReflection tap;
+				GS::AudioReflection tap;
 				tap.Delay = path.Delay;
 				tap.Gain = path.Gain * m_ReflectionGain;
 				tap.Pan = glm::clamp(glm::dot(path.Direction, right), -1.0f, 1.0f);
 				m_AcousticTaps.push_back(tap);
 			}
 
-			Egss::AudioEngine::SetVoiceReflections(m_Emitters[emitter],
+			GS::AudioEngine::SetVoiceReflections(m_Emitters[emitter],
 				m_AcousticTaps.data(), (unsigned int)m_AcousticTaps.size());
 		}
 
 		// The other emitter gets no echoes rather than stale ones.
 		int other = 1 - emitter;
-		if (Egss::AudioEngine::IsPlaying(m_Emitters[other]))
-			Egss::AudioEngine::SetVoiceReflections(m_Emitters[other], nullptr, 0);
+		if (GS::AudioEngine::IsPlaying(m_Emitters[other]))
+			GS::AudioEngine::SetVoiceReflections(m_Emitters[other], nullptr, 0);
 
 		// --- The tail ---
 		if (m_UseConvolution)
 		{
-			Egss::ImpulseSettings impulse;
+			GS::ImpulseSettings impulse;
 			// Starts where the discrete early reflections stop, or the first
 			// 80 ms would be heard twice.
 			impulse.StartSeconds = 0.08f;
 			impulse.Gain = m_TailGain;
 
-			m_AcousticImpulse = Egss::Acoustics::BuildImpulseTaps(m_Acoustics, impulse);
-			Egss::AudioEngine::SetReverbImpulse(m_AcousticImpulse.data(),
+			m_AcousticImpulse = GS::Acoustics::BuildImpulseTaps(m_Acoustics, impulse);
+			GS::AudioEngine::SetReverbImpulse(m_AcousticImpulse.data(),
 				(unsigned int)m_AcousticImpulse.size());
 		}
 		else
 		{
-			Egss::AudioEngine::ClearReverbImpulse();
+			GS::AudioEngine::ClearReverbImpulse();
 			m_AcousticImpulse.clear();
 		}
 
 		// The parametric reverb is told *about* the room; the convolution one is
 		// given it. Both are driven from the same trace.
-		Egss::ReverbSettings reverb;
+		GS::ReverbSettings reverb;
 		reverb.RoomSize = glm::clamp(m_Acoustics.ReverbTime / 2.0f, 0.1f, 0.95f);
 		reverb.Wet = glm::clamp(m_Acoustics.LateEnergyRatio * m_WetScale, 0.0f, 0.9f);
 		reverb.Damping = glm::clamp(m_Acoustics.MeanAbsorption * 1.5f, 0.1f, 0.9f);
 		reverb.Width = 1.0f;
 
-		Egss::AudioEngine::SetReverb(reverb);
+		GS::AudioEngine::SetReverb(reverb);
 	}
 
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 		m_FrameTime = ts.GetMilliseconds();
 
@@ -707,7 +707,7 @@ public:
 
 		// The listener rides the camera. PerspectiveCamera already hands back
 		// position, forward and up in exactly the form a listener wants.
-		Egss::AudioListener listener;
+		GS::AudioListener listener;
 		listener.Position = m_Camera.GetPosition();
 		listener.Forward = m_Camera.GetForward();
 		listener.Up = m_Camera.GetUp();
@@ -717,7 +717,7 @@ public:
 			? (m_Camera.GetPosition() - previousCameraPosition) / (float)ts
 			: glm::vec3(0.0f);
 
-		Egss::AudioEngine::SetListener(listener);
+		GS::AudioEngine::SetListener(listener);
 
 		// Occlusion, which until now the 3D demo simply could not do: Raycast
 		// was 2D, so a hum behind a cube sounded exactly like a hum in front of
@@ -729,18 +729,18 @@ public:
 		// across frames instead.
 		if (m_ApplyOcclusion)
 		{
-			EGSS_PROFILE_SCOPE("Cube3D::Occlusion");
+			GS_PROFILE_SCOPE("Cube3D::Occlusion");
 
 			for (int i = 0; i < 2; i++)
 			{
-				if (!Egss::AudioEngine::IsPlaying(m_Emitters[i]))
+				if (!GS::AudioEngine::IsPlaying(m_Emitters[i]))
 					continue;
 
-				m_EmitterOcclusion[i] = Egss::Raycast3D::Occlusion(m_Scene,
+				m_EmitterOcclusion[i] = GS::Raycast3D::Occlusion(m_Scene,
 					m_EmitterPositions[i], listener.Position, m_OcclusionSpread,
 					m_OcclusionRays);
 
-				Egss::AudioEngine::SetVoiceOcclusion(m_Emitters[i], m_EmitterOcclusion[i]);
+				GS::AudioEngine::SetVoiceOcclusion(m_Emitters[i], m_EmitterOcclusion[i]);
 			}
 		}
 		else
@@ -748,8 +748,8 @@ public:
 			for (int i = 0; i < 2; i++)
 			{
 				m_EmitterOcclusion[i] = 0.0f;
-				if (Egss::AudioEngine::IsPlaying(m_Emitters[i]))
-					Egss::AudioEngine::SetVoiceOcclusion(m_Emitters[i], 0.0f);
+				if (GS::AudioEngine::IsPlaying(m_Emitters[i]))
+					GS::AudioEngine::SetVoiceOcclusion(m_Emitters[i], 0.0f);
 			}
 		}
 
@@ -758,7 +758,7 @@ public:
 		// The spinner's rotation is a property of the entity now, not a global
 		// the draw loop reaches for. Advanced on the fixed step -- see
 		// OnDemoFixedUpdate -- so its speed does not follow the frame rate.
-		if (auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(m_Spinner))
+		if (auto* transform = m_Scene.GetComponent<GS::TransformComponent>(m_Spinner))
 			transform->Rotation.y = m_Rotation;
 
 		ResizeTarget();
@@ -767,8 +767,8 @@ public:
 		// --- Pass 1: the scene, into the picking framebuffer ---
 		m_Framebuffer->Bind();
 
-		Egss::RenderCommand::SetClearColor({ 0.06f, 0.07f, 0.09f, 1.0f });
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor({ 0.06f, 0.07f, 0.09f, 1.0f });
+		GS::RenderCommand::Clear();
 		// glClear only carries a float colour, so the integer attachment needs
 		// its own call. -1 means "nothing here".
 		m_Framebuffer->ClearAttachment(1, -1);
@@ -776,16 +776,16 @@ public:
 		// Safe here because every mesh -- primitives and .obj alike -- is wound
 		// counter-clockwise. Off again before the debug lines, which are not
 		// closed geometry and would half disappear.
-		Egss::RenderCommand::SetCullFace(m_BackfaceCulling ? Egss::CullFace::Back : Egss::CullFace::None);
+		GS::RenderCommand::SetCullFace(m_BackfaceCulling ? GS::CullFace::Back : GS::CullFace::None);
 
 		RenderMeshes();
 
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
 		// Debug lines under a perspective camera. Renderer2D::BeginScene takes
 		// any Camera, so the line batch works here exactly as it does in 2D --
 		// the "2D" in the name is about the primitives, not the projection.
-		Egss::Renderer2D::BeginScene(m_Camera);
+		GS::Renderer2D::BeginScene(m_Camera);
 
 		if (m_ShowGrid)
 			DrawGrid();
@@ -802,7 +802,7 @@ public:
 		// it sits outside the lit geometry.
 		DrawLightMarker();
 
-		Egss::Renderer2D::EndScene();
+		GS::Renderer2D::EndScene();
 
 		// Read back while the framebuffer is still bound and the batch has
 		// already been flushed. Both matter.
@@ -811,8 +811,8 @@ public:
 		m_Framebuffer->Unbind();
 
 		// --- Pass 2: the result, to the window ---
-		Egss::RenderCommand::SetClearColor({ 0.0f, 0.0f, 0.0f, 1.0f });
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor({ 0.0f, 0.0f, 0.0f, 1.0f });
+		GS::RenderCommand::Clear();
 
 		BlitToWindow();
 	}
@@ -821,7 +821,7 @@ public:
 	// not know or care which of them also has a body, a light or a name.
 	void RenderMeshes()
 	{
-		Egss::Renderer::BeginScene(m_Camera);
+		GS::Renderer::BeginScene(m_Camera);
 
 		// Everything that is not per-object, onto the scene material once. These
 		// used to be a run of SetFloat3 calls against a bound shader, which
@@ -835,22 +835,22 @@ public:
 		m_SceneMaterial->Set("u_Tint", m_Tint);
 		m_SceneMaterial->SetTexture("u_Texture", m_Texture, 0);
 
-		auto& meshes = m_Scene.View<Egss::MeshComponent>();
+		auto& meshes = m_Scene.View<GS::MeshComponent>();
 		m_DrawnMeshes = 0;
 		m_DrawnSubmeshes = 0;
 
 		for (size_t i = 0; i < meshes.Size(); i++)
 		{
-			Egss::MeshComponent& mesh = meshes.Components()[i];
+			GS::MeshComponent& mesh = meshes.Components()[i];
 			if (!mesh.Visible || !mesh.Geometry)
 				continue;
 
-			Egss::EntityId entity = meshes.Owner(i);
-			auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(entity);
+			GS::EntityId entity = meshes.Owner(i);
+			auto* transform = m_Scene.GetComponent<GS::TransformComponent>(entity);
 			if (!transform)
 				continue;
 
-			const std::vector<Egss::Submesh>& submeshes = mesh.Geometry->GetSubmeshes();
+			const std::vector<GS::Submesh>& submeshes = mesh.Geometry->GetSubmeshes();
 
 			// An entity may arrive without materials -- it is normal to add
 			// geometry before deciding how it looks -- so give each submesh an
@@ -861,7 +861,7 @@ public:
 			for (size_t s = 0; s < submeshes.size(); s++)
 			{
 				if (!mesh.Materials[s])
-					mesh.Materials[s] = Egss::Material::CreateInstance(m_SceneMaterial);
+					mesh.Materials[s] = GS::Material::CreateInstance(m_SceneMaterial);
 
 				// A material that came out of an .mtl already has its colour,
 				// and it is the whole reason the file was loaded.
@@ -871,11 +871,11 @@ public:
 				// The slot index, not the handle -- the attachment is a *signed*
 				// integer texture, and a handle whose generation passes 2047
 				// exceeds INT_MAX and reads back negative.
-				mesh.Materials[s]->Set("u_EntityID", (int)Egss::EntityIds::Index(entity));
+				mesh.Materials[s]->Set("u_EntityID", (int)GS::EntityIds::Index(entity));
 
 				// TransformComponent already composes scale, then rotate, then
 				// translate, in that order. Swapping any two changes the result.
-				Egss::Renderer::SubmitSubmesh(mesh.Materials[s], mesh.Geometry,
+				GS::Renderer::SubmitSubmesh(mesh.Materials[s], mesh.Geometry,
 					(unsigned int)s, transform->GetTransform());
 			}
 
@@ -883,15 +883,15 @@ public:
 			m_DrawnSubmeshes += (unsigned int)submeshes.size();
 		}
 
-		Egss::Renderer::EndScene();
+		GS::Renderer::EndScene();
 	}
 
 	// Keeps the target the same size as the window, so a framebuffer pixel and
 	// a window pixel are the same thing and the mouse needs no rebasing.
 	void ResizeTarget()
 	{
-		Egss::Window& window = Egss::Application::Get().GetWindow();
-		const Egss::FramebufferSpecification& spec = m_Framebuffer->GetSpecification();
+		GS::Window& window = GS::Application::Get().GetWindow();
+		const GS::FramebufferSpecification& spec = m_Framebuffer->GetSpecification();
 
 		if (window.GetWidth() > 0 && window.GetHeight() > 0 &&
 			(spec.Width != window.GetWidth() || spec.Height != window.GetHeight()))
@@ -906,15 +906,15 @@ public:
 		unsigned int handle = m_Framebuffer->GetColorAttachmentRendererID(0);
 		if (!m_ColorAttachment || m_ColorHandle != handle)
 		{
-			m_ColorAttachment.reset(Egss::Texture2D::CreateFromHandle(handle,
+			m_ColorAttachment.reset(GS::Texture2D::CreateFromHandle(handle,
 				m_Framebuffer->GetSpecification().Width,
 				m_Framebuffer->GetSpecification().Height));
 			m_ColorHandle = handle;
 		}
 
-		Egss::Renderer2D::BeginScene(m_BlitCamera);
-		Egss::Renderer2D::DrawQuad(glm::vec2(0.0f), glm::vec2(2.0f), m_ColorAttachment);
-		Egss::Renderer2D::EndScene();
+		GS::Renderer2D::BeginScene(m_BlitCamera);
+		GS::Renderer2D::DrawQuad(glm::vec2(0.0f), glm::vec2(2.0f), m_ColorAttachment);
+		GS::Renderer2D::EndScene();
 	}
 
 	// What is under the cursor, straight out of the integer attachment.
@@ -924,7 +924,7 @@ public:
 	// volume would claim you had clicked.
 	void ReadHoveredEntity()
 	{
-		m_Hovered = Egss::InvalidEntity;
+		m_Hovered = GS::InvalidEntity;
 
 		// Dragging a gizmo handle must not re-pick, or the first frame of a
 		// drag would select whatever is behind the handle.
@@ -939,11 +939,11 @@ public:
 		// two sessions with nothing in the renderer changed. Map Building's
 		// preview block had the same bug and the same fix; m_Selected is not
 		// mouse-derived, so its box stays.
-		if (Egss::Application::Get().IsUIHidden())
+		if (GS::Application::Get().IsUIHidden())
 			return;
 
-		auto [mouseX, mouseY] = Egss::Input::GetMousePosition();
-		const Egss::FramebufferSpecification& spec = m_Framebuffer->GetSpecification();
+		auto [mouseX, mouseY] = GS::Input::GetMousePosition();
+		const GS::FramebufferSpecification& spec = m_Framebuffer->GetSpecification();
 
 		// Flip y: window coordinates count down, GL counts up.
 		int x = (int)mouseX;
@@ -965,12 +965,12 @@ public:
 	{
 		for (int pass = 0; pass < 2; pass++)
 		{
-			Egss::EntityId entity = (pass == 0) ? m_Hovered : m_Selected;
+			GS::EntityId entity = (pass == 0) ? m_Hovered : m_Selected;
 			if (!m_Scene.IsValid(entity) || (pass == 0 && entity == m_Selected))
 				continue;
 
-			auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(entity);
-			auto* mesh = m_Scene.GetComponent<Egss::MeshComponent>(entity);
+			auto* transform = m_Scene.GetComponent<GS::TransformComponent>(entity);
+			auto* mesh = m_Scene.GetComponent<GS::MeshComponent>(entity);
 			if (!transform || !mesh || !mesh->Geometry)
 				continue;
 
@@ -1002,7 +1002,7 @@ public:
 				{
 					if (i & bit)
 						continue;
-					Egss::Renderer2D::DrawLine(corner[i], corner[i | bit], color);
+					GS::Renderer2D::DrawLine(corner[i], corner[i | bit], color);
 				}
 			}
 		}
@@ -1020,7 +1020,7 @@ public:
 		{
 			glm::vec3 offset(0.0f);
 			offset[axis] = size;
-			Egss::Renderer2D::DrawLine(m_LightPosition - offset, m_LightPosition + offset, color);
+			GS::Renderer2D::DrawLine(m_LightPosition - offset, m_LightPosition + offset, color);
 		}
 	}
 
@@ -1028,8 +1028,8 @@ public:
 	{
 		for (int i = 0; i < 2; i++)
 		{
-			Egss::VoiceDebug debug;
-			bool live = Egss::AudioEngine::GetVoiceDebug(m_Emitters[i], debug);
+			GS::VoiceDebug debug;
+			bool live = GS::AudioEngine::GetVoiceDebug(m_Emitters[i], debug);
 
 			float brightness = live ? 0.25f + debug.Gain * 0.75f : 0.15f;
 			glm::vec4 color = i == 0
@@ -1050,9 +1050,9 @@ public:
 
 			for (int e = 0; e < 4; e++)
 			{
-				Egss::Renderer2D::DrawLine(corners[e], corners[(e + 1) % 4], color);
-				Egss::Renderer2D::DrawLine(corners[4 + e], corners[4 + (e + 1) % 4], color);
-				Egss::Renderer2D::DrawLine(corners[e], corners[4 + e], color);
+				GS::Renderer2D::DrawLine(corners[e], corners[(e + 1) % 4], color);
+				GS::Renderer2D::DrawLine(corners[4 + e], corners[4 + (e + 1) % 4], color);
+				GS::Renderer2D::DrawLine(corners[e], corners[4 + e], color);
 			}
 		}
 	}
@@ -1068,15 +1068,15 @@ public:
 
 		for (int i = -half; i <= half; i++)
 		{
-			Egss::Renderer2D::DrawLine({ (float)i, y, (float)-half }, { (float)i, y, (float)half }, gridColor);
-			Egss::Renderer2D::DrawLine({ (float)-half, y, (float)i }, { (float)half, y, (float)i }, gridColor);
+			GS::Renderer2D::DrawLine({ (float)i, y, (float)-half }, { (float)i, y, (float)half }, gridColor);
+			GS::Renderer2D::DrawLine({ (float)-half, y, (float)i }, { (float)half, y, (float)i }, gridColor);
 		}
 
 		// X red, Y green, Z blue -- the usual convention, and the fastest way
 		// to work out which way a scene is facing.
-		Egss::Renderer2D::DrawLine({ 0, y, 0 }, { 2.0f, y, 0 }, { 0.9f, 0.25f, 0.25f, 1.0f });
-		Egss::Renderer2D::DrawLine({ 0, y, 0 }, { 0, y + 2.0f, 0 }, { 0.3f, 0.85f, 0.3f, 1.0f });
-		Egss::Renderer2D::DrawLine({ 0, y, 0 }, { 0, y, 2.0f }, { 0.35f, 0.5f, 0.95f, 1.0f });
+		GS::Renderer2D::DrawLine({ 0, y, 0 }, { 2.0f, y, 0 }, { 0.9f, 0.25f, 0.25f, 1.0f });
+		GS::Renderer2D::DrawLine({ 0, y, 0 }, { 0, y + 2.0f, 0 }, { 0.3f, 0.85f, 0.3f, 1.0f });
+		GS::Renderer2D::DrawLine({ 0, y, 0 }, { 0, y, 2.0f }, { 0.35f, 0.5f, 0.95f, 1.0f });
 	}
 
 
@@ -1102,7 +1102,7 @@ public:
 	// and direction in world space.
 	void ScreenRay(const glm::vec2& mouse, glm::vec3& outOrigin, glm::vec3& outDirection) const
 	{
-		Egss::Window& window = Egss::Application::Get().GetWindow();
+		GS::Window& window = GS::Application::Get().GetWindow();
 		float width = (float)window.GetWidth();
 		float height = (float)window.GetHeight();
 
@@ -1129,7 +1129,7 @@ public:
 	// projection would happily produce a plausible-looking wrong answer.
 	bool WorldToScreen(const glm::vec3& world, glm::vec2& outScreen) const
 	{
-		Egss::Window& window = Egss::Application::Get().GetWindow();
+		GS::Window& window = GS::Application::Get().GetWindow();
 
 		glm::vec4 clip = m_Camera.GetViewProjectionMatrix() * glm::vec4(world, 1.0f);
 		if (clip.w <= 0.0001f)
@@ -1175,7 +1175,7 @@ public:
 		if (m_GizmoOnLight)
 			return &m_LightPosition;
 
-		auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(m_Selected);
+		auto* transform = m_Scene.GetComponent<GS::TransformComponent>(m_Selected);
 		return transform ? &transform->Position : nullptr;
 	}
 
@@ -1206,10 +1206,10 @@ public:
 
 	void UpdateGizmo()
 	{
-		glm::vec2 mouse = { Egss::Input::GetMousePosition().first,
-							Egss::Input::GetMousePosition().second };
+		glm::vec2 mouse = { GS::Input::GetMousePosition().first,
+							GS::Input::GetMousePosition().second };
 
-		bool down = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT)
+		bool down = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_LEFT)
 			&& !ImGui::GetIO().WantCaptureMouse;
 
 		// A grab needs the button to go *down* while over a handle, not merely
@@ -1306,7 +1306,7 @@ public:
 				color = glm::vec4(1.0f, 1.0f, 0.5f, 1.0f);   // highlighted
 
 			glm::vec3 tip = origin + direction * m_GizmoLength;
-			Egss::Renderer2D::DrawLine(origin, tip, color);
+			GS::Renderer2D::DrawLine(origin, tip, color);
 
 			// A little cross at the tip, so the end of the handle is visible
 			// even when the line is nearly edge-on to the camera.
@@ -1314,15 +1314,15 @@ public:
 			a[(axis + 1) % 3] = 0.06f;
 			b[(axis + 2) % 3] = 0.06f;
 
-			Egss::Renderer2D::DrawLine(tip - a, tip + a, color);
-			Egss::Renderer2D::DrawLine(tip - b, tip + b, color);
+			GS::Renderer2D::DrawLine(tip - a, tip + a, color);
+			GS::Renderer2D::DrawLine(tip - b, tip + b, color);
 		}
 	}
 
 	// Fly camera: WASD along the ground, Q/E straight up and down, arrows to
 	// look. Keyboard-only on purpose -- mouse look would need cursor capture,
 	// which the engine doesn't have yet.
-	void MoveCamera(Egss::Timestep ts)
+	void MoveCamera(GS::Timestep ts)
 	{
 		glm::vec3 position = m_Camera.GetPosition();
 		float yaw = m_Camera.GetYaw();
@@ -1333,30 +1333,30 @@ public:
 
 		// Forward and right come from the camera's own orientation, so "left"
 		// always means left of where you are facing.
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) position += m_Camera.GetForward() * move;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) position -= m_Camera.GetForward() * move;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) position -= m_Camera.GetRight() * move;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) position += m_Camera.GetRight() * move;
+		if (GS::Input::IsKeyPressed(GS_KEY_W)) position += m_Camera.GetForward() * move;
+		if (GS::Input::IsKeyPressed(GS_KEY_S)) position -= m_Camera.GetForward() * move;
+		if (GS::Input::IsKeyPressed(GS_KEY_A)) position -= m_Camera.GetRight() * move;
+		if (GS::Input::IsKeyPressed(GS_KEY_D)) position += m_Camera.GetRight() * move;
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_E)) position.y += move;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_Q)) position.y -= move;
+		if (GS::Input::IsKeyPressed(GS_KEY_E)) position.y += move;
+		if (GS::Input::IsKeyPressed(GS_KEY_Q)) position.y -= move;
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))  yaw -= look;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) yaw += look;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))    pitch += look;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))  pitch -= look;
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT))  yaw -= look;
+		if (GS::Input::IsKeyPressed(GS_KEY_RIGHT)) yaw += look;
+		if (GS::Input::IsKeyPressed(GS_KEY_UP))    pitch += look;
+		if (GS::Input::IsKeyPressed(GS_KEY_DOWN))  pitch -= look;
 
 		// --- Middle-drag to look ---
 		// Mouse *delta*, not position: how far it moved since last frame, not
 		// where it is. Kept every frame whether or not the button is held, or
 		// the first frame of a drag would jump by however far the cursor had
 		// travelled since it was last looked at.
-		glm::vec2 mouse = { Egss::Input::GetMousePosition().first,
-							Egss::Input::GetMousePosition().second };
+		glm::vec2 mouse = { GS::Input::GetMousePosition().first,
+							GS::Input::GetMousePosition().second };
 		glm::vec2 delta = mouse - m_PreviousMouse;
 		m_PreviousMouse = mouse;
 
-		bool looking = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_MIDDLE)
+		bool looking = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_MIDDLE)
 			&& !ImGui::GetIO().WantCaptureMouse;
 
 		if (looking)
@@ -1372,11 +1372,11 @@ public:
 		m_Camera.SetRotation(yaw, pitch);
 	}
 
-	void OnDemoEvent(Egss::Event& e) override
+	void OnDemoEvent(GS::Event& e) override
 	{
-		Egss::EventDispatcher dispatcher(e);
+		GS::EventDispatcher dispatcher(e);
 
-		dispatcher.Dispatch<Egss::WindowResizeEvent>([this](Egss::WindowResizeEvent& e)
+		dispatcher.Dispatch<GS::WindowResizeEvent>([this](GS::WindowResizeEvent& e)
 		{
 			// Only the projection cares about the window's shape. Get this
 			// wrong in 3D and everything looks subtly stretched.
@@ -1386,12 +1386,12 @@ public:
 			return false;
 		});
 
-		dispatcher.Dispatch<Egss::MouseButtonPressedEvent>([this](Egss::MouseButtonPressedEvent& e)
+		dispatcher.Dispatch<GS::MouseButtonPressedEvent>([this](GS::MouseButtonPressedEvent& e)
 		{
 			// A click on empty space deselects, which is what makes the
 			// selection feel like it belongs to the scene rather than the
 			// panel. Grabbing a gizmo handle must not change the selection.
-			if (e.GetMouseButton() == EGSS_MOUSE_BUTTON_LEFT
+			if (e.GetMouseButton() == GS_MOUSE_BUTTON_LEFT
 				&& !ImGui::GetIO().WantCaptureMouse && m_HoverAxis < 0)
 			{
 				m_Selected = m_Hovered;
@@ -1401,7 +1401,7 @@ public:
 			return false;
 		});
 
-		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& e)
+		dispatcher.Dispatch<GS::KeyPressedEvent>([this](GS::KeyPressedEvent& e)
 		{
 			if (e.GetRepeatCount() > 0)
 				return false;
@@ -1409,7 +1409,7 @@ public:
 			// Switching demos is DemoSelector's job, not this layer's -- it
 			// sits above this one and consumes F1 before it gets here.
 
-			if (e.GetKeyCode() == EGSS_KEY_SPACE)
+			if (e.GetKeyCode() == GS_KEY_SPACE)
 				m_Spinning = !m_Spinning;
 
 			return false;
@@ -1434,7 +1434,7 @@ public:
 
 		if (m_Scene.IsValid(m_Hovered))
 		{
-			auto* tag = m_Scene.GetComponent<Egss::TagComponent>(m_Hovered);
+			auto* tag = m_Scene.GetComponent<GS::TagComponent>(m_Hovered);
 			ImGui::Text("Hovered: %s", tag ? tag->Name.c_str() : "?");
 		}
 		else
@@ -1443,9 +1443,9 @@ public:
 		}
 
 		ImGui::BeginChild("hierarchy", ImVec2(0.0f, 96.0f), ImGuiChildFlags_Borders);
-		for (Egss::EntityId entity : m_Scene.GetEntities())
+		for (GS::EntityId entity : m_Scene.GetEntities())
 		{
-			auto* tag = m_Scene.GetComponent<Egss::TagComponent>(entity);
+			auto* tag = m_Scene.GetComponent<GS::TagComponent>(entity);
 			if (!tag)
 				continue;
 
@@ -1473,16 +1473,16 @@ public:
 			ImGui::SliderFloat("Range", &m_LightRange, 1.0f, 40.0f);
 			ImGui::ColorEdit3("Colour", &m_LightColor.x);
 		}
-		else if (auto* transform = m_Scene.GetComponent<Egss::TransformComponent>(m_Selected))
+		else if (auto* transform = m_Scene.GetComponent<GS::TransformComponent>(m_Selected))
 		{
-			auto* tag = m_Scene.GetComponent<Egss::TagComponent>(m_Selected);
+			auto* tag = m_Scene.GetComponent<GS::TagComponent>(m_Selected);
 			ImGui::Text("%s  (id %u)", tag ? tag->Name.c_str() : "?", m_Selected);
 
 			ImGui::DragFloat3("Position", &transform->Position.x, 0.01f);
 			ImGui::DragFloat3("Rotation", &transform->Rotation.x, 0.5f);
 			ImGui::DragFloat3("Scale", &transform->Scale.x, 0.01f, 0.05f, 20.0f);
 
-			if (auto* mesh = m_Scene.GetComponent<Egss::MeshComponent>(m_Selected))
+			if (auto* mesh = m_Scene.GetComponent<GS::MeshComponent>(m_Selected))
 			{
 				ImGui::ColorEdit4("Mesh colour", &mesh->Color.x);
 				ImGui::Checkbox("Visible", &mesh->Visible);
@@ -1515,7 +1515,7 @@ public:
 		// pointing two entities at the same one costs nothing extra.
 		ImGui::SeparatorText("Model");
 
-		auto* selectedMesh = m_Scene.GetComponent<Egss::MeshComponent>(m_Selected);
+		auto* selectedMesh = m_Scene.GetComponent<GS::MeshComponent>(m_Selected);
 
 		if (!selectedMesh)
 		{
@@ -1573,14 +1573,14 @@ public:
 		ImGui::Checkbox("Show grid", &m_ShowGrid);
 
 		ImGui::Separator();
-		ImGui::Text("Audio: %s   %u voices", Egss::AudioEngine::GetBackendName(),
-			Egss::AudioEngine::GetActiveVoiceCount());
+		ImGui::Text("Audio: %s   %u voices", GS::AudioEngine::GetBackendName(),
+			GS::AudioEngine::GetActiveVoiceCount());
 		ImGui::Checkbox("Show emitters", &m_ShowEmitters);
 
 		for (int i = 0; i < 2; i++)
 		{
-			Egss::VoiceDebug debug;
-			if (Egss::AudioEngine::GetVoiceDebug(m_Emitters[i], debug))
+			GS::VoiceDebug debug;
+			if (GS::AudioEngine::GetVoiceDebug(m_Emitters[i], debug))
 			{
 				ImGui::Text("emitter %d: %.2fm  gain %.2f  pan %+.2f  doppler %.3f  occl %.0f%%",
 					i, debug.Distance, debug.Gain, debug.Pan, debug.PitchScale,
@@ -1682,24 +1682,24 @@ public:
 	}
 
 private:
-	Egss::PerspectiveCamera m_Camera;
+	GS::PerspectiveCamera m_Camera;
 
 	// The geometry available to assign. Entities point at these rather than
 	// owning meshes, so switching costs nothing and switching back reloads
 	// nothing.
-	std::shared_ptr<Egss::Mesh> m_Primitives[3];   // cube, sphere, plane
-	std::shared_ptr<Egss::Mesh> m_Loaded;
-	std::shared_ptr<Egss::Mesh> m_Beacon;
+	std::shared_ptr<GS::Mesh> m_Primitives[3];   // cube, sphere, plane
+	std::shared_ptr<GS::Mesh> m_Loaded;
+	std::shared_ptr<GS::Mesh> m_Beacon;
 
 	char m_LoadPath[256] = { 0 };
 	std::string m_LoadError;
-	std::shared_ptr<Egss::Shader> m_Shader;
-	std::shared_ptr<Egss::Texture2D> m_Texture;
+	std::shared_ptr<GS::Shader> m_Shader;
+	std::shared_ptr<GS::Texture2D> m_Texture;
 
 	// The base every mesh's own material instances from. Holds the light, the
 	// camera and the ambient level -- the things that are the same for every
 	// object drawn this frame.
-	std::shared_ptr<Egss::Material> m_SceneMaterial;
+	std::shared_ptr<GS::Material> m_SceneMaterial;
 
 	float m_MoveSpeed = 3.0f;
 	float m_LookSpeed = 70.0f;
@@ -1707,9 +1707,9 @@ private:
 	float m_Rotation = 0.0f;
 	bool m_Spinning = true;
 
-	std::shared_ptr<Egss::AudioClip> m_HumClip;
-	std::shared_ptr<Egss::AudioClip> m_ChimeClip;
-	Egss::VoiceHandle m_Emitters[2] = { Egss::InvalidVoice, Egss::InvalidVoice };
+	std::shared_ptr<GS::AudioClip> m_HumClip;
+	std::shared_ptr<GS::AudioClip> m_ChimeClip;
+	GS::VoiceHandle m_Emitters[2] = { GS::InvalidVoice, GS::InvalidVoice };
 	glm::vec3 m_EmitterPositions[2];
 	float m_EmitterOcclusion[2] = { 0.0f, 0.0f };
 	bool m_ApplyOcclusion = true;
@@ -1723,7 +1723,7 @@ private:
 	bool m_ShowEmitters = true;
 
 	// --- Acoustics ---
-	std::vector<Egss::EntityId> m_Enclosure;
+	std::vector<GS::EntityId> m_Enclosure;
 	bool m_ShowEnclosure = false;
 
 	bool m_ApplyAcoustics = true;
@@ -1755,9 +1755,9 @@ private:
 	int m_TracedEmitter = -1;
 	float m_TraceMilliseconds = 0.0f;
 
-	Egss::AcousticsResult3D m_Acoustics;
-	std::vector<Egss::AudioReflection> m_AcousticTaps;
-	std::vector<Egss::ReverbTap> m_AcousticImpulse;
+	GS::AcousticsResult3D m_Acoustics;
+	std::vector<GS::AudioReflection> m_AcousticTaps;
+	std::vector<GS::ReverbTap> m_AcousticImpulse;
 
 	bool m_ShowGrid = true;
 
@@ -1770,10 +1770,10 @@ private:
 
 	// The scene, and what is picked in it. m_Selected is what the gizmo and the
 	// inspector act on; m_Hovered is only what the cursor is over this frame.
-	Egss::Scene m_Scene;
-	Egss::EntityId m_Selected = Egss::InvalidEntity;
-	Egss::EntityId m_Hovered = Egss::InvalidEntity;
-	Egss::EntityId m_Spinner = Egss::InvalidEntity;
+	GS::Scene m_Scene;
+	GS::EntityId m_Selected = GS::InvalidEntity;
+	GS::EntityId m_Hovered = GS::InvalidEntity;
+	GS::EntityId m_Spinner = GS::InvalidEntity;
 
 	// When true the gizmo drags the light rather than the selected entity. The
 	// light is not an entity -- it is a set of shader uniforms -- so it cannot
@@ -1783,10 +1783,10 @@ private:
 
 	// Rendered offscreen so the integer attachment has somewhere to go, then
 	// blitted back as one quad.
-	std::shared_ptr<Egss::Framebuffer> m_Framebuffer;
-	std::shared_ptr<Egss::Texture2D> m_ColorAttachment;
+	std::shared_ptr<GS::Framebuffer> m_Framebuffer;
+	std::shared_ptr<GS::Texture2D> m_ColorAttachment;
 	unsigned int m_ColorHandle = 0;
-	Egss::OrthographicCamera m_BlitCamera{ -1.0f, 1.0f, -1.0f, 1.0f };
+	GS::OrthographicCamera m_BlitCamera{ -1.0f, 1.0f, -1.0f, 1.0f };
 
 	bool m_BackfaceCulling = true;
 	int m_DrawnMeshes = 0;

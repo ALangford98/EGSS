@@ -50,22 +50,34 @@ Last landed, newest first:
   roadmap item that started with TerrainLab's 93-down-to-9 (changelog,
   2026-09-04).
 - **The context pipeline.** This file, a generated trap index
-  (`./egss.py traps`, `--check` to detect drift), and a tiered read ladder in
+  (`./gs.py traps`, `--check` to detect drift), and a tiered read ladder in
   `CLAUDE.md`. Answering "what are we working on" cold went from ~252k tokens
   and wrong to ~3.9k and right.
 - **Instancing.** Panels and animals batched: 764 draw calls → 33, submission
   1420 µs → 66 µs. Verified by rendering both ways and comparing pixels —
   byte-identical, 3,686,400 of 3,686,400 samples. Frame time did not move,
   because 16.667 ms is vsync.
-- **`./egss.py prune`.** The checkout was 9.7 GB against 1.2 MB of source.
+- **`./gs.py prune`.** The checkout was 9.7 GB against 1.2 MB of source.
   Now 1.7 GB.
 - **Life.** Boids, an Ornstein–Uhlenbeck lek swarm, active Brownian beetles —
   each checked against a formula `Critters.h` does not evaluate.
 
 ## What is next
 
-Nothing is in flight. Unstarted, in the order they were last discussed:
+**In flight: the editor pivot.** Boot the app into an editor environment
+(building on `EditorShell.h`) rather than a selected demo — import meshes,
+compose scenes in `GS::Scene`, attach logic, and eventually play the result
+in place. Being brainstormed as a sequence of sub-projects: (1) editor boot +
+scene composition, (2) a mesh authoring tool, (3) a logic/module attachment
+mechanism, (4) play-in-editor. See `docs/superpowers/specs/` for the design
+doc once it lands.
 
+Unstarted, in the order they were last discussed:
+
+- **Multiplayer/networking foundation.** Nothing exists yet — no transport, no
+  replication, no session model. Explicitly out of scope for the editor pivot
+  above; scope it out as its own sub-project once the editor's scene model
+  exists to replicate.
 - **Character attributes.** `s_Strength` in `TerrainLab.h` is deliberately a
   constant with a hook where a stat should be — carry capacity trained by use.
   The owner deferred this ("further down the line"), so **ask before starting

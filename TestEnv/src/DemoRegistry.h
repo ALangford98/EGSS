@@ -131,21 +131,21 @@ inline const char* DemoFolder(int index)
 // rather than a loop. Pairs with --capture.
 inline void SelectDemoFromCommandLine()
 {
-	const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
+	const std::vector<std::string>& arguments = GS::Application::GetCommandLine();
 
 	// A recording knows which scene it belongs to, and it outranks --demo:
 	// replaying Breakout's input into Physics2D would produce something, and
 	// that something would look like a broken replay rather than a mistake.
-	if (Egss::Replay::IsPlaying())
+	if (GS::Replay::IsPlaying())
 	{
-		int recorded = Egss::Replay::GetRecordedDemoIndex();
+		int recorded = GS::Replay::GetRecordedDemoIndex();
 		if (recorded >= 0 && recorded < s_DemoCount)
 		{
 			g_ActiveDemo = recorded;
 			return;
 		}
 
-		EGSS_WARN("Replay names demo {0}, which does not exist here", recorded);
+		GS_WARN("Replay names demo {0}, which does not exist here", recorded);
 	}
 
 	for (size_t i = 1; i + 1 < arguments.size(); i++)
@@ -162,7 +162,7 @@ inline void SelectDemoFromCommandLine()
 			if (index >= 0 && index < s_DemoCount)
 				g_ActiveDemo = index;
 			else
-				EGSS_WARN("--demo {0} is out of range; {1} demos exist", wanted, s_DemoCount);
+				GS_WARN("--demo {0} is out of range; {1} demos exist", wanted, s_DemoCount);
 
 			return;
 		}
@@ -191,14 +191,14 @@ inline void SelectDemoFromCommandLine()
 			}
 		}
 
-		EGSS_WARN("--demo '{0}' matches no demo", wanted);
+		GS_WARN("--demo '{0}' matches no demo", wanted);
 		return;
 	}
 }
 
 // Creates every demo, hands each its index, and pushes it. Called once from
 // TestApp -- so adding a demo needs no change there either.
-inline void PushAllDemos(Egss::Application& app)
+inline void PushAllDemos(GS::Application& app)
 {
 	SelectDemoFromCommandLine();
 
@@ -218,12 +218,12 @@ inline void PushAllDemos(Egss::Application& app)
 	// registers those from its constructor. Starting the recording first wrote a
 	// file that named no parameters and then recorded none of them -- a valid
 	// recording of a session whose sliders did nothing.
-	const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
+	const std::vector<std::string>& arguments = GS::Application::GetCommandLine();
 	for (size_t i = 1; i + 1 < arguments.size(); i++)
 	{
 		if (arguments[i] == "--record")
 		{
-			Egss::Replay::StartRecording(arguments[i + 1], g_ActiveDemo, app.GetFixedTimestep());
+			GS::Replay::StartRecording(arguments[i + 1], g_ActiveDemo, app.GetFixedTimestep());
 			break;
 		}
 	}

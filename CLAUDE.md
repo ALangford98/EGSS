@@ -1,7 +1,7 @@
-# EGSS
+# GS
 
 A game engine written from scratch in C++17, following the shape of TheCherno's
-Hazel series but diverging where it made sense. `EGSS/` is the engine, built as
+Hazel series but diverging where it made sense. `GS/` is the engine, built as
 a shared library; `TestEnv/` is a sandbox app that links against it and holds
 seventeen demos.
 
@@ -67,27 +67,27 @@ an earlier command persists.
 ## Build
 
 ```sh
-./egss.py build            # debug; always regenerates project files first
-./egss.py build release
-./egss.py build all        # every config
-./egss.py run
-./egss.py clean
-./egss.py gen              # project files only
-./egss.py build --no-gen   # skip regeneration
+./gs.py build            # debug; always regenerates project files first
+./gs.py build release
+./gs.py build all        # every config
+./gs.py run
+./gs.py clean
+./gs.py gen              # project files only
+./gs.py build --no-gen   # skip regeneration
 
-./egss.py sanitize         # ASan + UBSan, then every demo under it
-./egss.py sanitize release # the same at -O2, where UB actually bites
-./egss.py build --sanitize # just the instrumented build
-./egss.py windows          # bridge KWin's window list to the wallpaper
+./gs.py sanitize         # ASan + UBSan, then every demo under it
+./gs.py sanitize release # the same at -O2, where UB actually bites
+./gs.py build --sanitize # just the instrumented build
+./gs.py windows          # bridge KWin's window list to the wallpaper
 
 # Flags for TestEnv go after a bare --
-./egss.py run -- --demo Breakout --record run.rec
+./gs.py run -- --demo Breakout --record run.rec
 ```
 
 **`TestEnv/` in the repo root is source, not a binary.** The executable is at
 `bin/<Config>-linux-x86_64/TestEnv/TestEnv` and must run from that directory —
 assets load by path relative to it, and screenshots, recordings, `imgui.ini` and
-`profile.json` all land beside it. `./egss.py run` handles that for you.
+`profile.json` all land beside it. `./gs.py run` handles that for you.
 
 It regenerates every time **on purpose**: premake expands file globs at
 generation time, so a new `.cpp` is invisible to the build until it does. That
@@ -100,7 +100,7 @@ things Debug did not.
 Assets load by path relative to the executable; premake copies `TestEnv/assets`
 next to the binary after every link.
 
-`vendor/bin/premake/premake5` is gitignored, and the `EGSS/vendor/*` submodules
+`vendor/bin/premake/premake5` is gitignored, and the `GS/vendor/*` submodules
 need `git submodule update --init --recursive`. A fresh clone or a new worktree
 has neither, and the build fails confusingly on both.
 
@@ -191,13 +191,13 @@ the value is in the measuring, not in keeping the harness.
 ```cpp
 // TEMPORARY -- delete after verifying X.
 #pragma once
-#include <Egss.h>
+#include <GS.h>
 
 namespace XTest {
     inline int g_Pass = 0, g_Fail = 0;
     inline void Check(bool ok, const std::string& what) {
         ok ? g_Pass++ : g_Fail++;
-        EGSS_TRACE("  [{0}] {1}", ok ? "ok " : "FAIL", what);
+        GS_TRACE("  [{0}] {1}", ok ? "ok " : "FAIL", what);
     }
     inline void Run() { /* ... */ }
 }

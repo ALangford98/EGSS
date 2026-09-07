@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Egss.h>
+#include <GS.h>
 
 // A static portal to a small, empty room. The portal itself -- a doorway
 // frame near the lander -- shows a live rendered view of the room, the way
@@ -31,14 +31,14 @@ public:
 	// u_Up) -- the room's slabs are lit the same simple way, just with their
 	// own fixed light rather than the sun, since a pocket dimension is not
 	// necessarily under one.
-	void Build(const std::shared_ptr<Egss::Material>& genericMaterial,
+	void Build(const std::shared_ptr<GS::Material>& genericMaterial,
 		unsigned int windowSize = 512)
 	{
 		BuildSlabs();
 
 		m_RoomMaterial = genericMaterial;
 
-		Egss::MeshData quad;
+		GS::MeshData quad;
 		quad.Vertices = {
 			{ {-1.0f, 0.0f, -1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f} },
 			{ { 1.0f, 0.0f, -1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f} },
@@ -47,20 +47,20 @@ public:
 		};
 		quad.Indices = { 0, 1, 2, 2, 3, 0 };
 		quad.Submeshes.push_back({ "", -1, 0, (unsigned int)quad.Indices.size() });
-		m_WindowQuad.reset(new Egss::Mesh(quad, "PortalWindow"));
+		m_WindowQuad.reset(new GS::Mesh(quad, "PortalWindow"));
 
-		m_UnitCube.reset(Egss::Mesh::CreateCube(1.0f));
+		m_UnitCube.reset(GS::Mesh::CreateCube(1.0f));
 
 		BuildWindowShader();
 
-		Egss::FramebufferSpecification spec;
+		GS::FramebufferSpecification spec;
 		spec.Width = windowSize;
 		spec.Height = windowSize;
-		spec.Attachments = { Egss::FramebufferTextureFormat::RGBA8,
-			Egss::FramebufferTextureFormat::DEPTH24STENCIL8 };
-		m_Framebuffer.reset(Egss::Framebuffer::Create(spec));
+		spec.Attachments = { GS::FramebufferTextureFormat::RGBA8,
+			GS::FramebufferTextureFormat::DEPTH24STENCIL8 };
+		m_Framebuffer.reset(GS::Framebuffer::Create(spec));
 
-		m_WindowTexture.reset(Egss::Texture2D::CreateFromHandle(
+		m_WindowTexture.reset(GS::Texture2D::CreateFromHandle(
 			m_Framebuffer->GetColorAttachmentRendererID(), windowSize, windowSize));
 
 		m_InteriorCamera.SetProjection(70.0f, 1.0f, 0.1f, 50.0f);
@@ -75,7 +75,7 @@ public:
 	// than recomputed, which is what makes the room's "down" fixed instead
 	// of radial. The room itself sits far enough away, along its own facing,
 	// that it can never overlap real terrain, the ship, or the rocks.
-	void Place(Egss::PhysicsWorld3D& world, const glm::vec3& portalLocal,
+	void Place(GS::PhysicsWorld3D& world, const glm::vec3& portalLocal,
 		const glm::vec3& portalFacing, const glm::vec3& siteUp)
 	{
 		m_PortalLocal = portalLocal;
@@ -97,7 +97,7 @@ public:
 			glm::vec3 centre = m_RoomLocal + m_Right * slab.Centre.x
 				+ m_Up * slab.Centre.y + m_Forward * slab.Centre.z;
 
-			Egss::RigidBody3D box = Egss::RigidBody3D::MakeStaticBox(centre, slab.HalfExtents);
+			GS::RigidBody3D box = GS::RigidBody3D::MakeStaticBox(centre, slab.HalfExtents);
 			box.Orientation = glm::quat_cast(glm::mat3(m_Right, m_Up, m_Forward));
 
 			world.AddBody(box);
@@ -105,7 +105,7 @@ public:
 	}
 
 	// Fixed step, from UpdateSurface after m_World.Step(dt).
-	void UpdateCrossing(Egss::RigidBody3D& player)
+	void UpdateCrossing(GS::RigidBody3D& player)
 	{
 		if (!m_Built)
 			return;
@@ -179,17 +179,17 @@ public:
 
 		m_Framebuffer->Bind();
 
-		Egss::RenderCommand::SetClearColor({ 0.03f, 0.03f, 0.05f, 1.0f });
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor({ 0.03f, 0.03f, 0.05f, 1.0f });
+		GS::RenderCommand::Clear();
 
-		Egss::Renderer::BeginScene(m_InteriorCamera);
+		GS::Renderer::BeginScene(m_InteriorCamera);
 		DrawShellLocal();
-		Egss::Renderer::EndScene();
+		GS::Renderer::EndScene();
 
 		m_Framebuffer->Unbind();
 
-		Egss::Window& window = Egss::Application::Get().GetWindow();
-		Egss::RenderCommand::SetViewport(0, 0, window.GetWidth(), window.GetHeight());
+		GS::Window& window = GS::Application::Get().GetWindow();
+		GS::RenderCommand::SetViewport(0, 0, window.GetWidth(), window.GetHeight());
 	}
 
 	// The doorway, from outside: a quad showing whatever RenderRoomToTexture
@@ -204,7 +204,7 @@ public:
 		if (!m_Built || m_InPocket)
 			return;
 
-		auto material = Egss::Material::CreateInstance(m_WindowMaterial);
+		auto material = GS::Material::CreateInstance(m_WindowMaterial);
 		material->SetTexture("u_Window", m_WindowTexture, 0);
 
 		glm::mat4 transform(
@@ -213,7 +213,7 @@ public:
 			glm::vec4(up * s_DoorHalfHeight, 0.0f),
 			glm::vec4(at + up * s_DoorHalfHeight, 1.0f));
 
-		Egss::Renderer::Submit(material, m_WindowQuad, transform);
+		GS::Renderer::Submit(material, m_WindowQuad, transform);
 	}
 
 	// The room, from inside: the same five slabs RenderRoomToTexture just
@@ -227,7 +227,7 @@ public:
 		if (!m_Built || !m_InPocket)
 			return;
 
-		auto material = Egss::Material::CreateInstance(m_RoomMaterial);
+		auto material = GS::Material::CreateInstance(m_RoomMaterial);
 		material->Set("u_Color", glm::vec4(0.55f, 0.55f, 0.6f, 1.0f));
 		material->Set("u_Emissive", 0.0f);
 		material->Set("u_LightPosition", glm::vec3(0.3f, 1.0f, 0.2f) * 40.0f);
@@ -246,7 +246,7 @@ public:
 				glm::vec4(forward * slab.HalfExtents.z * 2.0f, 0.0f),
 				glm::vec4(slabCentre, 1.0f));
 
-			Egss::Renderer::Submit(material, m_UnitCube, transform);
+			GS::Renderer::Submit(material, m_UnitCube, transform);
 		}
 	}
 
@@ -277,7 +277,7 @@ private:
 	// at this scale -- the room is six metres across.
 	void DrawShellLocal()
 	{
-		auto material = Egss::Material::CreateInstance(m_RoomMaterial);
+		auto material = GS::Material::CreateInstance(m_RoomMaterial);
 		material->Set("u_Color", glm::vec4(0.55f, 0.55f, 0.6f, 1.0f));
 		material->Set("u_Emissive", 0.0f);
 		material->Set("u_LightPosition", glm::vec3(0.3f, 1.0f, 0.2f) * 40.0f);
@@ -290,7 +290,7 @@ private:
 			glm::mat4 transform = glm::translate(glm::mat4(1.0f), slab.Centre)
 				* glm::scale(glm::mat4(1.0f), slab.HalfExtents * 2.0f);
 
-			Egss::Renderer::Submit(material, m_UnitCube, transform);
+			GS::Renderer::Submit(material, m_UnitCube, transform);
 		}
 	}
 
@@ -356,20 +356,20 @@ private:
 			}
 		)";
 
-		m_WindowShader.reset(Egss::Shader::Create("PortalWindow", vertexSrc, fragmentSrc));
-		m_WindowMaterial = Egss::Material::Create(m_WindowShader);
+		m_WindowShader.reset(GS::Shader::Create("PortalWindow", vertexSrc, fragmentSrc));
+		m_WindowMaterial = GS::Material::Create(m_WindowShader);
 	}
 
 	std::vector<Slab> m_Slabs;
 
-	std::shared_ptr<Egss::Mesh> m_UnitCube;
-	std::shared_ptr<Egss::Mesh> m_WindowQuad;
-	std::shared_ptr<Egss::Shader> m_WindowShader;
-	std::shared_ptr<Egss::Material> m_WindowMaterial;
-	std::shared_ptr<Egss::Material> m_RoomMaterial;
-	std::shared_ptr<Egss::Framebuffer> m_Framebuffer;
-	std::shared_ptr<Egss::Texture2D> m_WindowTexture;
-	Egss::PerspectiveCamera m_InteriorCamera{ 70.0f, 1.0f, 0.1f, 50.0f };
+	std::shared_ptr<GS::Mesh> m_UnitCube;
+	std::shared_ptr<GS::Mesh> m_WindowQuad;
+	std::shared_ptr<GS::Shader> m_WindowShader;
+	std::shared_ptr<GS::Material> m_WindowMaterial;
+	std::shared_ptr<GS::Material> m_RoomMaterial;
+	std::shared_ptr<GS::Framebuffer> m_Framebuffer;
+	std::shared_ptr<GS::Texture2D> m_WindowTexture;
+	GS::PerspectiveCamera m_InteriorCamera{ 70.0f, 1.0f, 0.1f, 50.0f };
 
 	glm::vec3 m_PortalLocal{ 0.0f };
 	glm::vec3 m_RoomLocal{ 0.0f };

@@ -30,7 +30,7 @@
 //
 // Things marked TRY: are deliberate places to experiment.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -74,18 +74,18 @@ public:
 		m_Camera.SetPosition({ 0.2f, 1.6f, 4.2f });
 		m_Camera.SetRotation(-90.0f, -6.0f);
 
-		m_Cube.reset(Egss::Mesh::CreateCube(1.0f));
-		m_Sphere.reset(Egss::Mesh::CreateSphere(0.5f, 24, 12));
+		m_Cube.reset(GS::Mesh::CreateCube(1.0f));
+		m_Sphere.reset(GS::Mesh::CreateSphere(0.5f, 24, 12));
 		// Unit radius and unit half-height, so the scale in the draw call is
 		// the capsule's own diameter and segment length.
-		m_Cylinder.reset(Egss::Mesh::CreateCylinder(0.5f, 0.5f, 24));
+		m_Cylinder.reset(GS::Mesh::CreateCylinder(0.5f, 0.5f, 24));
 
 		// The lit solid-colour shader Physics3D registers. Shared through the
 		// library rather than copied, which is what the library is for --
 		// and safe to depend on because `OnAttach` is deliberately not guarded
 		// by the active demo, so every demo's assets are built at startup.
-		m_SceneMaterial = Egss::Material::Create(
-			Egss::Renderer::GetShaderLibrary().Get("Physics3D"));
+		m_SceneMaterial = GS::Material::Create(
+			GS::Renderer::GetShaderLibrary().Get("Physics3D"));
 
 		BuildScene();
 	}
@@ -103,7 +103,7 @@ public:
 	{
 		auto capsule = [&](glm::vec3 centre, float radius, float halfHeight, float mass)
 		{
-			Egss::RigidBody3D body = Egss::RigidBody3D::MakeCapsule(
+			GS::RigidBody3D body = GS::RigidBody3D::MakeCapsule(
 				origin + centre, radius, halfHeight, mass);
 			body.Friction = 0.7f;
 			body.Restitution = 0.0f;
@@ -117,7 +117,7 @@ public:
 
 		auto box = [&](glm::vec3 centre, glm::vec3 halfExtents, float mass)
 		{
-			Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(
+			GS::RigidBody3D body = GS::RigidBody3D::MakeBox(
 				origin + centre, halfExtents, mass);
 			body.Friction = 0.7f;
 			body.Restitution = 0.0f;
@@ -128,7 +128,7 @@ public:
 
 		auto sphere = [&](glm::vec3 centre, float radius, float mass)
 		{
-			Egss::RigidBody3D body = Egss::RigidBody3D::MakeSphere(
+			GS::RigidBody3D body = GS::RigidBody3D::MakeSphere(
 				origin + centre, radius, mass);
 			body.Friction = 0.7f;
 			body.Restitution = 0.0f;
@@ -203,8 +203,8 @@ public:
 		// of these is measured from the pose being built here rather than from
 		// the two bodies being aligned, which is why a rig assembled crooked
 		// still starts inside its own limits.
-		auto ball = [&](Egss::PhysicsWorld3D::BodyHandle a,
-			Egss::PhysicsWorld3D::BodyHandle b, glm::vec3 anchor,
+		auto ball = [&](GS::PhysicsWorld3D::BodyHandle a,
+			GS::PhysicsWorld3D::BodyHandle b, glm::vec3 anchor,
 			glm::vec3 twistAxis, float coneDegrees, float twistDegrees, float torque)
 		{
 			auto joint = m_World.AddBallJoint(a, b, origin + anchor);
@@ -216,8 +216,8 @@ public:
 			return joint;
 		};
 
-		auto hinge = [&](Egss::PhysicsWorld3D::BodyHandle a,
-			Egss::PhysicsWorld3D::BodyHandle b, glm::vec3 anchor,
+		auto hinge = [&](GS::PhysicsWorld3D::BodyHandle a,
+			GS::PhysicsWorld3D::BodyHandle b, glm::vec3 anchor,
 			glm::vec3 axis, float lowerDegrees, float upperDegrees, float torque)
 		{
 			auto joint = m_World.AddHingeJoint(a, b, origin + anchor, axis);
@@ -312,7 +312,7 @@ public:
 			// Measured from the pose the rig was built in, so changing the
 			// skeleton's proportions does not leave the IK solving for a leg
 			// that no longer exists.
-			const Egss::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+			const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 			for (int side = 0; side < 2; side++)
 			{
 				glm::vec3 hipAt(side == 0 ? -0.10f : 0.10f, 1.00f, 0.0f);
@@ -322,7 +322,7 @@ public:
 
 				// Same for the arm, measured off the pose it was built in, so
 				// the get-up's hand IK solves for the arm that exists.
-				const Egss::RigidBody3D& torso = m_World.GetBody(m_Torso);
+				const GS::RigidBody3D& torso = m_World.GetBody(m_Torso);
 				glm::vec3 shoulderAt(side == 0 ? -0.22f : 0.22f, 1.55f, 0.0f);
 				glm::vec3 elbowAt(side == 0 ? -0.22f : 0.22f, 1.20f, 0.0f);
 				glm::vec3 wristAt(side == 0 ? -0.22f : 0.22f, 0.88f, 0.0f);
@@ -413,16 +413,16 @@ public:
 	// three-line change instead of a rewrite.
 	virtual void BuildGround()
 	{
-		m_World.AddBody(Egss::RigidBody3D::MakeStaticBox(
+		m_World.AddBody(GS::RigidBody3D::MakeStaticBox(
 			{ 0.0f, -0.5f, 0.0f }, { 8.0f, 0.5f, 8.0f }));
 
 		// A step to walk up. 0.30 m to the top, which is a tall domestic stair
 		// and about the limit of what the gait will lift a foot over.
-		m_World.AddBody(Egss::RigidBody3D::MakeStaticBox(
+		m_World.AddBody(GS::RigidBody3D::MakeStaticBox(
 			{ 0.0f, 0.15f, 2.6f }, { 1.4f, 0.15f, 1.2f }));
 
 		// And something smaller to trip over.
-		m_World.AddBody(Egss::RigidBody3D::MakeStaticBox(
+		m_World.AddBody(GS::RigidBody3D::MakeStaticBox(
 			{ 1.6f, 0.08f, 0.0f }, { 0.3f, 0.08f, 0.3f }));
 	}
 
@@ -439,7 +439,7 @@ public:
 		m_MotorsEnabled = enabled;
 		for (auto handle : m_Joints)
 		{
-			Egss::Joint3D& joint = m_World.GetJoint(handle);
+			GS::Joint3D& joint = m_World.GetJoint(handle);
 			joint.MotorEnabled = enabled;
 			joint.MotorStiffness = m_MotorStiffness;
 		}
@@ -462,7 +462,7 @@ public:
 		{
 			for (auto handle : { m_HipJoint[side], m_KneeJoint[side], m_AnkleJoint[side] })
 			{
-				Egss::Joint3D& joint = m_World.GetJoint(handle);
+				GS::Joint3D& joint = m_World.GetJoint(handle);
 				// The ankle is stiffer than the rest of the leg. It carries a
 				// 1 kg foot rather than the body's weight, and it is chasing a
 				// target that moves with the shin every frame -- a motor is a
@@ -489,7 +489,7 @@ public:
 
 		direction = glm::normalize(direction);
 
-		const Egss::RigidBody3D& torso = m_World.GetBody(m_Torso);
+		const GS::RigidBody3D& torso = m_World.GetBody(m_Torso);
 		m_World.ApplyImpulseAt(m_Torso, direction * strength, torso.Position);
 
 		// A shove applied straight to a body never arrives through a contact,
@@ -696,7 +696,7 @@ public:
 			// Done when the weight is over the stance foot, or when it has had
 			// long enough. The timeout matters: waiting for a condition that
 			// may never arrive is how a balance controller freezes mid-fall.
-			const Egss::RigidBody3D& stanceFoot = m_World.GetBody(m_Foot[1 - m_SwingSide]);
+			const GS::RigidBody3D& stanceFoot = m_World.GetBody(m_Foot[1 - m_SwingSide]);
 			float remaining = std::fabs(state.Com.x - stanceFoot.Position.x);
 
 			if (remaining < m_ShiftTolerance || m_ShiftTimer >= m_ShiftDuration)
@@ -724,8 +724,8 @@ public:
 				// the instant the foot touched down, undoing the step that had
 				// just been taken. The figure would place a foot correctly and
 				// then pull it out from under itself.
-				const Egss::RigidBody3D& thigh = m_World.GetBody(m_UpperLeg[m_SwingSide]);
-				const Egss::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+				const GS::RigidBody3D& thigh = m_World.GetBody(m_UpperLeg[m_SwingSide]);
+				const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 				m_HipRest[m_SwingSide] = glm::normalize(
 					glm::conjugate(pelvis.Orientation) * thigh.Orientation);
 
@@ -791,7 +791,7 @@ public:
 		// A step that lands where the foot already is buys nothing and costs
 		// the support of a raised foot for a third of a second. If the capture
 		// point is that close, the ankles can have it.
-		const Egss::RigidBody3D& foot = m_World.GetBody(m_Foot[m_SwingSide]);
+		const GS::RigidBody3D& foot = m_World.GetBody(m_Foot[m_SwingSide]);
 		glm::vec2 footNow(foot.Position.x, foot.Position.z);
 
 		if (glm::length(target - footNow) < m_MinStep)
@@ -911,7 +911,7 @@ public:
 		// weight needs to go rather than by where the capture point is.
 		if (m_Shifting)
 		{
-			const Egss::RigidBody3D& stanceFoot = m_World.GetBody(m_Foot[1 - m_SwingSide]);
+			const GS::RigidBody3D& stanceFoot = m_World.GetBody(m_Foot[1 - m_SwingSide]);
 			float towards = stanceFoot.Position.x - state.Com.x;
 			roll = glm::clamp(roll + m_ShiftRoll * glm::sign(towards), -0.55f, 0.55f);
 		}
@@ -927,12 +927,12 @@ public:
 			if (m_Stepping && side == m_SwingSide)
 				continue;
 
-			Egss::Joint3D& joint = m_World.GetJoint(m_AnkleJoint[side]);
+			GS::Joint3D& joint = m_World.GetJoint(m_AnkleJoint[side]);
 			joint.MotorTargetRotation = glm::normalize(correction * m_AnkleRest[side]);
 		}
 	}
 
-	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
+	void OnDemoFixedUpdate(GS::Timestep fixedStep) override
 	{
 		MoveCamera(fixedStep);
 
@@ -992,7 +992,7 @@ public:
 	// is the whole reason it feels attached to something with weight -- a
 	// camera pinned rigidly to the hips inherits the walk's bob and sway and
 	// makes the picture seasick.
-	void MoveCamera(Egss::Timestep step)
+	void MoveCamera(GS::Timestep step)
 	{
 		if (ImGui::GetIO().WantCaptureKeyboard)
 			return;
@@ -1002,10 +1002,10 @@ public:
 		// Orbit on the arrows. Pitch is clamped short of straight down, which
 		// is where a follow camera flips over and loses its horizon.
 		float turn = 90.0f * dt;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))  m_CameraYaw -= turn;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) m_CameraYaw += turn;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))    m_CameraPitch -= turn;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))  m_CameraPitch += turn;
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT))  m_CameraYaw -= turn;
+		if (GS::Input::IsKeyPressed(GS_KEY_RIGHT)) m_CameraYaw += turn;
+		if (GS::Input::IsKeyPressed(GS_KEY_UP))    m_CameraPitch -= turn;
+		if (GS::Input::IsKeyPressed(GS_KEY_DOWN))  m_CameraPitch += turn;
 
 		m_CameraPitch = glm::clamp(m_CameraPitch, -60.0f, 25.0f);
 
@@ -1016,12 +1016,12 @@ public:
 			glm::vec3 position = m_Camera.GetPosition();
 			float move = m_CameraSpeed * dt;
 
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) position += m_Camera.GetForward() * move;
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) position -= m_Camera.GetForward() * move;
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) position -= m_Camera.GetRight() * move;
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) position += m_Camera.GetRight() * move;
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_Q)) position.y -= move;
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_E)) position.y += move;
+			if (GS::Input::IsKeyPressed(GS_KEY_W)) position += m_Camera.GetForward() * move;
+			if (GS::Input::IsKeyPressed(GS_KEY_S)) position -= m_Camera.GetForward() * move;
+			if (GS::Input::IsKeyPressed(GS_KEY_A)) position -= m_Camera.GetRight() * move;
+			if (GS::Input::IsKeyPressed(GS_KEY_D)) position += m_Camera.GetRight() * move;
+			if (GS::Input::IsKeyPressed(GS_KEY_Q)) position.y -= move;
+			if (GS::Input::IsKeyPressed(GS_KEY_E)) position.y += move;
 
 			m_Camera.SetPosition(position);
 			m_Camera.SetRotation(m_CameraYaw, -m_CameraPitch);
@@ -1061,17 +1061,17 @@ public:
 	// ---------------------------------------------------------------------
 	// Drawing -- every body as its own collider
 	// ---------------------------------------------------------------------
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 		m_FrameTime = ts.GetMilliseconds();
 
-		float alpha = Egss::Application::Get().GetInterpolationAlpha();
+		float alpha = GS::Application::Get().GetInterpolationAlpha();
 
-		Egss::RenderCommand::SetClearColor(ClearColour());
-		Egss::RenderCommand::Clear();
-		Egss::RenderCommand::SetDepthTest(true);
+		GS::RenderCommand::SetClearColor(ClearColour());
+		GS::RenderCommand::Clear();
+		GS::RenderCommand::SetDepthTest(true);
 
-		Egss::Renderer::BeginScene(m_Camera);
+		GS::Renderer::BeginScene(m_Camera);
 
 		SetSceneLighting();
 		DrawWorld();
@@ -1079,11 +1079,11 @@ public:
 		const auto& bodies = m_World.GetBodies();
 		for (size_t i = 0; i < bodies.size(); i++)
 		{
-			const Egss::RigidBody3D& body = bodies[i];
+			const GS::RigidBody3D& body = bodies[i];
 
 			// A heightfield has no primitive to stand in for it; whoever put it
 			// in the world draws it, in DrawWorld.
-			if (body.Shape == Egss::ColliderShape3D::Heightfield)
+			if (body.Shape == GS::ColliderShape3D::Heightfield)
 				continue;
 
 			glm::vec3 position = glm::mix(body.PreviousPosition, body.Position, alpha);
@@ -1093,7 +1093,7 @@ public:
 				* glm::mat4_cast(orientation);
 
 			glm::vec4 colour;
-			if (body.Type == Egss::BodyType::Static)
+			if (body.Type == GS::BodyType::Static)
 				colour = { 0.34f, 0.36f, 0.42f, 1.0f };
 			else if (i == m_Head)
 				colour = { 0.92f, 0.78f, 0.62f, 1.0f };
@@ -1102,40 +1102,40 @@ public:
 			else
 				colour = { 0.80f, 0.55f, 0.35f, 1.0f };
 
-			if (body.Type != Egss::BodyType::Static && !body.Awake)
+			if (body.Type != GS::BodyType::Static && !body.Awake)
 				colour = glm::vec4(glm::vec3(colour) * 0.45f, 1.0f);
 
 			m_SceneMaterial->Set("u_Color", colour);
 
-			if (body.Shape == Egss::ColliderShape3D::Box)
+			if (body.Shape == GS::ColliderShape3D::Box)
 			{
-				Egss::Renderer::Submit(m_SceneMaterial, m_Cube,
+				GS::Renderer::Submit(m_SceneMaterial, m_Cube,
 					glm::scale(transform, body.HalfExtents * 2.0f));
 			}
-			else if (body.Shape == Egss::ColliderShape3D::Capsule)
+			else if (body.Shape == GS::ColliderShape3D::Capsule)
 			{
 				// Cylinder shaft, spherical caps -- exactly what a capsule is.
 				float d = body.Radius * 2.0f;
 
-				Egss::Renderer::Submit(m_SceneMaterial, m_Cylinder,
+				GS::Renderer::Submit(m_SceneMaterial, m_Cylinder,
 					glm::scale(transform, { d, body.HalfHeight * 2.0f, d }));
 
 				for (float end : { -1.0f, 1.0f })
 				{
 					glm::mat4 cap = glm::translate(transform,
 						{ 0.0f, end * body.HalfHeight, 0.0f });
-					Egss::Renderer::Submit(m_SceneMaterial, m_Sphere,
+					GS::Renderer::Submit(m_SceneMaterial, m_Sphere,
 						glm::scale(cap, glm::vec3(d)));
 				}
 			}
 			else
 			{
-				Egss::Renderer::Submit(m_SceneMaterial, m_Sphere,
+				GS::Renderer::Submit(m_SceneMaterial, m_Sphere,
 					glm::scale(transform, glm::vec3(body.Radius * 2.0f)));
 			}
 		}
 
-		Egss::Renderer::EndScene();
+		GS::Renderer::EndScene();
 
 		// The balance state, drawn as lines in the perspective scene --
 		// Renderer2D::BeginScene takes any camera, which is what makes debug
@@ -1145,8 +1145,8 @@ public:
 		// and drawing it implies a failure that is not happening.
 		if (m_ShowBalance && m_Mode == Mode::Ragdoll && m_Balance.Support.size() >= 3)
 		{
-			Egss::RenderCommand::SetDepthTest(false);
-			Egss::Renderer2D::BeginScene(m_Camera);
+			GS::RenderCommand::SetDepthTest(false);
+			GS::Renderer2D::BeginScene(m_Camera);
 
 			// Just off the floor, or it z-fights -- and the floor is wherever
 			// the character is standing, not zero. On flat ground this is the
@@ -1160,19 +1160,19 @@ public:
 				const glm::vec2& a = m_Balance.Support[i];
 				const glm::vec2& b = m_Balance.Support[(i + 1) % m_Balance.Support.size()];
 
-				Egss::Renderer2D::DrawLine({ a.x, y, a.y }, { b.x, y, b.y },
+				GS::Renderer2D::DrawLine({ a.x, y, a.y }, { b.x, y, b.y },
 					{ 0.4f, 0.9f, 1.0f, 1.0f });
 			}
 
 			// The centre of mass, dropped to the floor: a plumb line and a
 			// cross where it lands.
 			glm::vec3 com = m_Balance.Com;
-			Egss::Renderer2D::DrawLine(com, { com.x, y, com.z }, { 1.0f, 1.0f, 0.4f, 1.0f });
+			GS::Renderer2D::DrawLine(com, { com.x, y, com.z }, { 1.0f, 1.0f, 0.4f, 1.0f });
 
 			auto cross = [&](glm::vec2 at, glm::vec4 colour, float size)
 			{
-				Egss::Renderer2D::DrawLine({ at.x - size, y, at.y }, { at.x + size, y, at.y }, colour);
-				Egss::Renderer2D::DrawLine({ at.x, y, at.y - size }, { at.x, y, at.y + size }, colour);
+				GS::Renderer2D::DrawLine({ at.x - size, y, at.y }, { at.x + size, y, at.y }, colour);
+				GS::Renderer2D::DrawLine({ at.x, y, at.y - size }, { at.x, y, at.y + size }, colour);
 			};
 
 			cross(m_Balance.ComGround, { 1.0f, 1.0f, 0.4f, 1.0f }, 0.06f);
@@ -1184,8 +1184,8 @@ public:
 				m_Balance.Standing ? glm::vec4(0.4f, 1.0f, 0.5f, 1.0f)
 				                   : glm::vec4(1.0f, 0.35f, 0.3f, 1.0f), 0.09f);
 
-			Egss::Renderer2D::EndScene();
-			Egss::RenderCommand::SetDepthTest(true);
+			GS::Renderer2D::EndScene();
+			GS::RenderCommand::SetDepthTest(true);
 		}
 	}
 
@@ -1208,23 +1208,23 @@ public:
 	// subclass does not have to know how one is begun or ended.
 	virtual void DrawWorld() {}
 
-	void OnDemoEvent(Egss::Event& e) override
+	void OnDemoEvent(GS::Event& e) override
 	{
-		Egss::EventDispatcher dispatcher(e);
-		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& key)
+		GS::EventDispatcher dispatcher(e);
+		dispatcher.Dispatch<GS::KeyPressedEvent>([this](GS::KeyPressedEvent& key)
 		{
-			if (key.GetKeyCode() == EGSS_KEY_R) { BuildScene(); return true; }
-			if (key.GetKeyCode() == EGSS_KEY_P) { m_Paused = !m_Paused; return true; }
-			if (key.GetKeyCode() == EGSS_KEY_M) { SetMotorsEnabled(!m_MotorsEnabled); return true; }
-			if (key.GetKeyCode() == EGSS_KEY_B) { m_BalanceEnabled = !m_BalanceEnabled; return true; }
-			if (key.GetKeyCode() == EGSS_KEY_F) { m_FreeCamera = !m_FreeCamera; return true; }
-			if (key.GetKeyCode() == EGSS_KEY_G)
+			if (key.GetKeyCode() == GS_KEY_R) { BuildScene(); return true; }
+			if (key.GetKeyCode() == GS_KEY_P) { m_Paused = !m_Paused; return true; }
+			if (key.GetKeyCode() == GS_KEY_M) { SetMotorsEnabled(!m_MotorsEnabled); return true; }
+			if (key.GetKeyCode() == GS_KEY_B) { m_BalanceEnabled = !m_BalanceEnabled; return true; }
+			if (key.GetKeyCode() == GS_KEY_F) { m_FreeCamera = !m_FreeCamera; return true; }
+			if (key.GetKeyCode() == GS_KEY_G)
 			{
 				m_Mode == Mode::Controlled ? GoRagdoll("key") : BeginGetUp();
 				return true;
 			}
-			if (key.GetKeyCode() == EGSS_KEY_X) { m_PendingPush = m_PushStrength; return true; }
-			if (key.GetKeyCode() == EGSS_KEY_SPACE) { m_WantsJump = true; return true; }
+			if (key.GetKeyCode() == GS_KEY_X) { m_PendingPush = m_PushStrength; return true; }
+			if (key.GetKeyCode() == GS_KEY_SPACE) { m_WantsJump = true; return true; }
 			return false;
 		});
 	}
@@ -1387,8 +1387,8 @@ public:
 		m_RagdollReason = why;
 		m_RagdollTimer = 0.0f;
 
-		Egss::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
-		pelvis.Type = Egss::BodyType::Dynamic;
+		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		pelvis.Type = GS::BodyType::Dynamic;
 
 		// It keeps the velocity it was being driven at, so a character shoved
 		// while running tumbles forward rather than dropping on the spot.
@@ -1401,7 +1401,7 @@ public:
 		// looking like string, which is roughly what muscle tone does.
 		for (auto handle : m_Joints)
 		{
-			Egss::Joint3D& joint = m_World.GetJoint(handle);
+			GS::Joint3D& joint = m_World.GetJoint(handle);
 			joint.MotorStiffness = m_LimpStiffness;
 			joint.MotorMaxTorque = m_LimpTorque;
 		}
@@ -1415,8 +1415,8 @@ public:
 		m_RagdollTimer = 0.0f;
 		m_GetUpTimer = 0.0f;
 
-		Egss::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
-		pelvis.Type = Egss::BodyType::Kinematic;
+		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		pelvis.Type = GS::BodyType::Kinematic;
 		pelvis.AngularVelocity = glm::vec3(0.0f);
 
 		// The character stands up where it is lying, not where it fell from.
@@ -1441,7 +1441,7 @@ public:
 
 		for (auto handle : m_Joints)
 		{
-			Egss::Joint3D& joint = m_World.GetJoint(handle);
+			GS::Joint3D& joint = m_World.GetJoint(handle);
 			joint.MotorStiffness = m_MotorStiffness;
 			joint.MotorMaxTorque = m_JointTorque[handle];
 		}
@@ -1466,7 +1466,7 @@ public:
 		m_Mode = Mode::GettingUp;
 		m_GetUpTimer = 0.0f;
 
-		Egss::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 		m_GetUpFrom = pelvis.Position;
 		m_GetUpFromOrientation = pelvis.Orientation;
 
@@ -1508,7 +1508,7 @@ public:
 			m_HandSpot[side].y = m_GetUpGround + m_HandHeight;
 		}
 
-		pelvis.Type = Egss::BodyType::Kinematic;
+		pelvis.Type = GS::BodyType::Kinematic;
 		pelvis.AngularVelocity = glm::vec3(0.0f);
 	}
 
@@ -1537,7 +1537,7 @@ public:
 			glm::clamp((t - m_GetUpGather) / std::max(1.0f - m_GetUpGather, 0.01f),
 				0.0f, 1.0f));
 
-		Egss::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 
 		// Three waypoints, not two. Up onto the hands first, then back over
 		// the feet as they gather, and only then up.
@@ -1584,7 +1584,7 @@ public:
 		// they are asked to carry anything.
 		for (auto handle : m_Joints)
 		{
-			Egss::Joint3D& joint = m_World.GetJoint(handle);
+			GS::Joint3D& joint = m_World.GetJoint(handle);
 			// Twice the rate of the gather, so the legs have authority while
 			// there is still time left to gather with. Ramped over the whole
 			// gather instead, strength arrived just as the gather ended and
@@ -1671,7 +1671,7 @@ public:
 			return 0.0f;
 
 		float worst = 0.0f;
-		for (const Egss::Contact3D& contact : m_World.GetContacts())
+		for (const GS::Contact3D& contact : m_World.GetContacts())
 		{
 			bool mineA = IsCharacter(contact.A);
 			bool mineB = IsCharacter(contact.B);
@@ -1780,7 +1780,7 @@ public:
 	// the gait rather than snapped to it.
 	void DriveWalk(float dt)
 	{
-		Egss::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 
 		// --- steering, with momentum ----------------------------------------
 		//
@@ -1801,10 +1801,10 @@ public:
 		glm::vec3 wish(0.0f);
 		if (!m_FreeCamera)
 		{
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) wish += camForward;
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) wish -= camForward;
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) wish -= camRight;
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) wish += camRight;
+			if (GS::Input::IsKeyPressed(GS_KEY_W)) wish += camForward;
+			if (GS::Input::IsKeyPressed(GS_KEY_S)) wish -= camForward;
+			if (GS::Input::IsKeyPressed(GS_KEY_A)) wish -= camRight;
+			if (GS::Input::IsKeyPressed(GS_KEY_D)) wish += camRight;
 		}
 		wish.y = 0.0f;
 
@@ -1829,7 +1829,7 @@ public:
 		// walks along its *facing* rather than along the input -- so a turn is
 		// a curve rather than a sidestep.
 		bool wantsRun = !m_FreeCamera
-			&& Egss::Input::IsKeyPressed(EGSS_KEY_LEFT_SHIFT);
+			&& GS::Input::IsKeyPressed(GS_KEY_LEFT_SHIFT);
 
 		// Eased, because everything about the run differs from the walk --
 		// stride, stance fraction, arm swing, lean -- and snapping between two
@@ -2431,7 +2431,7 @@ public:
 	// reach from.
 	glm::vec3 HipWorld(int side) const
 	{
-		const Egss::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 		return pelvis.Position + pelvis.Orientation * m_HipLocal[side];
 	}
 
@@ -2454,8 +2454,8 @@ public:
 	// mirror images, which is why their limits are (0, 130) and (-140, 0).
 	void SolveLimb(const glm::quat& rootOrientation, const glm::vec3& anchorWorld,
 		const glm::vec3& endWorld, float upperLength, float lowerLength,
-		Egss::PhysicsWorld3D::BodyHandle proximal, const glm::quat& proximalRest,
-		Egss::PhysicsWorld3D::BodyHandle distal, float bendSign)
+		GS::PhysicsWorld3D::BodyHandle proximal, const glm::quat& proximalRest,
+		GS::PhysicsWorld3D::BodyHandle distal, float bendSign)
 	{
 		glm::vec3 toEnd = glm::conjugate(rootOrientation) * (endWorld - anchorWorld);
 
@@ -2499,7 +2499,7 @@ public:
 	// The shoulder's position in the world, which is what an arm reaches from.
 	glm::vec3 ShoulderWorld(int side) const
 	{
-		const Egss::RigidBody3D& torso = m_World.GetBody(m_Torso);
+		const GS::RigidBody3D& torso = m_World.GetBody(m_Torso);
 		return torso.Position + torso.Orientation * m_ShoulderLocal[side];
 	}
 
@@ -2528,7 +2528,7 @@ public:
 		// motor's stiffness. So the shin is integrated forward one step first.
 		// This is the whole reason the sole was not flat: not the cone limit,
 		// which never engaged, and not torque, but chasing a moving target.
-		const Egss::RigidBody3D& shin = m_World.GetBody(m_LowerLeg[side]);
+		const GS::RigidBody3D& shin = m_World.GetBody(m_LowerLeg[side]);
 
 		glm::quat spin(0.0f, shin.AngularVelocity.x, shin.AngularVelocity.y,
 			shin.AngularVelocity.z);
@@ -2677,9 +2677,9 @@ public:
 		BalanceState state;
 
 		float total = 0.0f;
-		for (const Egss::RigidBody3D& body : m_World.GetBodies())
+		for (const GS::RigidBody3D& body : m_World.GetBodies())
 		{
-			if (body.Type == Egss::BodyType::Static)
+			if (body.Type == GS::BodyType::Static)
 				continue;
 
 			float mass = body.GetMass();
@@ -2698,7 +2698,7 @@ public:
 		// Where the feet actually touch, not where they are. A foot in the air
 		// contributes nothing, which is the whole point.
 		std::vector<glm::vec2> contacts;
-		for (const Egss::Contact3D& contact : m_World.GetContacts())
+		for (const GS::Contact3D& contact : m_World.GetContacts())
 		{
 			bool footA = contact.A == m_Foot[0] || contact.A == m_Foot[1];
 			bool footB = contact.B == m_Foot[0] || contact.B == m_Foot[1];
@@ -2760,7 +2760,7 @@ public:
 			return 0.0f;
 
 		float impulse = 0.0f;
-		for (const Egss::Contact3D& contact : m_World.GetContacts())
+		for (const GS::Contact3D& contact : m_World.GetContacts())
 		{
 			if (contact.A == m_Foot[side] || contact.B == m_Foot[side])
 				impulse += contact.TotalNormalImpulse();
@@ -2774,9 +2774,9 @@ public:
 		glm::vec3 weighted(0.0f);
 		float total = 0.0f;
 
-		for (const Egss::RigidBody3D& body : m_World.GetBodies())
+		for (const GS::RigidBody3D& body : m_World.GetBodies())
 		{
-			if (body.Type == Egss::BodyType::Static)
+			if (body.Type == GS::BodyType::Static)
 				continue;
 
 			float mass = body.GetMass();
@@ -2792,15 +2792,15 @@ public:
 // tuning, and there is exactly one copy of it -- see the note at the top of
 // MapBuilding.h for why that demo is a subclass rather than a second rig.
 protected:
-	Egss::PerspectiveCamera m_Camera;
-	Egss::PhysicsWorld3D m_World;
+	GS::PerspectiveCamera m_Camera;
+	GS::PhysicsWorld3D m_World;
 
-	std::shared_ptr<Egss::Mesh> m_Cube;
-	std::shared_ptr<Egss::Mesh> m_Sphere;
-	std::shared_ptr<Egss::Mesh> m_Cylinder;
-	std::shared_ptr<Egss::Material> m_SceneMaterial;
+	std::shared_ptr<GS::Mesh> m_Cube;
+	std::shared_ptr<GS::Mesh> m_Sphere;
+	std::shared_ptr<GS::Mesh> m_Cylinder;
+	std::shared_ptr<GS::Material> m_SceneMaterial;
 
-	using Handle = Egss::PhysicsWorld3D::BodyHandle;
+	using Handle = GS::PhysicsWorld3D::BodyHandle;
 
 	Handle m_Pelvis = 0, m_Torso = 0, m_Head = 0;
 	Handle m_UpperLeg[2] = {}, m_LowerLeg[2] = {}, m_Foot[2] = {};
@@ -2811,11 +2811,11 @@ protected:
 	glm::quat m_ShoulderRest[2] = { glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
 		glm::quat(1.0f, 0.0f, 0.0f, 0.0f) };
 
-	std::vector<Egss::PhysicsWorld3D::JointHandle> m_Joints;
-	std::vector<Egss::PhysicsWorld3D::BodyHandle> m_CharacterBodies;
+	std::vector<GS::PhysicsWorld3D::JointHandle> m_Joints;
+	std::vector<GS::PhysicsWorld3D::BodyHandle> m_CharacterBodies;
 
-	Egss::PhysicsWorld3D::JointHandle m_HipJoint[2] = {};
-	Egss::PhysicsWorld3D::JointHandle m_KneeJoint[2] = {};
+	GS::PhysicsWorld3D::JointHandle m_HipJoint[2] = {};
+	GS::PhysicsWorld3D::JointHandle m_KneeJoint[2] = {};
 	glm::vec3 m_KneeAt[2] = {};
 	glm::vec3 m_AnkleAt[2] = {};
 
@@ -2984,7 +2984,7 @@ protected:
 	float m_StepCooldownTime = 0.25f;
 	glm::vec2 m_StepTarget{ 0.0f };
 
-	Egss::PhysicsWorld3D::JointHandle m_AnkleJoint[2] = {};
+	GS::PhysicsWorld3D::JointHandle m_AnkleJoint[2] = {};
 	glm::quat m_HipRest[2] = { glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
 	                           glm::quat(1.0f, 0.0f, 0.0f, 0.0f) };
 	glm::quat m_AnkleRest[2] = { glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
@@ -2993,7 +2993,7 @@ protected:
 	Mode m_Mode = Mode::Controlled;
 	const char* m_RagdollReason = "";
 	float m_RagdollTimer = 0.0f;
-	std::unordered_map<Egss::PhysicsWorld3D::JointHandle, float> m_JointTorque;
+	std::unordered_map<GS::PhysicsWorld3D::JointHandle, float> m_JointTorque;
 
 	// A hit above this many newtons ends control. Body weight is about 697 N,
 	// so the default is roughly three times the character's weight -- enough

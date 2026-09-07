@@ -1,6 +1,6 @@
 #pragma once
 
-// Breakout -- a worked example of building a 2D game on EGSS.
+// Breakout -- a worked example of building a 2D game on GS.
 //
 // Read docs/ENGINE.md first for the shape of the engine; this is the same
 // material from the other side. Everything here is game code -- no engine
@@ -12,7 +12,7 @@
 //
 // Things marked TRY: are deliberate places to experiment.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 // glm::two_pi -- do not rely on another header pulling this in.
@@ -89,7 +89,7 @@ public:
 			}
 		}
 
-		m_BrickTexture.reset(Egss::Texture2D::Create(size, size));
+		m_BrickTexture.reset(GS::Texture2D::Create(size, size));
 		m_BrickTexture->SetData(pixels.data(), (unsigned int)(pixels.size() * sizeof(unsigned int)));
 
 		// Synthesised, so the sandbox still has no asset files. A short
@@ -100,9 +100,9 @@ public:
 		Reset();
 	}
 
-	static std::shared_ptr<Egss::AudioClip> MakeTone(float frequency, float seconds, float decay)
+	static std::shared_ptr<GS::AudioClip> MakeTone(float frequency, float seconds, float decay)
 	{
-		const unsigned int rate = Egss::AudioEngine::GetSampleRate();
+		const unsigned int rate = GS::AudioEngine::GetSampleRate();
 		const unsigned int frames = (unsigned int)(seconds * rate);
 
 		std::vector<float> samples(frames);
@@ -112,18 +112,18 @@ public:
 			samples[i] = std::sin(glm::two_pi<float>() * frequency * t) * std::exp(-decay * t) * 0.5f;
 		}
 
-		return Egss::AudioClip::CreateFromSamples(std::move(samples), 1);
+		return GS::AudioClip::CreateFromSamples(std::move(samples), 1);
 	}
 
 	// Pan follows the x position, so a hit on the left is heard on the left.
 	// That is the whole idea behind positional audio, just without a listener.
-	void PlayAt(const std::shared_ptr<Egss::AudioClip>& clip, float x, float volume, float pitch)
+	void PlayAt(const std::shared_ptr<GS::AudioClip>& clip, float x, float volume, float pitch)
 	{
-		Egss::AudioParams params;
+		GS::AudioParams params;
 		params.Volume = volume;
 		params.Pitch = pitch;
 		params.Pan = std::min(std::max(x / m_WorldHalfWidth, -1.0f), 1.0f);
-		Egss::AudioEngine::Play(clip, params);
+		GS::AudioEngine::Play(clip, params);
 	}
 
 	void Reset()
@@ -179,7 +179,7 @@ public:
 	// Simulation. Runs on a fixed step, so the ball travels the same arc
 	// whatever the frame rate -- and, because the step never varies, it cannot
 	// tunnel through a brick just because one frame ran long.
-	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
+	void OnDemoFixedUpdate(GS::Timestep fixedStep) override
 	{
 
 		// Snapshot before stepping. Rendering blends from here to the new
@@ -196,7 +196,7 @@ public:
 	}
 
 	// Presentation only. Called once per frame, whatever the simulation did.
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 
 		m_FrameTime = ts.GetMilliseconds();
@@ -204,14 +204,14 @@ public:
 		Draw();
 	}
 
-	void Step(Egss::Timestep ts)
+	void Step(GS::Timestep ts)
 	{
 		// --- Paddle ------------------------------------------------------
 		// Polling, not events: this asks "is the key down right now", which is
 		// what continuous movement wants. An event fires once per press.
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT) || Egss::Input::IsKeyPressed(EGSS_KEY_A))
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT) || GS::Input::IsKeyPressed(GS_KEY_A))
 			m_PaddleX -= s_PaddleSpeed * ts;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT) || Egss::Input::IsKeyPressed(EGSS_KEY_D))
+		if (GS::Input::IsKeyPressed(GS_KEY_RIGHT) || GS::Input::IsKeyPressed(GS_KEY_D))
 			m_PaddleX += s_PaddleSpeed * ts;
 
 		float limit = m_WorldHalfWidth - s_PaddleSize.x * 0.5f;
@@ -324,20 +324,20 @@ public:
 	void Draw()
 	{
 		// Where the simulation sits between its last two steps.
-		float alpha = Egss::Application::Get().GetInterpolationAlpha();
+		float alpha = GS::Application::Get().GetInterpolationAlpha();
 
 		float paddleX = glm::mix(m_PaddlePrevX, m_PaddleX, alpha);
 		glm::vec2 ballPosition = glm::mix(m_BallPrevPosition, m_BallPosition, alpha);
 
-		Egss::Renderer2D::ResetStats();
+		GS::Renderer2D::ResetStats();
 
-		Egss::RenderCommand::SetClearColor({ 0.07f, 0.07f, 0.09f, 1.0f });
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor({ 0.07f, 0.07f, 0.09f, 1.0f });
+		GS::RenderCommand::Clear();
 
 		// Everything between BeginScene and EndScene accumulates into one
 		// vertex buffer. Nothing reaches the driver until EndScene flushes it,
 		// which is why the whole board costs one draw call.
-		Egss::Renderer2D::BeginScene(m_Camera);
+		GS::Renderer2D::BeginScene(m_Camera);
 
 		for (const Brick& brick : m_Bricks)
 		{
@@ -345,16 +345,16 @@ public:
 			{
 				// Texture supplies the shading, the colour multiplies it. All
 				// bricks share one texture, so they all land in one batch.
-				Egss::Renderer2D::DrawQuad(brick.Position, s_BrickSize, m_BrickTexture, 1.0f, brick.Color);
+				GS::Renderer2D::DrawQuad(brick.Position, s_BrickSize, m_BrickTexture, 1.0f, brick.Color);
 			}
 		}
 
 		// Interpolated, not the raw simulation state -- that is the whole
 		// point of keeping the previous positions around.
-		Egss::Renderer2D::DrawQuad({ paddleX, s_PaddleY }, s_PaddleSize,
+		GS::Renderer2D::DrawQuad({ paddleX, s_PaddleY }, s_PaddleSize,
 			glm::vec4(0.85f, 0.85f, 0.90f, 1.0f));
 
-		Egss::Renderer2D::DrawQuad(ballPosition, { s_BallRadius * 2.0f, s_BallRadius * 2.0f },
+		GS::Renderer2D::DrawQuad(ballPosition, { s_BallRadius * 2.0f, s_BallRadius * 2.0f },
 			glm::vec4(1.00f, 0.95f, 0.60f, 1.0f));
 
 		// Debug geometry. Lines are a separate primitive, so this always adds
@@ -362,7 +362,7 @@ public:
 		if (m_ShowDebug)
 		{
 			// Play area.
-			Egss::Renderer2D::DrawRect(glm::vec2(0.0f, 0.0f),
+			GS::Renderer2D::DrawRect(glm::vec2(0.0f, 0.0f),
 				{ m_WorldHalfWidth * 2.0f, s_WorldHalfHeight * 2.0f },
 				glm::vec4(0.25f, 0.30f, 0.40f, 1.0f));
 
@@ -372,31 +372,31 @@ public:
 			for (const Brick& brick : m_Bricks)
 			{
 				if (brick.Alive)
-					Egss::Renderer2D::DrawRect(brick.Position, s_BrickSize,
+					GS::Renderer2D::DrawRect(brick.Position, s_BrickSize,
 						glm::vec4(0.0f, 0.9f, 0.5f, 0.5f));
 			}
 
-			Egss::Renderer2D::DrawRect(glm::vec2(paddleX, s_PaddleY), s_PaddleSize,
+			GS::Renderer2D::DrawRect(glm::vec2(paddleX, s_PaddleY), s_PaddleSize,
 				glm::vec4(0.0f, 0.9f, 0.5f, 1.0f));
-			Egss::Renderer2D::DrawRect(ballPosition,
+			GS::Renderer2D::DrawRect(ballPosition,
 				{ s_BallRadius * 2.0f, s_BallRadius * 2.0f },
 				glm::vec4(0.0f, 0.9f, 0.5f, 1.0f));
 
 			// Velocity, scaled to a visible length. The first thing you want
 			// to see when a bounce looks wrong.
-			Egss::Renderer2D::DrawLine(ballPosition, ballPosition + m_BallVelocity * 0.25f,
+			GS::Renderer2D::DrawLine(ballPosition, ballPosition + m_BallVelocity * 0.25f,
 				glm::vec4(1.0f, 0.4f, 0.2f, 1.0f));
 		}
 
-		Egss::Renderer2D::EndScene();
+		GS::Renderer2D::EndScene();
 	}
 
 	// Events, unlike polling, fire once per change -- right for actions.
-	void OnDemoEvent(Egss::Event& e) override
+	void OnDemoEvent(GS::Event& e) override
 	{
-		Egss::EventDispatcher dispatcher(e);
+		GS::EventDispatcher dispatcher(e);
 
-		dispatcher.Dispatch<Egss::WindowResizeEvent>([this](Egss::WindowResizeEvent& e)
+		dispatcher.Dispatch<GS::WindowResizeEvent>([this](GS::WindowResizeEvent& e)
 		{
 			// The only place aspect ratio matters. Half-height stays fixed, so
 			// a wider window shows more world rather than stretching it.
@@ -410,7 +410,7 @@ public:
 			return false;  // false = don't consume it; other layers still see it
 		});
 
-		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& e)
+		dispatcher.Dispatch<GS::KeyPressedEvent>([this](GS::KeyPressedEvent& e)
 		{
 			// GetRepeatCount() > 0 means the OS auto-repeat is firing, which
 			// you almost never want for an action.
@@ -420,11 +420,11 @@ public:
 			// Switching demos is DemoSelector's job, not this layer's -- it
 			// sits above this one and consumes F1 before it gets here.
 
-			if (e.GetKeyCode() == EGSS_KEY_SPACE)
+			if (e.GetKeyCode() == GS_KEY_SPACE)
 				m_BallStuck = false;
-			if (e.GetKeyCode() == EGSS_KEY_R)
+			if (e.GetKeyCode() == GS_KEY_R)
 				Reset();
-			if (e.GetKeyCode() == EGSS_KEY_P)
+			if (e.GetKeyCode() == GS_KEY_P)
 				m_Paused = !m_Paused;
 
 			return false;
@@ -436,7 +436,7 @@ public:
 	void OnDemoImGui() override
 	{
 
-		auto stats = Egss::Renderer2D::GetStats();
+		auto stats = GS::Renderer2D::GetStats();
 
 		// Clear of the Demos panel on first run; ImGui remembers it after.
 		ImGui::SetNextWindowPos(ImVec2(20.0f, 180.0f), ImGuiCond_FirstUseEver);
@@ -467,7 +467,7 @@ public:
 
 		ImGui::Separator();
 
-		Egss::Application& app = Egss::Application::Get();
+		GS::Application& app = GS::Application::Get();
 
 		ImGui::Text("Sim steps this frame: %u", app.GetFixedStepsLastFrame());
 		ImGui::Text("Interpolation alpha:  %.2f", app.GetInterpolationAlpha());
@@ -488,12 +488,12 @@ public:
 	}
 
 private:
-	Egss::OrthographicCamera m_Camera;
+	GS::OrthographicCamera m_Camera;
 	float m_WorldHalfWidth = 1.6f;
 
-	std::shared_ptr<Egss::Texture2D> m_BrickTexture;
-	std::shared_ptr<Egss::AudioClip> m_BounceClip;
-	std::shared_ptr<Egss::AudioClip> m_BrickClip;
+	std::shared_ptr<GS::Texture2D> m_BrickTexture;
+	std::shared_ptr<GS::AudioClip> m_BounceClip;
+	std::shared_ptr<GS::AudioClip> m_BrickClip;
 	std::vector<Brick> m_Bricks;
 
 	float m_PaddleX = 0.0f;

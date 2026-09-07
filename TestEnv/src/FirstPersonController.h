@@ -22,7 +22,7 @@
 // any other parameter -- this class does not register anything itself,
 // since it does not own a DemoLayer.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 class FirstPersonController
@@ -103,7 +103,7 @@ public:
 
 	Config Cfg;
 
-	explicit FirstPersonController(Egss::PerspectiveCamera& camera,
+	explicit FirstPersonController(GS::PerspectiveCamera& camera,
 		float startYaw = -90.0f, float startPitch = 0.0f)
 		: m_Camera(camera), m_Yaw(startYaw), m_Pitch(startPitch)
 	{
@@ -137,8 +137,8 @@ public:
 		m_MouseLook = on;
 		m_MouseSampled = false;
 
-		if (!Egss::Input::IsPlayingBack())
-			Egss::Application::Get().GetWindow().SetCursorCaptured(on);
+		if (!GS::Input::IsPlayingBack())
+			GS::Application::Get().GetWindow().SetCursorCaptured(on);
 	}
 
 	// Tab toggles, Escape releases, the mouse turns the camera when captured
@@ -146,15 +146,15 @@ public:
 	// UpdateFly or UpdateWalk.
 	void UpdateLook(float dt)
 	{
-		bool toggle = Egss::Input::IsKeyPressed(EGSS_KEY_TAB);
+		bool toggle = GS::Input::IsKeyPressed(GS_KEY_TAB);
 		if (toggle && !m_WasToggling)
 			SetMouseLook(!m_MouseLook);
-		else if (m_MouseLook && Egss::Input::IsKeyPressed(EGSS_KEY_ESCAPE))
+		else if (m_MouseLook && GS::Input::IsKeyPressed(GS_KEY_ESCAPE))
 			SetMouseLook(false);
 
 		m_WasToggling = toggle;
 
-		auto [mouseX, mouseY] = Egss::Input::GetMousePosition();
+		auto [mouseX, mouseY] = GS::Input::GetMousePosition();
 
 		if (m_MouseLook)
 		{
@@ -176,10 +176,10 @@ public:
 		m_LastMouseX = mouseX;
 		m_LastMouseY = mouseY;
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))  m_Yaw -= Cfg.LookRateDegreesPerSecond * dt;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) m_Yaw += Cfg.LookRateDegreesPerSecond * dt;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))    m_Pitch += Cfg.LookRateDegreesPerSecond * dt;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))  m_Pitch -= Cfg.LookRateDegreesPerSecond * dt;
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT))  m_Yaw -= Cfg.LookRateDegreesPerSecond * dt;
+		if (GS::Input::IsKeyPressed(GS_KEY_RIGHT)) m_Yaw += Cfg.LookRateDegreesPerSecond * dt;
+		if (GS::Input::IsKeyPressed(GS_KEY_UP))    m_Pitch += Cfg.LookRateDegreesPerSecond * dt;
+		if (GS::Input::IsKeyPressed(GS_KEY_DOWN))  m_Pitch -= Cfg.LookRateDegreesPerSecond * dt;
 
 		m_Pitch = glm::clamp(m_Pitch, Cfg.MinPitch, Cfg.MaxPitch);
 		m_Camera.SetRotation(m_Yaw, m_Pitch);
@@ -204,12 +204,12 @@ public:
 		glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
 
 		glm::vec3 move(0.0f);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) move += forward;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) move -= forward;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) move += right;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) move -= right;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_E)) move.y += 1.0f;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_Q)) move.y -= 1.0f;
+		if (GS::Input::IsKeyPressed(GS_KEY_W)) move += forward;
+		if (GS::Input::IsKeyPressed(GS_KEY_S)) move -= forward;
+		if (GS::Input::IsKeyPressed(GS_KEY_D)) move += right;
+		if (GS::Input::IsKeyPressed(GS_KEY_A)) move -= right;
+		if (GS::Input::IsKeyPressed(GS_KEY_E)) move.y += 1.0f;
+		if (GS::Input::IsKeyPressed(GS_KEY_Q)) move.y -= 1.0f;
 
 		if (glm::length(move) > 1e-4f)
 			m_Camera.SetPosition(m_Camera.GetPosition() + glm::normalize(move) * Cfg.FlySpeed * dt);
@@ -227,10 +227,10 @@ public:
 	//
 	// Returns whether the body is currently grounded, for a caller that
 	// wants to show it.
-	bool UpdateWalk(Egss::PhysicsWorld3D& world, Egss::PhysicsWorld3D::BodyHandle handle,
+	bool UpdateWalk(GS::PhysicsWorld3D& world, GS::PhysicsWorld3D::BodyHandle handle,
 		float eyeHeight, float dt)
 	{
-		Egss::RigidBody3D& body = world.GetBody(handle);
+		GS::RigidBody3D& body = world.GetBody(handle);
 
 		body.Orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 		body.AngularVelocity = glm::vec3(0.0f);
@@ -246,10 +246,10 @@ public:
 		glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
 
 		glm::vec3 wish(0.0f);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) wish += forward;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) wish -= forward;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) wish += right;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) wish -= right;
+		if (GS::Input::IsKeyPressed(GS_KEY_W)) wish += forward;
+		if (GS::Input::IsKeyPressed(GS_KEY_S)) wish -= forward;
+		if (GS::Input::IsKeyPressed(GS_KEY_D)) wish += right;
+		if (GS::Input::IsKeyPressed(GS_KEY_A)) wish -= right;
 
 		// Kept for whoever is drawing the body: which way the player is *trying*
 		// to go, which is not the same as which way they are looking and is the
@@ -313,9 +313,9 @@ public:
 			// vertical speed every step rather than accumulating one.
 			float wantY;
 
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_SPACE))
+			if (GS::Input::IsKeyPressed(GS_KEY_SPACE))
 				wantY = Cfg.SwimVerticalSpeed;
-			else if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT_SHIFT))
+			else if (GS::Input::IsKeyPressed(GS_KEY_LEFT_SHIFT))
 				wantY = -Cfg.SwimVerticalSpeed;
 			else
 				// Float: rise while deeper than FloatDepth, sink while
@@ -326,7 +326,7 @@ public:
 
 			velocity.y = wantY;
 		}
-		else if ((grounded || wading) && Egss::Input::IsKeyPressed(EGSS_KEY_SPACE))
+		else if ((grounded || wading) && GS::Input::IsKeyPressed(GS_KEY_SPACE))
 		{
 			velocity.y = Cfg.JumpSpeed;
 		}
@@ -356,7 +356,7 @@ public:
 	}
 
 private:
-	Egss::PerspectiveCamera& m_Camera;
+	GS::PerspectiveCamera& m_Camera;
 
 	Motion m_Motion = Motion::Airborne;
 	glm::vec3 m_Wish{ 0.0f };

@@ -1,0 +1,143 @@
+#pragma once
+
+#include "GS/Renderer/Camera.h"
+#include "GS/Renderer/OrthographicCamera.h"
+#include "GS/Renderer/Texture.h"
+#include "GS/Renderer/SubTexture2D.h"
+
+#include <glm/glm.hpp>
+
+namespace GS {
+
+	// Batched 2D quad renderer.
+	//
+	// Every draw takes an optional entity ID, written to a second integer
+	// attachment on the bound framebuffer. Reading that attachment back at the
+	// cursor is how picking works: -1 means nothing was drawn there.
+	//
+	// Quads are accumulated into one CPU-side vertex buffer between BeginScene
+	// and EndScene, then uploaded and drawn in as few draw calls as possible.
+	// A batch is flushed early when it runs out of vertex room or texture
+	// slots, so the number of draw calls tracks the number of distinct
+	// textures rather than the number of quads.
+	class GS_API Renderer2D
+	{
+	public:
+		static void Init();
+		static void Shutdown();
+
+		static void BeginScene(const Camera& camera);
+		static void EndScene();
+		static void Flush();
+
+		// Flat colour
+		static void DrawQuad(const glm::vec2& position, const glm::vec2& size, const glm::vec4& color,
+			int entityID = -1);
+		static void DrawQuad(const glm::vec3& position, const glm::vec2& size, const glm::vec4& color,
+			int entityID = -1);
+
+		// Textured, optionally tiled and tinted
+		static void DrawQuad(const glm::vec2& position, const glm::vec2& size,
+			const std::shared_ptr<Texture2D>& texture,
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
+		static void DrawQuad(const glm::vec3& position, const glm::vec2& size,
+			const std::shared_ptr<Texture2D>& texture,
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
+
+		// Sprite-sheet regions. The whole point of an atlas: many distinct
+		// sprites share one texture slot, so they batch together.
+		static void DrawQuad(const glm::vec2& position, const glm::vec2& size,
+			const std::shared_ptr<SubTexture2D>& subTexture,
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
+		static void DrawQuad(const glm::vec3& position, const glm::vec2& size,
+			const std::shared_ptr<SubTexture2D>& subTexture,
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
+
+		// Rotation is in degrees, about the z axis.
+		static void DrawRotatedQuad(const glm::vec2& position, const glm::vec2& size,
+			float rotation, const glm::vec4& color, int entityID = -1);
+		static void DrawRotatedQuad(const glm::vec3& position, const glm::vec2& size,
+			float rotation, const glm::vec4& color, int entityID = -1);
+		static void DrawRotatedQuad(const glm::vec2& position, const glm::vec2& size,
+			float rotation, const std::shared_ptr<Texture2D>& texture,
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
+		static void DrawRotatedQuad(const glm::vec3& position, const glm::vec2& size,
+			float rotation, const std::shared_ptr<Texture2D>& texture,
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
+		static void DrawRotatedQuad(const glm::vec2& position, const glm::vec2& size,
+			float rotation, const std::shared_ptr<SubTexture2D>& subTexture,
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
+		static void DrawRotatedQuad(const glm::vec3& position, const glm::vec2& size,
+			float rotation, const std::shared_ptr<SubTexture2D>& subTexture,
+			float tilingFactor = 1.0f, const glm::vec4& tint = glm::vec4(1.0f),
+			int entityID = -1);
+
+		// Debug geometry: outlines, normals, rays. Lines are their own
+		// primitive type, so they always cost one draw call on top of the
+		// quads -- they cannot join that batch.
+		static void DrawLine(const glm::vec2& from, const glm::vec2& to,
+			const glm::vec4& color = glm::vec4(1.0f));
+		static void DrawLine(const glm::vec3& from, const glm::vec3& to,
+			const glm::vec4& color = glm::vec4(1.0f));
+
+		// Same centre-and-size convention as DrawQuad, so a collider and its
+		// outline take identical arguments.
+		static void DrawRect(const glm::vec2& position, const glm::vec2& size,
+			const glm::vec4& color = glm::vec4(1.0f));
+		static void DrawRect(const glm::vec3& position, const glm::vec2& size,
+			const glm::vec4& color = glm::vec4(1.0f));
+		static void DrawRect(const glm::mat4& transform,
+			const glm::vec4& color = glm::vec4(1.0f));
+
+		// Filled triangles, for generated geometry -- light polygons, vision
+		// cones, anything that isn't a quad. Their own batch, so they cost one
+		// draw call however many you submit.
+		static void DrawTriangle(const glm::vec2& a, const glm::vec2& b, const glm::vec2& c,
+			const glm::vec4& color = glm::vec4(1.0f));
+		static void DrawTriangle(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
+			const glm::vec4& color = glm::vec4(1.0f));
+		// Per-corner colour: bright at the light, dim at the edge.
+		static void DrawTriangle(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
+			const glm::vec4& colorA, const glm::vec4& colorB, const glm::vec4& colorC);
+
+		// A filled circle, as a fan of triangles. Joins the same triangle
+		// batch as DrawTriangle, so any number of circles still costs one
+		// draw call. More segments is smoother and costs only vertices.
+		static void DrawCircle(const glm::vec2& centre, float radius,
+			const glm::vec4& color = glm::vec4(1.0f), int segments = 24);
+		static void DrawCircle(const glm::vec3& centre, float radius,
+			const glm::vec4& color = glm::vec4(1.0f), int segments = 24);
+
+		// Values above 1.0 are ignored by most core-profile drivers.
+		static float GetLineWidth();
+		static void SetLineWidth(float width);
+
+		struct Statistics
+		{
+			unsigned int DrawCalls = 0;
+			unsigned int QuadCount = 0;
+			unsigned int LineCount = 0;
+			unsigned int TriangleCount = 0;
+
+			unsigned int GetTotalVertexCount() const { return QuadCount * 4; }
+			unsigned int GetTotalIndexCount() const { return QuadCount * 6; }
+		};
+
+		static Statistics GetStats();
+		static void ResetStats();
+	private:
+		static void StartBatch();
+		static void NextBatch();
+		static void FlushQuads();
+		static void FlushLines();
+		static void FlushTriangles();
+	};
+
+}

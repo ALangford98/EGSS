@@ -5,7 +5,7 @@
 // Deliberately free of engine headers -- standard library only. The room comes
 // in as a list of (delay, gain) taps and the answer goes out as two numbers, so
 // everything here can be checked against arithmetic without a window, a device
-// or a GL context. `PumpDiagnostics.h` is the half that knows about EGSS.
+// or a GL context. `PumpDiagnostics.h` is the half that knows about GS.
 //
 // ---------------------------------------------------------------------------
 // The problem

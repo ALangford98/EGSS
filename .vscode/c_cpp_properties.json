@@ -16,16 +16,16 @@
             "compileCommands": "${workspaceFolder}/compile_commands.json",
 
             "includePath": [
-                "${workspaceFolder}/EGSS/src",
-                "${workspaceFolder}/EGSS/vendor/spdlog/include",
-                "${workspaceFolder}/EGSS/vendor/glfw/include",
-                "${workspaceFolder}/EGSS/vendor/Glad/include",
-                "${workspaceFolder}/EGSS/vendor/glm"
+                "${workspaceFolder}/GS/src",
+                "${workspaceFolder}/GS/vendor/spdlog/include",
+                "${workspaceFolder}/GS/vendor/glfw/include",
+                "${workspaceFolder}/GS/vendor/Glad/include",
+                "${workspaceFolder}/GS/vendor/glm"
             ],
             "defines": [
-                "EGSS_PLATFORM_LINUX",
-                "EGSS_BUILD_DLL",
-                "EGSS_DEBUG",
+                "GS_PLATFORM_LINUX",
+                "GS_BUILD_DLL",
+                "GS_DEBUG",
                 "GLFW_INCLUDE_NONE"
             ]
         }

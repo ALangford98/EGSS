@@ -21,7 +21,7 @@
 // generator knows where the poles are. Sampling by direction and angle gives
 // terrain that pinches at both ends, which looks exactly like the mistake it is.
 
-#include <Egss.h>
+#include <GS.h>
 
 #include <set>
 #include <unordered_map>
@@ -227,14 +227,14 @@ public:
 		int half = (int)std::ceil(reach / settings.VoxelSize);
 
 		int side = half * 2 + 1;
-		side = ((side + Egss::VoxelField3D::ChunkSize - 1)
-			/ Egss::VoxelField3D::ChunkSize) * Egss::VoxelField3D::ChunkSize + 1;
+		side = ((side + GS::VoxelField3D::ChunkSize - 1)
+			/ GS::VoxelField3D::ChunkSize) * GS::VoxelField3D::ChunkSize + 1;
 
-		m_Field = std::make_shared<Egss::VoxelField3D>();
+		m_Field = std::make_shared<GS::VoxelField3D>();
 		m_Field->Create({ side, side, side }, settings.VoxelSize,
 			glm::vec3(-(float)(side / 2) * settings.VoxelSize));
 
-		m_ChunkWorld = (float)Egss::VoxelField3D::ChunkSize * settings.VoxelSize;
+		m_ChunkWorld = (float)GS::VoxelField3D::ChunkSize * settings.VoxelSize;
 
 		MeasureReliefBias();
 
@@ -274,12 +274,12 @@ public:
 				high = glm::max(high, r);
 			}
 
-			EGSS_TRACE("  relief {0:+.1f} to {1:+.1f} m sampled, bound {2:.1f} m, "
+			GS_TRACE("  relief {0:+.1f} to {1:+.1f} m sampled, bound {2:.1f} m, "
 				"bias {3:+.1f} m{4}", low, high, ReliefReach(), m_ReliefBias,
 				glm::max(-low, high) <= ReliefReach() ? "" : "  -- OUTSIDE THE BOUND");
 		}
 
-		EGSS_TRACE("  sea level {0:+.2f} m about the mean radius, land {1:.1f}% "
+		GS_TRACE("  sea level {0:+.2f} m about the mean radius, land {1:.1f}% "
 				"(asked {2:.1f}%, {3:.1f} sigma on other directions)",
 				m_Settings.OceanRadius - m_Settings.Radius,
 				achieved * 100.0f, p * 100.0f, std::abs(achieved - p) / sigma);
@@ -550,7 +550,7 @@ public:
 
 			if (bestDot > -2.0f)
 			{
-				EGSS_TRACE("  landing site {0:.1f} deg off the approach, {1:+.1f} m "
+				GS_TRACE("  landing site {0:.1f} deg off the approach, {1:+.1f} m "
 					"above sea, dry for {2:.0f} m around",
 					glm::degrees(std::acos(glm::clamp(bestDot, -1.0f, 1.0f))),
 					Relief(best) - sea, clearMetres * share);
@@ -563,7 +563,7 @@ public:
 		// this generator does not make at any land fraction above zero. Said
 		// out loud rather than handing back `preferred` and letting the lander
 		// drown quietly.
-		EGSS_WARN("no dry land anywhere on this planet");
+		GS_WARN("no dry land anywhere on this planet");
 
 		return want;
 	}
@@ -844,7 +844,7 @@ public:
 			// Capped: an unallocated chunk reads `Far`, which is a sentinel
 			// and not a distance, and one step of it leaves the planet.
 			travelled += glm::min(distance,
-				(float)Egss::VoxelField3D::ChunkSize * m_Settings.VoxelSize);
+				(float)GS::VoxelField3D::ChunkSize * m_Settings.VoxelSize);
 		}
 
 		return false;
@@ -868,7 +868,7 @@ public:
 		// the remesh queue and nowhere near the file. Writing the second set
 		// too would store the generator's own output as though somebody had
 		// dug it, which is 125 chunks a hole instead of a handful.
-		float margin = (float)Egss::VoxelField3D::SparseBandVoxels
+		float margin = (float)GS::VoxelField3D::SparseBandVoxels
 			* m_Settings.VoxelSize + m_Settings.VoxelSize;
 
 		float reach = radius + margin;
@@ -880,8 +880,8 @@ public:
 
 		glm::ivec3 count = m_Field->ChunkCount();
 
-		glm::ivec3 first = glm::max(low / Egss::VoxelField3D::ChunkSize, glm::ivec3(0));
-		glm::ivec3 last = glm::min(high / Egss::VoxelField3D::ChunkSize,
+		glm::ivec3 first = glm::max(low / GS::VoxelField3D::ChunkSize, glm::ivec3(0));
+		glm::ivec3 last = glm::min(high / GS::VoxelField3D::ChunkSize,
 			count - glm::ivec3(1));
 
 		const glm::ivec3* offsets = HighNeighbourOffsets();
@@ -935,7 +935,7 @@ public:
 			+ glm::dvec3(lattice) * (double)m_Settings.VoxelSize;
 	}
 
-	const std::shared_ptr<Egss::VoxelField3D>& Field() const { return m_Field; }
+	const std::shared_ptr<GS::VoxelField3D>& Field() const { return m_Field; }
 
 	// --- Generation ---------------------------------------------------------
 
@@ -1384,12 +1384,12 @@ public:
 		double sphere = 4.0 * 3.14159265358979323846
 			* (double)m_Settings.Radius * (double)m_Settings.Radius;
 
-		EGSS_TRACE("  drainage: {0:.4g} km^2 of land ({1:.1f}% of the sphere), "
+		GS_TRACE("  drainage: {0:.4g} km^2 of land ({1:.1f}% of the sphere), "
 			"{2:.4g} delivered to the sea ({3:.3f}% out), {4} stranded, {5:.0f} ms",
 			land * 1e-6, land / sphere * 100.0, delivered * 1e-6,
 			error * 100.0, stranded, ms);
 
-		EGSS_TRACE("  the largest basin drains {0:.2f}% of the land; standing "
+		GS_TRACE("  the largest basin drains {0:.2f}% of the land; standing "
 			"water covers {1:.2f}% of it",
 			land > 0.0 ? biggest / land * 100.0 : 0.0,
 			land > 0.0 ? lakes / land * 100.0 : 0.0);
@@ -1462,7 +1462,7 @@ public:
 				}
 			}
 
-		EGSS_TRACE("  water: {0:.2f}% of land under a lake, every lake level "
+		GS_TRACE("  water: {0:.2f}% of land under a lake, every lake level "
 			"to within {1:.5f} m of itself, no ground stands above its own "
 			"surface by more than {2:.5f} m",
 			land > 0.0 ? wetLand * share : 0.0, m_BasinSpread, worstStanding);
@@ -1471,11 +1471,11 @@ public:
 		// with nothing on it, because the sea cannot reach it. A shell at a
 		// fixed radius has none of this by construction -- every point below
 		// the radius is wet, which is exactly the behaviour that was wrong.
-		EGSS_TRACE("  and {0:.4g} km^2 of land sits below sea level and dry, "
+		GS_TRACE("  and {0:.4g} km^2 of land sits below sea level and dry, "
 			"across {1} basins too arid to hold a lake", dryBelowSea * 1e-6,
 			m_DryBasins);
 
-		EGSS_TRACE("  climate over land: {0:.1f}% steppe, {1:.1f}% temperate, "
+		GS_TRACE("  climate over land: {0:.1f}% steppe, {1:.1f}% temperate, "
 			"{2:.1f}% desert, {3:.1f}% tropical; mean moisture {4:.2f}, "
 			"mean warmth {5:.2f}",
 			quadrant[0] * share, quadrant[1] * share,
@@ -2040,7 +2040,7 @@ public:
 			}
 		}
 
-		m_Map.reset(Egss::Texture2D::Create(width, height));
+		m_Map.reset(GS::Texture2D::Create(width, height));
 		m_Map->SetData(pixels.data(), (unsigned int)pixels.size());
 
 		// One texel is about two metres of ground at the equator. Nearest
@@ -2049,7 +2049,7 @@ public:
 		m_Map->SetSmooth(true);
 	}
 
-	const std::shared_ptr<Egss::Texture2D>& Map() const { return m_Map; }
+	const std::shared_ptr<GS::Texture2D>& Map() const { return m_Map; }
 
 	// **Coverage only, baked once.** Four octaves of the same value noise
 	// `Relief` uses, but with its own seed and its own frequency, so cloud
@@ -2111,12 +2111,12 @@ public:
 			}
 		}
 
-		m_CloudMap.reset(Egss::Texture2D::Create(width, height));
+		m_CloudMap.reset(GS::Texture2D::Create(width, height));
 		m_CloudMap->SetData(pixels.data(), (unsigned int)pixels.size());
 		m_CloudMap->SetSmooth(true);
 	}
 
-	const std::shared_ptr<Egss::Texture2D>& CloudMap() const { return m_CloudMap; }
+	const std::shared_ptr<GS::Texture2D>& CloudMap() const { return m_CloudMap; }
 
 	// --- Vegetation ---------------------------------------------------------
 	//
@@ -2365,7 +2365,7 @@ public:
 	// exactly as it is in OpenWorld, and meshes plainly.
 	void MeshChunk(const glm::ivec3& chunk, int stride)
 	{
-		Egss::MeshData data;
+		GS::MeshData data;
 		BuildChunkMesh(chunk, stride, data);
 
 		size_t key = Key(chunk);
@@ -2419,11 +2419,11 @@ public:
 	// The second is where grass belongs. It is asked of the same fields the
 	// surface is coloured from, so a blade never stands on a seabed, on rock
 	// above the tree line, or in a desert.
-	Egss::MeshData ChunkGrass(const Egss::MeshData& data,
+	GS::MeshData ChunkGrass(const GS::MeshData& data,
 		const glm::ivec3& chunk, int stride, const glm::dvec3& origin) const
 	{
 		if (!m_Settings.Vegetated || stride != 1 || m_Settings.GrassDensity <= 0.0f)
-			return Egss::MeshData();
+			return GS::MeshData();
 
 		Grass::Settings settings;
 		settings.Density = m_Settings.GrassDensity;
@@ -2440,7 +2440,7 @@ public:
 			return glm::normalize(origin + glm::dvec3(local));
 		};
 
-		Egss::MeshData blades = Grass::Build(data, settings,
+		GS::MeshData blades = Grass::Build(data, settings,
 			(unsigned int)(chunk.x * 73 + chunk.y * 19 + chunk.z * 131),
 			[&direction](const glm::vec3& local)
 			{
@@ -2509,7 +2509,7 @@ public:
 	// The geometry alone, with nothing stored. Separate from `MeshChunk`
 	// because a seam is a property of the triangles and can be counted without
 	// uploading anything.
-	void BuildChunkMesh(const glm::ivec3& chunk, int stride, Egss::MeshData& data) const
+	void BuildChunkMesh(const glm::ivec3& chunk, int stride, GS::MeshData& data) const
 	{
 		glm::ivec3 min, max;
 		m_Field->ChunkRange(chunk, min, max);
@@ -2560,22 +2560,22 @@ public:
 
 			switch (face)
 			{
-				case Egss::VoxelTransition::PosX: interiorMax.x -= stride; layerMin.x = interiorMax.x; break;
-				case Egss::VoxelTransition::NegX: interiorMin.x += stride; layerMax.x = interiorMin.x; break;
-				case Egss::VoxelTransition::PosY: interiorMax.y -= stride; layerMin.y = interiorMax.y; break;
-				case Egss::VoxelTransition::NegY: interiorMin.y += stride; layerMax.y = interiorMin.y; break;
-				case Egss::VoxelTransition::PosZ: interiorMax.z -= stride; layerMin.z = interiorMax.z; break;
-				case Egss::VoxelTransition::NegZ: interiorMin.z += stride; layerMax.z = interiorMin.z; break;
+				case GS::VoxelTransition::PosX: interiorMax.x -= stride; layerMin.x = interiorMax.x; break;
+				case GS::VoxelTransition::NegX: interiorMin.x += stride; layerMax.x = interiorMin.x; break;
+				case GS::VoxelTransition::PosY: interiorMax.y -= stride; layerMin.y = interiorMax.y; break;
+				case GS::VoxelTransition::NegY: interiorMin.y += stride; layerMax.y = interiorMin.y; break;
+				case GS::VoxelTransition::PosZ: interiorMax.z -= stride; layerMin.z = interiorMax.z; break;
+				case GS::VoxelTransition::NegZ: interiorMin.z += stride; layerMax.z = interiorMin.z; break;
 			}
 
-			data = Egss::MarchingTetrahedra::Mesh(*m_Field, interiorMin, interiorMax,
+			data = GS::MarchingTetrahedra::Mesh(*m_Field, interiorMin, interiorMax,
 				stride, &about);
-			Egss::VoxelTransition::MeshBoundaryLayer(*m_Field, layerMin, layerMax,
+			GS::VoxelTransition::MeshBoundaryLayer(*m_Field, layerMin, layerMax,
 				stride, boundaryMask, ratio, data, &about);
 		}
 		else
 		{
-			data = Egss::MarchingTetrahedra::Mesh(*m_Field, min, max, stride, &about);
+			data = GS::MarchingTetrahedra::Mesh(*m_Field, min, max, stride, &about);
 		}
 	}
 
@@ -2829,7 +2829,7 @@ public:
 			if (!TouchesSurface(chunkCentre))
 			{
 				float uniform = glm::length(chunkCentre) < (double)m_Settings.Radius
-					? -Egss::VoxelField3D::Far : Egss::VoxelField3D::Far;
+					? -GS::VoxelField3D::Far : GS::VoxelField3D::Far;
 
 				// Set, not generated. The old form ran the constant through
 				// `FillChunk`, which allocates a 16 KB scratch buffer and
@@ -3004,13 +3004,13 @@ public:
 		// drawn in fixed 3x3x3 groups instead (see RebuildGroup), so this is
 		// kept only long enough to be concatenated into whichever group's
 		// buffer it belongs to -- never uploaded on its own.
-		Egss::MeshData Data;
+		GS::MeshData Data;
 
 		// **Grass, on stride-1 chunks only.** Not a special case bolted on: a
 		// stride-2 chunk is the streamer saying this is far enough away to
 		// halve its detail, and grass is the first thing that should go.
 		// Empty on every other chunk, and on every body with no vegetation.
-		Egss::MeshData Grass;
+		GS::MeshData Grass;
 
 		// **In the planet's frame, in double, and the mesh is not.** The
 		// vertices in `Data` (and `Grass`) are measured from this chunk's own
@@ -3048,8 +3048,8 @@ public:
 
 	struct Group
 	{
-		std::shared_ptr<Egss::Mesh> MeshPtr;
-		std::shared_ptr<Egss::Mesh> GrassPtr;
+		std::shared_ptr<GS::Mesh> MeshPtr;
+		std::shared_ptr<GS::Mesh> GrassPtr;
 
 		// The group's own reference point, in double -- the anchor every
 		// member chunk's vertices are re-expressed against when concatenated.
@@ -3082,8 +3082,8 @@ public:
 	// narrowed once. Erases the group entirely if nothing is left in it.
 	void RebuildGroup(const glm::ivec3& group)
 	{
-		Egss::MeshData terrain;
-		Egss::MeshData grass;
+		GS::MeshData terrain;
+		GS::MeshData grass;
 		glm::ivec3 base = group * s_GroupSize;
 		glm::dvec3 origin = ChunkOriginFixed(base);
 
@@ -3112,10 +3112,10 @@ public:
 
 		Group entry;
 		entry.Origin = origin;
-		entry.MeshPtr = std::make_shared<Egss::Mesh>(terrain, "PlanetChunkGroup");
+		entry.MeshPtr = std::make_shared<GS::Mesh>(terrain, "PlanetChunkGroup");
 
 		if (!grass.Indices.empty())
-			entry.GrassPtr = std::make_shared<Egss::Mesh>(grass, "PlanetGrassGroup");
+			entry.GrassPtr = std::make_shared<GS::Mesh>(grass, "PlanetGrassGroup");
 
 		m_Groups[key] = std::move(entry);
 	}
@@ -3123,7 +3123,7 @@ public:
 	// Appends `from`'s vertices and indices onto `into`, shifting every
 	// vertex position by `rebase` -- the one thing plain concatenation can't
 	// do, and the reason this isn't just an `insert` on each array.
-	static void Append(Egss::MeshData& into, const Egss::MeshData& from,
+	static void Append(GS::MeshData& into, const GS::MeshData& from,
 		const glm::vec3& rebase)
 	{
 		unsigned int offset = (unsigned int)into.Vertices.size();
@@ -3158,7 +3158,7 @@ public:
 	// would show up in a measurement as terrain that is perfectly wrong.
 	bool ResidentAround(const glm::ivec3& about) const
 	{
-		const int size = Egss::VoxelField3D::ChunkSize;
+		const int size = GS::VoxelField3D::ChunkSize;
 
 		// In double: a lattice index at 1:1 is about 4e6, which a float still
 		// holds exactly, but only just -- and this is the one file where
@@ -3293,7 +3293,7 @@ private:
 	// offset from its chunk -- stay small enough to be floats again.
 	glm::ivec3 ChunkLattice(const glm::ivec3& chunk) const
 	{
-		return chunk * Egss::VoxelField3D::ChunkSize;
+		return chunk * GS::VoxelField3D::ChunkSize;
 	}
 
 	glm::dvec3 ChunkOriginFixed(const glm::ivec3& chunk) const
@@ -3606,9 +3606,9 @@ public:
 			// The chunk's own voxels, every fourth one in each axis: the error
 			// is smooth over a grid cell, so sixty-four points a chunk find
 			// the peak of it without paying for four thousand.
-			for (int k = 0; k < Egss::VoxelField3D::ChunkSize; k += 4)
-			for (int j = 0; j < Egss::VoxelField3D::ChunkSize; j += 4)
-			for (int i2 = 0; i2 < Egss::VoxelField3D::ChunkSize; i2 += 4)
+			for (int k = 0; k < GS::VoxelField3D::ChunkSize; k += 4)
+			for (int j = 0; j < GS::VoxelField3D::ChunkSize; j += 4)
+			for (int i2 = 0; i2 < GS::VoxelField3D::ChunkSize; i2 += 4)
 			{
 				glm::dvec3 p = ChunkOriginFixed(chunk)
 					+ glm::dvec3(i2, j, k) * (double)m_Settings.VoxelSize;
@@ -3640,7 +3640,7 @@ public:
 			}
 		}
 
-		EGSS_TRACE("Relief patch: {0} chunks, grid {1:.2f} m a sample, "
+		GS_TRACE("Relief patch: {0} chunks, grid {1:.2f} m a sample, "
 			"error mean {2:.4f} m worst {3:.4f} m over {4} voxels "
 			"({5:.2f}% of a voxel)",
 			patched, ReliefDetail(), samples ? sum / (double)samples : 0.0, worst,
@@ -3717,7 +3717,7 @@ public:
 			counted++;
 		}
 
-		EGSS_TRACE("Surface error: mean {0:.4f} m worst {1:.4f} m over {2} points "
+		GS_TRACE("Surface error: mean {0:.4f} m worst {1:.4f} m over {2} points "
 			"({3:.2f}% / {4:.2f}% of a {5:.2f} m voxel), {6} outside the streamed shell",
 			counted ? sum / (double)counted : 0.0, worst, counted,
 			100.0 * (counted ? sum / (double)counted : 0.0) / (double)m_Settings.VoxelSize,
@@ -3909,9 +3909,9 @@ private:
 	}
 
 	Settings m_Settings;
-	std::shared_ptr<Egss::Texture2D> m_Map;
-	std::shared_ptr<Egss::Texture2D> m_CloudMap;
-	std::shared_ptr<Egss::VoxelField3D> m_Field;
+	std::shared_ptr<GS::Texture2D> m_Map;
+	std::shared_ptr<GS::Texture2D> m_CloudMap;
+	std::shared_ptr<GS::VoxelField3D> m_Field;
 
 	// One grid for the height map and the hydrology both, so a texel means the
 	// same patch of ground in each and nothing has to be resampled between

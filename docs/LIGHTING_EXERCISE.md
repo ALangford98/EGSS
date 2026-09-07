@@ -63,8 +63,8 @@ never have to call `Step`:
 
 ```cpp
 m_World.Clear();
-m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ 0.5f, 0.2f }, { 0.20f, 0.06f }));
-m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ -0.6f, -0.3f }, { 0.08f, 0.25f }));
+m_World.AddBody(GS::RigidBody2D::MakeStaticBox({ 0.5f, 0.2f }, { 0.20f, 0.06f }));
+m_World.AddBody(GS::RigidBody2D::MakeStaticBox({ -0.6f, -0.3f }, { 0.08f, 0.25f }));
 // ...a dozen or so, scattered
 ```
 
@@ -84,10 +84,10 @@ for (int i = 0; i < m_RayCount; i++)
     float angle = (float)i / (float)m_RayCount * glm::two_pi<float>();
     glm::vec2 direction = { std::cos(angle), std::sin(angle) };
 
-    Egss::RaycastHit hit = m_World.Raycast(m_LightPosition, direction, m_LightRadius);
+    GS::RaycastHit hit = m_World.Raycast(m_LightPosition, direction, m_LightRadius);
     glm::vec2 end = hit.Hit ? hit.Point : m_LightPosition + direction * m_LightRadius;
 
-    Egss::Renderer2D::DrawLine(m_LightPosition, end, lightColour);
+    GS::Renderer2D::DrawLine(m_LightPosition, end, lightColour);
 }
 ```
 
@@ -132,7 +132,7 @@ This is the interesting one, and it's a near-copy of the line batch. Read
 `Renderer2D.cpp` and find everything with `Line` in the name — you are adding a
 parallel set with `Triangle`.
 
-**Backend** (`Egss/Renderer/RendererAPI.h`, `RenderCommand.h`,
+**Backend** (`GS/Renderer/RendererAPI.h`, `RenderCommand.h`,
 `Platform/OpenGL/OpenGLRendererAPI.{h,cpp}`):
 
 ```cpp
@@ -148,7 +148,7 @@ void OpenGLRendererAPI::DrawTriangles(const std::shared_ptr<VertexArray>& va, un
 }
 ```
 
-**Renderer2D** (`Egss/Renderer/Renderer2D.{h,cpp}`):
+**Renderer2D** (`GS/Renderer/Renderer2D.{h,cpp}`):
 
 1. `TriangleVertex { glm::vec3 Position; glm::vec4 Color; }` — same layout as
    `LineVertex`, so **reuse `s_Data.LineShader`**. No new shader needed.

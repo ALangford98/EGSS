@@ -1,14 +1,14 @@
-[submodule "EGSS/vendor/spdlog"]
-	path = EGSS/vendor/spdlog
+[submodule "GS/vendor/spdlog"]
+	path = GS/vendor/spdlog
 	url = https://github.com/gabime/spdlog
-[submodule "EGSS/vendor/glfw"]
-	path = EGSS/vendor/glfw
+[submodule "GS/vendor/glfw"]
+	path = GS/vendor/glfw
 	url = https://github.com/TheCherno/glfw.git
-[submodule "EGSS/vendor/glm"]
-	path = EGSS/vendor/glm
+[submodule "GS/vendor/glm"]
+	path = GS/vendor/glm
 	url = https://github.com/g-truc/glm.git
-[submodule "EGSS/vendor/imgui"]
-	path = EGSS/vendor/imgui
+[submodule "GS/vendor/imgui"]
+	path = GS/vendor/imgui
 	url = https://github.com/ocornut/imgui.git
 	# Docking and multi-viewport live on this branch, not on master.
 	branch = docking

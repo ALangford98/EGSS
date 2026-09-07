@@ -3,7 +3,7 @@
 // Single-microphone fault attribution: two pumps, one mic, which one is bad.
 //
 // The engine-facing half. `PumpSignal.h` holds the arithmetic and knows nothing
-// about EGSS; this file builds the room, traces it, plays it, and draws the
+// about GS; this file builds the room, traces it, plays it, and draws the
 // answer.
 //
 // ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@
 // 1/(defect rate difference). Those checks live in the changelog rather than in
 // the tree, per the project's habit of deleting a test once it has spoken.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -126,7 +126,7 @@ public:
 		m_Camera.SetPosition({ -0.5f, 5.4f, 7.5f });
 		m_Camera.SetRotation(-84.0f, -26.0f);
 
-		m_Cube.reset(Egss::Mesh::CreateCube(1.0f));
+		m_Cube.reset(GS::Mesh::CreateCube(1.0f));
 
 		// 4-pole motors on a 50 Hz grid. Synchronous speed is 25 Hz; the
 		// difference between the two is slip, which tracks load -- so these
@@ -175,8 +175,8 @@ public:
 		// Put the mixer back, or this demo's room keeps ringing under whichever
 		// demo is selected next. That exact bug is why `OnDemoDeactivated`
 		// exists at all -- see Demo.h.
-		Egss::AudioEngine::ClearReverbImpulse();
-		Egss::AudioEngine::SetReverb(Egss::ReverbSettings());
+		GS::AudioEngine::ClearReverbImpulse();
+		GS::AudioEngine::SetReverb(GS::ReverbSettings());
 	}
 
 	// The room. **Slabs, not one hollow box** -- a ray starting inside a box
@@ -192,7 +192,7 @@ public:
 	// channel method cannot solve.
 	void BuildRoom()
 	{
-		m_Scene = Egss::Scene();
+		m_Scene = GS::Scene();
 		m_Walls.clear();
 
 		const float halfX = m_RoomHalfX;
@@ -202,13 +202,13 @@ public:
 
 		auto slab = [this](const char* name, const glm::vec3& position, const glm::vec3& scale)
 		{
-			Egss::Entity entity = m_Scene.CreateEntity(name);
+			GS::Entity entity = m_Scene.CreateEntity(name);
 
-			auto* transform = entity.Get<Egss::TransformComponent>();
+			auto* transform = entity.Get<GS::TransformComponent>();
 			transform->Position = position;
 			transform->Scale = scale;
 
-			Egss::MeshComponent mesh;
+			GS::MeshComponent mesh;
 			mesh.Geometry = m_Cube;
 			mesh.Color = { 0.34f, 0.36f, 0.42f, 1.0f };
 			// **Required for tracing, not for drawing.** Raycast3D skips
@@ -217,7 +217,7 @@ public:
 			// draws its own wireframe and never submits these, so Visible
 			// stays true and means only "the sound can see it".
 			mesh.Visible = true;
-			entity.Add<Egss::MeshComponent>(mesh);
+			entity.Add<GS::MeshComponent>(mesh);
 
 			m_Walls.push_back({ position, scale });
 		};
@@ -235,7 +235,7 @@ public:
 	// ---------------------------------------------------------------------
 	void Retrace()
 	{
-		Egss::AcousticsSettings settings;
+		GS::AcousticsSettings settings;
 		settings.RayCount = m_RayCount;
 		settings.Absorption = m_Absorption;
 		settings.Scattering = m_Scattering;
@@ -243,7 +243,7 @@ public:
 
 		for (int p = 0; p < 2; p++)
 		{
-			m_Trace[p] = Egss::Acoustics3D::Trace(m_Scene, m_PumpPosition[p], m_MicPosition, settings);
+			m_Trace[p] = GS::Acoustics3D::Trace(m_Scene, m_PumpPosition[p], m_MicPosition, settings);
 			BuildChannel(p);
 		}
 
@@ -261,7 +261,7 @@ public:
 	// by a scale factor, which is exactly the rank-deficient case.
 	void BuildChannel(int pump)
 	{
-		const Egss::AcousticsResult3D& trace = m_Trace[pump];
+		const GS::AcousticsResult3D& trace = m_Trace[pump];
 
 		PumpDx::SparseIr ir;
 
@@ -269,17 +269,17 @@ public:
 		float directGain = m_MinDistance / distance;
 		ir.Add(trace.DirectDistance / PumpDx::kSpeedOfSound, directGain * (1.0f - trace.Occlusion));
 
-		for (const Egss::ReflectionPath3D& path : trace.Reflections)
+		for (const GS::ReflectionPath3D& path : trace.Reflections)
 			ir.Add(path.Delay, path.Gain * m_ReflectionGain);
 
 		if (m_UseTail)
 		{
-			Egss::ImpulseSettings impulse;
+			GS::ImpulseSettings impulse;
 			impulse.StartSeconds = 0.08f;
 			impulse.Gain = m_TailGain;
 
-			std::vector<Egss::ReverbTap> taps = Egss::Acoustics::BuildImpulseTaps(trace, impulse);
-			for (const Egss::ReverbTap& tap : taps)
+			std::vector<GS::ReverbTap> taps = GS::Acoustics::BuildImpulseTaps(trace, impulse);
+			for (const GS::ReverbTap& tap : taps)
 			{
 				// Pan is dropped rather than folded in. A single microphone has
 				// no left and no right, and summing a panned pair would leave a
@@ -298,7 +298,7 @@ public:
 		m_PredictedQuefrency[pump] = 0.0f;
 		if (!trace.Reflections.empty())
 		{
-			const Egss::ReflectionPath3D& first = trace.Reflections.front();
+			const GS::ReflectionPath3D& first = trace.Reflections.front();
 			m_PredictedQuefrency[pump] =
 				(first.PathLength - trace.DirectDistance) / PumpDx::kSpeedOfSound;
 		}
@@ -324,10 +324,10 @@ public:
 	{
 		StopVoices();
 
-		if (!Egss::AudioEngine::IsAvailable())
+		if (!GS::AudioEngine::IsAvailable())
 			return;
 
-		float rate = (float)Egss::AudioEngine::GetSampleRate();
+		float rate = (float)GS::AudioEngine::GetSampleRate();
 		int frames = (int)(rate * 2.0f);
 
 		for (int p = 0; p < 2; p++)
@@ -341,9 +341,9 @@ public:
 			std::vector<float> samples((size_t)frames);
 			synth.Render(samples.data(), frames, false);
 
-			m_Clip[p] = Egss::AudioClip::CreateFromSamples(std::move(samples), 1);
+			m_Clip[p] = GS::AudioClip::CreateFromSamples(std::move(samples), 1);
 
-			Egss::Audio3DParams params;
+			GS::Audio3DParams params;
 			params.Position = m_PumpPosition[p];
 			params.Loop = true;
 			params.Volume = m_Volume;
@@ -352,7 +352,7 @@ public:
 			// A pump does not move, so Doppler is only a source of surprises.
 			params.DopplerFactor = 0.0f;
 
-			m_Voice[p] = Egss::AudioEngine::PlayAt(m_Clip[p], params);
+			m_Voice[p] = GS::AudioEngine::PlayAt(m_Clip[p], params);
 		}
 
 		ApplyToMixer();
@@ -362,10 +362,10 @@ public:
 	{
 		for (int p = 0; p < 2; p++)
 		{
-			if (m_Voice[p] != Egss::InvalidVoice)
-				Egss::AudioEngine::Stop(m_Voice[p]);
+			if (m_Voice[p] != GS::InvalidVoice)
+				GS::AudioEngine::Stop(m_Voice[p]);
 
-			m_Voice[p] = Egss::InvalidVoice;
+			m_Voice[p] = GS::InvalidVoice;
 		}
 	}
 
@@ -373,32 +373,32 @@ public:
 	// until the clip is rebuilt. Cheap enough to just rebuild it.
 	void RefreshAudibleClips()
 	{
-		if (m_Voice[0] != Egss::InvalidVoice || m_Voice[1] != Egss::InvalidVoice)
+		if (m_Voice[0] != GS::InvalidVoice || m_Voice[1] != GS::InvalidVoice)
 			StartVoices();
 	}
 
 	void ApplyToMixer()
 	{
-		if (!Egss::AudioEngine::IsAvailable())
+		if (!GS::AudioEngine::IsAvailable())
 			return;
 
-		Egss::AudioListener listener;
+		GS::AudioListener listener;
 		listener.Position = m_Camera.GetPosition();
 		listener.Forward = m_Camera.GetForward();
 		listener.Up = m_Camera.GetUp();
-		Egss::AudioEngine::SetListener(listener);
+		GS::AudioEngine::SetListener(listener);
 
 		glm::vec3 right = glm::normalize(glm::cross(listener.Forward, listener.Up));
 
 		for (int p = 0; p < 2; p++)
 		{
-			if (!Egss::AudioEngine::IsPlaying(m_Voice[p]))
+			if (!GS::AudioEngine::IsPlaying(m_Voice[p]))
 				continue;
 
 			m_Taps.clear();
-			for (const Egss::ReflectionPath3D& path : m_Trace[p].Reflections)
+			for (const GS::ReflectionPath3D& path : m_Trace[p].Reflections)
 			{
-				Egss::AudioReflection tap;
+				GS::AudioReflection tap;
 				tap.Delay = path.Delay;
 				tap.Gain = path.Gain * m_ReflectionGain;
 				// In 3D a pan comes from the listener, not the world: the
@@ -408,7 +408,7 @@ public:
 				m_Taps.push_back(tap);
 			}
 
-			Egss::AudioEngine::SetVoiceReflections(m_Voice[p], m_Taps.data(), (unsigned int)m_Taps.size());
+			GS::AudioEngine::SetVoiceReflections(m_Voice[p], m_Taps.data(), (unsigned int)m_Taps.size());
 		}
 
 		// One tail for the room, from the nearer pump's trace. A tail is a
@@ -417,17 +417,17 @@ public:
 		int nearest = glm::length(m_PumpPosition[0] - listener.Position)
 			< glm::length(m_PumpPosition[1] - listener.Position) ? 0 : 1;
 
-		Egss::ImpulseSettings impulse;
+		GS::ImpulseSettings impulse;
 		impulse.StartSeconds = 0.08f;
 		impulse.Gain = m_TailGain;
-		m_Impulse = Egss::Acoustics::BuildImpulseTaps(m_Trace[nearest], impulse);
-		Egss::AudioEngine::SetReverbImpulse(m_Impulse.data(), (unsigned int)m_Impulse.size());
+		m_Impulse = GS::Acoustics::BuildImpulseTaps(m_Trace[nearest], impulse);
+		GS::AudioEngine::SetReverbImpulse(m_Impulse.data(), (unsigned int)m_Impulse.size());
 
-		Egss::ReverbSettings reverb;
+		GS::ReverbSettings reverb;
 		reverb.Wet = glm::clamp(m_Trace[nearest].LateEnergyRatio * 1.5f, 0.0f, 0.9f);
 		reverb.RoomSize = glm::clamp(m_Trace[nearest].ReverbTime / 2.0f, 0.1f, 0.95f);
 		reverb.Damping = glm::clamp(m_Trace[nearest].MeanAbsorption * 1.5f, 0.1f, 0.9f);
-		Egss::AudioEngine::SetReverb(reverb);
+		GS::AudioEngine::SetReverb(reverb);
 	}
 
 	// ---------------------------------------------------------------------
@@ -438,7 +438,7 @@ public:
 	// Everything that moves belongs in the fixed step -- three demos here
 	// violated that and could not reproduce themselves run to run.
 	// ---------------------------------------------------------------------
-	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
+	void OnDemoFixedUpdate(GS::Timestep fixedStep) override
 	{
 		if (m_Paused)
 			return;
@@ -520,7 +520,7 @@ public:
 		m_Baselines.Fingerprint = Fingerprint();
 		m_Baselines.Valid = true;
 
-		EGSS_TRACE("[PumpDx] baselines captured over {0:.1f} s, {1} Welch segments",
+		GS_TRACE("[PumpDx] baselines captured over {0:.1f} s, {1} Welch segments",
 			m_WindowSeconds, m_Segments);
 	}
 
@@ -569,7 +569,7 @@ public:
 			static const char* names[] = { "neither", "pump A", "pump B", "both" };
 			int truthIndex = GroundTruth() + 1;
 			int verdictIndex = m_ChannelFit.Verdict + 1;
-			EGSS_TRACE("[PumpDx] t={0:.1f}s truth={1} verdict={2} | A {3:+.2f} dB B {4:+.2f} dB "
+			GS_TRACE("[PumpDx] t={0:.1f}s truth={1} verdict={2} | A {3:+.2f} dB B {4:+.2f} dB "
 				"| detect {5:.1f}s attrib {6:.1f}s cond {7:.2f} chi2 {8:.2f} q {9:.2f}",
 				m_ElapsedSeconds, names[truthIndex], names[verdictIndex],
 				m_ChannelFit.SeverityDb[0], m_ChannelFit.SeverityDb[1],
@@ -624,37 +624,37 @@ public:
 	// ---------------------------------------------------------------------
 	// Camera and rendering
 	// ---------------------------------------------------------------------
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 		MoveCamera(ts);
 		ApplyToMixer();
 
-		Egss::RenderCommand::SetClearColor({ 0.05f, 0.06f, 0.08f, 1.0f });
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor({ 0.05f, 0.06f, 0.08f, 1.0f });
+		GS::RenderCommand::Clear();
 
-		Egss::Renderer2D::BeginScene(m_Camera);
+		GS::Renderer2D::BeginScene(m_Camera);
 		DrawRoom();
 		DrawRays();
 		DrawMachines();
-		Egss::Renderer2D::EndScene();
+		GS::Renderer2D::EndScene();
 	}
 
-	void MoveCamera(Egss::Timestep ts)
+	void MoveCamera(GS::Timestep ts)
 	{
 		float speed = m_CameraSpeed * (float)ts;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT_SHIFT))
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT_SHIFT))
 			speed *= 3.0f;
 
 		glm::vec3 position = m_Camera.GetPosition();
 		glm::vec3 forward = m_Camera.GetForward();
 		glm::vec3 right = m_Camera.GetRight();
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) position += forward * speed;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) position -= forward * speed;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) position -= right * speed;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) position += right * speed;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_E)) position.y += speed;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_Q)) position.y -= speed;
+		if (GS::Input::IsKeyPressed(GS_KEY_W)) position += forward * speed;
+		if (GS::Input::IsKeyPressed(GS_KEY_S)) position -= forward * speed;
+		if (GS::Input::IsKeyPressed(GS_KEY_A)) position -= right * speed;
+		if (GS::Input::IsKeyPressed(GS_KEY_D)) position += right * speed;
+		if (GS::Input::IsKeyPressed(GS_KEY_E)) position.y += speed;
+		if (GS::Input::IsKeyPressed(GS_KEY_Q)) position.y -= speed;
 
 		m_Camera.SetPosition(position);
 
@@ -662,10 +662,10 @@ public:
 		float yaw = m_Camera.GetYaw();
 		float pitch = m_Camera.GetPitch();
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))  yaw -= turn;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) yaw += turn;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))    pitch += turn;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))  pitch -= turn;
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT))  yaw -= turn;
+		if (GS::Input::IsKeyPressed(GS_KEY_RIGHT)) yaw += turn;
+		if (GS::Input::IsKeyPressed(GS_KEY_UP))    pitch += turn;
+		if (GS::Input::IsKeyPressed(GS_KEY_DOWN))  pitch -= turn;
 
 		m_Camera.SetRotation(yaw, glm::clamp(pitch, -89.0f, 89.0f));
 	}
@@ -687,7 +687,7 @@ public:
 		};
 
 		for (const auto& e : edges)
-			Egss::Renderer2D::DrawLine(corner[e[0]], corner[e[1]], color);
+			GS::Renderer2D::DrawLine(corner[e[0]], corner[e[1]], color);
 	}
 
 	void DrawRoom()
@@ -715,7 +715,7 @@ public:
 
 		glm::vec4 micColor = { 0.85f, 0.90f, 0.95f, 1.0f };
 		DrawBox(m_MicPosition, { 0.25f, 0.25f, 0.25f }, micColor);
-		Egss::Renderer2D::DrawLine(m_MicPosition,
+		GS::Renderer2D::DrawLine(m_MicPosition,
 			m_MicPosition - glm::vec3(0.0f, m_MicPosition.y, 0.0f), micColor);
 	}
 
@@ -732,13 +732,13 @@ public:
 			glm::vec4 color = PumpColor(p);
 
 			if (m_ShowDirect)
-				Egss::Renderer2D::DrawLine(m_PumpPosition[p], m_MicPosition, color);
+				GS::Renderer2D::DrawLine(m_PumpPosition[p], m_MicPosition, color);
 
 			if (!m_ShowReflections)
 				continue;
 
 			glm::vec4 faint = { color.r, color.g, color.b, 0.35f };
-			for (const Egss::ReflectionPath3D& path : m_Trace[p].Reflections)
+			for (const GS::ReflectionPath3D& path : m_Trace[p].Reflections)
 			{
 				// The bounce point is not reported, only the arrival direction
 				// and the total length -- enough to draw the last leg, which is
@@ -749,7 +749,7 @@ public:
 				// matters here into a starburst.
 				float leg = std::min(path.PathLength * 0.45f, 3.5f);
 				glm::vec3 from = m_MicPosition - path.Direction * leg;
-				Egss::Renderer2D::DrawLine(from, m_MicPosition, faint);
+				GS::Renderer2D::DrawLine(from, m_MicPosition, faint);
 			}
 		}
 	}
@@ -1031,7 +1031,7 @@ public:
 		if (ImGui::SliderFloat("Volume", &m_Volume, 0.0f, 1.0f))
 		{
 			for (int p = 0; p < 2; p++)
-				Egss::AudioEngine::SetVoiceVolume(m_Voice[p], m_Volume);
+				GS::AudioEngine::SetVoiceVolume(m_Voice[p], m_Volume);
 		}
 		ImGui::Checkbox("Show direct paths", &m_ShowDirect);
 		ImGui::SameLine();
@@ -1171,17 +1171,17 @@ public:
 		ImGui::End();
 	}
 
-	void OnDemoEvent(Egss::Event& e) override
+	void OnDemoEvent(GS::Event& e) override
 	{
-		Egss::EventDispatcher dispatcher(e);
-		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& key)
+		GS::EventDispatcher dispatcher(e);
+		dispatcher.Dispatch<GS::KeyPressedEvent>([this](GS::KeyPressedEvent& key)
 		{
-			if (key.GetKeyCode() == EGSS_KEY_B)
+			if (key.GetKeyCode() == GS_KEY_B)
 			{
 				BeginCapture();
 				return true;
 			}
-			if (key.GetKeyCode() == EGSS_KEY_SPACE)
+			if (key.GetKeyCode() == GS_KEY_SPACE)
 			{
 				m_Paused = !m_Paused;
 				return true;
@@ -1204,9 +1204,9 @@ private:
 	// a quieter machine than the second.
 	static constexpr float kSettleSeconds = 1.0f;
 
-	Egss::PerspectiveCamera m_Camera;
-	Egss::Scene m_Scene;
-	std::shared_ptr<Egss::Mesh> m_Cube;
+	GS::PerspectiveCamera m_Camera;
+	GS::Scene m_Scene;
+	std::shared_ptr<GS::Mesh> m_Cube;
 	std::vector<Slab> m_Walls;
 
 	float m_RoomHalfX = 9.0f;
@@ -1217,9 +1217,9 @@ private:
 	glm::vec3 m_PumpPosition[2] = { { -4.5f, 0.7f, -3.0f }, { 3.5f, 0.7f, -1.0f } };
 
 	// --- Acoustics ---
-	Egss::AcousticsResult3D m_Trace[2];
-	std::vector<Egss::AudioReflection> m_Taps;
-	std::vector<Egss::ReverbTap> m_Impulse;
+	GS::AcousticsResult3D m_Trace[2];
+	std::vector<GS::AudioReflection> m_Taps;
+	std::vector<GS::ReverbTap> m_Impulse;
 	float m_PredictedQuefrency[2] = { 0.0f, 0.0f };
 	float m_TracedFingerprint = 0.0f;
 
@@ -1232,8 +1232,8 @@ private:
 	bool m_UseTail = true;
 
 	// --- Audible ---
-	std::shared_ptr<Egss::AudioClip> m_Clip[2];
-	Egss::VoiceHandle m_Voice[2] = { Egss::InvalidVoice, Egss::InvalidVoice };
+	std::shared_ptr<GS::AudioClip> m_Clip[2];
+	GS::VoiceHandle m_Voice[2] = { GS::InvalidVoice, GS::InvalidVoice };
 	float m_Volume = 0.5f;
 
 	// --- Measured ---

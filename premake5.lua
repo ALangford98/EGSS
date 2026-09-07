@@ -1,4 +1,4 @@
-workspace "EGSS"
+workspace "GS"
     architecture "x64"
 
     configurations
@@ -42,29 +42,29 @@ end
 
 --include directories 
 IncludeDir = {}
-IncludeDir["GLFW"] = "EGSS/vendor/glfw/include"
-IncludeDir["Glad"] = "EGSS/vendor/Glad/include"
-IncludeDir["glm"] = "EGSS/vendor/glm"
-IncludeDir["ImGui"] = "EGSS/vendor/imgui"
-IncludeDir["stb_image"] = "EGSS/vendor/stb_image"
-IncludeDir["miniaudio"] = "EGSS/vendor/miniaudio"
+IncludeDir["GLFW"] = "GS/vendor/glfw/include"
+IncludeDir["Glad"] = "GS/vendor/Glad/include"
+IncludeDir["glm"] = "GS/vendor/glm"
+IncludeDir["ImGui"] = "GS/vendor/imgui"
+IncludeDir["stb_image"] = "GS/vendor/stb_image"
+IncludeDir["miniaudio"] = "GS/vendor/miniaudio"
 
-include "EGSS/vendor/glfw"
-include "EGSS/vendor/Glad"
-include "EGSS/vendor/imgui_premake5.lua"
+include "GS/vendor/glfw"
+include "GS/vendor/Glad"
+include "GS/vendor/imgui_premake5.lua"
 
-project "EGSS"
+project "GS"
     -- Must match the case of the source folder: on Windows this resolved to
-    -- EGSS/ anyway, but a case-sensitive filesystem would make a second dir.
-    location "EGSS"
+    -- GS/ anyway, but a case-sensitive filesystem would make a second dir.
+    location "GS"
     kind "SharedLib"
     language "C++"
 
     targetdir ("bin/" .. outputdir .. "/%{prj.name}")
     objdir ("bin-int/" .. outputdir .. "/%{prj.name}")
 
-    pchheader "egsspch.h"
-    pchsource "EGSS/src/egsspch.cpp"
+    pchheader "gspch.h"
+    pchsource "GS/src/gspch.cpp"
 
     files
     {
@@ -114,15 +114,15 @@ project "EGSS"
 
         -- C4251: exported classes hold std::string/vector/shared_ptr members.
         -- Harmless here because the engine and app share one runtime, and it
-        -- would otherwise fire on nearly every EGSS_API class.
+        -- would otherwise fire on nearly every GS_API class.
         disablewarnings { "4251" }
 
         removefiles { "%{prj.name}/src/Platform/Linux/**" }
 
         defines
         {
-            "EGSS_PLATFORM_WINDOWS",
-            "EGSS_BUILD_DLL"
+            "GS_PLATFORM_WINDOWS",
+            "GS_BUILD_DLL"
         }
 
         links
@@ -148,8 +148,8 @@ project "EGSS"
 
         defines
         {
-            "EGSS_PLATFORM_LINUX",
-            "EGSS_BUILD_DLL"
+            "GS_PLATFORM_LINUX",
+            "GS_BUILD_DLL"
         }
 
         -- GLFW is built as a static lib with the X11 backend, so its
@@ -170,18 +170,18 @@ project "EGSS"
         }
 
     filter "configurations:Debug"
-        defines { "EGSS_DEBUG", "EGSS_ENABLE_ASSERTS", "EGSS_PROFILE" }
+        defines { "GS_DEBUG", "GS_ENABLE_ASSERTS", "GS_PROFILE" }
         runtime "Debug"
         symbols "On"
 
     filter "configurations:Release"
-        defines { "EGSS_RELEASE", "EGSS_PROFILE" }
+        defines { "GS_RELEASE", "GS_PROFILE" }
         runtime "Release"
         optimize "On"
         symbols "On"
 
     filter "configurations:Dist"
-        defines "EGSS_DIST"
+        defines "GS_DIST"
         runtime "Release"
         optimize "Full"
         symbols "Off"
@@ -204,7 +204,7 @@ project "EGSS"
 
     -- TSan instruments every memory access to track happens-before, so it has
     -- to see *both* sides of a race to report one. The audio mixer runs on
-    -- miniaudio's device thread inside libEGSS, and the demo code that claims
+    -- miniaudio's device thread inside libGS, and the demo code that claims
     -- and stops voices runs on the main thread in TestEnv, so both first-party
     -- projects being instrumented is what makes this able to say anything at
     -- all.
@@ -231,15 +231,15 @@ project "TestEnv"
 
     includedirs
     {
-        "EGSS/vendor/spdlog/include",
-        "EGSS/src",
+        "GS/vendor/spdlog/include",
+        "GS/src",
         "%{IncludeDir.glm}",
         "%{IncludeDir.ImGui}"
     }
 
     links 
     {
-        "EGSS",
+        "GS",
         "ImGui"
     }
 
@@ -261,7 +261,7 @@ project "TestEnv"
 
         defines
         {
-            "EGSS_PLATFORM_WINDOWS",
+            "GS_PLATFORM_WINDOWS",
         }
 
         postbuildcommands
@@ -275,7 +275,7 @@ project "TestEnv"
 
         defines
         {
-            "EGSS_PLATFORM_LINUX",
+            "GS_PLATFORM_LINUX",
         }
 
         links
@@ -284,7 +284,7 @@ project "TestEnv"
             "dl"
         }
 
-        -- Find libEGSS.so next to the executable instead of on the system path.
+        -- Find libGS.so next to the executable instead of on the system path.
         linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
 
         postbuildcommands
@@ -293,18 +293,18 @@ project "TestEnv"
         }
 
     filter "configurations:Debug"
-        defines { "EGSS_DEBUG", "EGSS_ENABLE_ASSERTS", "EGSS_PROFILE" }
+        defines { "GS_DEBUG", "GS_ENABLE_ASSERTS", "GS_PROFILE" }
         runtime "Debug"
         symbols "On"
 
     filter "configurations:Release"
-        defines { "EGSS_RELEASE", "EGSS_PROFILE" }
+        defines { "GS_RELEASE", "GS_PROFILE" }
         runtime "Release"
         optimize "On"
         symbols "On"
 
     filter "configurations:Dist"
-        defines "EGSS_DIST"
+        defines "GS_DIST"
         runtime "Release"
         optimize "Full"
         symbols "Off"
@@ -327,7 +327,7 @@ project "TestEnv"
 
     -- TSan instruments every memory access to track happens-before, so it has
     -- to see *both* sides of a race to report one. The audio mixer runs on
-    -- miniaudio's device thread inside libEGSS, and the demo code that claims
+    -- miniaudio's device thread inside libGS, and the demo code that claims
     -- and stops voices runs on the main thread in TestEnv, so both first-party
     -- projects being instrumented is what makes this able to say anything at
     -- all.

@@ -26,7 +26,7 @@
 //     matters. The spawn points and the clipping toggle below are both meant
 //     to be ported.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -110,7 +110,7 @@ public:
 		// `--time 0.5` puts the sun overhead for a capture. Unattended runs
 		// have nobody to move a slider, and comparing a dawn against a noon is
 		// the first thing anyone wants of a day cycle.
-		const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
+		const std::vector<std::string>& arguments = GS::Application::GetCommandLine();
 
 		// `--spawn N` stands at the centre of cell N. The spawn buttons are
 		// the only way to be somewhere specific, and an unattended run has
@@ -658,7 +658,7 @@ private:
 
 		float half = 0.5f * Extent();
 
-		m_Field = std::make_shared<Egss::VoxelField3D>();
+		m_Field = std::make_shared<GS::VoxelField3D>();
 		m_Field->Create({ s_Side, s_Side, s_Side }, m_Voxel,
 			{ -half, -half, -half });
 
@@ -688,8 +688,8 @@ private:
 		m_World.Clear();
 		m_World.Gravity = { 0.0f, -9.81f, 0.0f };
 
-		Egss::RigidBody3D ground =
-			Egss::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
+		GS::RigidBody3D ground =
+			GS::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
 
 		m_Ground = m_World.AddBody(ground);
 
@@ -701,7 +701,7 @@ private:
 
 	void SpawnWalker()
 	{
-		Egss::RigidBody3D body = Egss::RigidBody3D::MakeCapsule(
+		GS::RigidBody3D body = GS::RigidBody3D::MakeCapsule(
 			{ 0.0f, 40.0f, 0.0f }, s_WalkerRadius, s_WalkerHalfHeight, 80.0f);
 
 		// Upright and staying that way: a capsule that can tip over is a
@@ -986,7 +986,7 @@ private:
 			glm::ivec3 min, max;
 			m_Field->ChunkRange(chunk, min, max);
 
-			Egss::MeshData data = Egss::MarchingCubes::Mesh(*m_Field, min, max);
+			GS::MeshData data = GS::MarchingCubes::Mesh(*m_Field, min, max);
 
 			size_t key = ChunkKey(chunk);
 
@@ -1031,7 +1031,7 @@ private:
 	// entirely if none of its members have geometry.
 	void RebuildChunkGroup(const glm::ivec3& group)
 	{
-		Egss::MeshData merged;
+		GS::MeshData merged;
 		glm::ivec3 base = group * s_GroupSize;
 
 		for (int dz = 0; dz < s_GroupSize; dz++)
@@ -1058,7 +1058,7 @@ private:
 		if (merged.Indices.empty())
 			m_ChunkGroups.erase(key);
 		else
-			m_ChunkGroups[key] = std::make_shared<Egss::Mesh>(merged, "LabChunkGroup");
+			m_ChunkGroups[key] = std::make_shared<GS::Mesh>(merged, "LabChunkGroup");
 	}
 
 	// **Two passes of blades, long and short.**
@@ -1070,7 +1070,7 @@ private:
 	// the ground between the tall blades, which is the job the density was
 	// being asked to do on its own.
 	void BuildChunkGrass(size_t key, const glm::ivec3& chunk,
-		const Egss::MeshData& data)
+		const GS::MeshData& data)
 	{
 		m_Grass.erase(key);
 
@@ -1125,8 +1125,8 @@ private:
 		low.Lean = 0.5f;
 		low.Seed = 4231u;
 
-		Egss::MeshData blades = Grass::Build(data, tall, seed, up, allow);
-		Egss::MeshData under = Grass::Build(data, low, seed, up, allow);
+		GS::MeshData blades = Grass::Build(data, tall, seed, up, allow);
+		GS::MeshData under = Grass::Build(data, low, seed, up, allow);
 
 		// One mesh, one draw. Appending needs the second lot's indices shifted
 		// past the first lot's vertices -- the classic off-by-a-whole-mesh.
@@ -1143,12 +1143,12 @@ private:
 
 		blades.Submeshes.clear();
 
-		Egss::Submesh all;
+		GS::Submesh all;
 		all.IndexCount = (unsigned int)blades.Indices.size();
 		blades.Submeshes.push_back(all);
 		blades.RecalculateBounds();
 
-		m_Grass[key] = std::make_shared<Egss::Mesh>(blades, "LabGrass");
+		m_Grass[key] = std::make_shared<GS::Mesh>(blades, "LabGrass");
 	}
 
 	// --- Sky ------------------------------------------------------------------
@@ -1267,7 +1267,7 @@ private:
 	// rewritten but not removed.
 	struct Felled
 	{
-		Egss::PhysicsWorld3D::BodyHandle Body = 0;
+		GS::PhysicsWorld3D::BodyHandle Body = 0;
 		bool Active = false;
 		int Shape = 0;
 		int Size = 0;
@@ -1301,7 +1301,7 @@ private:
 	// ask the same matrix the renderer uses.
 	glm::mat4 FelledFrame(const Felled& fell) const
 	{
-		const Egss::RigidBody3D& body = m_World.GetBody(fell.Body);
+		const GS::RigidBody3D& body = m_World.GetBody(fell.Body);
 
 		// Read right to left: lift the mesh so its own cut height is at the
 		// origin, scale it, slide it down the stem to where the cut is, then
@@ -1489,7 +1489,7 @@ private:
 	}
 
 	void BuildChunkTrees(size_t key, const glm::ivec3& chunk,
-		const Egss::MeshData& data)
+		const GS::MeshData& data)
 	{
 		m_Trees.erase(key);
 
@@ -1725,8 +1725,8 @@ private:
 
 		RebuildDirtyMeshes();
 
-		Egss::RigidBody3D& ground = m_World.GetBody(m_Ground);
-		ground = Egss::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
+		GS::RigidBody3D& ground = m_World.GetBody(m_Ground);
+		ground = GS::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
 
 		// **Rock breaks into blocks; soil does not.** A picked block is a
 		// 300 mm cube of stone -- 70 kg, a heavy but real lift, and exactly
@@ -1779,9 +1779,9 @@ private:
 		// Replacing the ground body alone fixes that and leaves everything
 		// else -- the player, their velocity, where they were looking --
 		// exactly as it was.
-		Egss::RigidBody3D& ground = m_World.GetBody(m_Ground);
+		GS::RigidBody3D& ground = m_World.GetBody(m_Ground);
 
-		ground = Egss::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
+		ground = GS::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
 	}
 
 	// --- Developer tools ----------------------------------------------------
@@ -1816,7 +1816,7 @@ private:
 		// or floating, and falling a couple of metres is neither.
 		at.y = Height(at.x, at.z) + 2.5f;
 
-		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+		GS::RigidBody3D& body = m_World.GetBody(m_Walker);
 		body.Position = at;
 		body.Velocity = glm::vec3(0.0f);
 		body.Awake = true;
@@ -1983,7 +1983,7 @@ private:
 	}
 
 	void BuildChunkStones(size_t key, const glm::ivec3& chunk,
-		const Egss::MeshData& data)
+		const GS::MeshData& data)
 	{
 		m_Stones.erase(key);
 
@@ -2242,7 +2242,7 @@ private:
 	{
 		while ((int)m_StoneBodies.size() < s_StoneBodies)
 		{
-			Egss::RigidBody3D body = Egss::RigidBody3D::MakeStaticSphere(
+			GS::RigidBody3D body = GS::RigidBody3D::MakeStaticSphere(
 				glm::vec3(0.0f, -1000.0f, 0.0f), 0.1f);
 
 			body.Friction = 0.8f;
@@ -2259,9 +2259,9 @@ private:
 			if (at >= s_StoneBodies)
 				break;
 
-			Egss::RigidBody3D& body = m_World.GetBody(m_StoneBodies[at++]);
+			GS::RigidBody3D& body = m_World.GetBody(m_StoneBodies[at++]);
 
-			body = Egss::RigidBody3D::MakeStaticSphere(stone.At,
+			body = GS::RigidBody3D::MakeStaticSphere(stone.At,
 				glm::min(glm::min(stone.Radii.x, stone.Radii.y),
 					stone.Radii.z));
 
@@ -2273,7 +2273,7 @@ private:
 
 		for (; at < s_StoneBodies; at++)
 		{
-			Egss::RigidBody3D& body = m_World.GetBody(m_StoneBodies[at]);
+			GS::RigidBody3D& body = m_World.GetBody(m_StoneBodies[at]);
 
 			body.Position = glm::vec3(0.0f, -1000.0f, 0.0f);
 		}
@@ -2291,7 +2291,7 @@ private:
 
 	struct Loose
 	{
-		Egss::PhysicsWorld3D::BodyHandle Body = 0;
+		GS::PhysicsWorld3D::BodyHandle Body = 0;
 		glm::vec3 Half = glm::vec3(0.5f);
 		glm::vec3 Colour = glm::vec3(0.5f);
 		Flotsam Kind = Flotsam::Driftwood;
@@ -2322,7 +2322,7 @@ private:
 	// world for ever -- so every press doubled the physics.
 	static constexpr int s_LoosePool = 200;
 
-	std::vector<Egss::PhysicsWorld3D::BodyHandle> m_LoosePool;
+	std::vector<GS::PhysicsWorld3D::BodyHandle> m_LoosePool;
 
 	// **Archimedes, and now the shape of what is under water as well.**
 	//
@@ -2368,7 +2368,7 @@ private:
 
 		for (const Loose& loose : m_Loose)
 		{
-			Egss::RigidBody3D& body = m_World.GetBody(loose.Body);
+			GS::RigidBody3D& body = m_World.GetBody(loose.Body);
 
 			if (body.InverseMass <= 0.0f || loose.Carried)
 				continue;
@@ -2504,9 +2504,9 @@ private:
 	{
 		for (size_t i = from; i < m_LoosePool.size(); i++)
 		{
-			Egss::RigidBody3D& body = m_World.GetBody(m_LoosePool[i]);
+			GS::RigidBody3D& body = m_World.GetBody(m_LoosePool[i]);
 
-			body = Egss::RigidBody3D::MakeStaticSphere(
+			body = GS::RigidBody3D::MakeStaticSphere(
 				glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f);
 		}
 	}
@@ -2517,7 +2517,7 @@ private:
 	{
 		while ((int)m_LoosePool.size() < s_LoosePool)
 			m_LoosePool.push_back(m_World.AddBody(
-				Egss::RigidBody3D::MakeStaticSphere(
+				GS::RigidBody3D::MakeStaticSphere(
 					glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f)));
 
 		if (m_Loose.size() >= m_LoosePool.size())
@@ -2532,7 +2532,7 @@ private:
 
 		float mass = density * fill * 8.0f * half.x * half.y * half.z;
 
-		Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(at, half, mass);
+		GS::RigidBody3D body = GS::RigidBody3D::MakeBox(at, half, mass);
 
 		body.Orientation = glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f));
 		body.UpdateInertiaWorld();
@@ -2644,7 +2644,7 @@ private:
 			if (loose.Kind != Flotsam::Plank)
 				continue;
 
-			const Egss::RigidBody3D& body = m_World.GetBody(loose.Body);
+			const GS::RigidBody3D& body = m_World.GetBody(loose.Body);
 
 			glm::mat3 frame = glm::mat3_cast(body.Orientation);
 			glm::mat3 into = glm::transpose(frame);
@@ -2729,7 +2729,7 @@ private:
 		if (pick < 0)
 			return;
 
-		Egss::RigidBody3D& body = m_World.GetBody(m_Loose[(size_t)pick].Body);
+		GS::RigidBody3D& body = m_World.GetBody(m_Loose[(size_t)pick].Body);
 
 		body.Position = landing;
 		body.PreviousPosition = landing;
@@ -2776,7 +2776,7 @@ private:
 	// already, F hangs it back wherever you are standing at the rack.
 	void TakeTool()
 	{
-		const Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+		const GS::RigidBody3D& body = m_World.GetBody(m_Walker);
 
 		// Taken and returned at the rack, so a tool cannot be dropped in a
 		// field and lost. There is one of each, the way there is one portal.
@@ -2976,10 +2976,10 @@ private:
 		{
 			Felled spare;
 
-			Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(
+			GS::RigidBody3D body = GS::RigidBody3D::MakeBox(
 				glm::vec3(0.0f, -1000.0f, 0.0f), glm::vec3(0.5f), 1.0f);
 
-			body.Type = Egss::BodyType::Static;
+			body.Type = GS::BodyType::Static;
 
 			spare.Body = m_World.AddBody(body);
 
@@ -3035,7 +3035,7 @@ private:
 		slot.Hinge = root;
 		slot.Hinged = true;
 
-		Egss::RigidBody3D body = Egss::RigidBody3D::MakeCapsule(centre, radius,
+		GS::RigidBody3D body = GS::RigidBody3D::MakeCapsule(centre, radius,
 			halfHeight, glm::max(mass, 20.0f));
 
 		body.Friction = 0.85f;
@@ -3155,7 +3155,7 @@ private:
 			if (!fell.Active || !fell.Hinged)
 				continue;
 
-			Egss::RigidBody3D& body = m_World.GetBody(fell.Body);
+			GS::RigidBody3D& body = m_World.GetBody(fell.Body);
 
 			glm::vec3 axis = glm::mat3_cast(body.Orientation)
 				* glm::vec3(0.0f, 1.0f, 0.0f);
@@ -3196,7 +3196,7 @@ private:
 			if (!fell.Active)
 				continue;
 
-			Egss::RigidBody3D& body = m_World.GetBody(fell.Body);
+			GS::RigidBody3D& body = m_World.GetBody(fell.Body);
 
 			if (!body.Awake || body.InverseMass <= 0.0f)
 				continue;
@@ -3464,13 +3464,13 @@ private:
 		board.Stack = slot;
 		board.Pile = (int)pile;
 
-		Egss::RigidBody3D& body = m_World.GetBody(board.Body);
+		GS::RigidBody3D& body = m_World.GetBody(board.Body);
 
 		body.Position = PileSlot(pile, slot, board.Half.y);
 		body.Orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 		body.Velocity = glm::vec3(0.0f);
 		body.AngularVelocity = glm::vec3(0.0f);
-		body.Type = Egss::BodyType::Static;
+		body.Type = GS::BodyType::Static;
 		body.Awake = false;
 
 		body.UpdateInertiaWorld();
@@ -3482,9 +3482,9 @@ private:
 
 		board.Stack = -1;
 
-		Egss::RigidBody3D& body = m_World.GetBody(board.Body);
+		GS::RigidBody3D& body = m_World.GetBody(board.Body);
 
-		body.Type = Egss::BodyType::Dynamic;
+		body.Type = GS::BodyType::Dynamic;
 		body.Awake = true;
 	}
 
@@ -3581,7 +3581,7 @@ private:
 			if (!m_Fell[i].Active)
 				continue;
 
-			const Egss::RigidBody3D& body = m_World.GetBody(m_Fell[i].Body);
+			const GS::RigidBody3D& body = m_World.GetBody(m_Fell[i].Body);
 
 			glm::vec3 to = body.Position - origin;
 
@@ -3614,7 +3614,7 @@ private:
 	{
 		Felled& fell = m_Fell[which];
 
-		const Egss::RigidBody3D& body = m_World.GetBody(fell.Body);
+		const GS::RigidBody3D& body = m_World.GetBody(fell.Body);
 
 		// **A log is the piece of stem it was cut from, and a stem tapers.**
 		//
@@ -3675,7 +3675,7 @@ private:
 		// is nothing to show for it, which is what felling a sapling is worth.
 		fell.Active = false;
 
-		m_World.GetBody(fell.Body) = Egss::RigidBody3D::MakeStaticSphere(
+		m_World.GetBody(fell.Body) = GS::RigidBody3D::MakeStaticSphere(
 			glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f);
 
 		m_Bucked += logs;
@@ -3709,7 +3709,7 @@ private:
 			if (m_Loose[i].Kind != Flotsam::Log || m_Loose[i].Carried)
 				continue;
 
-			const Egss::RigidBody3D& body = m_World.GetBody(m_Loose[i].Body);
+			const GS::RigidBody3D& body = m_World.GetBody(m_Loose[i].Body);
 
 			glm::vec3 to = body.Position - origin;
 
@@ -3737,7 +3737,7 @@ private:
 
 		float radius = log.Half.y * 0.70710678f;
 
-		Egss::RigidBody3D& body = m_World.GetBody(log.Body);
+		GS::RigidBody3D& body = m_World.GetBody(log.Body);
 
 		glm::vec3 at = body.Position;
 		glm::quat turn = body.Orientation;
@@ -3750,7 +3750,7 @@ private:
 
 		float mass = s_Pine * log.Fill * 8.0f * log.Half.x * radius * radius;
 
-		body = Egss::RigidBody3D::MakeBox(at - aside * (radius * 1.05f),
+		body = GS::RigidBody3D::MakeBox(at - aside * (radius * 1.05f),
 			log.Half, mass);
 
 		body.Orientation = turn;
@@ -3847,9 +3847,9 @@ private:
 
 		held.Carried = false;
 
-		Egss::RigidBody3D& body = m_World.GetBody(held.Body);
+		GS::RigidBody3D& body = m_World.GetBody(held.Body);
 
-		body.Type = Egss::BodyType::Dynamic;
+		body.Type = GS::BodyType::Dynamic;
 		body.Velocity = glm::vec3(0.0f);
 		body.AngularVelocity = glm::vec3(0.0f);
 		body.Awake = true;
@@ -3917,7 +3917,7 @@ private:
 			if (loose.Kind != Flotsam::Log && loose.Kind != Flotsam::Plank)
 				continue;
 
-			const Egss::RigidBody3D& body = m_World.GetBody(loose.Body);
+			const GS::RigidBody3D& body = m_World.GetBody(loose.Body);
 
 			glm::vec3 to = body.Position - origin;
 
@@ -4031,9 +4031,9 @@ private:
 
 		m_Loose[(size_t)slot].Carried = true;
 
-		Egss::RigidBody3D& body = m_World.GetBody(m_Loose[(size_t)slot].Body);
+		GS::RigidBody3D& body = m_World.GetBody(m_Loose[(size_t)slot].Body);
 
-		body.Type = Egss::BodyType::Kinematic;
+		body.Type = GS::BodyType::Kinematic;
 		body.Velocity = glm::vec3(0.0f);
 		body.AngularVelocity = glm::vec3(0.0f);
 	}
@@ -4069,10 +4069,10 @@ private:
 			normal))
 			reach = glm::min(reach, distance);
 
-		for (const Egss::RigidBody3D& body : m_World.GetBodies())
+		for (const GS::RigidBody3D& body : m_World.GetBodies())
 		{
-			if (body.Type != Egss::BodyType::Static
-				|| body.Shape != Egss::ColliderShape3D::Box)
+			if (body.Type != GS::BodyType::Static
+				|| body.Shape != GS::ColliderShape3D::Box)
 				continue;
 
 			glm::mat3 frame = glm::mat3_cast(glm::conjugate(body.Orientation));
@@ -4184,7 +4184,7 @@ private:
 
 			const Loose& held = m_Loose[(size_t)slot];
 
-			Egss::RigidBody3D& body = m_World.GetBody(held.Body);
+			GS::RigidBody3D& body = m_World.GetBody(held.Body);
 
 			// Carried low enough that a full armful tops out below the sight
 			// line: six boards stack 0.32 m, and starting at the old 0.35 m
@@ -4213,7 +4213,7 @@ private:
 
 		Loose& held = m_Loose[(size_t)slot];
 
-		const Egss::RigidBody3D& body = m_World.GetBody(held.Body);
+		const GS::RigidBody3D& body = m_World.GetBody(held.Body);
 
 		if (glm::length(body.Position - SawBench()) > 3.0f)
 			return;
@@ -4232,9 +4232,9 @@ private:
 		float mass = s_Pine * 8.0f * s_BoardHalf[0] * s_BoardHalf[1]
 			* s_BoardHalf[2];
 
-		Egss::RigidBody3D& first = m_World.GetBody(held.Body);
+		GS::RigidBody3D& first = m_World.GetBody(held.Body);
 
-		first = Egss::RigidBody3D::MakeBox(PileSlot(Pile::Mill, 0), held.Half,
+		first = GS::RigidBody3D::MakeBox(PileSlot(Pile::Mill, 0), held.Half,
 			mass);
 
 		first.Friction = 0.7f;
@@ -4430,7 +4430,7 @@ private:
 	struct Panel
 	{
 		Design Plan;
-		Egss::PhysicsWorld3D::BodyHandle Body = 0;
+		GS::PhysicsWorld3D::BodyHandle Body = 0;
 		glm::vec3 At = glm::vec3(0.0f);
 		float Yaw = 0.0f;
 		bool Placed = false;
@@ -5201,7 +5201,7 @@ private:
 			m_World.GetBody(m_Loose[at].Body) =
 				m_World.GetBody(m_Loose[last].Body);
 
-			Egss::PhysicsWorld3D::BodyHandle keep = m_Loose[at].Body;
+			GS::PhysicsWorld3D::BodyHandle keep = m_Loose[at].Body;
 
 			m_Loose[at] = m_Loose[last];
 			m_Loose[at].Body = keep;
@@ -5272,7 +5272,7 @@ private:
 
 		while ((int)m_PanelPool.size() < s_PanelPool)
 			m_PanelPool.push_back(m_World.AddBody(
-				Egss::RigidBody3D::MakeStaticSphere(
+				GS::RigidBody3D::MakeStaticSphere(
 					glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f)));
 
 		if (m_Panels.size() >= m_PanelPool.size())
@@ -5559,10 +5559,10 @@ private:
 
 		TouchPanels();
 
-		Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(panel.At, half,
+		GS::RigidBody3D body = GS::RigidBody3D::MakeBox(panel.At, half,
 			0.0f);
 
-		body.Type = Egss::BodyType::Static;
+		body.Type = GS::BodyType::Static;
 		body.Orientation = PanelTurn(panel);
 		body.Friction = 0.8f;
 
@@ -5700,7 +5700,7 @@ private:
 
 		// Its body goes back under the world, or the collider stays where the
 		// panel used to be and you walk into a wall that is in your hands.
-		m_World.GetBody(panel.Body) = Egss::RigidBody3D::MakeStaticSphere(
+		m_World.GetBody(panel.Body) = GS::RigidBody3D::MakeStaticSphere(
 			glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f);
 
 		// **Unplaced panels are taken in order, so the one just lifted has to
@@ -5884,7 +5884,7 @@ private:
 	void DrawBenchView();
 	void BenchPick(const ImVec2& at, const ImVec2& size);
 
-	Egss::PerspectiveCamera BenchCamera(float aspect) const;
+	GS::PerspectiveCamera BenchCamera(float aspect) const;
 
 	// The ray through a point of the bench's image, in the design's own grid
 	// space. `u` and `v` run 0 to 1 from the top left, which is how ImGui
@@ -5892,7 +5892,7 @@ private:
 	void BenchRay(float u, float v, float aspect, glm::vec3& from,
 		glm::vec3& direction) const;
 
-	std::shared_ptr<Egss::Framebuffer> m_BenchTarget;
+	std::shared_ptr<GS::Framebuffer> m_BenchTarget;
 	glm::vec2 m_BenchSize = glm::vec2(0.0f);
 
 	// Where the bench's camera is looking from: an orbit, because a design is
@@ -6089,7 +6089,7 @@ private:
 	{
 		while ((int)m_PanelPool.size() < s_PanelPool)
 			m_PanelPool.push_back(m_World.AddBody(
-				Egss::RigidBody3D::MakeStaticSphere(
+				GS::RigidBody3D::MakeStaticSphere(
 					glm::vec3(0.0f, -1000.0f, 0.0f), 0.05f)));
 
 		glm::vec3 centre = ShedCentre();
@@ -6110,10 +6110,10 @@ private:
 
 			made.At = centre + corner + PanelWorldHalf(made.Plan, yaw);
 
-			Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(made.At,
+			GS::RigidBody3D body = GS::RigidBody3D::MakeBox(made.At,
 				PanelHalf(made.Plan), 0.0f);
 
-			body.Type = Egss::BodyType::Static;
+			body.Type = GS::BodyType::Static;
 			body.Orientation = PanelTurn(made);
 			body.Friction = 0.7f;
 			body.UpdateInertiaWorld();
@@ -6226,11 +6226,11 @@ private:
 		// on it and the deck sits on the ring.
 		float under = LayerHeight() * (2.0f + (float)s_LogLayers);
 
-		Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(
+		GS::RigidBody3D body = GS::RigidBody3D::MakeBox(
 			centre - glm::vec3(0.0f, under + 0.5f * s_ShedSlab, 0.0f),
 			glm::vec3(s_ShedHalf, 0.5f * s_ShedSlab, s_ShedHalf), 0.0f);
 
-		body.Type = Egss::BodyType::Static;
+		body.Type = GS::BodyType::Static;
 		body.Friction = 0.7f;
 
 		m_World.AddBody(body);
@@ -6320,7 +6320,7 @@ private:
 
 	void TogglePortal()
 	{
-		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+		GS::RigidBody3D& body = m_World.GetBody(m_Walker);
 
 		if (m_PortalOn)
 		{
@@ -6359,7 +6359,7 @@ private:
 	// door and re-trigger on the next step.
 	void StepThrough(const Doorway& from, const Doorway& to)
 	{
-		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+		GS::RigidBody3D& body = m_World.GetBody(m_Walker);
 
 		glm::mat3 turn = DoorTurn(from, to);
 
@@ -6390,7 +6390,7 @@ private:
 		if (!m_PortalOn)
 			return;
 
-		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+		GS::RigidBody3D& body = m_World.GetBody(m_Walker);
 
 		if (!m_ViaPortal)
 		{
@@ -6441,9 +6441,9 @@ private:
 
 	// --- Walking ------------------------------------------------------------
 
-	void MoveWalker(Egss::Timestep step)
+	void MoveWalker(GS::Timestep step)
 	{
-		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+		GS::RigidBody3D& body = m_World.GetBody(m_Walker);
 
 		body.Orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 		body.AngularVelocity = glm::vec3(0.0f);
@@ -6462,10 +6462,10 @@ private:
 			glm::cross(flat, glm::vec3(0.0f, 1.0f, 0.0f)));
 
 		glm::vec3 wish(0.0f);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) wish += m_NoClip ? forward : flat;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) wish -= m_NoClip ? forward : flat;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) wish += right;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) wish -= right;
+		if (GS::Input::IsKeyPressed(GS_KEY_W)) wish += m_NoClip ? forward : flat;
+		if (GS::Input::IsKeyPressed(GS_KEY_S)) wish -= m_NoClip ? forward : flat;
+		if (GS::Input::IsKeyPressed(GS_KEY_D)) wish += right;
+		if (GS::Input::IsKeyPressed(GS_KEY_A)) wish -= right;
 
 		// **Clipping off: the body stops being a body.**
 		//
@@ -6478,15 +6478,15 @@ private:
 		// ground": while it is on, the world does not act on you at all.
 		if (m_NoClip)
 		{
-			body.Type = Egss::BodyType::Kinematic;
+			body.Type = GS::BodyType::Kinematic;
 			body.Velocity = glm::vec3(0.0f);
 
-			float speed = m_WalkSpeed * (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT_SHIFT)
+			float speed = m_WalkSpeed * (GS::Input::IsKeyPressed(GS_KEY_LEFT_SHIFT)
 				? 6.0f : 2.5f);
 
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_SPACE))
+			if (GS::Input::IsKeyPressed(GS_KEY_SPACE))
 				wish += glm::vec3(0.0f, 1.0f, 0.0f);
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT_CONTROL))
+			if (GS::Input::IsKeyPressed(GS_KEY_LEFT_CONTROL))
 				wish -= glm::vec3(0.0f, 1.0f, 0.0f);
 
 			if (glm::length(wish) > 1e-4f)
@@ -6498,7 +6498,7 @@ private:
 			return;
 		}
 
-		body.Type = Egss::BodyType::Dynamic;
+		body.Type = GS::BodyType::Dynamic;
 
 		float feet = body.Position.y - (s_WalkerHalfHeight + s_WalkerRadius);
 
@@ -6539,7 +6539,7 @@ private:
 			velocity.z = 0.0f;
 		}
 
-		if (m_Grounded && Egss::Input::IsKeyPressed(EGSS_KEY_SPACE))
+		if (m_Grounded && GS::Input::IsKeyPressed(GS_KEY_SPACE))
 			velocity.y = m_JumpSpeed;
 
 		body.Velocity = velocity;
@@ -6562,23 +6562,23 @@ private:
 	// This demo had digging on a `MouseButtonPressedEvent` and it did not
 	// work. Two reasons, and the second is the one that matters: an event can
 	// be consumed before it reaches a demo layer, and -- much worse --
-	// **events are not in the replay stream**. `Egss::Input` is, so a session
+	// **events are not in the replay stream**. `GS::Input` is, so a session
 	// polled here records and plays back and one handled from events does not.
 	// `VoxelTerrain` has done it this way since it was written and says so in
 	// a comment; the lab simply did not follow it.
 	//
 	// Everything that edits or teleports goes through here for that reason.
 	// Looking around stays in `Look`, which is also polled.
-	void OnDemoFixedUpdate(Egss::Timestep step) override
+	void OnDemoFixedUpdate(GS::Timestep step) override
 	{
-		bool toggle = Egss::Input::IsKeyPressed(EGSS_KEY_TAB);
+		bool toggle = GS::Input::IsKeyPressed(GS_KEY_TAB);
 
 		if (toggle && !m_WasToggling)
 			SetMouseLook(!m_MouseLook);
 
 		m_WasToggling = toggle;
 
-		bool portal = Egss::Input::IsKeyPressed(EGSS_KEY_E);
+		bool portal = GS::Input::IsKeyPressed(GS_KEY_E);
 
 		if (portal && !m_WasPortal)
 			TogglePortal();
@@ -6587,63 +6587,63 @@ private:
 
 		// **F rather than E.** E is the portal, and a key that does one thing
 		// beside a doorway and another beside a rack is a key nobody trusts.
-		bool axe = Egss::Input::IsKeyPressed(EGSS_KEY_F);
+		bool axe = GS::Input::IsKeyPressed(GS_KEY_F);
 
 		if (axe && !m_WasAxe)
 			TakeTool();
 
 		m_WasAxe = axe;
 
-		bool weight = Egss::Input::IsKeyPressed(EGSS_KEY_G);
+		bool weight = GS::Input::IsKeyPressed(GS_KEY_G);
 
 		if (weight && !m_WasWeight)
 			PlaceWeight();
 
 		m_WasWeight = weight;
 
-		bool carry = Egss::Input::IsKeyPressed(EGSS_KEY_R);
+		bool carry = GS::Input::IsKeyPressed(GS_KEY_R);
 
 		if (carry && !m_WasCarry)
 			ToggleCarry();
 
 		m_WasCarry = carry;
 
-		bool mill = Egss::Input::IsKeyPressed(EGSS_KEY_T);
+		bool mill = GS::Input::IsKeyPressed(GS_KEY_T);
 
 		if (mill && !m_WasMill)
 			MillLog();
 
 		m_WasMill = mill;
 
-		bool craft = Egss::Input::IsKeyPressed(EGSS_KEY_C);
+		bool craft = GS::Input::IsKeyPressed(GS_KEY_C);
 
 		if (craft && !m_WasCraft)
 			CraftPanel();
 
 		m_WasCraft = craft;
 
-		bool place = Egss::Input::IsKeyPressed(EGSS_KEY_B);
+		bool place = GS::Input::IsKeyPressed(GS_KEY_B);
 
 		if (place && !m_WasPlace)
 			PlacePanel();
 
 		m_WasPlace = place;
 
-		bool rotate = Egss::Input::IsKeyPressed(EGSS_KEY_X);
+		bool rotate = GS::Input::IsKeyPressed(GS_KEY_X);
 
 		if (rotate && !m_WasRotate)
 			m_HeldTurns = (m_HeldTurns + 1) & 3;
 
 		m_WasRotate = rotate;
 
-		bool attach = Egss::Input::IsKeyPressed(EGSS_KEY_Z);
+		bool attach = GS::Input::IsKeyPressed(GS_KEY_Z);
 
 		if (attach && !m_WasAttach)
 			m_Attach = !m_Attach;
 
 		m_WasAttach = attach;
 
-		bool lift = Egss::Input::IsKeyPressed(EGSS_KEY_N);
+		bool lift = GS::Input::IsKeyPressed(GS_KEY_N);
 
 		if (lift && !m_WasLift)
 			LiftPanel();
@@ -6655,7 +6655,7 @@ private:
 		// **The bench opens at the bench and closes when you leave it.** A
 		// menu you can carry across the map is a developer panel with a key
 		// bound to it, which is the thing this replaced.
-		bool bench = Egss::Input::IsKeyPressed(EGSS_KEY_Q);
+		bool bench = GS::Input::IsKeyPressed(GS_KEY_Q);
 
 		if (bench && !m_WasBench)
 		{
@@ -6682,7 +6682,7 @@ private:
 		// about a third of a second whether or not it connected.
 		m_Swing = glm::max(m_Swing - (float)step * 3.2f, 0.0f);
 
-		bool clip = Egss::Input::IsKeyPressed(EGSS_KEY_V);
+		bool clip = GS::Input::IsKeyPressed(GS_KEY_V);
 
 		if (clip && !m_WasClipping)
 			m_NoClip = !m_NoClip;
@@ -6693,7 +6693,7 @@ private:
 		// key respawns you every step and you never fall.
 		for (int i = 0; i < s_Grid * s_Grid; i++)
 		{
-			bool down = Egss::Input::IsKeyPressed(EGSS_KEY_1 + i);
+			bool down = GS::Input::IsKeyPressed(GS_KEY_1 + i);
 
 			if (down && !m_WasSpawning[i])
 				GoTo(i);
@@ -6704,8 +6704,8 @@ private:
 		// **One edit per press, not per step.** Holding the button otherwise
 		// hollows the block out in a second, which reads as the dig radius
 		// being enormous rather than as the edit repeating.
-		bool dig = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
-		bool add = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_RIGHT);
+		bool dig = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_LEFT);
+		bool add = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_RIGHT);
 
 		// **One button, and what it does is what you are holding.** An axe in
 		// your hands is not a shovel, which is also why taking a tool has to
@@ -6772,16 +6772,16 @@ private:
 		m_Time += (float)step;
 	}
 
-	void OnDemoUpdate(Egss::Timestep ts) override;
+	void OnDemoUpdate(GS::Timestep ts) override;
 	void OnDemoImGui() override;
 
 	// Which side of the doorway is being drawn. See the note on `DrawScene`.
 	enum class Pass { Main, ToShed, ToWorld };
 
-	void DrawScene(const Egss::PerspectiveCamera& camera, Pass pass);
+	void DrawScene(const GS::PerspectiveCamera& camera, Pass pass);
 	void DrawPortalView();
 	void DrawShed();
-	void DrawHeldAxe(const Egss::PerspectiveCamera& camera);
+	void DrawHeldAxe(const GS::PerspectiveCamera& camera);
 	void DrawDoorFrame();
 
 	// The unit cube, placed and coloured. The doorway, its frame and the whole
@@ -6805,27 +6805,27 @@ private:
 		// Never grab the pointer during a replay: nobody is watching, and a
 		// run that steals the cursor while the machine is in use is the exact
 		// problem the hidden window exists to avoid.
-		if (!Egss::Input::IsPlayingBack())
-			Egss::Application::Get().GetWindow().SetCursorCaptured(on);
+		if (!GS::Input::IsPlayingBack())
+			GS::Application::Get().GetWindow().SetCursorCaptured(on);
 	}
 
 	void Look(float dt);
 
 	// --- State --------------------------------------------------------------
 
-	Egss::PerspectiveCamera m_Camera;
-	Egss::PhysicsWorld3D m_World;
+	GS::PerspectiveCamera m_Camera;
+	GS::PhysicsWorld3D m_World;
 
-	std::shared_ptr<Egss::VoxelField3D> m_Field;
+	std::shared_ptr<GS::VoxelField3D> m_Field;
 
 	// **Two levels: what a chunk meshed to, and what actually gets drawn.**
 	// A chunk's own mesh data is cheap and kept per chunk so an edit only
 	// remeshes the one chunk it touched; the GPU mesh is one per s_GroupSize^3
 	// group, so a frame draws groups instead of chunks. See RebuildChunkGroup.
-	std::map<size_t, Egss::MeshData> m_ChunkData;
-	std::map<size_t, std::shared_ptr<Egss::Mesh>> m_ChunkGroups;
+	std::map<size_t, GS::MeshData> m_ChunkData;
+	std::map<size_t, std::shared_ptr<GS::Mesh>> m_ChunkGroups;
 
-	std::map<size_t, std::shared_ptr<Egss::Mesh>> m_Grass;
+	std::map<size_t, std::shared_ptr<GS::Mesh>> m_Grass;
 	std::map<size_t, std::vector<Tree>> m_Trees;
 
 	std::vector<Loose> m_Loose;
@@ -6836,8 +6836,8 @@ private:
 	static constexpr int s_StoneMeshes = 6;
 
 	std::map<size_t, std::vector<Stone>> m_Stones;
-	std::vector<Egss::PhysicsWorld3D::BodyHandle> m_StoneBodies;
-	std::shared_ptr<Egss::Mesh> m_Boulders[s_StoneMeshes];
+	std::vector<GS::PhysicsWorld3D::BodyHandle> m_StoneBodies;
+	std::shared_ptr<GS::Mesh> m_Boulders[s_StoneMeshes];
 
 	bool m_ShowStones = true;
 	float m_StoneDensity = 1.2f;     // per square metre of open scree
@@ -6856,9 +6856,9 @@ private:
 		return total;
 	}
 
-	std::shared_ptr<Egss::Mesh> m_Boulder;
-	std::shared_ptr<Egss::Mesh> m_Log;
-	std::shared_ptr<Egss::Mesh> m_Cube;
+	std::shared_ptr<GS::Mesh> m_Boulder;
+	std::shared_ptr<GS::Mesh> m_Log;
+	std::shared_ptr<GS::Mesh> m_Cube;
 	int m_LooseCount = 12;
 	int m_Stacked = 0;
 	// **Which loose entries are in your hands.** A list rather than one index:
@@ -6913,7 +6913,7 @@ private:
 	int m_FillCourses = 1;
 
 	std::vector<Panel> m_Panels;
-	std::vector<Egss::PhysicsWorld3D::BodyHandle> m_PanelPool;
+	std::vector<GS::PhysicsWorld3D::BodyHandle> m_PanelPool;
 
 	int m_Built = 0;
 	int m_Placed = 0;
@@ -7014,11 +7014,11 @@ private:
 
 	std::vector<Felled> m_Fell;
 
-	std::shared_ptr<Egss::Mesh> m_TreeBark[s_TreeShapes][s_TreeSizes];
-	std::shared_ptr<Egss::Mesh> m_TreeLeaves[s_TreeShapes][s_TreeSizes];
+	std::shared_ptr<GS::Mesh> m_TreeBark[s_TreeShapes][s_TreeSizes];
+	std::shared_ptr<GS::Mesh> m_TreeLeaves[s_TreeShapes][s_TreeSizes];
 
-	std::shared_ptr<Egss::Shader> m_TreeShader;
-	std::shared_ptr<Egss::Material> m_TreeMaterial;
+	std::shared_ptr<GS::Shader> m_TreeShader;
+	std::shared_ptr<GS::Material> m_TreeMaterial;
 
 	// --- Everything that is a box or a log, drawn in two calls ----------------
 	//
@@ -7044,17 +7044,17 @@ private:
 	static constexpr int s_PieceCap = s_PanelPool * s_MaxParts;
 	static constexpr int s_LifeCap = 1024;
 
-	std::shared_ptr<Egss::Shader> m_PieceShader;
-	std::shared_ptr<Egss::Material> m_PieceMaterial;
+	std::shared_ptr<GS::Shader> m_PieceShader;
+	std::shared_ptr<GS::Material> m_PieceMaterial;
 
-	std::shared_ptr<Egss::Mesh> m_CubeBatch;
-	std::shared_ptr<Egss::Mesh> m_LogBatch;
+	std::shared_ptr<GS::Mesh> m_CubeBatch;
+	std::shared_ptr<GS::Mesh> m_LogBatch;
 
-	std::shared_ptr<Egss::VertexBuffer> m_CubeInstances;
-	std::shared_ptr<Egss::VertexBuffer> m_LogInstances;
-	std::shared_ptr<Egss::VertexBuffer> m_LifeInstances;
+	std::shared_ptr<GS::VertexBuffer> m_CubeInstances;
+	std::shared_ptr<GS::VertexBuffer> m_LogInstances;
+	std::shared_ptr<GS::VertexBuffer> m_LifeInstances;
 
-	std::shared_ptr<Egss::Mesh> m_LifeBatch;
+	std::shared_ptr<GS::Mesh> m_LifeBatch;
 
 	std::vector<Piece> m_PanelCubes;
 	std::vector<Piece> m_PanelLogs;
@@ -7094,8 +7094,8 @@ private:
 
 	// Upload and draw. One place, so the "did you set the layout before the
 	// buffer joined the array" question has one answer.
-	void DrawBatch(const std::shared_ptr<Egss::Mesh>& mesh,
-		const std::shared_ptr<Egss::VertexBuffer>& buffer,
+	void DrawBatch(const std::shared_ptr<GS::Mesh>& mesh,
+		const std::shared_ptr<GS::VertexBuffer>& buffer,
 		const std::vector<Piece>& pieces, bool upload)
 	{
 		if (pieces.empty() || !mesh || !buffer)
@@ -7105,7 +7105,7 @@ private:
 			buffer->SetData(pieces.data(),
 				(unsigned int)(pieces.size() * sizeof(Piece)));
 
-		Egss::Renderer::SubmitInstanced(m_PieceMaterial, mesh,
+		GS::Renderer::SubmitInstanced(m_PieceMaterial, mesh,
 			(unsigned int)pieces.size());
 	}
 
@@ -7120,22 +7120,22 @@ private:
 	bool m_ShapeOn[s_TreeShapes] = { true, true, true, true, true, true };
 	int m_ShapesOn = s_TreeShapes;
 
-	std::shared_ptr<Egss::Shader> m_Shader;
-	std::shared_ptr<Egss::Material> m_Material;
+	std::shared_ptr<GS::Shader> m_Shader;
+	std::shared_ptr<GS::Material> m_Material;
 
-	std::shared_ptr<Egss::Shader> m_GrassShader;
-	std::shared_ptr<Egss::Material> m_GrassMaterial;
+	std::shared_ptr<GS::Shader> m_GrassShader;
+	std::shared_ptr<GS::Material> m_GrassMaterial;
 
-	std::shared_ptr<Egss::Mesh> m_Sky;
-	std::shared_ptr<Egss::Shader> m_SkyShader;
-	std::shared_ptr<Egss::Material> m_SkyMaterial;
+	std::shared_ptr<GS::Mesh> m_Sky;
+	std::shared_ptr<GS::Shader> m_SkyShader;
+	std::shared_ptr<GS::Material> m_SkyMaterial;
 
-	std::shared_ptr<Egss::Mesh> m_Water;
-	std::shared_ptr<Egss::Shader> m_WaterShader;
-	std::shared_ptr<Egss::Material> m_WaterMaterial;
+	std::shared_ptr<GS::Mesh> m_Water;
+	std::shared_ptr<GS::Shader> m_WaterShader;
+	std::shared_ptr<GS::Material> m_WaterMaterial;
 
-	Egss::PhysicsWorld3D::BodyHandle m_Walker = 0;
-	Egss::PhysicsWorld3D::BodyHandle m_Ground = 0;
+	GS::PhysicsWorld3D::BodyHandle m_Walker = 0;
+	GS::PhysicsWorld3D::BodyHandle m_Ground = 0;
 
 	bool m_Grounded = false;
 	bool m_NoClip = false;
@@ -7190,7 +7190,7 @@ private:
 	float m_Time = 0.0f;
 	float m_FrameTime = 0.0f;
 
-	Egss::Renderer::Statistics m_Stats;
+	GS::Renderer::Statistics m_Stats;
 
 	int m_TriangleCount = 0;
 	int m_GrassTriangles = 0;
@@ -7244,10 +7244,10 @@ private:
 	// wants the camera to be pointing somewhere and it is not until then.
 	bool m_DeployOnStart = false;
 
-	std::shared_ptr<Egss::Framebuffer> m_PortalTarget;
-	std::shared_ptr<Egss::Texture2D> m_PortalTexture;
-	std::shared_ptr<Egss::Shader> m_PortalShader;
-	std::shared_ptr<Egss::Material> m_PortalMaterial;
+	std::shared_ptr<GS::Framebuffer> m_PortalTarget;
+	std::shared_ptr<GS::Texture2D> m_PortalTexture;
+	std::shared_ptr<GS::Shader> m_PortalShader;
+	std::shared_ptr<GS::Material> m_PortalMaterial;
 	glm::vec2 m_PortalSize = glm::vec2(0.0f);
 	float m_LastMouseX = 0.0f;
 	float m_LastMouseY = 0.0f;
@@ -7476,8 +7476,8 @@ inline void TerrainLab::BuildShaders()
 		}
 	)";
 
-	m_Shader.reset(Egss::Shader::Create("LabGround", vertexSrc, fragmentSrc));
-	m_Material = Egss::Material::Create(m_Shader);
+	m_Shader.reset(GS::Shader::Create("LabGround", vertexSrc, fragmentSrc));
+	m_Material = GS::Material::Create(m_Shader);
 
 	// **The blades, with the variation in the mesh's own hash.**
 	//
@@ -7755,9 +7755,9 @@ inline void TerrainLab::BuildShaders()
 	)";
 
 	m_GrassShader.reset(
-		Egss::Shader::Create("LabGrass", grassVertex, grassFragment));
+		GS::Shader::Create("LabGrass", grassVertex, grassFragment));
 
-	m_GrassMaterial = Egss::Material::Create(m_GrassShader);
+	m_GrassMaterial = GS::Material::Create(m_GrassShader);
 
 	BuildWater();
 	BuildTrees();
@@ -7777,7 +7777,7 @@ inline void TerrainLab::BuildShaders()
 // simply the first thing drawn and the last thing anyone sees behind.
 inline void TerrainLab::BuildSky()
 {
-	Egss::MeshData box;
+	GS::MeshData box;
 
 	// A cube of side two centred on the origin, wound inward -- the camera is
 	// inside it, so the faces that matter are the ones pointing at it.
@@ -7795,12 +7795,12 @@ inline void TerrainLab::BuildSky()
 
 	box.Indices.assign(faces, faces + 36);
 
-	Egss::Submesh all;
+	GS::Submesh all;
 	all.IndexCount = 36;
 	box.Submeshes.push_back(all);
 	box.RecalculateBounds();
 
-	m_Sky = std::make_shared<Egss::Mesh>(box, "LabSky");
+	m_Sky = std::make_shared<GS::Mesh>(box, "LabSky");
 
 	std::string vertexSrc = R"(
 		#version 330 core
@@ -7934,8 +7934,8 @@ inline void TerrainLab::BuildSky()
 		}
 	)";
 
-	m_SkyShader.reset(Egss::Shader::Create("LabSky", vertexSrc, fragmentSrc));
-	m_SkyMaterial = Egss::Material::Create(m_SkyShader);
+	m_SkyShader.reset(GS::Shader::Create("LabSky", vertexSrc, fragmentSrc));
+	m_SkyMaterial = GS::Material::Create(m_SkyShader);
 }
 
 // **Three shapes, built once, drawn everywhere.**
@@ -8024,7 +8024,7 @@ inline void TerrainLab::BuildTrees()
 		else if (j == 0 && params.Depth > 3)
 			params.Depth -= 1;
 
-		Egss::MeshData bark, leaves;
+		GS::MeshData bark, leaves;
 
 		Veg::MakeTreeMesh(1471u + (unsigned int)(i * s_TreeSizes + j) * 97u,
 			params, bark, leaves);
@@ -8041,8 +8041,8 @@ inline void TerrainLab::BuildTrees()
 			glm::max(leaves.BoundsMax.x, -leaves.BoundsMin.x),
 			glm::max(leaves.BoundsMax.z, -leaves.BoundsMin.z));
 
-		m_TreeBark[i][j] = std::make_shared<Egss::Mesh>(bark, "LabBark");
-		m_TreeLeaves[i][j] = std::make_shared<Egss::Mesh>(leaves, "LabLeaves");
+		m_TreeBark[i][j] = std::make_shared<GS::Mesh>(bark, "LabBark");
+		m_TreeLeaves[i][j] = std::make_shared<GS::Mesh>(leaves, "LabLeaves");
 	}
 
 	// The tree shader is the grass shader's argument one size up: the same
@@ -8330,8 +8330,8 @@ inline void TerrainLab::BuildTrees()
 		}
 	)";
 
-	m_TreeShader.reset(Egss::Shader::Create("LabTree", vertexSrc, fragmentSrc));
-	m_TreeMaterial = Egss::Material::Create(m_TreeShader);
+	m_TreeShader.reset(GS::Shader::Create("LabTree", vertexSrc, fragmentSrc));
+	m_TreeMaterial = GS::Material::Create(m_TreeShader);
 
 	// --- The same surface, drawn a thousand at a time ------------------------
 	//
@@ -8352,7 +8352,7 @@ inline void TerrainLab::BuildTrees()
 
 		if (at == std::string::npos)
 		{
-			EGSS_ERROR("LabPiece: '{0}' is not in the lit fragment source any"
+			GS_ERROR("LabPiece: '{0}' is not in the lit fragment source any"
 				" more -- the two shaders have come apart", from);
 
 			return;
@@ -8407,19 +8407,19 @@ inline void TerrainLab::BuildTrees()
 		}
 	)";
 
-	m_PieceShader.reset(Egss::Shader::Create("LabPiece", pieceVertex,
+	m_PieceShader.reset(GS::Shader::Create("LabPiece", pieceVertex,
 		pieceFragment));
 
-	m_PieceMaterial = Egss::Material::Create(m_PieceShader);
+	m_PieceMaterial = GS::Material::Create(m_PieceShader);
 
 	// One boulder mesh for every rock and every log. The shape is a jittered
 	// sphere either way -- what tells a granite boulder from a floating log
 	// here is its density and its colour, not its silhouette, and that is
 	// honest enough for a buoyancy test.
-	m_Boulder = std::make_shared<Egss::Mesh>(Boulder::Build(4177u), "LabRock");
+	m_Boulder = std::make_shared<GS::Mesh>(Boulder::Build(4177u), "LabRock");
 
 	for (int i = 0; i < s_StoneMeshes; i++)
-		m_Boulders[i] = std::make_shared<Egss::Mesh>(
+		m_Boulders[i] = std::make_shared<GS::Mesh>(
 			Boulder::Build(4177u + (unsigned int)i * 7919u), "LabStone");
 
 	// **The doorway's panel: a window, sampled in screen space.**
@@ -8468,10 +8468,10 @@ inline void TerrainLab::BuildTrees()
 			}
 		)";
 
-		m_PortalShader.reset(Egss::Shader::Create("LabPortal", portalVertex,
+		m_PortalShader.reset(GS::Shader::Create("LabPortal", portalVertex,
 			portalFragment));
 
-		m_PortalMaterial = Egss::Material::Create(m_PortalShader);
+		m_PortalMaterial = GS::Material::Create(m_PortalShader);
 	}
 
 	// **A log, as a cylinder lying along x.** Unit radius and unit half-length,
@@ -8479,7 +8479,7 @@ inline void TerrainLab::BuildTrees()
 	// enough that a 34 cm log does not read as a hexagon and few enough that a
 	// stack of them costs nothing.
 	{
-		Egss::MeshData log;
+		GS::MeshData log;
 
 		const int sides = 16;
 
@@ -8556,20 +8556,20 @@ inline void TerrainLab::BuildTrees()
 
 		(void)ring;
 
-		Egss::Submesh all;
+		GS::Submesh all;
 		all.IndexCount = (unsigned int)log.Indices.size();
 
 		log.Submeshes.push_back(all);
 		log.RecalculateBounds();
 
-		m_Log = std::make_shared<Egss::Mesh>(log, "LabLog");
-		m_LogBatch = std::make_shared<Egss::Mesh>(log, "LabLogBatch");
+		m_Log = std::make_shared<GS::Mesh>(log, "LabLog");
+		m_LogBatch = std::make_shared<GS::Mesh>(log, "LabLogBatch");
 	}
 
 	// A unit cube, scaled by whatever draws it. The doorway and the shed are
 	// both made of boxes and neither is worth a mesh of its own.
 	{
-		Egss::MeshData cube;
+		GS::MeshData cube;
 
 		const glm::vec3 n[6] = { { 0,0,1 }, { 0,0,-1 }, { 1,0,0 },
 			{ -1,0,0 }, { 0,1,0 }, { 0,-1,0 } };
@@ -8596,14 +8596,14 @@ inline void TerrainLab::BuildTrees()
 				{ at, at + 1, at + 3, at, at + 3, at + 2 });
 		}
 
-		Egss::Submesh all;
+		GS::Submesh all;
 		all.IndexCount = (unsigned int)cube.Indices.size();
 		cube.Submeshes.push_back(all);
 		cube.RecalculateBounds();
 
-		m_Cube = std::make_shared<Egss::Mesh>(cube, "LabCube");
-		m_CubeBatch = std::make_shared<Egss::Mesh>(cube, "LabCubeBatch");
-		m_LifeBatch = std::make_shared<Egss::Mesh>(cube, "LabLifeBatch");
+		m_Cube = std::make_shared<GS::Mesh>(cube, "LabCube");
+		m_CubeBatch = std::make_shared<GS::Mesh>(cube, "LabCubeBatch");
+		m_LifeBatch = std::make_shared<GS::Mesh>(cube, "LabLifeBatch");
 	}
 
 	// **Three instance buffers, allocated once at full size.**
@@ -8616,17 +8616,17 @@ inline void TerrainLab::BuildTrees()
 	// Three rather than two because a buffer belongs to a vertex array: the
 	// panels' cubes and the animals' cubes are the same *mesh data* but they
 	// are refilled on different schedules, so they get a mesh each.
-	auto instanced = [](const std::shared_ptr<Egss::Mesh>& mesh, int cap)
+	auto instanced = [](const std::shared_ptr<GS::Mesh>& mesh, int cap)
 	{
-		std::shared_ptr<Egss::VertexBuffer> buffer(
-			Egss::VertexBuffer::Create((unsigned int)(cap * sizeof(Piece))));
+		std::shared_ptr<GS::VertexBuffer> buffer(
+			GS::VertexBuffer::Create((unsigned int)(cap * sizeof(Piece))));
 
 		// The divisor is what makes it per-instance, and it has to be set
 		// before the buffer joins a vertex array -- that is when the attribute
 		// pointers are declared.
-		buffer->SetLayout(Egss::BufferLayout({
-			{ Egss::ShaderDataType::Mat4, "a_Model" },
-			{ Egss::ShaderDataType::Float3, "a_Tint" } }, 1));
+		buffer->SetLayout(GS::BufferLayout({
+			{ GS::ShaderDataType::Mat4, "a_Model" },
+			{ GS::ShaderDataType::Float3, "a_Tint" } }, 1));
 
 		mesh->SetInstanceBuffer(buffer);
 
@@ -8653,7 +8653,7 @@ inline void TerrainLab::BuildTrees()
 // with a wet mask on it.
 inline void TerrainLab::BuildWater()
 {
-	Egss::MeshData plane;
+	GS::MeshData plane;
 
 	// **A grid, not a quad, because waves need somewhere to happen.**
 	//
@@ -8687,12 +8687,12 @@ inline void TerrainLab::BuildWater()
 		plane.Indices.insert(plane.Indices.end(), { a, c, b, b, c, d });
 	}
 
-	Egss::Submesh all;
+	GS::Submesh all;
 	all.IndexCount = (unsigned int)plane.Indices.size();
 	plane.Submeshes.push_back(all);
 	plane.RecalculateBounds();
 
-	m_Water = std::make_shared<Egss::Mesh>(plane, "LabWater");
+	m_Water = std::make_shared<GS::Mesh>(plane, "LabWater");
 
 	std::string waterVertex = R"(
 		#version 330 core
@@ -8850,16 +8850,16 @@ inline void TerrainLab::BuildWater()
 	)";
 
 	m_WaterShader.reset(
-		Egss::Shader::Create("LabWater", waterVertex, waterFragment));
+		GS::Shader::Create("LabWater", waterVertex, waterFragment));
 
-	m_WaterMaterial = Egss::Material::Create(m_WaterShader);
+	m_WaterMaterial = GS::Material::Create(m_WaterShader);
 }
 
 // --- Rendering ---------------------------------------------------------------
 
 inline void TerrainLab::Look(float dt)
 {
-	auto [mouseX, mouseY] = Egss::Input::GetMousePosition();
+	auto [mouseX, mouseY] = GS::Input::GetMousePosition();
 
 	if (m_MouseLook)
 	{
@@ -8877,16 +8877,16 @@ inline void TerrainLab::Look(float dt)
 	m_LastMouseX = mouseX;
 	m_LastMouseY = mouseY;
 
-	if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))  m_Yaw -= m_LookRate * dt;
-	if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) m_Yaw += m_LookRate * dt;
-	if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))    m_Pitch += m_LookRate * dt;
-	if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))  m_Pitch -= m_LookRate * dt;
+	if (GS::Input::IsKeyPressed(GS_KEY_LEFT))  m_Yaw -= m_LookRate * dt;
+	if (GS::Input::IsKeyPressed(GS_KEY_RIGHT)) m_Yaw += m_LookRate * dt;
+	if (GS::Input::IsKeyPressed(GS_KEY_UP))    m_Pitch += m_LookRate * dt;
+	if (GS::Input::IsKeyPressed(GS_KEY_DOWN))  m_Pitch -= m_LookRate * dt;
 
 	m_Pitch = glm::clamp(m_Pitch, -85.0f, 85.0f);
 	m_Camera.SetRotation(m_Yaw, m_Pitch);
 }
 
-inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
+inline void TerrainLab::OnDemoUpdate(GS::Timestep ts)
 {
 	m_FrameTime = ts.GetMilliseconds();
 
@@ -8915,7 +8915,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 	// One reset for the whole frame, not per pass -- the portal and bench
 	// views are real submissions too, and the panel wants what the frame
 	// actually cost, not just the main camera's share of it.
-	Egss::Renderer::ResetStats();
+	GS::Renderer::ResetStats();
 
 	// **The other side of the doorway, drawn first.**
 	//
@@ -8934,7 +8934,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 
 	DrawScene(m_Camera, Pass::Main);
 
-	m_Stats = Egss::Renderer::GetStats();
+	m_Stats = GS::Renderer::GetStats();
 }
 
 // **Everything in the world, from whichever camera is asked for.**
@@ -8956,7 +8956,7 @@ inline void TerrainLab::OnDemoUpdate(Egss::Timestep ts)
 //
 // The doorway's panel is drawn only in `Main`, which is what stops a portal
 // from recursing into itself.
-inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pass)
+inline void TerrainLab::DrawScene(const GS::PerspectiveCamera& camera, Pass pass)
 {
 	glm::vec3 skyColour = SkyColour();
 
@@ -8968,12 +8968,12 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 	glm::vec3 sunColour = SunColour();
 	glm::vec2 windMean = MeanWind();
 
-	Egss::RenderCommand::SetClearColor(
+	GS::RenderCommand::SetClearColor(
 		{ skyColour.r, skyColour.g, skyColour.b, 1.0f });
 
-	Egss::RenderCommand::Clear();
+	GS::RenderCommand::Clear();
 
-	Egss::Renderer::BeginScene(camera);
+	GS::Renderer::BeginScene(camera);
 
 	if (m_ShowSky && m_Sky)
 	{
@@ -8992,15 +8992,15 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 		// camera and scaled to sit inside the far plane; with no depth written
 		// everything drawn afterwards lands in front of it whatever its own
 		// distance, so the sky needs no special depth range.
-		Egss::RenderCommand::SetDepthWrite(false);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+		GS::RenderCommand::SetDepthWrite(false);
+		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
-		Egss::Renderer::Submit(m_SkyMaterial, m_Sky,
+		GS::Renderer::Submit(m_SkyMaterial, m_Sky,
 			glm::scale(glm::translate(glm::mat4(1.0f), camera.GetPosition()),
 				glm::vec3(400.0f)));
 
-		Egss::RenderCommand::SetDepthWrite(true);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+		GS::RenderCommand::SetDepthWrite(true);
+		GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 	}
 
 	m_Material->Set("u_SunDirection", sun);
@@ -9030,17 +9030,17 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 
 	if (m_ShowWireframe)
 	{
-		Egss::RenderCommand::SetPolygonMode(Egss::PolygonMode::Line);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+		GS::RenderCommand::SetPolygonMode(GS::PolygonMode::Line);
+		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 	}
 
 	for (const auto& entry : m_ChunkGroups)
-		Egss::Renderer::Submit(m_Material, entry.second, glm::mat4(1.0f));
+		GS::Renderer::Submit(m_Material, entry.second, glm::mat4(1.0f));
 
 	if (m_ShowWireframe)
 	{
-		Egss::RenderCommand::SetPolygonMode(Egss::PolygonMode::Fill);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+		GS::RenderCommand::SetPolygonMode(GS::PolygonMode::Fill);
+		GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 	}
 
 	if (m_ShowGrass && !m_Grass.empty())
@@ -9104,7 +9104,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 			m_GrassMaterial->Set("u_Dryness",
 				glm::smoothstep(0.58f, 0.30f, climate.x));
 
-			Egss::Renderer::Submit(m_GrassMaterial, entry.second,
+			GS::Renderer::Submit(m_GrassMaterial, entry.second,
 				glm::mat4(1.0f));
 		}
 	}
@@ -9182,13 +9182,13 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 			bool open = tree.CutDepth > 0.0f || tree.Severed;
 
 			if (open)
-				Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+				GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
 			m_TreeMaterial->Set("u_Color", tree.Bark);
 			m_TreeMaterial->Set("u_Compliance", 1.1e-5f);
 			m_TreeMaterial->Set("u_Through", 0.0f);
 
-			Egss::Renderer::Submit(m_TreeMaterial,
+			GS::Renderer::Submit(m_TreeMaterial,
 				m_TreeBark[tree.Shape][tree.Size], transform);
 
 			m_TreeMaterial->Set("u_Color", tree.Leaf);
@@ -9200,11 +9200,11 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 			// has been through two of them is still light.
 			m_TreeMaterial->Set("u_Through", 0.30f);
 
-			Egss::Renderer::Submit(m_TreeMaterial,
+			GS::Renderer::Submit(m_TreeMaterial,
 				m_TreeLeaves[tree.Shape][tree.Size], transform);
 
 			if (open)
-				Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+				GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 
 			drawn++;
 		}
@@ -9222,7 +9222,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 		m_TreeMaterial->Set("u_CutDepth", 0.0f);
 		m_TreeMaterial->Set("u_CutPart", 1.0f);
 
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
 		for (const Felled& fell : m_Fell)
 		{
@@ -9237,17 +9237,17 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 			m_TreeMaterial->Set("u_Compliance", 0.0f);
 			m_TreeMaterial->Set("u_Through", 0.0f);
 
-			Egss::Renderer::Submit(m_TreeMaterial,
+			GS::Renderer::Submit(m_TreeMaterial,
 				m_TreeBark[fell.Shape][fell.Size], transform);
 
 			m_TreeMaterial->Set("u_Color", fell.Leaf);
 			m_TreeMaterial->Set("u_Through", 0.30f);
 
-			Egss::Renderer::Submit(m_TreeMaterial,
+			GS::Renderer::Submit(m_TreeMaterial,
 				m_TreeLeaves[fell.Shape][fell.Size], transform);
 		}
 
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+		GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 	}
 
 	// Everything from here draws no cut.
@@ -9284,7 +9284,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 				* glm::mat4(stone.Lie)
 				* glm::scale(glm::mat4(1.0f), stone.Radii);
 
-			Egss::Renderer::Submit(m_TreeMaterial, m_Boulders[stone.Mesh],
+			GS::Renderer::Submit(m_TreeMaterial, m_Boulders[stone.Mesh],
 				transform);
 
 			drawn++;
@@ -9308,7 +9308,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 
 		for (const Loose& loose : m_Loose)
 		{
-			const Egss::RigidBody3D& body = m_World.GetBody(loose.Body);
+			const GS::RigidBody3D& body = m_World.GetBody(loose.Body);
 
 			m_TreeMaterial->Set("u_Color", loose.Colour);
 
@@ -9316,7 +9316,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 			// All of them are box colliders: the boulder mesh fits inside the
 			// unit box exactly, and the log fills its box in two axes and is
 			// round in the third, which is what `Fill` accounts for.
-			const std::shared_ptr<Egss::Mesh>& mesh =
+			const std::shared_ptr<GS::Mesh>& mesh =
 				loose.Kind == Flotsam::Cobble ? m_Boulder
 				: loose.Kind == Flotsam::Log ? m_Log : m_Cube;
 
@@ -9325,7 +9325,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 				* glm::mat4_cast(body.Orientation)
 				* glm::scale(glm::mat4(1.0f), loose.Half);
 
-			Egss::Renderer::Submit(m_TreeMaterial, mesh, transform);
+			GS::Renderer::Submit(m_TreeMaterial, mesh, transform);
 		}
 	}
 
@@ -9381,7 +9381,7 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 						yaw, glm::vec3(0.0f, 1.0f, 0.0f)),
 					glm::vec3(s_DoorHalf, 0.5f * s_DoorTop, 0.02f));
 
-				Egss::Renderer::Submit(m_PortalMaterial, m_Cube, transform);
+				GS::Renderer::Submit(m_PortalMaterial, m_Cube, transform);
 			}
 			else if (!m_ViaPortal)
 			{
@@ -9415,25 +9415,25 @@ inline void TerrainLab::DrawScene(const Egss::PerspectiveCamera& camera, Pass pa
 		m_WaterMaterial->Set("u_Waves", m_Waves ? 1.0f : 0.0f);
 		m_WaterMaterial->Set("u_Ripples", m_Ripples ? 1.0f : 0.0f);
 
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
-		Egss::RenderCommand::SetDepthWrite(false);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::Alpha);
+		GS::RenderCommand::SetDepthWrite(false);
 
 		// No culling: the camera can be under the surface, and a lake seen
 		// from below is a thing you should be able to swim up through.
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
 		glm::mat4 transform = glm::scale(
 			glm::translate(glm::mat4(1.0f),
 				glm::vec3(0.0f, WaterLevel(), 0.0f)),
 			glm::vec3(Extent(), 1.0f, Extent()));
 
-		Egss::Renderer::Submit(m_WaterMaterial, m_Water, transform);
+		GS::Renderer::Submit(m_WaterMaterial, m_Water, transform);
 
-		Egss::RenderCommand::SetDepthWrite(true);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+		GS::RenderCommand::SetDepthWrite(true);
+		GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 	}
 
-	Egss::Renderer::EndScene();
+	GS::Renderer::EndScene();
 }
 
 // The unit cube, placed and coloured, through the tree shader with the sway
@@ -9521,7 +9521,7 @@ inline void TerrainLab::DrawPanels()
 // appears, and that it goes away when you walk off.
 // **The bench's camera**, orbiting the draft rather than standing in it. The
 // design's own grid space, so a hit on the near plane is already a cell.
-inline Egss::PerspectiveCamera TerrainLab::BenchCamera(float aspect) const
+inline GS::PerspectiveCamera TerrainLab::BenchCamera(float aspect) const
 {
 	glm::vec3 size = PanelSize(m_Draft);
 	glm::vec3 middle = GridOffset(m_Draft);
@@ -9537,7 +9537,7 @@ inline Egss::PerspectiveCamera TerrainLab::BenchCamera(float aspect) const
 		std::sin(m_BenchPitch),
 		std::cos(m_BenchPitch) * std::cos(m_BenchYaw)) * range;
 
-	Egss::PerspectiveCamera camera(38.0f, glm::max(aspect, 0.1f), 0.05f,
+	GS::PerspectiveCamera camera(38.0f, glm::max(aspect, 0.1f), 0.05f,
 		400.0f);
 
 	camera.SetPosition(eye);
@@ -9550,7 +9550,7 @@ inline Egss::PerspectiveCamera TerrainLab::BenchCamera(float aspect) const
 inline void TerrainLab::BenchRay(float u, float v, float aspect,
 	glm::vec3& from, glm::vec3& direction) const
 {
-	Egss::PerspectiveCamera camera = BenchCamera(aspect);
+	GS::PerspectiveCamera camera = BenchCamera(aspect);
 
 	glm::mat4 inverse = glm::inverse(camera.GetViewProjectionMatrix());
 
@@ -9583,31 +9583,31 @@ inline void TerrainLab::DrawBenchView()
 	if (!m_BenchTarget || m_BenchTarget->GetSpecification().Width != width
 		|| m_BenchTarget->GetSpecification().Height != height)
 	{
-		Egss::FramebufferSpecification spec;
+		GS::FramebufferSpecification spec;
 		spec.Width = width;
 		spec.Height = height;
-		spec.Attachments = { Egss::FramebufferTextureFormat::RGBA8,
-			Egss::FramebufferTextureFormat::DEPTH24STENCIL8 };
+		spec.Attachments = { GS::FramebufferTextureFormat::RGBA8,
+			GS::FramebufferTextureFormat::DEPTH24STENCIL8 };
 
 		// **The attachment's handle straight into ImGui, with no `Texture2D`
 		// wrapper in between.** The portal needs one because it samples the
 		// view in a shader; ImGui takes a raw GL name, so wrapping it would be
 		// an object whose only job is to be unwrapped again -- and one more
 		// thing to rebuild every time the panel is resized.
-		m_BenchTarget.reset(Egss::Framebuffer::Create(spec));
+		m_BenchTarget.reset(GS::Framebuffer::Create(spec));
 	}
 
 	float aspect = m_BenchSize.x / glm::max(m_BenchSize.y, 1.0f);
 
-	Egss::PerspectiveCamera camera = BenchCamera(aspect);
+	GS::PerspectiveCamera camera = BenchCamera(aspect);
 
 	m_BenchTarget->Bind();
 
-	Egss::RenderCommand::SetViewport(0, 0, width, height);
-	Egss::RenderCommand::SetClearColor({ 0.09f, 0.08f, 0.07f, 1.0f });
-	Egss::RenderCommand::Clear();
+	GS::RenderCommand::SetViewport(0, 0, width, height);
+	GS::RenderCommand::SetClearColor({ 0.09f, 0.08f, 0.07f, 1.0f });
+	GS::RenderCommand::Clear();
 
-	Egss::Renderer::BeginScene(camera);
+	GS::Renderer::BeginScene(camera);
 
 	m_TreeMaterial->Set("u_SunDirection",
 		glm::normalize(glm::vec3(-0.45f, -0.8f, -0.4f)));
@@ -9642,12 +9642,12 @@ inline void TerrainLab::DrawBenchView()
 		float at = (float)i * Cell();
 		float thick = board ? 0.012f : 0.006f;
 
-		Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+		GS::Renderer::Submit(m_TreeMaterial, m_Cube,
 			glm::scale(glm::translate(glm::mat4(1.0f),
 				glm::vec3(at, level, 0.5f * span)),
 				glm::vec3(thick, thick, 0.5f * span)));
 
-		Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+		GS::Renderer::Submit(m_TreeMaterial, m_Cube,
 			glm::scale(glm::translate(glm::mat4(1.0f),
 				glm::vec3(0.5f * span, level, at)),
 				glm::vec3(0.5f * span, thick, thick)));
@@ -9662,7 +9662,7 @@ inline void TerrainLab::DrawBenchView()
 
 		m_TreeMaterial->Set("u_Color", PartColour(part));
 
-		Egss::Renderer::Submit(m_TreeMaterial,
+		GS::Renderer::Submit(m_TreeMaterial,
 			part.Kind == Stock::Log ? m_Log : m_Cube,
 			glm::translate(glm::mat4(1.0f), at) * glm::mat4_cast(turn)
 			* glm::scale(glm::mat4(1.0f), mesh));
@@ -9682,14 +9682,14 @@ inline void TerrainLab::DrawBenchView()
 				: glm::vec3(0.90f, 0.28f, 0.22f));
 	}
 
-	Egss::Renderer::EndScene();
+	GS::Renderer::EndScene();
 
 	m_BenchTarget->Unbind();
 
 	// `Unbind` restores the default target and not the viewport, so this has
 	// to go back by hand or the main pass draws into the whole window.
 	if (g_Viewport.Valid())
-		Egss::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
+		GS::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
 			(unsigned int)g_Viewport.Y, (unsigned int)g_Viewport.Width,
 			(unsigned int)g_Viewport.Height);
 }
@@ -10275,7 +10275,7 @@ inline void TerrainLab::DrawOutline(const glm::mat4& frame,
 		glm::vec3 size(thick);
 		size[axis] = half[axis] + thick;
 
-		Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+		GS::Renderer::Submit(m_TreeMaterial, m_Cube,
 			frame * glm::translate(glm::mat4(1.0f), at)
 				* glm::scale(glm::mat4(1.0f), size));
 	}
@@ -10543,7 +10543,7 @@ inline void TerrainLab::DrawBox(const glm::vec3& at, const glm::vec3& half,
 			yaw, glm::vec3(0.0f, 1.0f, 0.0f)),
 		half);
 
-	Egss::Renderer::Submit(m_TreeMaterial, m_Cube, transform);
+	GS::Renderer::Submit(m_TreeMaterial, m_Cube, transform);
 }
 
 // **The lighting has to be set here as well as in the main pass.** The pass
@@ -10638,7 +10638,7 @@ inline void TerrainLab::DrawShed()
 // the only matrix needed is the inverse of the view. The stroke is one rotation
 // about the axis across the view, eased so it goes over quickly and comes back
 // slowly -- which is what a swing does and what a linear ramp never looks like.
-inline void TerrainLab::DrawHeldAxe(const Egss::PerspectiveCamera& camera)
+inline void TerrainLab::DrawHeldAxe(const GS::PerspectiveCamera& camera)
 {
 	if (m_Tool == Tool::None)
 		return;
@@ -10677,7 +10677,7 @@ inline void TerrainLab::DrawHeldAxe(const Egss::PerspectiveCamera& camera)
 	{
 		m_TreeMaterial->Set("u_Color", colour);
 
-		Egss::Renderer::Submit(m_TreeMaterial, m_Cube,
+		GS::Renderer::Submit(m_TreeMaterial, m_Cube,
 			glm::scale(glm::translate(held, at), half));
 	};
 
@@ -10814,7 +10814,7 @@ inline glm::mat4 ObliqueNearPlane(const glm::mat4& projection,
 // the field this draws the room and standing in the room it draws the field.
 inline void TerrainLab::DrawPortalView()
 {
-	Egss::Window& window = Egss::Application::Get().GetWindow();
+	GS::Window& window = GS::Application::Get().GetWindow();
 
 	unsigned int width = glm::max(window.GetWidth(), 1u);
 	unsigned int height = glm::max(window.GetHeight(), 1u);
@@ -10827,17 +10827,17 @@ inline void TerrainLab::DrawPortalView()
 	if (!m_PortalTarget || (unsigned int)m_PortalSize.x != width
 		|| (unsigned int)m_PortalSize.y != height)
 	{
-		Egss::FramebufferSpecification spec;
+		GS::FramebufferSpecification spec;
 		spec.Width = width;
 		spec.Height = height;
-		spec.Attachments = { Egss::FramebufferTextureFormat::RGBA8,
-			Egss::FramebufferTextureFormat::DEPTH24STENCIL8 };
+		spec.Attachments = { GS::FramebufferTextureFormat::RGBA8,
+			GS::FramebufferTextureFormat::DEPTH24STENCIL8 };
 
-		m_PortalTarget.reset(Egss::Framebuffer::Create(spec));
+		m_PortalTarget.reset(GS::Framebuffer::Create(spec));
 
 		// The wrapper does not own the handle, and the handle changes with
 		// the framebuffer -- so it is rebuilt here and nowhere else.
-		m_PortalTexture.reset(Egss::Texture2D::CreateFromHandle(
+		m_PortalTexture.reset(GS::Texture2D::CreateFromHandle(
 			m_PortalTarget->GetColorAttachmentRendererID(), width, height));
 
 		// **Do not call `SetSmooth` on this.** It sets the minifying filter to
@@ -10864,7 +10864,7 @@ inline void TerrainLab::DrawPortalView()
 	// Copied, so it keeps the field of view, the aspect and the clip planes
 	// the main camera is using this frame -- which is what the screen-space
 	// sampling depends on.
-	Egss::PerspectiveCamera other = m_Camera;
+	GS::PerspectiveCamera other = m_Camera;
 
 	other.SetPosition(to.At + turn * (m_Camera.GetPosition() - from.At));
 	other.SetOrientation(turn * m_Camera.GetForward(),
@@ -10882,7 +10882,7 @@ inline void TerrainLab::DrawPortalView()
 	// `Bind` sets the viewport to the whole target; the demo owns only the
 	// editor's central pane, and the two passes must cover the same pixels.
 	if (g_Viewport.Valid())
-		Egss::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
+		GS::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
 			(unsigned int)g_Viewport.Y, (unsigned int)g_Viewport.Width,
 			(unsigned int)g_Viewport.Height);
 
@@ -10893,11 +10893,11 @@ inline void TerrainLab::DrawPortalView()
 	// `Unbind` restores the default target and not the viewport, so this has
 	// to go back by hand or the main pass draws into the whole window.
 	if (g_Viewport.Valid())
-		Egss::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
+		GS::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
 			(unsigned int)g_Viewport.Y, (unsigned int)g_Viewport.Width,
 			(unsigned int)g_Viewport.Height);
 	else
-		Egss::RenderCommand::SetViewport(0, 0, width, height);
+		GS::RenderCommand::SetViewport(0, 0, width, height);
 }
 
 inline void TerrainLab::OnDemoImGui()

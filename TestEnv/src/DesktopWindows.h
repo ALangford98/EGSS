@@ -5,7 +5,7 @@
 // On a Wayland session the X11 client list is useless -- it holds XWayland
 // clients and nothing else, which on a normal KDE desk is two windows out of
 // twenty. The only component that can see them all is the compositor, so the
-// chain is: a KWin script reports geometry over D-Bus, `tools/egss-windows.py`
+// chain is: a KWin script reports geometry over D-Bus, `tools/gs-windows.py`
 // owns the name and writes what arrives to a file, and this reads that file.
 //
 // Nothing here starts any of that. If the bridge is not running the file does
@@ -20,7 +20,7 @@
 // reported for the monitor of the same name -- 1.5 here, derived rather than
 // assumed, because a desk can mix scales.
 
-#include <Egss.h>
+#include <GS.h>
 
 #include <cstdio>
 #include <sys/stat.h>
@@ -35,10 +35,10 @@ public:
 
 	// True when the set of windows changed, so a caller can rebuild whatever it
 	// derives from them instead of doing it every step.
-	bool Poll(const std::vector<Egss::MonitorInfo>& monitors)
+	bool Poll(const std::vector<GS::MonitorInfo>& monitors)
 	{
 		const char* runtime = std::getenv("XDG_RUNTIME_DIR");
-		std::string path = std::string(runtime ? runtime : "/tmp") + "/egss-windows";
+		std::string path = std::string(runtime ? runtime : "/tmp") + "/gs-windows";
 
 		struct stat info;
 
@@ -84,7 +84,7 @@ public:
 	const std::vector<Rect>& Rects() const { return m_Rects; }
 
 private:
-	bool Parse(const std::string& payload, const std::vector<Egss::MonitorInfo>& monitors)
+	bool Parse(const std::string& payload, const std::vector<GS::MonitorInfo>& monitors)
 	{
 		std::vector<Rect> parsed;
 
@@ -133,7 +133,7 @@ private:
 
 			const std::string& name = fields[8];
 
-			const Egss::MonitorInfo* monitor = Find(monitors, name);
+			const GS::MonitorInfo* monitor = Find(monitors, name);
 
 			if (!monitor || values[6] <= 0.0f || values[7] <= 0.0f)
 				continue;
@@ -165,10 +165,10 @@ private:
 		return changed;
 	}
 
-	static const Egss::MonitorInfo* Find(const std::vector<Egss::MonitorInfo>& monitors,
+	static const GS::MonitorInfo* Find(const std::vector<GS::MonitorInfo>& monitors,
 		const std::string& name)
 	{
-		for (const Egss::MonitorInfo& monitor : monitors)
+		for (const GS::MonitorInfo& monitor : monitors)
 			if (monitor.Name == name)
 				return &monitor;
 

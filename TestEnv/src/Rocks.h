@@ -13,7 +13,7 @@
 // collider is a box and the mesh is what you see, and the mesh has to stay
 // inside the thing that stops it.
 
-#include <Egss.h>
+#include <GS.h>
 
 #include "Vegetation.h"
 
@@ -23,7 +23,7 @@
 
 namespace Boulder {
 
-inline Egss::MeshData Build(unsigned int seed)
+inline GS::MeshData Build(unsigned int seed)
 {
 	const int segments = 16, rings = 10;
 
@@ -49,7 +49,7 @@ inline Egss::MeshData Build(unsigned int seed)
 			std::sin(v) * std::cos(u), std::cos(v), std::sin(v) * std::sin(u)) * radius;
 	};
 
-	Egss::MeshData data;
+	GS::MeshData data;
 
 	auto face = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
 	{
@@ -82,7 +82,7 @@ inline Egss::MeshData Build(unsigned int seed)
 		}
 	}
 
-	Egss::Submesh all;
+	GS::Submesh all;
 	all.IndexCount = (unsigned int)data.Indices.size();
 	data.Submeshes.push_back(all);
 	data.RecalculateBounds();

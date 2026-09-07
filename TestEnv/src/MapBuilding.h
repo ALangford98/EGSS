@@ -74,7 +74,7 @@ private:
 
 	void BuildGround() override
 	{
-		Egss::RigidBody3D ground = Egss::RigidBody3D::MakeHeightfield(
+		GS::RigidBody3D ground = GS::RigidBody3D::MakeHeightfield(
 			{ 0.0f, 0.0f, 0.0f }, m_Terrain.Field());
 
 		// The same friction the character's own bodies carry, so the combined
@@ -181,8 +181,8 @@ private:
 	// pixel, which the perspective divide makes different.
 	void ScreenRay(glm::vec3& outOrigin, glm::vec3& outDirection) const
 	{
-		Egss::Window& window = Egss::Application::Get().GetWindow();
-		std::pair<float, float> mouse = Egss::Input::GetMousePosition();
+		GS::Window& window = GS::Application::Get().GetWindow();
+		std::pair<float, float> mouse = GS::Input::GetMousePosition();
 
 		float x = (mouse.first / (float)window.GetWidth()) * 2.0f - 1.0f;
 		float y = 1.0f - (mouse.second / (float)window.GetHeight()) * 2.0f;
@@ -241,13 +241,13 @@ private:
 		{
 			glm::vec3 centre = BlockCentre(block);
 
-			Egss::Aabb box;
+			GS::Aabb box;
 			box.Min = centre - glm::vec3(s_BlockSize * 0.5f);
 			box.Max = centre + glm::vec3(s_BlockSize * 0.5f);
 
 			float t = 0.0f;
 			glm::vec3 boxNormal(0.0f);
-			if (!Egss::Raycast3D::AgainstAabb(origin, direction, nearest, box, t, boxNormal))
+			if (!GS::Raycast3D::AgainstAabb(origin, direction, nearest, box, t, boxNormal))
 				continue;
 
 			if (t > nearest)
@@ -285,7 +285,7 @@ private:
 
 	void AddBlockBody(const Block& block)
 	{
-		Egss::RigidBody3D body = Egss::RigidBody3D::MakeStaticBox(
+		GS::RigidBody3D body = GS::RigidBody3D::MakeStaticBox(
 			BlockCentre(block), glm::vec3(s_BlockSize * 0.5f));
 
 		body.Friction = 0.7f;
@@ -387,7 +387,7 @@ private:
 			return;
 
 		m_SceneMaterial->Set("u_Color", glm::vec4(0.38f, 0.52f, 0.30f, 1.0f));
-		Egss::Renderer::Submit(m_SceneMaterial, m_TerrainMesh, glm::mat4(1.0f));
+		GS::Renderer::Submit(m_SceneMaterial, m_TerrainMesh, glm::mat4(1.0f));
 
 		// The block that would be placed. Drawn a little under size so it never
 		// z-fights with the ground or with the block it is sitting on -- two
@@ -395,10 +395,10 @@ private:
 		// it reads as the preview being broken rather than as a depth tie.
 		// Not under --hide-ui: it follows the mouse, so a capture that includes
 		// it is a capture of where the cursor was, and two runs stop matching.
-		if (m_Aim.Valid && !Egss::Application::Get().IsUIHidden())
+		if (m_Aim.Valid && !GS::Application::Get().IsUIHidden())
 		{
 			m_SceneMaterial->Set("u_Color", glm::vec4(0.95f, 0.85f, 0.35f, 1.0f));
-			Egss::Renderer::Submit(m_SceneMaterial, m_Cube,
+			GS::Renderer::Submit(m_SceneMaterial, m_Cube,
 				glm::scale(glm::translate(glm::mat4(1.0f), m_Aim.Centre),
 					glm::vec3(s_BlockSize * 0.96f)));
 		}
@@ -468,24 +468,24 @@ private:
 		Ragdoll::OnDemoImGui();
 	}
 
-	void OnDemoEvent(Egss::Event& e) override
+	void OnDemoEvent(GS::Event& e) override
 	{
-		Egss::EventDispatcher dispatcher(e);
-		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& key)
+		GS::EventDispatcher dispatcher(e);
+		dispatcher.Dispatch<GS::KeyPressedEvent>([this](GS::KeyPressedEvent& key)
 		{
-			if (key.GetKeyCode() == EGSS_KEY_R)
+			if (key.GetKeyCode() == GS_KEY_R)
 			{
 				m_Terrain.Seed = m_Terrain.Seed * 1664525u + 1013904223u;
 				Regenerate();
 				return true;
 			}
-			if (key.GetKeyCode() == EGSS_KEY_LEFT_BRACKET)
+			if (key.GetKeyCode() == GS_KEY_LEFT_BRACKET)
 			{
 				m_Terrain.Seed--;
 				Regenerate();
 				return true;
 			}
-			if (key.GetKeyCode() == EGSS_KEY_RIGHT_BRACKET)
+			if (key.GetKeyCode() == GS_KEY_RIGHT_BRACKET)
 			{
 				m_Terrain.Seed++;
 				Regenerate();
@@ -497,13 +497,13 @@ private:
 			// handle is an index, and the ragdoll's joints hold twelve of them.
 			// The character is put back on his feet as a side effect, which is
 			// the visible price of not having RemoveBody.
-			if (key.GetKeyCode() == EGSS_KEY_BACKSPACE && !m_Blocks.empty())
+			if (key.GetKeyCode() == GS_KEY_BACKSPACE && !m_Blocks.empty())
 			{
 				m_Blocks.pop_back();
 				RebuildScene();
 				return true;
 			}
-			if (key.GetKeyCode() == EGSS_KEY_DELETE && !m_Blocks.empty())
+			if (key.GetKeyCode() == GS_KEY_DELETE && !m_Blocks.empty())
 			{
 				m_Blocks.clear();
 				RebuildScene();
@@ -516,7 +516,7 @@ private:
 			Ragdoll::OnDemoEvent(e);
 	}
 
-	void OnDemoFixedUpdate(Egss::Timestep step) override
+	void OnDemoFixedUpdate(GS::Timestep step) override
 	{
 		Ragdoll::OnDemoFixedUpdate(step);
 
@@ -528,7 +528,7 @@ private:
 		// the button down should place one block, not sixty a second.
 		UpdateAim();
 
-		bool placing = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT)
+		bool placing = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_LEFT)
 			&& !ImGui::GetIO().WantCaptureMouse;
 
 		if (placing && !m_WasPlacing)
@@ -566,9 +566,9 @@ private:
 
 	void BuildTerrainMesh()
 	{
-		Egss::MeshData data = m_Terrain.BuildMesh();
+		GS::MeshData data = m_Terrain.BuildMesh();
 		m_TriangleCount = data.TriangleCount();
-		m_TerrainMesh = std::make_shared<Egss::Mesh>(data, "Terrain");
+		m_TerrainMesh = std::make_shared<GS::Mesh>(data, "Terrain");
 	}
 
 	// The map's own shader, because the Physics3D one cannot light it.
@@ -638,8 +638,8 @@ private:
 			}
 		)";
 
-		m_Shader.reset(Egss::Shader::Create("MapBuilding", vertexSrc, fragmentSrc));
-		m_SceneMaterial = Egss::Material::Create(m_Shader);
+		m_Shader.reset(GS::Shader::Create("MapBuilding", vertexSrc, fragmentSrc));
+		m_SceneMaterial = GS::Material::Create(m_Shader);
 	}
 
 	std::vector<Block> m_Blocks;
@@ -653,7 +653,7 @@ private:
 	int m_MaxBlocks = 400;
 
 	Terrain m_Terrain;
-	std::shared_ptr<Egss::Mesh> m_TerrainMesh;
-	std::shared_ptr<Egss::Shader> m_Shader;
+	std::shared_ptr<GS::Mesh> m_TerrainMesh;
+	std::shared_ptr<GS::Shader> m_Shader;
 	size_t m_TriangleCount = 0;
 };

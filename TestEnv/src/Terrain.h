@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Egss.h>
+#include <GS.h>
 
 // Seeded terrain: a heightmap, the mesh for it, and the queries a character
 // needs to walk on it.
@@ -88,7 +88,7 @@ public:
 		// answering it another, and the two disagreeing by a centimetre is
 		// exactly the bug that shows up as feet hovering with nothing in a
 		// screenshot to explain it.
-		m_Field = std::make_shared<Egss::Heightfield3D>();
+		m_Field = std::make_shared<GS::Heightfield3D>();
 		m_Field->SetHeights(Resolution, Extent, m_Heights);
 	}
 
@@ -184,9 +184,9 @@ public:
 
 	// --- Geometry ---------------------------------------------------------
 
-	Egss::MeshData BuildMesh() const
+	GS::MeshData BuildMesh() const
 	{
-		Egss::MeshData data;
+		GS::MeshData data;
 		if (m_Heights.empty())
 			return data;
 
@@ -201,7 +201,7 @@ public:
 				float wx = -half + (float)x * step;
 				float wz = -half + (float)z * step;
 
-				Egss::MeshVertex vertex;
+				GS::MeshVertex vertex;
 				vertex.Position = { wx, At(x, z), wz };
 				vertex.Normal = NormalAt(wx, wz);
 
@@ -236,7 +236,7 @@ public:
 			}
 		}
 
-		Egss::Submesh all;
+		GS::Submesh all;
 		all.IndexCount = (unsigned int)data.Indices.size();
 		data.Submeshes.push_back(all);
 		data.RecalculateBounds();
@@ -248,7 +248,7 @@ public:
 	// The collider, for `RigidBody3D::MakeHeightfield`. Shared, so regenerating
 	// while a body holds the old one is safe -- though the body wants
 	// rebuilding too, or it will be standing on the previous map.
-	const std::shared_ptr<Egss::Heightfield3D>& Field() const { return m_Field; }
+	const std::shared_ptr<GS::Heightfield3D>& Field() const { return m_Field; }
 
 	// Grid sample, for tests that want the stored value rather than the
 	// interpolated one.
@@ -314,5 +314,5 @@ private:
 	}
 
 	std::vector<float> m_Heights;
-	std::shared_ptr<Egss::Heightfield3D> m_Field;
+	std::shared_ptr<GS::Heightfield3D> m_Field;
 };

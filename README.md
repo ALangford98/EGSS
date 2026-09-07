@@ -1,9 +1,9 @@
-# EGSS
+# GS
 
 Every Game Starts Somewhere, Why not here?
 
 A game engine built from scratch, following along with TheCherno's Hazel
-series. `EGSS` is the engine itself, built as a shared library; `TestEnv` is a
+series. `GS` is the engine itself, built as a shared library; `TestEnv` is a
 sandbox application that links against it.
 
 **Current state:** an OpenGL 3.3 core context, an event system, a layer stack,
@@ -41,18 +41,18 @@ where everything you hear is computed by bouncing rays off walls. See
 
 | Path | What it is |
 | --- | --- |
-| `EGSS/src/Egss/` | Engine core — application loop, layers, events, input, logging |
-| `EGSS/src/Egss/Renderer/` | Backend-agnostic renderer interfaces |
-| `EGSS/src/Egss/Scene/` | `Scene`, `Entity`, `ComponentStore`, `Components` |
-| `EGSS/src/Egss/Physics/` | `PhysicsWorld2D`, `RigidBody2D`, raycasts, broadphase |
-| `EGSS/src/Egss/Audio/` | `AudioEngine`, `AudioClip` — mixer, positional sound, reverb; `Acoustics2D` — ray-traced room response |
-| `EGSS/src/Egss/Debug/` | `Instrumentor` — scope timers and Chrome-trace capture |
-| `EGSS/src/Platform/` | Backends: `Windows/`, `Linux/`, and `OpenGL/` |
-| `EGSS/vendor/` | GLFW, spdlog, glm, imgui (submodules); Glad, stb_image and miniaudio (checked in) |
+| `GS/src/GS/` | Engine core — application loop, layers, events, input, logging |
+| `GS/src/GS/Renderer/` | Backend-agnostic renderer interfaces |
+| `GS/src/GS/Scene/` | `Scene`, `Entity`, `ComponentStore`, `Components` |
+| `GS/src/GS/Physics/` | `PhysicsWorld2D`, `RigidBody2D`, raycasts, broadphase |
+| `GS/src/GS/Audio/` | `AudioEngine`, `AudioClip` — mixer, positional sound, reverb; `Acoustics2D` — ray-traced room response |
+| `GS/src/GS/Debug/` | `Instrumentor` — scope timers and Chrome-trace capture |
+| `GS/src/Platform/` | Backends: `Windows/`, `Linux/`, and `OpenGL/` |
+| `GS/vendor/` | GLFW, spdlog, glm, imgui (submodules); Glad, stb_image and miniaudio (checked in) |
 | `TestEnv/src/` | Sandbox app that consumes the engine |
 | `TestEnv/assets/` | Sample models; copied next to the executable on build |
 | `premake5.lua` | Build definition — the source of truth for both platforms |
-| `egss.py` | Build/run wrapper; always regenerates, so new files are never missed |
+| `gs.py` | Build/run wrapper; always regenerates, so new files are never missed |
 | `docs/` | `ENGINE.md` (orientation), `HANDOVER.md` (picking the project up cold), `LIGHTING_EXERCISE.md` (worked build) |
 | `.vscode/` | Editor tasks, IntelliSense config, and debug launch configs |
 
@@ -97,14 +97,14 @@ A `premake5` binary is expected at `vendor/bin/premake/` (`premake5` on Linux,
 `premake5.lua` is the only build file you edit. Everything else is generated:
 
 ```
-premake5.lua  ──[ BuildProject.sh ]──>  Makefile, EGSS/Makefile, TestEnv/Makefile
-              ──[ BuildProject.bat ]──> EGSS.sln, *.vcxproj
+premake5.lua  ──[ BuildProject.sh ]──>  Makefile, GS/Makefile, TestEnv/Makefile
+              ──[ BuildProject.bat ]──> GS.sln, *.vcxproj
 ```
 
 Five projects build in dependency order: **GLFW**, **Glad**, and **ImGui**
-(static libs) → **EGSS** (shared lib) → **TestEnv** (executable). GLFW and Glad
-carry their own `premake5.lua`; ImGui ships none, so EGSS supplies one at
-`EGSS/vendor/imgui_premake5.lua` — deliberately outside the submodule, since a
+(static libs) → **GS** (shared lib) → **TestEnv** (executable). GLFW and Glad
+carry their own `premake5.lua`; ImGui ships none, so GS supplies one at
+`GS/vendor/imgui_premake5.lua` — deliberately outside the submodule, since a
 file added inside it would be lost on re-clone and would leave the submodule
 permanently dirty. All three are pulled in by `include` directives at the top
 of the root script.
@@ -112,10 +112,10 @@ of the root script.
 **Either platform**, via the wrapper script:
 
 ```sh
-./egss.py                  # build debug and run it
-./egss.py build release    # or debug (default), dist, all
-./egss.py run release      # build, then launch from beside the binary
-./egss.py clean all
+./gs.py                  # build debug and run it
+./gs.py build release    # or debug (default), dist, all
+./gs.py run release      # build, then launch from beside the binary
+./gs.py clean all
 ```
 
 It regenerates project files every time. That costs 0.2s — the same as a no-op
@@ -142,7 +142,7 @@ make clean config=debug
 BuildProject.bat
 ```
 
-then open `EGSS.sln` and build.
+then open `GS.sln` and build.
 
 ### When to regenerate
 
@@ -160,23 +160,23 @@ fine in the editor but never gets linked, and you get undefined-symbol errors.
 
 | Config | Defines | Symbols | Optimized |
 | --- | --- | --- | --- |
-| `debug` | `EGSS_DEBUG`, `EGSS_ENABLE_ASSERTS` | yes | no |
-| `release` | `EGSS_RELEASE` | yes | `On` |
-| `dist` | `EGSS_DIST` | no | `Full` |
+| `debug` | `GS_DEBUG`, `GS_ENABLE_ASSERTS` | yes | no |
+| `release` | `GS_RELEASE` | yes | `On` |
+| `dist` | `GS_DIST` | no | `Full` |
 
 `debug` is the only config with asserts compiled in, and the only one that
 requests an OpenGL debug context.
 
-Platform defines are `EGSS_PLATFORM_LINUX` or `EGSS_PLATFORM_WINDOWS`, set by
+Platform defines are `GS_PLATFORM_LINUX` or `GS_PLATFORM_WINDOWS`, set by
 the `system:` filters. `Core.h` `#error`s on any other platform.
 
 ### Sanitizers
 
 ```sh
-./egss.py sanitize              # build instrumented, run every demo under it
-./egss.py sanitize release      # the config where UB actually bites
-./egss.py build --sanitize      # just the build
-./egss.py run --sanitize -- --demo OpenWorld
+./gs.py sanitize              # build instrumented, run every demo under it
+./gs.py sanitize release      # the config where UB actually bites
+./gs.py build --sanitize      # just the build
+./gs.py run --sanitize -- --demo OpenWorld
 ```
 
 `--sanitize` is a **generation** option rather than a fourth configuration, so
@@ -200,8 +200,8 @@ rather than something the normal build does.
 ### The wallpaper, and the window bridge
 
 ```sh
-./egss.py run release -- --demo Slime --wallpaper
-./egss.py windows        # in another terminal: react to open windows
+./gs.py run release -- --demo Slime --wallpaper
+./gs.py windows        # in another terminal: react to open windows
 ```
 
 `--wallpaper` marks the window `_NET_WM_WINDOW_TYPE_DESKTOP` and sizes it to the
@@ -209,7 +209,7 @@ union of every monitor. `--wallpaper-scale N` and `--wallpaper-density F` trade
 detail against cost; `--show-ui` puts the panels back so the breeds can be tuned
 while it runs; `--no-windows` ignores the desk even when the bridge is up.
 
-`./egss.py windows` is the KWin bridge described in the 2026-08-21 changelog
+`./gs.py windows` is the KWin bridge described in the 2026-08-21 changelog
 entry. It runs until interrupted and unloads its KWin script on the way out. It
 is not required: without it the colonies simply do not know about your windows.
 
@@ -217,20 +217,20 @@ is not required: without it the colonies simply do not know about your windows.
 
 ```
 bin/<Config>-<system>-x86_64/
-  ├── EGSS/       libEGSS.so
-  └── TestEnv/    TestEnv + a copy of libEGSS.so
+  ├── GS/       libGS.so
+  └── TestEnv/    TestEnv + a copy of libGS.so
 bin-int/          object files and precompiled headers
 ```
 
 Vendor static libraries build into their own directories rather than the
 top-level `bin/`, because each vendor `premake5.lua` resolves `targetdir`
 relative to itself — for example
-`EGSS/vendor/glfw/bin/<Config>-<system>-x86_64/GLFW/libGLFW.a`. They are linked
-into `libEGSS.so`, so nothing needs to ship them.
+`GS/vendor/glfw/bin/<Config>-<system>-x86_64/GLFW/libGLFW.a`. They are linked
+into `libGS.so`, so nothing needs to ship them.
 
 The engine library is copied next to the executable by a post-build step. On
 Linux `TestEnv` is also linked with an `$ORIGIN` rpath, so it resolves
-`libEGSS.so` from its own directory rather than the system path — you can move
+`libGS.so` from its own directory rather than the system path — you can move
 the folder anywhere and it still runs.
 
 ## Running
@@ -244,12 +244,12 @@ On Windows, `bin\Debug-windows-x86_64\TestEnv\TestEnv.exe`.
 You should see a 1280x720 window running one of the demos, plus:
 
 ```
-[22:00:24] EGSS: Creating Window Every Game Starts Somewhere (1280, 720)
-[22:00:24] EGSS: OpenGL 4.6 (Core Profile) Mesa 26.1.5 | Mesa Intel(R) Iris(R) Xe Graphics (RPL-U)
-[22:00:24] EGSS: GL: 32 fragment texture units reported, using 32
-[22:00:24] EGSS: Renderer2D initialized (10000 quads/batch, 32 texture slots)
-[22:00:24] EGSS: Audio PulseAudio | 48000 Hz, 2 ch, 32 voices
-[22:00:24] EGSS: ImGui 1.92.9b initialized
+[22:00:24] GS: Creating Window Every Game Starts Somewhere (1280, 720)
+[22:00:24] GS: OpenGL 4.6 (Core Profile) Mesa 26.1.5 | Mesa Intel(R) Iris(R) Xe Graphics (RPL-U)
+[22:00:24] GS: GL: 32 fragment texture units reported, using 32
+[22:00:24] GS: Renderer2D initialized (10000 quads/batch, 32 texture slots)
+[22:00:24] GS: Audio PulseAudio | 48000 Hz, 2 ch, 32 voices
+[22:00:24] GS: ImGui 1.92.9b initialized
 ```
 
 The **Demos** panel switches between them; **F1** cycles.
@@ -340,10 +340,10 @@ generated database is gitignored; regenerate it after adding source files.
 GDB. There's a matching config for the release build.
 
 Both set `cwd` to the executable's own directory — that's how the `$ORIGIN`
-rpath resolves `libEGSS.so`. Changing it will break the launch with a
+rpath resolves `libGS.so`. Changing it will break the launch with a
 library-not-found error.
 
-Breakpoints inside `libEGSS.so` work normally; GDB resolves them once the
+Breakpoints inside `libGS.so` work normally; GDB resolves them once the
 shared library loads. If a breakpoint stays hollow, confirm you built the
 `debug` config.
 
@@ -352,22 +352,22 @@ see [Debugging rendering](#debugging-rendering) below.
 
 ## Adding source files
 
-Engine code goes under `EGSS/src/Egss/`; platform-specific code goes under
-`EGSS/src/Platform/<Platform>/`. The per-platform directories are mutually
+Engine code goes under `GS/src/GS/`; platform-specific code goes under
+`GS/src/Platform/<Platform>/`. The per-platform directories are mutually
 exclusive at build time — each `system:` filter `removefiles` the other's
 subtree — so a Linux backend never has to `#ifdef` around Windows code.
 
-Anything you add to the engine's public surface needs `EGSS_API` on the class
+Anything you add to the engine's public surface needs `GS_API` on the class
 so it's exported from the shared library:
 
 ```cpp
-class EGSS_API Thing { ... };
+class GS_API Thing { ... };
 ```
 
-Then regenerate. New engine headers should be reachable from `EGSS/src`, which
+Then regenerate. New engine headers should be reachable from `GS/src`, which
 is on both projects' include path.
 
-The engine uses a precompiled header, `egsspch.h`, holding the common standard
+The engine uses a precompiled header, `gspch.h`, holding the common standard
 library includes. Every engine `.cpp` must include it first. `TestEnv` does not
 use a PCH.
 
@@ -387,7 +387,7 @@ exposes only a very old baseline — on Windows, `opengl32.lib` stops at OpenGL
 query from the driver at runtime.
 
 **Glad** is a generated file that declares every GL 3.3 core function as a
-function pointer and fills them in from a loader callback. `EGSS/vendor/Glad/`
+function pointer and fills them in from a loader callback. `GS/vendor/Glad/`
 holds a loader generated for exactly `gl=3.3, profile=core`. Regenerate with:
 
 ```sh
@@ -545,7 +545,7 @@ glDetachShader → glDeleteShader                    (cleanup)
 ```
 
 `CompileShader` in `Application.cpp` checks `GL_COMPILE_STATUS` and logs the
-driver's message via `EGSS_CORE_ERROR` on failure; linking checks
+driver's message via `GS_CORE_ERROR` on failure; linking checks
 `GL_LINK_STATUS` the same way. **Keep these checks.** GLSL failures are
 otherwise completely silent — you get a black window and no diagnostic.
 
@@ -708,7 +708,7 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       changelog entry for the numbers; reopen this only if the demos ever
       become separate `.cpp` files
 - [x] **Vendor a `premake5` binary per platform**, or script fetching it —
-      `egss.py` now fetches a pinned, checksummed premake on first use
+      `gs.py` now fetches a pinned, checksummed premake on first use
 - [x] **Replay: record the ImGui panel state too** — a demo registers the
       parameters that reach its simulation, one line per slider, and the
       recorder samples them per fixed step beside the input. Format version 2:
@@ -1250,7 +1250,7 @@ docked, tabbed, and split.
 **Tooling.** ImGui as an overlay layer, with the GLFW and OpenGL3 backends and
 input capture so ImGui windows swallow clicks instead of leaking them to the
 game. GL debug context plus `glDebugMessageCallback` in debug builds, routing
-driver messages to the log by severity. `EGSS_ENABLE_ASSERTS` defined in the
+driver messages to the log by severity. `GS_ENABLE_ASSERTS` defined in the
 debug config — it had been defined nowhere, so every assert compiled to
 nothing, including the GLFW and Glad init checks.
 
@@ -1336,7 +1336,7 @@ chunks that already share a stride, since a coarse and a fine chunk in one
 buffer would need the same seam-stitching `VoxelTransition` already does
 between bands.
 
-Also added: `Egss::Renderer::GetStats().DrawCalls` on the Terrain lab panel,
+Also added: `GS::Renderer::GetStats().DrawCalls` on the Terrain lab panel,
 which it didn't read before this.
 
 ### 2026-08-31 (the docs cost 252k tokens and answered the question wrong)
@@ -1370,10 +1370,10 @@ landed, and the entire `Voxel` subsystem had never been listed.
 sessions skip, which is exactly how the same wall gets hit twice. One line per
 trap -- the bold opening clause, which is the trap stated once -- comes to
 4,262 tokens against 31,223, a factor of **7.3**, enough to decide whether to
-`grep -n` for the body. It is built by `./egss.py traps` rather than kept by
+`grep -n` for the body. It is built by `./gs.py traps` rather than kept by
 hand, because a hand-kept index of a list that grows every session is a second
 thing to forget, and forgetting is the failure being fixed one level up.
-`./egss.py traps --check` exits 1 on drift. Verified by adding a trap, watching
+`./gs.py traps --check` exits 1 on drift. Verified by adding a trap, watching
 `--check` fail, seeing the regenerated index pick it up, and watching the count
 return to 254 when it was removed.
 
@@ -1396,14 +1396,14 @@ Tier 1 was guessed at ~800 and measured 1,009. Neither changed a decision --
 the ratios they were justified on survived -- but a design argued from
 estimates should say so once the numbers arrive.
 
-### 2026-08-31 (`./egss.py prune`, and where 8.2 of 9.7 GB was going)
+### 2026-08-31 (`./gs.py prune`, and where 8.2 of 9.7 GB was going)
 
 The checkout was 9.7 GB against 1.2 MB of engine source, so it was worth
 finding out where. Three answers, and none of them is the engine:
 
-- **5.7 GB in four sanitizer build trees.** An instrumented `libEGSS.so`
+- **5.7 GB in four sanitizer build trees.** An instrumented `libGS.so`
   carries so much debug info that one config's shared library alone is 293 MB,
-  and nothing reads any of them between sweeps — `./egss.py sanitize` rebuilds
+  and nothing reads any of them between sweeps — `./gs.py sanitize` rebuilds
   whichever it needs.
 - **2.5 GB in two abandoned worktrees.** The handover workflow that
   `CLAUDE.md` says is gone left behind a full checkout *and* a second clone of
@@ -1416,7 +1416,7 @@ finding out where. Three answers, and none of them is the engine:
 `prune` reports all of it and deletes only the stale build trees, and only with
 `--delete`. Reporting is the default because the cost of getting a tree back is
 a full rebuild and only the person at the keyboard knows whether they are about
-to want one — and because **`./egss.py sanitize` runs out of one of those
+to want one — and because **`./gs.py sanitize` runs out of one of those
 trees**, so deleting them while a sweep is in flight is a confusing way to
 fail.
 
@@ -2350,7 +2350,7 @@ field of view, aspect and clip distances can describe an oblique frustum, so
 there had to be a way to hand one over. Set it last; setting the lens overwrites
 it.
 
-**`./egss.py sanitize` had not run since some earlier edit**: `unexpected_exit`
+**`./gs.py sanitize` had not run since some earlier edit**: `unexpected_exit`
 was assigned at the bottom of the sweep's loop and read at the top, so the first
 demo raised `UnboundLocalError`, and the traceback goes to stdout with an exit
 code of zero -- so from outside it looked like a sweep that passed quietly. It
@@ -3899,14 +3899,14 @@ until there's something to put in it. `PocketDimension` (new,
 `TestEnv/src/PocketDimension.h`) owns five static box colliders for a 6x6x3 m
 room with one open doorway, a small offscreen `Framebuffer` rendered from a
 fixed interior camera each frame and shown through the doorway as a live
-"window" (`Egss::Renderer::Submit` with a small unlit textured shader — not
+"window" (`GS::Renderer::Submit` with a small unlit textured shader — not
 `Renderer2D::DrawRotatedQuad`, which only rotates about one axis and can't
 orient a window tangent to a sphere), and plane-crossing detection
 (`UpdateCrossing`) that teleports the player between the portal and the room
 in either direction, carrying the lateral/height offset they crossed at so
 walking through slightly left of centre comes out slightly left of centre on
 the other side. Gravity, grounding and the water/horizon follow-rebuilds all
-branch on `Egss::PhysicsWorld3D::InPocket()` — the room has its own fixed
+branch on `GS::PhysicsWorld3D::InPocket()` — the room has its own fixed
 "down" rather than a radial one, and the water/horizon rebuilds are the
 required half of that branch, not an optional one: the room sits 2,000 m from
 the landing site along the portal's own facing, which every step would
@@ -3937,7 +3937,7 @@ design (`u_Sky = (0.12, 0.12, 0.16)`, one fixed light, no windows) and reads
 clearly enough facing into it, which is what a player who just walked through
 the doorway actually does. Both crossing directions were verified with a
 scripted position override (no recorded input exists for this landing site)
-and an `EGSS_TRACE` on every `InPocket` transition, confirmed firing exactly
+and an `GS_TRACE` on every `InPocket` transition, confirmed firing exactly
 once each way for a clean approach-and-return.
 
 **Deliberately not built**: placing the portal on an arbitrary surface, and
@@ -5123,7 +5123,7 @@ about 1,174 chunk meshes and 3,556 trees at *two calls each* -- bark and leaves
 the thing that is slow. Instancing the trees takes 7,112 of those to six. That is
 the next lever and it is on the roadmap.
 
-Debug is about seven times slower than Release on this path, and `./egss.py run`
+Debug is about seven times slower than Release on this path, and `./gs.py run`
 builds Debug: 40 FPS against 60 for the same scene. Worth knowing before
 concluding anything about a frame rate from it.
 
@@ -5867,11 +5867,11 @@ all is the compositor, and KWin scripts cannot open a file or a socket. So the
 chain is three links:
 
 ```
-KWin script  --callDBus-->  tools/egss-windows.py  --file-->  the wallpaper
+KWin script  --callDBus-->  tools/gs-windows.py  --file-->  the wallpaper
 ```
 
-`./egss.py windows` runs the middle one: it owns `org.egss.Wallpaper`, loads the
-script into KWin, and writes what arrives to `$XDG_RUNTIME_DIR/egss-windows` by
+`./gs.py windows` runs the middle one: it owns `org.gs.Wallpaper`, loads the
+script into KWin, and writes what arrives to `$XDG_RUNTIME_DIR/gs-windows` by
 atomic rename. A file rather than a socket because the wallpaper is a game loop:
 it wants to read the current state when it happens to look, not to service a
 connection. Nothing starts it automatically, and with it absent the wallpaper
@@ -5985,7 +5985,7 @@ and a desktop window that arrives as an ordinary one has already been stacked,
 framed and focused by the time the property lands.
 
 **This works on a Wayland session because GLFW here is built `_GLFW_X11` only**,
-so every EGSS window is already an XWayland client and has been all along.
+so every GS window is already an XWayland client and has been all along.
 Nobody had noticed, because nothing until now cared which display server it was
 talking to.
 
@@ -6204,7 +6204,7 @@ reach it again.** That afternoon -- a signed overflow in a hash, a loop whose
 exit test the compiler deleted, `SpawnRocks` running 99,482 times, 17 GB and an
 OOM kill, with `-Wall -Wextra -Waggressive-loop-optimizations -Warray-bounds=2`,
 `-D_GLIBCXX_ASSERTIONS` and `-fstack-protector-all` all silent -- ended with the
-right tool being run by hand once. `./egss.py sanitize` is that tool wired in.
+right tool being run by hand once. `./gs.py sanitize` is that tool wired in.
 
 `--sanitize` is a **generation option, not a fourth configuration**. Five
 project files would each have needed one and three of them describe vendored
@@ -6216,7 +6216,7 @@ load-bearing**: make cannot tell that the compiler flags changed, so
 instrumented and plain objects in one directory would link whatever was
 there.
 
-`./egss.py sanitize` builds that and then runs **every demo** under it, in
+`./gs.py sanitize` builds that and then runs **every demo** under it, in
 lockstep with the window hidden, one process each so the demo that produced a
 report is named beside it. The demo list is read out of `DemoRegistry.h`, so
 adding a demo adds it to the sweep -- the newest thing being the one most likely
@@ -6251,7 +6251,7 @@ One trap found by falling into it: `--no-gen` and `--sanitize` disagreeing is
 silent. The flags *and* the output directory live in the generated project
 files, so `build --sanitize --no-gen` after a plain generation cheerfully
 rebuilds the plain tree, and `sanitize --no-gen` would sweep the plain binary
-and report no findings -- which reads as a pass. `egss.py` now reads
+and report no findings -- which reads as a pass. `gs.py` now reads
 `-fsanitize` back out of the generated makefile and regenerates anyway, saying
 so.
 
@@ -6331,7 +6331,7 @@ were left as flat coarse triangles, so two neighbouring transition cells put
 a different number of vertices on the edge between them -- a T-junction, not
 visible but fatal to the watertightness check.
 
-**`VoxelTransition`** (`EGSS/src/Egss/Voxel/VoxelTransition.h/.cpp`) fixes it
+**`VoxelTransition`** (`GS/src/GS/Voxel/VoxelTransition.h/.cpp`) fixes it
 by marking *edges*, not faces. Against a coarse cube cell's fixed six-tet
 decomposition (`MarchingTetrahedra::CellTetrahedra()`), exactly two tets have
 a full face on a given boundary ("cap" tets) and two touch it along one edge
@@ -7618,7 +7618,7 @@ the demo at step 60 are **MD5-identical**.
 and its vertices as **binary** rather than as decimal text that has to be
 re-parsed and re-rounded. All three are now read.
 
-**A JSON parser, written rather than vendored** (`Egss/Json.h`). glTF is the
+**A JSON parser, written rather than vendored** (`GS/Json.h`). glTF is the
 only thing in the engine that needs JSON and it uses a plain subset; a
 general-purpose library would be tens of thousands of lines on every TU that
 touched a model, and another submodule on a project where a missing submodule is
@@ -7707,8 +7707,8 @@ every argument was still convertible to the field it landed on.
 It showed up as the Cube3D capture changing hash — floor, sphere and icosahedron
 gone, wireframes and debug lines still there, those not going through `Submesh`.
 Diagnosis went wrong before it went right: the signature is identical to a stale
-shared-library build, where `TestEnv` and `libEGSS.so` disagree about a struct's
-layout, and that got two hours. `./egss.py clean` refuted it in one step and
+shared-library build, where `TestEnv` and `libGS.so` disagree about a struct's
+layout, and that got two hours. `./gs.py clean` refuted it in one step and
 should have been the first thing tried, not the fourth. The captured frame is
 what caught it at all — nothing else in the session would have.
 
@@ -8498,7 +8498,7 @@ recording still replays its input.
 
 The magic string keeps its trailing '1' deliberately. It is the container's
 magic, not the version — `Header::Version` is — and changing it would make an
-older build report "not an EGSS recording", sending the reader after a corrupt
+older build report "not an GS recording", sending the reader after a corrupt
 file instead of the version mismatch it actually is.
 
 #### Two ordering problems, both the same shape
@@ -9073,7 +9073,7 @@ of Ragdoll rather than a second copy of the rig.
 
 `ColliderShape3D::Heightfield` — static only, never turned, since a collider
 that is a height as a function of `(x, z)` stops being one the moment it tilts.
-`EGSS/src/Egss/Physics/Heightfield3D.h` holds the samples and the surface;
+`GS/src/GS/Physics/Heightfield3D.h` holds the samples and the surface;
 `PhysicsWorld3D` gained a narrowphase case per shape and an exact ground probe.
 
 Every shape reduces to the same thing — a handful of places where it might be
@@ -11626,7 +11626,7 @@ without one and failed at the first build with a link to go and find it. Both
 happened again setting up the worktree for *this* work, which is how it got
 picked.
 
-`egss.py` now downloads a pinned 5.0.0-beta7 on first use and verifies a
+`gs.py` now downloads a pinned 5.0.0-beta7 on first use and verifies a
 **SHA256 of the archive before unpacking**, so a corrupted or substituted
 payload never reaches the filesystem as an executable. Confirmed both ways: the
 real archive installs and runs, and a deliberately wrong expected hash is
@@ -11636,7 +11636,7 @@ version changed nothing about the build.
 
 `--no-fetch` restores the old fail-with-a-link behaviour.
 
-The submodules are the same first-five-minutes failure, so `egss.py` now checks
+The submodules are the same first-five-minutes failure, so `gs.py` now checks
 them too — but it names `git submodule update --init --recursive` rather than
 running it, because that is a git operation on the user's own repository.
 
@@ -12332,7 +12332,7 @@ a material system exists to receive them". One does now, so:
   file agrees on what that is. `ObjMaterialUniforms` is where the two are
   introduced — once, rather than assumed at every call site.
 
-`ObjMaterial` is deliberately **not** an `Egss::Material`. Keeping the parsed
+`ObjMaterial` is deliberately **not** an `GS::Material`. Keeping the parsed
 form separate is what lets one file feed two different shaders, and what keeps
 the parser free of any GPU dependency.
 
@@ -13083,7 +13083,7 @@ comparing the two.
 
 ### 2026-08-02 (build wrapper)
 
-- **`egss.py`** — `build`, `run`, `clean`, `gen`, with `all` for every config.
+- **`gs.py`** — `build`, `run`, `clean`, `gen`, with `all` for every config.
 - It **always regenerates** project files. That costs 0.21s, the same as a
   no-op build, and in exchange the most confusing failure in the project
   cannot happen: premake expands its file globs at *generation* time, so a
@@ -13184,7 +13184,7 @@ bodies costs it 3.4x the time.
 
 **A measurement mistake worth recording.** The first attempt compared the two
 modes live and found *no difference at all* — both 0.4 us per call. That figure
-was the profiler: `Raycast` carried an `EGSS_PROFILE_SCOPE`, and a scope timer
+was the profiler: `Raycast` carried an `GS_PROFILE_SCOPE`, and a scope timer
 costs more than a raycast against a small world, so the instrumentation was
 most of what was being timed. Removing the per-call scope revealed a real 1.9x
 that had been invisible. Profile the loop that issues the rays, not the leaf.
@@ -13350,9 +13350,9 @@ justify a spatial broadphase.
 
 ### 2026-08-01 (profiler)
 
-- **`Instrumentor`** — RAII scope timers behind `EGSS_PROFILE_SCOPE`, with two
+- **`Instrumentor`** — RAII scope timers behind `GS_PROFILE_SCOPE`, with two
   outputs: a live per-frame summary, and a Chrome trace written to JSON for
-  `chrome://tracing` or `ui.perfetto.dev`. `EGSS_PROFILE` is defined in Debug
+  `chrome://tracing` or `ui.perfetto.dev`. `GS_PROFILE` is defined in Debug
   and Release; Dist compiles the macros to nothing.
 - Instrumented the frame loop, the fixed-update loop, ImGui, the buffer swap,
   `Renderer2D::Flush`, and each phase of `PhysicsWorld2D::Step`.
@@ -13528,7 +13528,7 @@ exactly the entity IDs of the quads drawn there.
   ratio, and camera keys only act while the panel has focus.
 - Documented render targets under [Rendering](#render-targets), including the
   two things that bite: the viewport being global state, and the V flip.
-- Untracked `EGSS/vendor/Glad/Makefile`. It is premake output, so it changed on
+- Untracked `GS/vendor/Glad/Makefile`. It is premake output, so it changed on
   every regeneration and flip-flopped between platforms.
 
 Verified at 900x501 and again at 341x153 after a resize: the tilemap stays
@@ -13574,7 +13574,7 @@ square, and 402 quads still render in **1 draw call**.
 - ImGui as an overlay layer pushed by `Application`, bracketing every layer's
   `OnImGuiRender`. Its `OnEvent` marks mouse and keyboard events handled when
   ImGui wants capture, so panels don't leak input into the game.
-- ImGui's premake project lives at `EGSS/vendor/imgui_premake5.lua`, outside
+- ImGui's premake project lives at `GS/vendor/imgui_premake5.lua`, outside
   the submodule — a build file added inside it would be lost on re-clone and
   would leave the submodule permanently dirty.
 - `TestEnv` now draws a textured, index-buffered quad behind the triangle and
@@ -13600,7 +13600,7 @@ window" to something you can build on.
 - The triangle moved out of `Application` and into `TestEnv`'s example layer,
   where it now uses per-vertex colors and a movable camera.
 - GL debug context plus `glDebugMessageCallback` in debug builds.
-- `EGSS_ENABLE_ASSERTS` is now defined in the debug config; it had been defined
+- `GS_ENABLE_ASSERTS` is now defined in the debug config; it had been defined
   nowhere, so every assert compiled to nothing.
 - `release` and `dist` now optimize, and `dist` no longer ships symbols —
   5.8 MB down to 315 KB.
@@ -13618,7 +13618,7 @@ them until the event system needed them:
 
 **A triangle.** The window now renders something.
 
-- Added Glad as an OpenGL function loader, under `EGSS/vendor/Glad`. The
+- Added Glad as an OpenGL function loader, under `GS/vendor/Glad`. The
   loader is generated for GL 3.3 core and checked into the repo rather than
   added as a submodule, because TheCherno's `Glad` repo no longer exists.
   Regenerate with `pip install glad` and
@@ -13635,10 +13635,10 @@ them until the event system needed them:
 
 **Linux support.** The project previously built only on Windows.
 
-- Added an `EGSS_PLATFORM_LINUX` branch to `Core.h`. `EGSS_API` uses
+- Added an `GS_PLATFORM_LINUX` branch to `Core.h`. `GS_API` uses
   `__attribute__((visibility("default")))` when building the library and
   expands to nothing when consuming it, since ELF has no import side.
-- Added `EGSS_DEBUGBREAK()` — `raise(SIGTRAP)` on Linux, `__debugbreak()` on
+- Added `GS_DEBUGBREAK()` — `raise(SIGTRAP)` on Linux, `__debugbreak()` on
   Windows.
 - Added `Platform/Linux/LinuxWindow.{h,cpp}`, mirroring the Windows backend.
 - Added `system:linux` filters to `premake5.lua`: position-independent code,
@@ -13647,15 +13647,15 @@ them until the event system needed them:
   `Window::Create` has exactly one definition.
 - Moved `opengl32.lib` into the Windows filter; it had been linked
   unconditionally.
-- Un-gated `main()` in `EntryPoint.h`, which was `#ifdef EGSS_PLATFORM_WINDOWS`.
+- Un-gated `main()` in `EntryPoint.h`, which was `#ifdef GS_PLATFORM_WINDOWS`.
 - Added `BuildProject.sh` as the Linux counterpart to `BuildProject.bat`.
 
 Fixed three case-sensitivity bugs that were invisible on Windows' case-
 insensitive filesystem:
 
-- `premake5.lua` referenced `EGSS/vendor/GLFW`; the submodule is at
-  `EGSS/vendor/glfw`.
-- The `EGSS` project used `location "Egss"`, which collapsed into the `EGSS/`
+- `premake5.lua` referenced `GS/vendor/GLFW`; the submodule is at
+  `GS/vendor/glfw`.
+- The `GS` project used `location "GS"`, which collapsed into the `GS/`
   source folder on Windows but created a second directory on Linux.
 - `EventDispatcher::Dispatch` assigned to `m_handled`; the member is
   `m_Handled`.
@@ -13665,7 +13665,7 @@ Fixed pre-existing bugs that MSVC had tolerated:
 - `EVENT_CLASS_TYPE` used `EventType::##type`. Token-pasting `::` with an
   identifier is an MSVC extension and not a valid preprocessing token.
 - The assert macros called `HZ_ERROR` (left over from Hazel) with a misspelled
-  `__VAARGS__`, and would not compile once `EGSS_ENABLE_ASSERTS` was defined.
+  `__VAARGS__`, and would not compile once `GS_ENABLE_ASSERTS` was defined.
 - `WindowsWindow::Init` never set `s_GLFWInitialized`, so `glfwInit()` ran on
   every window creation.
 
@@ -13679,7 +13679,7 @@ platform-agnostic `Window` interface behind a `WindowsWindow` backend.
 
 ### 2023-08-24
 
-Added precompiled headers (`egsspch.h`).
+Added precompiled headers (`gspch.h`).
 
 ### 2023-08-23
 
@@ -13689,5 +13689,5 @@ premake for project generation.
 
 ### 2023-08-22
 
-Initial engine skeleton: `Application`, `EntryPoint`, and the `EGSS_API` export
+Initial engine skeleton: `Application`, `EntryPoint`, and the `GS_API` export
 macro, split into an engine library and a sandbox app.

@@ -28,7 +28,7 @@
 // letting everything else follow, is a fair trade at this scale and is
 // flagged as such where it happens.
 
-#include <Egss.h>
+#include <GS.h>
 
 #include <glm/glm.hpp>
 

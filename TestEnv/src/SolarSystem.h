@@ -66,7 +66,7 @@
 // on the Moon is *twice* the Earth's, which needs a much smaller step to stay
 // stable and buys nothing you can see at this scale.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 #include <chrono>
@@ -121,7 +121,7 @@ static std::string WithSphereSample(std::string source)
 	const std::string version = "#version 330 core";
 
 	size_t at = source.find(version);
-	EGSS_CORE_ASSERT(at != std::string::npos, "shader has no #version line");
+	GS_CORE_ASSERT(at != std::string::npos, "shader has no #version line");
 
 	return source.insert(at + version.size(), std::string("\n") + s_SphereSample);
 }
@@ -269,7 +269,7 @@ public:
 
 	void OnDemoAttach() override
 	{
-		const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
+		const std::vector<std::string>& arguments = GS::Application::GetCommandLine();
 
 		for (size_t i = 1; i + 1 < arguments.size(); i++)
 			if (arguments[i] == "--years-per-second")
@@ -294,7 +294,7 @@ public:
 		// At 48x24 that put polygonal patches of missing sea across the far
 		// ocean. 128x64 is 16k triangles a sphere and the crossings fall below
 		// a pixel.
-		m_Sphere.reset(Egss::Mesh::CreateSphere(1.0f, 128, 64));
+		m_Sphere.reset(GS::Mesh::CreateSphere(1.0f, 128, 64));
 
 		BuildShader();
 		BuildRings();
@@ -533,7 +533,7 @@ public:
 	// one at 1.66, because it really is a tight orbit -- 2.77 Mars radii.
 	void ReportScale() const
 	{
-		EGSS_TRACE("Solar system: p = {0:.3f} (orbits), q = {1:.3f} (bodies), "
+		GS_TRACE("Solar system: p = {0:.3f} (orbits), q = {1:.3f} (bodies), "
 			"Earth {2:.1f} m, 1 AU = {3:.0f} m",
 			m_Compression, m_BodyScale, DrawnRadius(3),
 			DrawnLength(s_AuKm, (double)m_Compression));
@@ -542,7 +542,7 @@ public:
 		{
 			if (m_Bodies[i].Parent < 0)
 			{
-				EGSS_TRACE("  {0:<9} r = {1:8.1f} m", m_Bodies[i].Name, DrawnRadius(i));
+				GS_TRACE("  {0:<9} r = {1:8.1f} m", m_Bodies[i].Name, DrawnRadius(i));
 				continue;
 			}
 
@@ -550,7 +550,7 @@ public:
 			double orbit = DrawnLength(m_Bodies[i].SemiMajorAu * s_AuKm, OrbitExponent(i));
 			double clearance = orbit / (DrawnRadius(parent) + DrawnRadius(i));
 
-			EGSS_TRACE("  {0:<9} r = {1:8.1f} m, a = {2:9.1f} m, {3:.2f}x clear of {4}",
+			GS_TRACE("  {0:<9} r = {1:8.1f} m, a = {2:9.1f} m, {3:.2f}x clear of {4}",
 				m_Bodies[i].Name, DrawnRadius(i), orbit, clearance, m_Bodies[parent].Name);
 		}
 	}
@@ -560,12 +560,12 @@ public:
 	// nobody to fly it.
 	bool PlaceFromCommandLine()
 	{
-		const std::vector<std::string>& arguments = Egss::Application::GetCommandLine();
+		const std::vector<std::string>& arguments = GS::Application::GetCommandLine();
 
 		// A replay places itself: the recording drives the ship from wherever
 		// the run it came from started, and landing first would put it
 		// somewhere the recorded input was never taken at.
-		if (Egss::Input::IsPlayingBack())
+		if (GS::Input::IsPlayingBack())
 			return true;
 
 		// `--orbit` is how you get the old opening back: four radii out,
@@ -603,7 +603,7 @@ public:
 				return true;
 			}
 
-			EGSS_WARN("{0} {1} matches no body", arguments[i], wanted);
+			GS_WARN("{0} {1} matches no body", arguments[i], wanted);
 		}
 
 		return false;
@@ -1263,7 +1263,7 @@ public:
 			settings.RoughnessSize = 300.0f;
 		}
 
-		EGSS_TRACE("{0}: voxel planet, radius {1:.0f} m, relief {2:.0f} m, voxel {3:.2f} m",
+		GS_TRACE("{0}: voxel planet, radius {1:.0f} m, relief {2:.0f} m, voxel {3:.2f} m",
 			m_Bodies[index].Name, settings.Radius, settings.Amplitude, settings.VoxelSize);
 
 		VoxelPlanet& planet = m_Planets[index];
@@ -1343,7 +1343,7 @@ public:
 		double residual = glm::length(ShipScene() - before);
 		m_HandoverResidual = std::max(m_HandoverResidual, residual);
 
-		EGSS_TRACE("frame -> {0} ({1:.2f}x its radius), moved {2:.3e} m",
+		GS_TRACE("frame -> {0} ({1:.2f}x its radius), moved {2:.3e} m",
 			m_Bodies[candidate].Name, ratio, residual);
 	}
 
@@ -1354,8 +1354,8 @@ public:
 		m_MouseLook = on;
 		m_HasMouse = false;
 
-		if (!Egss::Input::IsPlayingBack())
-			Egss::Application::Get().GetWindow().SetCursorCaptured(on);
+		if (!GS::Input::IsPlayingBack())
+			GS::Application::Get().GetWindow().SetCursorCaptured(on);
 	}
 
 	// How far to turn this step, in degrees: positive yaw is to the right,
@@ -1372,16 +1372,16 @@ public:
 	// camera. Same convention as `FirstPersonController`, for the same reason.
 	void LookDelta(float dt, float& yaw, float& pitch)
 	{
-		bool toggle = Egss::Input::IsKeyPressed(EGSS_KEY_TAB);
+		bool toggle = GS::Input::IsKeyPressed(GS_KEY_TAB);
 
 		if (toggle && !m_WasToggling)
 			SetMouseLook(!m_MouseLook);
-		else if (m_MouseLook && Egss::Input::IsKeyPressed(EGSS_KEY_ESCAPE))
+		else if (m_MouseLook && GS::Input::IsKeyPressed(GS_KEY_ESCAPE))
 			SetMouseLook(false);
 
 		m_WasToggling = toggle;
 
-		std::pair<float, float> mouse = Egss::Input::GetMousePosition();
+		std::pair<float, float> mouse = GS::Input::GetMousePosition();
 
 		yaw = 0.0f;
 		pitch = 0.0f;
@@ -1406,10 +1406,10 @@ public:
 
 		float rate = m_LookRate * dt;
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))  yaw -= rate;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) yaw += rate;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))    pitch += rate;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))  pitch -= rate;
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT))  yaw -= rate;
+		if (GS::Input::IsKeyPressed(GS_KEY_RIGHT)) yaw += rate;
+		if (GS::Input::IsKeyPressed(GS_KEY_UP))    pitch += rate;
+		if (GS::Input::IsKeyPressed(GS_KEY_DOWN))  pitch -= rate;
 	}
 
 	static glm::vec3 RotateAbout(const glm::vec3& v, const glm::vec3& axis, float radians)
@@ -1536,17 +1536,17 @@ public:
 
 		glm::dvec3 move(0.0);
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) move += glm::dvec3(m_Forward);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) move -= glm::dvec3(m_Forward);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) move += glm::dvec3(right);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) move -= glm::dvec3(right);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_SPACE)) move += glm::dvec3(m_Up);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT_CONTROL)) move -= glm::dvec3(m_Up);
+		if (GS::Input::IsKeyPressed(GS_KEY_W)) move += glm::dvec3(m_Forward);
+		if (GS::Input::IsKeyPressed(GS_KEY_S)) move -= glm::dvec3(m_Forward);
+		if (GS::Input::IsKeyPressed(GS_KEY_D)) move += glm::dvec3(right);
+		if (GS::Input::IsKeyPressed(GS_KEY_A)) move -= glm::dvec3(right);
+		if (GS::Input::IsKeyPressed(GS_KEY_SPACE)) move += glm::dvec3(m_Up);
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT_CONTROL)) move -= glm::dvec3(m_Up);
 
 		double speed = glm::clamp(m_SpeedPerMetre * AltitudeAboveAnything(),
 			(double)m_MinSpeed, (double)m_MaxSpeed);
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT_SHIFT))
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT_SHIFT))
 			speed *= 5.0;
 
 		m_FlightSpeed = speed;
@@ -1598,7 +1598,7 @@ public:
 	{
 		if (m_Frame == 0)
 		{
-			EGSS_WARN("nothing to land on out here");
+			GS_WARN("nothing to land on out here");
 			return;
 		}
 
@@ -1608,7 +1608,7 @@ public:
 
 		if (distance > (double)planet.Get().Radius * 2.5)
 		{
-			EGSS_WARN("{0} is {1:.0f} m away -- fly closer first",
+			GS_WARN("{0} is {1:.0f} m away -- fly closer first",
 				m_Bodies[m_Frame].Name, distance - planet.Get().Radius);
 			return;
 		}
@@ -1618,7 +1618,7 @@ public:
 		// Not refused: a seabed is a place, and somebody may want to look at
 		// one. Only said, because it is not what the key was pressed for.
 		if (GroundUnderShip(aboveSea) && aboveSea < 0.0)
-			EGSS_WARN("landing under {0:.0f} m of water", -aboveSea);
+			GS_WARN("landing under {0:.0f} m of water", -aboveSea);
 
 		m_Walking = true;
 		m_Ground = (int)m_Frame;
@@ -1693,7 +1693,7 @@ public:
 		// off again.
 		if (m_HasShip && DistanceToShip() > s_BoardingReach)
 		{
-			EGSS_WARN("the ship is {0:.0f} m away -- walk back to it",
+			GS_WARN("the ship is {0:.0f} m away -- walk back to it",
 				DistanceToShip());
 			return;
 		}
@@ -1715,13 +1715,13 @@ public:
 		m_Ground = -1;
 	}
 
-	void OnDemoEvent(Egss::Event& e) override
+	void OnDemoEvent(GS::Event& e) override
 	{
-		Egss::EventDispatcher dispatcher(e);
+		GS::EventDispatcher dispatcher(e);
 
-		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& key)
+		dispatcher.Dispatch<GS::KeyPressedEvent>([this](GS::KeyPressedEvent& key)
 		{
-			if (key.GetRepeatCount() > 0 || key.GetKeyCode() != EGSS_KEY_L)
+			if (key.GetRepeatCount() > 0 || key.GetKeyCode() != GS_KEY_L)
 				return false;
 
 			m_Walking ? TakeOff() : Land();
@@ -1822,10 +1822,10 @@ public:
 
 		planet.SetPrefilling(false);
 
-		EGSS_TRACE("  site cache: {0} chunks read, {1} written",
+		GS_TRACE("  site cache: {0} chunks read, {1} written",
 			planet.CacheHits(), planet.CacheWrites());
 
-		EGSS_TRACE("Landing site: {0} chunks filled, {1} meshed, {2} passes, {3:.0f} ms",
+		GS_TRACE("Landing site: {0} chunks filled, {1} meshed, {2} passes, {3:.0f} ms",
 			planet.FilledChunks(), planet.MeshedChunks(), passes + 1,
 			std::chrono::duration<double, std::milli>(
 				std::chrono::high_resolution_clock::now() - before).count());
@@ -1866,12 +1866,12 @@ public:
 
 	void RebuildWaterMesh()
 	{
-		Egss::MeshData surface;
+		GS::MeshData surface;
 		m_Water.BuildMesh(surface);
 
 		m_WaterMesh = surface.Indices.empty()
 			? nullptr
-			: std::make_shared<Egss::Mesh>(surface, "SurfaceWater");
+			: std::make_shared<GS::Mesh>(surface, "SurfaceWater");
 	}
 
 	// A spade, reaching from the eye along the view.
@@ -1881,7 +1881,7 @@ public:
 	// lattice point, and none of it depends on how large the planet is.
 	void Dig(VoxelPlanet& planet, bool add)
 	{
-		const Egss::RigidBody3D& player = m_World.GetBody(m_Player);
+		const GS::RigidBody3D& player = m_World.GetBody(m_Player);
 
 		glm::vec3 eye = player.Position
 			+ glm::vec3(glm::normalize(SiteFixed(player.Position))) * m_EyeHeight;
@@ -2177,7 +2177,7 @@ public:
 		// not want gravity at all.
 		if (m_Pocket.InPocket())
 		{
-			Egss::RigidBody3D& player = m_World.GetBody(m_Player);
+			GS::RigidBody3D& player = m_World.GetBody(m_Player);
 			float mass = 1.0f / player.InverseMass;
 
 			m_World.ApplyForce(m_Player, -m_Pocket.Up() * 9.81f * mass);
@@ -2186,9 +2186,9 @@ public:
 
 		double gm = LocalGm((size_t)m_Ground);
 
-		for (Egss::RigidBody3D& body : m_World.GetBodies())
+		for (GS::RigidBody3D& body : m_World.GetBodies())
 		{
-			if (body.Type != Egss::BodyType::Dynamic || body.InverseMass <= 0.0f)
+			if (body.Type != GS::BodyType::Dynamic || body.InverseMass <= 0.0f)
 				continue;
 
 			// **Down is toward the planet's centre, which is not the origin of
@@ -2223,16 +2223,16 @@ public:
 	// The alternative was orienting each collider against the wind every step,
 	// which for a tumbling rock is a more precise answer to a question nobody
 	// asked -- the rock is tumbling, so the average is the honest number.
-	static float CrossSection(const Egss::RigidBody3D& body)
+	static float CrossSection(const GS::RigidBody3D& body)
 	{
 		const float pi = glm::pi<float>();
 
 		switch (body.Shape)
 		{
-			case Egss::ColliderShape3D::Sphere:
+			case GS::ColliderShape3D::Sphere:
 				return pi * body.Radius * body.Radius;
 
-			case Egss::ColliderShape3D::Capsule:
+			case GS::ColliderShape3D::Capsule:
 			{
 				// A cylinder's side plus two hemispheres making one sphere.
 				float side = 2.0f * pi * body.Radius * (2.0f * body.HalfHeight);
@@ -2241,7 +2241,7 @@ public:
 				return (side + caps) * 0.25f;
 			}
 
-			case Egss::ColliderShape3D::Box:
+			case GS::ColliderShape3D::Box:
 			{
 				const glm::vec3& h = body.HalfExtents;
 
@@ -2289,9 +2289,9 @@ public:
 
 		auto it = m_Planets.find((size_t)m_Ground);
 
-		for (Egss::RigidBody3D& body : m_World.GetBodies())
+		for (GS::RigidBody3D& body : m_World.GetBodies())
 		{
-			if (body.Type != Egss::BodyType::Dynamic || body.InverseMass <= 0.0f)
+			if (body.Type != GS::BodyType::Dynamic || body.InverseMass <= 0.0f)
 				continue;
 
 			// **How much of the ten-metre wind reaches this body**, which for
@@ -2344,7 +2344,7 @@ public:
 		if (m_Ground < 0 || !m_Water.Valid())
 			return;
 
-		Egss::RigidBody3D& player = m_World.GetBody(m_Player);
+		GS::RigidBody3D& player = m_World.GetBody(m_Player);
 
 		float level;
 		if (!m_Water.LevelNear(player.Position, level))
@@ -2375,11 +2375,11 @@ public:
 			- player.Velocity * (mass * m_WaterDrag * m_Submersion));
 	}
 
-	Egss::PhysicsWorld3D::BodyHandle BodyHandleOf(const Egss::RigidBody3D& body) const
+	GS::PhysicsWorld3D::BodyHandle BodyHandleOf(const GS::RigidBody3D& body) const
 	{
-		const std::vector<Egss::RigidBody3D>& bodies = m_World.GetBodies();
+		const std::vector<GS::RigidBody3D>& bodies = m_World.GetBodies();
 
-		return (Egss::PhysicsWorld3D::BodyHandle)(&body - bodies.data());
+		return (GS::PhysicsWorld3D::BodyHandle)(&body - bodies.data());
 	}
 
 	// A stable pair of tangents at a point on a sphere. The reference axis is
@@ -2420,8 +2420,8 @@ public:
 		// invisible gravity pointing at the planet's north pole.
 		m_World.Gravity = glm::vec3(0.0f);
 
-		Egss::RigidBody3D ground =
-			Egss::RigidBody3D::MakeSdf(glm::vec3(0.0f), planet.Field(), m_SiteLattice);
+		GS::RigidBody3D ground =
+			GS::RigidBody3D::MakeSdf(glm::vec3(0.0f), planet.Field(), m_SiteLattice);
 		ground.Friction = 0.8f;
 		ground.Restitution = 0.0f;
 
@@ -2445,7 +2445,7 @@ public:
 		// near one keeps it from slowly toppling on a slope, which is a
 		// lander with legs behaving like a lander with legs rather than a
 		// physical claim about its inertia.
-		Egss::RigidBody3D ship = Egss::RigidBody3D::MakeCapsule(
+		GS::RigidBody3D ship = GS::RigidBody3D::MakeCapsule(
 			SiteLocal(at) + up * 1.4f, 1.3f, 1.1f, 4200.0f);
 
 		ship.Friction = 0.9f;
@@ -2467,7 +2467,7 @@ public:
 		along = glm::length(along) > 1e-3f
 			? glm::normalize(along) : glm::vec3(0.0f);
 
-		Egss::RigidBody3D player = Egss::RigidBody3D::MakeCapsule(
+		GS::RigidBody3D player = GS::RigidBody3D::MakeCapsule(
 			SiteLocal(at) - up * m_EyeHeight - along * 8.0f, 0.4f, 0.9f, 78.0f);
 
 		player.Friction = 0.6f;
@@ -2525,7 +2525,7 @@ public:
 
 			double ground2 = (double)planet.SurfaceRadius(where);
 
-			Egss::RigidBody3D rock = Egss::RigidBody3D::MakeSphere(
+			GS::RigidBody3D rock = GS::RigidBody3D::MakeSphere(
 				SiteLocal(glm::dvec3(where)
 					* (ground2 + 18.0 + (double)next() * 25.0)),
 				0.6f + next() * 0.7f, 40.0f);
@@ -2602,15 +2602,15 @@ public:
 
 		glm::vec3 move(0.0f);
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) move += heading;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) move -= heading;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) move += glm::cross(heading, up);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) move -= glm::cross(heading, up);
+		if (GS::Input::IsKeyPressed(GS_KEY_W)) move += heading;
+		if (GS::Input::IsKeyPressed(GS_KEY_S)) move -= heading;
+		if (GS::Input::IsKeyPressed(GS_KEY_D)) move += glm::cross(heading, up);
+		if (GS::Input::IsKeyPressed(GS_KEY_A)) move -= glm::cross(heading, up);
 
-		float speed = Egss::Input::IsKeyPressed(EGSS_KEY_LEFT_SHIFT)
+		float speed = GS::Input::IsKeyPressed(GS_KEY_LEFT_SHIFT)
 			? m_WalkSpeed * 2.5f : m_WalkSpeed;
 
-		Egss::RigidBody3D& body = m_World.GetBody(m_Player);
+		GS::RigidBody3D& body = m_World.GetBody(m_Player);
 
 		// **Steer the tangential velocity, leave the radial one alone.** The
 		// player is a rigid body: falling, landing and being knocked about are
@@ -2629,7 +2629,7 @@ public:
 		float responsiveness = m_Grounded ? 12.0f : 2.0f;
 		tangential += (wanted - tangential) * glm::clamp(responsiveness * dt, 0.0f, 1.0f);
 
-		if (m_Grounded && Egss::Input::IsKeyPressed(EGSS_KEY_SPACE) && m_JumpCooldown <= 0.0f)
+		if (m_Grounded && GS::Input::IsKeyPressed(GS_KEY_SPACE) && m_JumpCooldown <= 0.0f)
 		{
 			// Straight up is radially out, which on a planet is a different
 			// direction at every point.
@@ -2657,7 +2657,7 @@ public:
 		// it; it just does not lie down.
 		if (m_HasShip)
 		{
-			Egss::RigidBody3D& hull = m_World.GetBody(m_Ship);
+			GS::RigidBody3D& hull = m_World.GetBody(m_Ship);
 
 			hull.Orientation = UprightAt(
 				glm::vec3(glm::normalize(SiteFixed(hull.Position))));
@@ -2667,8 +2667,8 @@ public:
 		// **Digging happens on the fixed step, not in an event handler.** The
 		// mouse is in the replay stream and events are not, so a session spent
 		// digging records and replays as itself.
-		bool cut = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
-		bool fill = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_RIGHT);
+		bool cut = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_LEFT);
+		bool fill = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_RIGHT);
 
 		// One edit a press rather than one a step, or holding the button
 		// hollows out the hillside in a second.
@@ -2772,7 +2772,7 @@ public:
 
 	// --- The step -----------------------------------------------------------
 
-	void OnDemoFixedUpdate(Egss::Timestep step) override
+	void OnDemoFixedUpdate(GS::Timestep step) override
 	{
 		if (m_Walking)
 			UpdateSurface(step);
@@ -3035,8 +3035,8 @@ public:
 		// picture -- a budget that depends on the wall clock would make a
 		// replay depend on the machine. Lockstep keeps the fixed count, which
 		// is what every capture and every recording runs under anyway.
-		bool timed = !Egss::Application::Get().IsLockstep()
-			&& !Egss::Input::IsPlayingBack();
+		bool timed = !GS::Application::Get().IsLockstep()
+			&& !GS::Input::IsPlayingBack();
 
 		// **The allowance is a fraction, and it is banked.**
 		//
@@ -3097,16 +3097,16 @@ public:
 
 	// --- Drawing ------------------------------------------------------------
 
-	void OnDemoUpdate(Egss::Timestep) override
+	void OnDemoUpdate(GS::Timestep) override
 	{
 		// Reset is the caller's job here, and the panel reads the total back
 		// at the end of the frame -- without this it counts every frame since
 		// the demo started, which is exactly the shape of a plausible-looking
 		// number that is not measuring what you think.
-		Egss::Renderer::ResetStats();
+		GS::Renderer::ResetStats();
 
-		Egss::RenderCommand::SetClearColor({ 0.01f, 0.01f, 0.02f, 1.0f });
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor({ 0.01f, 0.01f, 0.02f, 1.0f });
+		GS::RenderCommand::Clear();
 
 		// **A floating origin.** Neptune is 302 km out, where a float's spacing
 		// is 3.6 cm -- so a vertex transformed through a world-space matrix out
@@ -3141,7 +3141,7 @@ public:
 		if (m_Walking)
 			m_Pocket.RenderRoomToTexture();
 
-		Egss::Renderer::BeginScene(m_Camera);
+		GS::Renderer::BeginScene(m_Camera);
 
 		// Before anything that writes depth, so everything else is in front of
 		// it by construction rather than by comparison.
@@ -3246,7 +3246,7 @@ public:
 			DrawClouds(i, glm::vec3(centre), (float)DrawnRadius(i) * scale);
 		}
 
-		Egss::Renderer::EndScene();
+		GS::Renderer::EndScene();
 
 		// **The tint, which is the other half of "no buoyancy and no tint".**
 		// A flat colour over the whole screen, the same blit-quad trick
@@ -3258,19 +3258,19 @@ public:
 		// standing at the surface does.
 		if (m_EyeUnderwater)
 		{
-			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
-			Egss::RenderCommand::SetDepthWrite(false);
+			GS::RenderCommand::SetBlendMode(GS::BlendMode::Alpha);
+			GS::RenderCommand::SetDepthWrite(false);
 
-			Egss::Renderer2D::BeginScene(m_TintCamera);
-			Egss::Renderer2D::DrawQuad(glm::vec2(0.0f), glm::vec2(2.0f),
+			GS::Renderer2D::BeginScene(m_TintCamera);
+			GS::Renderer2D::DrawQuad(glm::vec2(0.0f), glm::vec2(2.0f),
 				glm::vec4(0.04f, 0.20f, 0.34f, 0.55f));
-			Egss::Renderer2D::EndScene();
+			GS::Renderer2D::EndScene();
 
-			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
-			Egss::RenderCommand::SetDepthWrite(true);
+			GS::RenderCommand::SetBlendMode(GS::BlendMode::None);
+			GS::RenderCommand::SetDepthWrite(true);
 		}
 
-		m_Stats = Egss::Renderer::GetStats();
+		m_Stats = GS::Renderer::GetStats();
 	}
 
 	// One body: its sphere, and its terrain if any has been meshed.
@@ -3295,7 +3295,7 @@ public:
 			// The star lights everything and is lit by nothing, so it is drawn
 			// as its own colour at full brightness -- an emissive surface, and
 			// the one body where a lighting calculation would be wrong.
-			auto material = Egss::Material::CreateInstance(m_Material);
+			auto material = GS::Material::CreateInstance(m_Material);
 			material->Set("u_Color", glm::vec4(m_Bodies[0].Colour, 1.0f));
 			material->Set("u_Emissive", 1.0f);
 			material->Set("u_Sky", glm::vec3(0.0f));
@@ -3303,7 +3303,7 @@ public:
 			material->Set("u_LightPosition", glm::vec3(centre));
 			material->Set("u_LightColor", m_SunLight * m_StarBrightness);
 
-			Egss::Renderer::Submit(material, m_Sphere,
+			GS::Renderer::Submit(material, m_Sphere,
 				glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(centre)),
 					glm::vec3(radius)));
 
@@ -3331,7 +3331,7 @@ public:
 		// close enough to mesh one.
 		float drawn = generated ? radius - relief * 0.5f - 0.5f : radius;
 
-		auto material = Egss::Material::CreateInstance(m_TerrainMaterial);
+		auto material = GS::Material::CreateInstance(m_TerrainMaterial);
 		material->Set("u_LightDirection", SunDirection(index));
 		material->Set("u_LightColor", m_SunLight * m_StarBrightness);
 		material->Set("u_Sky", SkyLight(index));
@@ -3397,7 +3397,7 @@ public:
 		// shading height is a fraction of a pixel. See `u_ReferenceAltitude`.
 		material->Set("u_HasReference", 0.0f);
 
-		Egss::Renderer::Submit(material, m_Sphere,
+		GS::Renderer::Submit(material, m_Sphere,
 			glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(centre)),
 				glm::vec3(drawn)));
 
@@ -3432,7 +3432,7 @@ public:
 
 		// Built on first use: most bodies have no grass at all, and a material
 		// instance per frame for a body that never draws one is pure waste.
-		std::shared_ptr<Egss::Material> grass;
+		std::shared_ptr<GS::Material> grass;
 
 		// **The gust travels in the planet's frame, so its axis lives there.**
 		// The lean itself still uses the scene-frame wind, because the
@@ -3463,7 +3463,7 @@ public:
 			SetReference(material, placed, turned,
 				glm::length(group.Origin), sea);
 
-			Egss::Renderer::Submit(material, group.MeshPtr,
+			GS::Renderer::Submit(material, group.MeshPtr,
 				glm::translate(glm::mat4(1.0f), placed) * spin);
 
 			// Grass rides the same transform: it was scattered over the
@@ -3473,7 +3473,7 @@ public:
 			{
 				if (!grass)
 				{
-					grass = Egss::Material::CreateInstance(m_GrassMaterial);
+					grass = GS::Material::CreateInstance(m_GrassMaterial);
 					DressGrass(grass, index);
 				}
 
@@ -3499,7 +3499,7 @@ public:
 				grass->Set("u_Keep", glm::mix(1.0f, 0.20f,
 					glm::smoothstep(20.0f, 52.0f, away)));
 
-				Egss::Renderer::Submit(grass, group.GrassPtr,
+				GS::Renderer::Submit(grass, group.GrassPtr,
 					glm::translate(glm::mat4(1.0f), placed) * spin);
 			}
 		}
@@ -3522,7 +3522,7 @@ public:
 			SetReference(material, placed, turned,
 				glm::length(m_Horizon.Site()), sea);
 
-			Egss::Renderer::Submit(material, m_Horizon.Mesh(),
+			GS::Renderer::Submit(material, m_Horizon.Mesh(),
 				glm::translate(glm::mat4(1.0f), placed) * spin);
 		}
 
@@ -3592,7 +3592,7 @@ public:
 	// the *unturned* original because a spin is a rotation and cannot change
 	// it. `altitude` is the only one that had to be a subtraction, and it
 	// happens here in double.
-	static void SetReference(const std::shared_ptr<Egss::Material>& material,
+	static void SetReference(const std::shared_ptr<GS::Material>& material,
 		const glm::vec3& placed, const glm::dvec3& turned, double radius,
 		double sea)
 	{
@@ -3605,7 +3605,7 @@ public:
 
 	// The palette and the waterline, which the terrain and the sea both need
 	// and neither owns.
-	void SetBiome(const std::shared_ptr<Egss::Material>& material, size_t index,
+	void SetBiome(const std::shared_ptr<GS::Material>& material, size_t index,
 		const VoxelPlanet::Settings& settings, float scale = 1.0f) const
 	{
 		double sea = SeaRadiusOf(index, settings);
@@ -3703,7 +3703,7 @@ public:
 	// hull described by eight numbers can be argued with.
 	void BuildLander()
 	{
-		Egss::MeshData data;
+		GS::MeshData data;
 
 		const int sides = 6;
 		const float pi = 3.14159265358979323846f;
@@ -3716,7 +3716,7 @@ public:
 			{
 				float a = (float)i / (float)sides * 2.0f * pi;
 
-				Egss::MeshVertex point;
+				GS::MeshVertex point;
 				point.Position = glm::vec3(std::cos(a) * radius, height,
 					std::sin(a) * radius);
 				point.Normal = glm::normalize(
@@ -3755,7 +3755,7 @@ public:
 
 		// A cap, fanned from a centre vertex.
 		{
-			Egss::MeshVertex top;
+			GS::MeshVertex top;
 			top.Position = glm::vec3(0.0f, 3.35f, 0.0f);
 			top.Normal = glm::vec3(0.0f, 1.0f, 0.0f);
 			top.TexCoord = glm::vec2(0.0f);
@@ -3795,7 +3795,7 @@ public:
 				glm::vec3 where = (i < 2 ? hip : foot)
 					+ side * ((i % 2) ? 0.16f : -0.16f);
 
-				Egss::MeshVertex point;
+				GS::MeshVertex point;
 				point.Position = where;
 				point.Normal = glm::normalize(out + glm::vec3(0.0f, 0.5f, 0.0f));
 				point.TexCoord = glm::vec2(0.0f);
@@ -3810,14 +3810,14 @@ public:
 				f, f + 1, f + 2, f + 1, f + 3, f + 2 });
 		}
 
-		Egss::Submesh all;
+		GS::Submesh all;
 		all.IndexCount = (unsigned int)data.Indices.size();
 		data.Submeshes.push_back(all);
 		data.RecalculateBounds();
 
-		m_Lander.reset(new Egss::Mesh(data, "Lander"));
+		m_Lander.reset(new GS::Mesh(data, "Lander"));
 
-		EGSS_TRACE("Lander: {0} vertices, {1} triangles",
+		GS_TRACE("Lander: {0} vertices, {1} triangles",
 			data.Vertices.size(), data.Indices.size() / 3);
 	}
 
@@ -3829,12 +3829,12 @@ public:
 		{
 			for (int lod = 0; lod < s_TreeLods; lod++)
 			{
-			Egss::MeshData bark, leaves;
+			GS::MeshData bark, leaves;
 			Veg::MakeTreeMesh(521u + (unsigned int)i * 97u, TreeShape(lod),
 				bark, leaves);
 
-			m_TreeBark[i][lod].reset(new Egss::Mesh(bark, "PlanetTree"));
-			m_TreeLeaves[i][lod].reset(new Egss::Mesh(leaves, "PlanetTreeLeaves"));
+			m_TreeBark[i][lod].reset(new GS::Mesh(bark, "PlanetTree"));
+			m_TreeLeaves[i][lod].reset(new GS::Mesh(leaves, "PlanetTreeLeaves"));
 
 			// **One buffer of transforms, attached to both meshes of the
 			// shape.** A trunk and its leaves are separate geometry with
@@ -3848,13 +3848,13 @@ public:
 			// added: the new one would land at 7 and the shader would still be
 			// reading 3.
 			m_TreeInstances[i][lod].reset(
-				Egss::VertexBuffer::Create(s_MaxTreesPerShape * sizeof(glm::mat4)));
+				GS::VertexBuffer::Create(s_MaxTreesPerShape * sizeof(glm::mat4)));
 
 			// The divisor is what makes it per-instance, and it has to be set
 			// before the buffer joins a vertex array -- that is when the
 			// attribute pointers are declared.
 			m_TreeInstances[i][lod]->SetLayout(
-				Egss::BufferLayout({ { Egss::ShaderDataType::Mat4, "a_Model" } }, 1));
+				GS::BufferLayout({ { GS::ShaderDataType::Mat4, "a_Model" } }, 1));
 
 			m_TreeBark[i][lod]->SetInstanceBuffer(m_TreeInstances[i][lod]);
 			m_TreeLeaves[i][lod]->SetInstanceBuffer(m_TreeInstances[i][lod]);
@@ -3863,7 +3863,7 @@ public:
 			}
 		}
 
-		EGSS_TRACE("Planet trees: {0} shapes x {1} levels, {2} triangles each "
+		GS_TRACE("Planet trees: {0} shapes x {1} levels, {2} triangles each "
 			"on average", s_TreeShapes, s_TreeLods,
 			triangles / (s_TreeShapes * s_TreeLods));
 	}
@@ -3889,7 +3889,7 @@ public:
 		if (speed < 0.3f)
 			return;
 
-		auto material = Egss::Material::CreateInstance(m_StreakMaterial);
+		auto material = GS::Material::CreateInstance(m_StreakMaterial);
 
 		material->Set("u_Wind", m_WindScene);
 		material->Set("u_Extent", s_StreakExtent);
@@ -3910,15 +3910,15 @@ public:
 		// Premultiplied and no depth write: these are air, so they add light
 		// to what is behind them and never hide it. No culling, because a
 		// stroke is a flat quad and half of them face away.
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Premultiplied);
-		Egss::RenderCommand::SetDepthWrite(false);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::Premultiplied);
+		GS::RenderCommand::SetDepthWrite(false);
+		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
-		Egss::Renderer::Submit(material, m_StreakMesh, glm::mat4(1.0f));
+		GS::Renderer::Submit(material, m_StreakMesh, glm::mat4(1.0f));
 
-		Egss::RenderCommand::SetDepthWrite(true);
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+		GS::RenderCommand::SetDepthWrite(true);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::Alpha);
+		GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 	}
 
 	// **A planet-sized dot product that still fits in a float.**
@@ -3939,7 +3939,7 @@ public:
 	}
 
 	// Everything the grass shader needs about this body, now.
-	void DressGrass(const std::shared_ptr<Egss::Material>& grass, size_t index)
+	void DressGrass(const std::shared_ptr<GS::Material>& grass, size_t index)
 	{
 		grass->Set("u_LightDirection", SunDirection(index));
 		grass->Set("u_LightColor", m_SunLight * m_StarBrightness);
@@ -3999,7 +3999,7 @@ public:
 		// by `phase` in the tree shader.
 		float gustOffset = GustPhase(localOrigin, glm::dvec3(0.7, 1.3, 0.9));
 
-		auto bark = Egss::Material::CreateInstance(m_TreeMaterial);
+		auto bark = GS::Material::CreateInstance(m_TreeMaterial);
 		bark->Set("u_GustOffset", gustOffset);
 		bark->Set("u_Color", glm::vec4(0.30f, 0.22f, 0.15f, 1.0f));
 		bark->Set("u_Emissive", 0.0f);
@@ -4014,7 +4014,7 @@ public:
 		// a ten-metre tree leans 1.1 cm in the default site's 3.9 m/s.
 		bark->Set("u_Compliance", 1.25e-5f);
 
-		auto leaves = Egss::Material::CreateInstance(m_TreeMaterial);
+		auto leaves = GS::Material::CreateInstance(m_TreeMaterial);
 		leaves->Set("u_GustOffset", gustOffset);
 		leaves->Set("u_Color", glm::vec4(0.16f, 0.34f, 0.13f, 1.0f));
 		leaves->Set("u_Emissive", 0.0f);
@@ -4168,9 +4168,9 @@ public:
 
 			// `frame` is the planet's placement and spin: what every tree on
 			// this body has in common, and the only thing left in a uniform.
-			Egss::Renderer::SubmitInstanced(bark, m_TreeBark[shape][lod],
+			GS::Renderer::SubmitInstanced(bark, m_TreeBark[shape][lod],
 				(unsigned int)batch.size(), frame);
-			Egss::Renderer::SubmitInstanced(leaves, m_TreeLeaves[shape][lod],
+			GS::Renderer::SubmitInstanced(leaves, m_TreeLeaves[shape][lod],
 				(unsigned int)batch.size(), frame);
 
 			drawn += (int)batch.size();
@@ -4333,7 +4333,7 @@ public:
 		// still grows with brightness, because a brighter Gaussian crosses the
 		// eye's threshold further out. That is what makes Sirius look bigger
 		// than Megrez without a single per-star size being stored.
-		Egss::MeshData data;
+		GS::MeshData data;
 
 		const std::vector<StarDescription>& stars = Stars();
 
@@ -4388,7 +4388,7 @@ public:
 
 		data.Submeshes.push_back({ "", -1, 0, (unsigned int)data.Indices.size() });
 
-		m_Stars.reset(new Egss::Mesh(data, "Stars"));
+		m_Stars.reset(new GS::Mesh(data, "Stars"));
 
 		std::string brightVertex = R"(
 			#version 330 core
@@ -4447,8 +4447,8 @@ public:
 			}
 		)";
 
-		m_StarShader.reset(Egss::Shader::Create("Stars", brightVertex, brightFragment));
-		m_StarMaterial = Egss::Material::Create(m_StarShader);
+		m_StarShader.reset(GS::Shader::Create("Stars", brightVertex, brightFragment));
+		m_StarMaterial = GS::Material::Create(m_StarShader);
 
 		// --- The background, on the sphere ---------------------------------
 
@@ -4685,8 +4685,8 @@ public:
 			}
 		)";
 
-		m_FieldShader.reset(Egss::Shader::Create("Starfield", fieldVertex, fieldFragment));
-		m_FieldMaterial = Egss::Material::Create(m_FieldShader);
+		m_FieldShader.reset(GS::Shader::Create("Starfield", fieldVertex, fieldFragment));
+		m_FieldMaterial = GS::Material::Create(m_FieldShader);
 	}
 
 	// **How much of the sky is drowned out by daylight.**
@@ -4765,21 +4765,21 @@ public:
 		// the camera, so no parallax can reveal it.
 		const float distance = 600000.0f;
 
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Additive);
-		Egss::RenderCommand::SetDepthWrite(false);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::Additive);
+		GS::RenderCommand::SetDepthWrite(false);
+		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
-		auto field = Egss::Material::CreateInstance(m_FieldMaterial);
+		auto field = GS::Material::CreateInstance(m_FieldMaterial);
 		field->Set("u_Fade", fade);
 		field->Set("u_GalacticPole",
 			glm::vec3(SkyDirection(12.85694, 27.1283)));
 
-		Egss::Renderer::Submit(field, m_Sphere,
+		GS::Renderer::Submit(field, m_Sphere,
 			glm::scale(glm::mat4(1.0f), glm::vec3(distance)));
 
 		glm::vec3 right = glm::normalize(glm::cross(m_Forward, m_Up));
 
-		auto bright = Egss::Material::CreateInstance(m_StarMaterial);
+		auto bright = GS::Material::CreateInstance(m_StarMaterial);
 		bright->Set("u_Distance", distance);
 		bright->Set("u_Fade", fade);
 		bright->Set("u_Right", right);
@@ -4795,11 +4795,11 @@ public:
 		// The pattern was exactly right; it was two pixels wide.
 		bright->Set("u_Size", glm::radians(0.85f));
 
-		Egss::Renderer::Submit(bright, m_Stars, glm::mat4(1.0f));
+		GS::Renderer::Submit(bright, m_Stars, glm::mat4(1.0f));
 
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
-		Egss::RenderCommand::SetDepthWrite(true);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::None);
+		GS::RenderCommand::SetDepthWrite(true);
+		GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 	}
 
 	// --- Rings ---------------------------------------------------------------
@@ -4822,7 +4822,7 @@ public:
 	// is what real axial tilt is, below.
 	void BuildRings()
 	{
-		Egss::MeshData data;
+		GS::MeshData data;
 
 		const int segments = 256;
 		const float pi = 3.14159265358979323846f;
@@ -4850,7 +4850,7 @@ public:
 
 		data.Submeshes.push_back({ "", -1, 0, (unsigned int)data.Indices.size() });
 
-		m_Ring.reset(new Egss::Mesh(data, "Ring"));
+		m_Ring.reset(new GS::Mesh(data, "Ring"));
 
 		std::string vertexSrc = R"(
 			#version 330 core
@@ -4979,8 +4979,8 @@ public:
 			}
 		)";
 
-		m_RingShader.reset(Egss::Shader::Create("Ring", vertexSrc, fragmentSrc));
-		m_RingMaterial = Egss::Material::Create(m_RingShader);
+		m_RingShader.reset(GS::Shader::Create("Ring", vertexSrc, fragmentSrc));
+		m_RingMaterial = GS::Material::Create(m_RingShader);
 	}
 
 	void DrawRings(size_t index, const glm::vec3& centre, float scale)
@@ -4992,7 +4992,7 @@ public:
 
 		float radius = (float)DrawnRadius(index) * scale;
 
-		auto material = Egss::Material::CreateInstance(m_RingMaterial);
+		auto material = GS::Material::CreateInstance(m_RingMaterial);
 		// The ring's own basis: +Y taken to the spin axis itself -- a ring is
 		// the body's equatorial plane, not a tilt of its own -- and the other
 		// two axes anywhere consistent, since an annulus has no preferred
@@ -5023,15 +5023,15 @@ public:
 		// through, thin enough to have no back, and the far half of it has to
 		// be occluded by the planet -- which depth *testing* does, since the
 		// bodies were drawn first and wrote depth.
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
-		Egss::RenderCommand::SetDepthWrite(false);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::Alpha);
+		GS::RenderCommand::SetDepthWrite(false);
+		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
-		Egss::Renderer::Submit(material, m_Ring, basis);
+		GS::Renderer::Submit(material, m_Ring, basis);
 
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
-		Egss::RenderCommand::SetDepthWrite(true);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::None);
+		GS::RenderCommand::SetDepthWrite(true);
+		GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 	}
 
 	void DrawOcean(size_t index, const glm::vec3& centre, float scale)
@@ -5047,7 +5047,7 @@ public:
 		// horizon and beyond, and once as a sheet at the local level over the
 		// ground you are standing on. Only the geometry and the cut-out
 		// differ, so the uniforms are written once.
-		auto dress = [&](const std::shared_ptr<Egss::Material>& water)
+		auto dress = [&](const std::shared_ptr<GS::Material>& water)
 		{
 			water->SetTexture("u_Map", it->second.Map(), 0);
 			water->Set("u_Unspin", glm::transpose(SpinMatrix(index)));
@@ -5093,14 +5093,14 @@ public:
 			water->Set("u_NearCos", 2.0f);
 		};
 
-		auto material = Egss::Material::CreateInstance(m_WaterMaterial);
+		auto material = GS::Material::CreateInstance(m_WaterMaterial);
 		dress(material);
 
 		// No depth write, so two bits of sea do not occlude each other, and no
 		// culling because the camera can be under it.
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
-		Egss::RenderCommand::SetDepthWrite(false);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::Alpha);
+		GS::RenderCommand::SetDepthWrite(false);
+		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
 		bool local = m_WaterMesh && m_Walking && (size_t)m_Ground == index;
 
@@ -5120,28 +5120,28 @@ public:
 				m_Water.DrawnReach() / glm::max(settings.Radius, 1.0f))));
 		}
 
-		Egss::Renderer::Submit(material, m_Sphere,
+		GS::Renderer::Submit(material, m_Sphere,
 			glm::scale(glm::translate(glm::mat4(1.0f), centre),
 				glm::vec3(settings.OceanRadius * scale)));
 
 		if (local)
 		{
-			auto nearby = Egss::Material::CreateInstance(m_WaterMaterial);
+			auto nearby = GS::Material::CreateInstance(m_WaterMaterial);
 			dress(nearby);
 
 			glm::dvec3 exact = BodyScene(index) - ShipScene();
 
 			nearby->Set("u_HasDepth", 1.0f);
 
-			Egss::Renderer::Submit(nearby, m_WaterMesh,
+			GS::Renderer::Submit(nearby, m_WaterMesh,
 				glm::translate(glm::mat4(1.0f),
 					glm::vec3(exact + ToScene(index, m_Water.Site())))
 				* SpinMatrix(index));
 		}
 
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
-		Egss::RenderCommand::SetDepthWrite(true);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::None);
+		GS::RenderCommand::SetDepthWrite(true);
+		GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 	}
 
 	// The lander, where the physics has it. Drawn from the site's frame like
@@ -5155,9 +5155,9 @@ public:
 
 		size_t index = (size_t)m_Ground;
 
-		const Egss::RigidBody3D& body = m_World.GetBody(m_Ship);
+		const GS::RigidBody3D& body = m_World.GetBody(m_Ship);
 
-		auto hull = Egss::Material::CreateInstance(m_Material);
+		auto hull = GS::Material::CreateInstance(m_Material);
 		hull->Set("u_Color", glm::vec4(0.72f, 0.74f, 0.78f, 1.0f));
 		hull->Set("u_Emissive", 0.0f);
 		hull->Set("u_LightPosition", SunDirection(index) * 40000.0f);
@@ -5177,7 +5177,7 @@ public:
 			* glm::mat4_cast(body.Orientation)
 			* glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.4f, 0.0f));
 
-		Egss::Renderer::Submit(hull, m_Lander, transform);
+		GS::Renderer::Submit(hull, m_Lander, transform);
 	}
 
 	// The loose bodies. Gravity acting on nothing you can see is gravity you
@@ -5195,14 +5195,14 @@ public:
 		// the body's centre stays in double until the last step -- the same
 		// reason the chunk transforms do.
 		glm::dvec3 centre = BodyScene(index) - origin;
-		const std::vector<Egss::RigidBody3D>& bodies = m_World.GetBodies();
+		const std::vector<GS::RigidBody3D>& bodies = m_World.GetBodies();
 
-		for (const Egss::RigidBody3D& body : bodies)
+		for (const GS::RigidBody3D& body : bodies)
 		{
-			if (body.Shape != Egss::ColliderShape3D::Sphere)
+			if (body.Shape != GS::ColliderShape3D::Sphere)
 				continue;
 
-			auto rock = Egss::Material::CreateInstance(m_Material);
+			auto rock = GS::Material::CreateInstance(m_Material);
 			rock->Set("u_Color", glm::vec4(0.62f, 0.58f, 0.52f, 1.0f));
 			rock->Set("u_Emissive", 0.0f);
 			rock->Set("u_LightPosition", SunDirection(index) * 4000.0f);
@@ -5216,7 +5216,7 @@ public:
 			glm::mat4 transform = glm::scale(
 				glm::translate(glm::mat4(1.0f), at), glm::vec3(body.Radius));
 
-			Egss::Renderer::Submit(rock, m_Sphere, transform);
+			GS::Renderer::Submit(rock, m_Sphere, transform);
 		}
 	}
 
@@ -5493,7 +5493,7 @@ private:
 			{
 				double predicted = PredictedPeriod(body);
 
-				EGSS_TRACE("{0}: a = {1:.5f} AU, measured {2:.6f} yr, "
+				GS_TRACE("{0}: a = {1:.5f} AU, measured {2:.6f} yr, "
 					"Kepler {3:.6f} yr, {4:+.4f}%",
 					body.Name, body.SemiMajorAu, body.MeasuredPeriod, predicted,
 					100.0 * (body.MeasuredPeriod - predicted) / predicted);
@@ -5552,7 +5552,7 @@ private:
 
 	float Aspect() const
 	{
-		Egss::Window& window = Egss::Application::Get().GetWindow();
+		GS::Window& window = GS::Application::Get().GetWindow();
 		float height = (float)window.GetHeight();
 
 		return height > 0.0f ? (float)window.GetWidth() / height : 16.0f / 9.0f;
@@ -5633,7 +5633,7 @@ private:
 			}
 		)";
 
-		m_Shader.reset(Egss::Shader::Create("SolarSystem", vertexSrc, fragmentSrc));
+		m_Shader.reset(GS::Shader::Create("SolarSystem", vertexSrc, fragmentSrc));
 
 		// **The same lighting, fed a transform per copy instead of per draw.**
 		//
@@ -5762,9 +5762,9 @@ private:
 		)";
 
 		m_TreeShader.reset(
-			Egss::Shader::Create("SolarSystemTrees", treeVertexSrc, fragmentSrc));
+			GS::Shader::Create("SolarSystemTrees", treeVertexSrc, fragmentSrc));
 
-		m_TreeMaterial = Egss::Material::Create(m_TreeShader);
+		m_TreeMaterial = GS::Material::Create(m_TreeShader);
 
 		// **Grass, which is the same idea as the trees one dimension smaller.**
 		//
@@ -5972,19 +5972,19 @@ private:
 			}
 		)";
 
-		m_GrassShader.reset(Egss::Shader::Create("PlanetGrass",
+		m_GrassShader.reset(GS::Shader::Create("PlanetGrass",
 			grassVertexSrc, grassFragmentSrc));
 
-		m_GrassMaterial = Egss::Material::Create(m_GrassShader);
+		m_GrassMaterial = GS::Material::Create(m_GrassShader);
 
-		m_StreakShader.reset(Egss::Shader::Create("WindStreaks",
+		m_StreakShader.reset(GS::Shader::Create("WindStreaks",
 			WindStreaks::VertexSource(), WindStreaks::FragmentSource()));
 
-		m_StreakMaterial = Egss::Material::Create(m_StreakShader);
+		m_StreakMaterial = GS::Material::Create(m_StreakShader);
 
-		m_StreakMesh = std::make_shared<Egss::Mesh>(
+		m_StreakMesh = std::make_shared<GS::Mesh>(
 			WindStreaks::BuildMesh(s_StreakCount, s_StreakExtent), "WindStreaks");
-		m_Material = Egss::Material::Create(m_Shader);
+		m_Material = GS::Material::Create(m_Shader);
 
 		BuildTerrainShader();
 		BuildWaterShader();
@@ -6413,10 +6413,10 @@ private:
 		)";
 
 		m_TerrainShader.reset(
-			Egss::Shader::Create("PlanetSurface", vertexSrc,
+			GS::Shader::Create("PlanetSurface", vertexSrc,
 				WithSphereSample(fragmentSrc)));
 
-		m_TerrainMaterial = Egss::Material::Create(m_TerrainShader);
+		m_TerrainMaterial = GS::Material::Create(m_TerrainShader);
 	}
 
 	// **The sea is one sphere, and the map says where it is not.**
@@ -6677,9 +6677,9 @@ private:
 			}
 		)";
 
-		m_WaterShader.reset(Egss::Shader::Create("PlanetWater", vertexSrc,
+		m_WaterShader.reset(GS::Shader::Create("PlanetWater", vertexSrc,
 			WithSphereSample(fragmentSrc)));
-		m_WaterMaterial = Egss::Material::Create(m_WaterShader);
+		m_WaterMaterial = GS::Material::Create(m_WaterShader);
 	}
 
 	// **Single-scattering, marched along the view ray.**
@@ -6954,9 +6954,9 @@ private:
 		)";
 
 		m_AtmosphereShader.reset(
-			Egss::Shader::Create("Atmosphere", vertexSrc, fragmentSrc));
+			GS::Shader::Create("Atmosphere", vertexSrc, fragmentSrc));
 
-		m_AtmosphereMaterial = Egss::Material::Create(m_AtmosphereShader);
+		m_AtmosphereMaterial = GS::Material::Create(m_AtmosphereShader);
 	}
 
 	// Draws one body's air, in camera-relative coordinates like everything
@@ -6975,7 +6975,7 @@ private:
 		if (glm::length(centre) > outer * 800.0f)
 			return;
 
-		auto material = Egss::Material::CreateInstance(m_AtmosphereMaterial);
+		auto material = GS::Material::CreateInstance(m_AtmosphereMaterial);
 		material->Set("u_Centre", centre);
 		material->Set("u_CameraPosition", glm::vec3(0.0f));
 		material->Set("u_LightDirection", SunDirection(index));
@@ -6995,19 +6995,19 @@ private:
 		// shell does not occlude the next, and no culling because the camera
 		// can be inside the shell, where only its back faces are visible.
 		// Depth *testing* stays on, so terrain in front still occludes the sky.
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Premultiplied);
-		Egss::RenderCommand::SetDepthWrite(false);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::Premultiplied);
+		GS::RenderCommand::SetDepthWrite(false);
+		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
-		Egss::Renderer::Submit(material, m_Sphere,
+		GS::Renderer::Submit(material, m_Sphere,
 			glm::scale(glm::translate(glm::mat4(1.0f), centre), glm::vec3(outer)));
 
 		// Put the pipeline back. Application::ResetState does this once a frame
 		// anyway, but leaving it set means whatever draws next in *this* frame
 		// inherits it -- which is the render-state leak of 2026-08-17.
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
-		Egss::RenderCommand::SetDepthWrite(true);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::None);
+		GS::RenderCommand::SetDepthWrite(true);
+		GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 	}
 
 	// **A coverage map on a shell, not a second scattering integral.** The
@@ -7079,9 +7079,9 @@ private:
 			}
 		)";
 
-		m_CloudShader.reset(Egss::Shader::Create("Clouds", vertexSrc,
+		m_CloudShader.reset(GS::Shader::Create("Clouds", vertexSrc,
 			WithSphereSample(fragmentSrc)));
-		m_CloudMaterial = Egss::Material::Create(m_CloudShader);
+		m_CloudMaterial = GS::Material::Create(m_CloudShader);
 	}
 
 	void DrawClouds(size_t index, const glm::vec3& centre, float radius)
@@ -7107,24 +7107,24 @@ private:
 		if (glm::length(centre) > shell * 800.0f)
 			return;
 
-		auto material = Egss::Material::CreateInstance(m_CloudMaterial);
+		auto material = GS::Material::CreateInstance(m_CloudMaterial);
 		material->Set("u_Centre", centre);
 		material->SetTexture("u_CloudMap", it->second.CloudMap(), 0);
 		material->Set("u_LightDirection", SunDirection(index));
 		material->Set("u_LightColor", m_SunLight * m_StarBrightness);
 		material->Set("u_Sky", SkyLight(index));
 
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Premultiplied);
-		Egss::RenderCommand::SetDepthWrite(false);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::Premultiplied);
+		GS::RenderCommand::SetDepthWrite(false);
+		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
-		Egss::Renderer::Submit(material, m_Sphere,
+		GS::Renderer::Submit(material, m_Sphere,
 			glm::translate(glm::mat4(1.0f), centre) * CloudMatrix(index)
 			* glm::scale(glm::mat4(1.0f), glm::vec3(shell)));
 
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
-		Egss::RenderCommand::SetDepthWrite(true);
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::None);
+		GS::RenderCommand::SetDepthWrite(true);
+		GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 	}
 
 	// **Labels, because a 302 km void has no landmarks.** Flying to Mars means
@@ -7325,9 +7325,9 @@ private:
 		ImGui::SliderFloat("Stream budget", &m_StreamTargetMs, 0.5f, 12.0f, "%.1f ms");
 
 		ImGui::TextDisabled("streaming %.2f ms, %.2f chunks a step%s", m_StreamMs,
-			Egss::Application::Get().IsLockstep()
+			GS::Application::Get().IsLockstep()
 				? (float)m_ChunksPerStep : m_StreamAllowance,
-			Egss::Application::Get().IsLockstep() ? " (lockstep: fixed)" : "");
+			GS::Application::Get().IsLockstep() ? " (lockstep: fixed)" : "");
 		ImGui::Checkbox("Labels", &m_ShowLabels);
 
 		ImGui::TextDisabled("Earth %.0f m across, 1 AU = %.1f km, system %.0f km wide",
@@ -7414,25 +7414,25 @@ private:
 		ImGui::End();
 	}
 
-	Egss::PerspectiveCamera m_Camera;
+	GS::PerspectiveCamera m_Camera;
 
-	std::shared_ptr<Egss::Shader> m_Shader;
-	std::shared_ptr<Egss::Material> m_Material;
-	std::shared_ptr<Egss::Mesh> m_Sphere;
-	std::shared_ptr<Egss::Mesh> m_Ring;
-	std::shared_ptr<Egss::Mesh> m_Stars;
-	std::shared_ptr<Egss::Shader> m_StarShader;
-	std::shared_ptr<Egss::Material> m_StarMaterial;
-	std::shared_ptr<Egss::Shader> m_FieldShader;
-	std::shared_ptr<Egss::Material> m_FieldMaterial;
-	std::shared_ptr<Egss::Shader> m_RingShader;
-	std::shared_ptr<Egss::Material> m_RingMaterial;
+	std::shared_ptr<GS::Shader> m_Shader;
+	std::shared_ptr<GS::Material> m_Material;
+	std::shared_ptr<GS::Mesh> m_Sphere;
+	std::shared_ptr<GS::Mesh> m_Ring;
+	std::shared_ptr<GS::Mesh> m_Stars;
+	std::shared_ptr<GS::Shader> m_StarShader;
+	std::shared_ptr<GS::Material> m_StarMaterial;
+	std::shared_ptr<GS::Shader> m_FieldShader;
+	std::shared_ptr<GS::Material> m_FieldMaterial;
+	std::shared_ptr<GS::Shader> m_RingShader;
+	std::shared_ptr<GS::Material> m_RingMaterial;
 
-	std::shared_ptr<Egss::Shader> m_AtmosphereShader;
-	std::shared_ptr<Egss::Material> m_AtmosphereMaterial;
+	std::shared_ptr<GS::Shader> m_AtmosphereShader;
+	std::shared_ptr<GS::Material> m_AtmosphereMaterial;
 
-	std::shared_ptr<Egss::Shader> m_CloudShader;
-	std::shared_ptr<Egss::Material> m_CloudMaterial;
+	std::shared_ptr<GS::Shader> m_CloudShader;
+	std::shared_ptr<GS::Material> m_CloudMaterial;
 
 	// **The light the Sun emits, which is not the colour the Sun looks.**
 	//
@@ -7476,11 +7476,11 @@ private:
 	glm::vec3 m_WindFixed = glm::vec3(0.0f);
 	glm::vec3 m_WindScene = glm::vec3(0.0f);
 
-	std::shared_ptr<Egss::Shader> m_TerrainShader;
-	std::shared_ptr<Egss::Material> m_TerrainMaterial;
+	std::shared_ptr<GS::Shader> m_TerrainShader;
+	std::shared_ptr<GS::Material> m_TerrainMaterial;
 
-	std::shared_ptr<Egss::Shader> m_WaterShader;
-	std::shared_ptr<Egss::Material> m_WaterMaterial;
+	std::shared_ptr<GS::Shader> m_WaterShader;
+	std::shared_ptr<GS::Material> m_WaterMaterial;
 
 	static constexpr int s_TreeShapes = 3;
 
@@ -7496,24 +7496,24 @@ private:
 	// arrays it was added to and the levels are different vertex arrays. Nine
 	// buffers of 16,384 matrices is 9.4 MB of VRAM that is mostly never
 	// written -- cheap next to the alternative of re-declaring attributes.
-	std::shared_ptr<Egss::Mesh> m_TreeBark[s_TreeShapes][s_TreeLods];
-	std::shared_ptr<Egss::Mesh> m_TreeLeaves[s_TreeShapes][s_TreeLods];
-	std::shared_ptr<Egss::VertexBuffer> m_TreeInstances[s_TreeShapes][s_TreeLods];
+	std::shared_ptr<GS::Mesh> m_TreeBark[s_TreeShapes][s_TreeLods];
+	std::shared_ptr<GS::Mesh> m_TreeLeaves[s_TreeShapes][s_TreeLods];
+	std::shared_ptr<GS::VertexBuffer> m_TreeInstances[s_TreeShapes][s_TreeLods];
 	std::vector<glm::mat4> m_TreeBatch[s_TreeShapes][s_TreeLods];
 
-	std::shared_ptr<Egss::Shader> m_TreeShader;
+	std::shared_ptr<GS::Shader> m_TreeShader;
 	// The wind field: one static mesh in a box round the camera, drifted on
 	// the GPU. 220 m is a little past where the strokes stop being legible.
 	static constexpr int s_StreakCount = 1100;
 	static constexpr float s_StreakExtent = 150.0f;
 
-	std::shared_ptr<Egss::Shader> m_StreakShader;
-	std::shared_ptr<Egss::Material> m_StreakMaterial;
-	std::shared_ptr<Egss::Mesh> m_StreakMesh;
+	std::shared_ptr<GS::Shader> m_StreakShader;
+	std::shared_ptr<GS::Material> m_StreakMaterial;
+	std::shared_ptr<GS::Mesh> m_StreakMesh;
 
-	std::shared_ptr<Egss::Shader> m_GrassShader;
-	std::shared_ptr<Egss::Material> m_GrassMaterial;
-	std::shared_ptr<Egss::Material> m_TreeMaterial;
+	std::shared_ptr<GS::Shader> m_GrassShader;
+	std::shared_ptr<GS::Material> m_GrassMaterial;
+	std::shared_ptr<GS::Material> m_TreeMaterial;
 
 	// Room for every tree the streaming radius can hold: 14 a chunk over a few
 	// thousand chunks, with headroom. A megabyte of matrices a shape.
@@ -7523,7 +7523,7 @@ private:
 	// Last frame's totals, read back after EndScene. The panel is the only
 	// consumer, but it is the number every performance question here has
 	// started from.
-	Egss::Renderer::Statistics m_Stats;
+	GS::Renderer::Statistics m_Stats;
 
 	// Generated on approach and kept: regenerating a planet is a density
 	// evaluation for every voxel of its shell.
@@ -7581,10 +7581,10 @@ private:
 	float m_BuoyancyStrength = 1.5f;
 	float m_WaterDrag = 4.0f;
 
-	Egss::OrthographicCamera m_TintCamera{ -1.0f, 1.0f, -1.0f, 1.0f };
+	GS::OrthographicCamera m_TintCamera{ -1.0f, 1.0f, -1.0f, 1.0f };
 
-	Egss::PhysicsWorld3D m_World;
-	Egss::PhysicsWorld3D::BodyHandle m_Player = 0;
+	GS::PhysicsWorld3D m_World;
+	GS::PhysicsWorld3D::BodyHandle m_Player = 0;
 
 	// The lattice point the surface physics world is centred on, and where it
 	// is in the planet's own frame. Set when a landing builds the world.
@@ -7597,10 +7597,10 @@ private:
 	HorizonMesh m_Horizon;
 	glm::dvec3 m_HorizonSite { 0.0 };
 	bool m_HorizonReported = false;
-	std::shared_ptr<Egss::Mesh> m_WaterMesh;
+	std::shared_ptr<GS::Mesh> m_WaterMesh;
 
-	std::shared_ptr<Egss::Mesh> m_Lander;
-	Egss::PhysicsWorld3D::BodyHandle m_Ship = 0;
+	std::shared_ptr<GS::Mesh> m_Lander;
+	GS::PhysicsWorld3D::BodyHandle m_Ship = 0;
 	bool m_HasShip = false;
 
 	PocketDimension m_Pocket;

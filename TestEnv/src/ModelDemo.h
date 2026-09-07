@@ -25,7 +25,7 @@
 //     built the right way round on purpose, and the panel shows the tree so
 //     the shape of it is visible rather than asserted.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -57,10 +57,10 @@ private:
 	// is to be able to say the two agree.
 	struct Loaded
 	{
-		Egss::GltfModel Model;
-		std::vector<std::shared_ptr<Egss::Mesh>> Meshes;
-		std::vector<std::shared_ptr<Egss::Material>> Materials;
-		std::vector<std::shared_ptr<Egss::Texture2D>> Textures;
+		GS::GltfModel Model;
+		std::vector<std::shared_ptr<GS::Mesh>> Meshes;
+		std::vector<std::shared_ptr<GS::Material>> Materials;
+		std::vector<std::shared_ptr<GS::Texture2D>> Textures;
 		std::string Error;
 		bool Ok = false;
 	};
@@ -77,9 +77,9 @@ private:
 	{
 		out = Loaded();
 
-		if (!Egss::GltfLoader::Load(path, out.Model, out.Error))
+		if (!GS::GltfLoader::Load(path, out.Model, out.Error))
 		{
-			EGSS_ERROR("{0}", out.Error);
+			GS_ERROR("{0}", out.Error);
 			return;
 		}
 
@@ -87,26 +87,26 @@ private:
 		out.Textures.resize(out.Model.Images.size());
 		for (size_t i = 0; i < out.Model.Images.size(); i++)
 		{
-			const Egss::GltfImage& image = out.Model.Images[i];
+			const GS::GltfImage& image = out.Model.Images[i];
 
 			// The two shapes an image arrives in, and the reason
 			// CreateFromMemory had to exist: a .glb's PNG never was a file.
 			if (image.IsEmbedded())
-				out.Textures[i].reset(Egss::Texture2D::CreateFromMemory(
+				out.Textures[i].reset(GS::Texture2D::CreateFromMemory(
 					image.Bytes.data(), image.Bytes.size(), image.Name));
 			else if (!image.Path.empty())
-				out.Textures[i].reset(Egss::Texture2D::Create(image.Path));
+				out.Textures[i].reset(GS::Texture2D::Create(image.Path));
 		}
 
 		out.Meshes.reserve(out.Model.Meshes.size());
-		for (const Egss::MeshData& data : out.Model.Meshes)
-			out.Meshes.push_back(std::make_shared<Egss::Mesh>(data, "gltf"));
+		for (const GS::MeshData& data : out.Model.Meshes)
+			out.Meshes.push_back(std::make_shared<GS::Mesh>(data, "gltf"));
 
 		out.Materials.reserve(out.Model.Materials.size());
-		for (const Egss::GltfMaterial& material : out.Model.Materials)
+		for (const GS::GltfMaterial& material : out.Model.Materials)
 		{
-			std::shared_ptr<Egss::Material> instance =
-				Egss::Material::CreateInstance(m_SceneMaterial);
+			std::shared_ptr<GS::Material> instance =
+				GS::Material::CreateInstance(m_SceneMaterial);
 
 			instance->Set("u_BaseColour", material.BaseColour);
 			instance->Set("u_Metallic", material.Metallic);
@@ -129,7 +129,7 @@ private:
 		}
 
 		out.Ok = true;
-		EGSS_INFO("{0}: {1} nodes, {2} instances, {3} triangles, generator '{4}'",
+		GS_INFO("{0}: {1} nodes, {2} instances, {3} triangles, generator '{4}'",
 			path, out.Model.Nodes.size(), out.Model.Instances.size(),
 			out.Model.TriangleCount(), out.Model.Generator);
 	}
@@ -154,12 +154,12 @@ private:
 		size_t vertices = 0;
 		for (size_t i = 0; i < m_Gltf.Model.Meshes.size(); i++)
 		{
-			const Egss::MeshData& a = m_Gltf.Model.Meshes[i];
-			const Egss::MeshData& b = m_Glb.Model.Meshes[i];
+			const GS::MeshData& a = m_Gltf.Model.Meshes[i];
+			const GS::MeshData& b = m_Glb.Model.Meshes[i];
 
 			if (a.Vertices.size() != b.Vertices.size() || a.Indices != b.Indices
 				|| std::memcmp(a.Vertices.data(), b.Vertices.data(),
-					a.Vertices.size() * sizeof(Egss::MeshVertex)) != 0)
+					a.Vertices.size() * sizeof(GS::MeshVertex)) != 0)
 			{
 				m_Comparison = "mesh " + std::to_string(i) + " differs between the containers";
 				m_ContainersAgree = false;
@@ -191,7 +191,7 @@ private:
 
 	// --- Update -------------------------------------------------------------
 
-	void OnDemoFixedUpdate(Egss::Timestep step) override
+	void OnDemoFixedUpdate(GS::Timestep step) override
 	{
 		float dt = step;
 
@@ -215,7 +215,7 @@ private:
 
 		float swing = std::sin(m_Time * 1.5f) * 35.0f;
 
-		for (Egss::GltfNode& node : active.Model.Nodes)
+		for (GS::GltfNode& node : active.Model.Nodes)
 		{
 			if (node.Name == "shoulder.L" || node.Name == "shoulder.R")
 			{
@@ -242,7 +242,7 @@ private:
 	// node move everything beneath it. Kept here rather than in the engine
 	// because a real animation system would drive it from samplers, and this
 	// demo is not that -- see the note about skinning in GltfLoader.h.
-	static void Reflatten(Egss::GltfModel& model)
+	static void Reflatten(GS::GltfModel& model)
 	{
 		model.Instances.clear();
 
@@ -251,7 +251,7 @@ private:
 			Walk(model, root, glm::mat4(1.0f), visited);
 	}
 
-	static void Walk(Egss::GltfModel& model, int index, const glm::mat4& parent,
+	static void Walk(GS::GltfModel& model, int index, const glm::mat4& parent,
 		std::vector<bool>& visited)
 	{
 		if (index < 0 || (size_t)index >= model.Nodes.size() || visited[index])
@@ -259,12 +259,12 @@ private:
 
 		visited[index] = true;
 
-		const Egss::GltfNode& node = model.Nodes[index];
+		const GS::GltfNode& node = model.Nodes[index];
 		glm::mat4 world = parent * node.Local;
 
 		if (node.Mesh >= 0)
 		{
-			Egss::GltfInstance instance;
+			GS::GltfInstance instance;
 			instance.Node = index;
 			instance.Mesh = node.Mesh;
 			instance.Transform = world;
@@ -277,12 +277,12 @@ private:
 
 	// --- Draw ---------------------------------------------------------------
 
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 		(void)ts;
 
-		Egss::RenderCommand::SetClearColor({ 0.09f, 0.10f, 0.13f, 1.0f });
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor({ 0.09f, 0.10f, 0.13f, 1.0f });
+		GS::RenderCommand::Clear();
 
 		const Loaded& active = Active();
 		if (!active.Ok)
@@ -290,24 +290,24 @@ private:
 
 		FrameCamera(active.Model);
 
-		Egss::Renderer::BeginScene(m_Camera);
+		GS::Renderer::BeginScene(m_Camera);
 
 		m_SceneMaterial->Set("u_LightDirection", glm::normalize(glm::vec3(-0.4f, -1.0f, -0.6f)));
 		m_SceneMaterial->Set("u_CameraPosition", m_Camera.GetPosition());
 		m_SceneMaterial->Set("u_Ambient", m_Ambient);
 
 		if (m_Wireframe)
-			Egss::RenderCommand::SetPolygonMode(Egss::PolygonMode::Line);
+			GS::RenderCommand::SetPolygonMode(GS::PolygonMode::Line);
 
-		for (const Egss::GltfInstance& instance : active.Model.Instances)
+		for (const GS::GltfInstance& instance : active.Model.Instances)
 		{
-			const std::shared_ptr<Egss::Mesh>& mesh = active.Meshes[instance.Mesh];
+			const std::shared_ptr<GS::Mesh>& mesh = active.Meshes[instance.Mesh];
 
 			for (unsigned int s = 0; s < (unsigned int)mesh->GetSubmeshes().size(); s++)
 			{
 				int materialIndex = mesh->GetSubmeshes()[s].MaterialIndex;
 
-				std::shared_ptr<Egss::Material> material =
+				std::shared_ptr<GS::Material> material =
 					(materialIndex >= 0 && (size_t)materialIndex < active.Materials.size())
 					? active.Materials[materialIndex] : m_Fallback;
 
@@ -331,21 +331,21 @@ private:
 				glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(instance.Transform)));
 				material->Set("u_NormalMatrix", glm::mat4(normalMatrix));
 
-				Egss::Renderer::SubmitSubmesh(material, mesh, s,
+				GS::Renderer::SubmitSubmesh(material, mesh, s,
 					m_Model * instance.Transform);
 			}
 		}
 
 		if (m_Wireframe)
-			Egss::RenderCommand::SetPolygonMode(Egss::PolygonMode::Fill);
+			GS::RenderCommand::SetPolygonMode(GS::PolygonMode::Fill);
 
-		Egss::Renderer::EndScene();
+		GS::Renderer::EndScene();
 	}
 
 	// Frames whatever was loaded, rather than assuming a size. A model's units
 	// are its author's business -- this one is about 3 m tall, but the next
 	// file might be in centimetres.
-	void FrameCamera(const Egss::GltfModel& model)
+	void FrameCamera(const GS::GltfModel& model)
 	{
 		float radius = model.BoundsRadius();
 		if (radius < 1e-4f)
@@ -422,7 +422,7 @@ private:
 		{
 			for (size_t i = 0; i < active.Model.Materials.size(); i++)
 			{
-				const Egss::GltfMaterial& material = active.Model.Materials[i];
+				const GS::GltfMaterial& material = active.Model.Materials[i];
 				ImGui::ColorButton(("##c" + std::to_string(i)).c_str(),
 					ImVec4(material.BaseColour.r, material.BaseColour.g,
 						material.BaseColour.b, 1.0f));
@@ -438,12 +438,12 @@ private:
 		ImGui::End();
 	}
 
-	void DrawNode(const Egss::GltfModel& model, int index)
+	void DrawNode(const GS::GltfModel& model, int index)
 	{
 		if (index < 0 || (size_t)index >= model.Nodes.size())
 			return;
 
-		const Egss::GltfNode& node = model.Nodes[index];
+		const GS::GltfNode& node = model.Nodes[index];
 
 		std::string label = node.Name.empty()
 			? ("node " + std::to_string(index)) : node.Name;
@@ -566,13 +566,13 @@ private:
 			}
 		)";
 
-		m_Shader.reset(Egss::Shader::Create("Gltf", vertexSrc, fragmentSrc));
-		m_SceneMaterial = Egss::Material::Create(m_Shader);
-		m_Fallback = Egss::Material::CreateInstance(m_SceneMaterial);
+		m_Shader.reset(GS::Shader::Create("Gltf", vertexSrc, fragmentSrc));
+		m_SceneMaterial = GS::Material::Create(m_Shader);
+		m_Fallback = GS::Material::CreateInstance(m_SceneMaterial);
 
 		// The stand-in for "this material has no texture". One white pixel, so
 		// the shader can sample unconditionally.
-		m_White.reset(Egss::Texture2D::Create(1, 1));
+		m_White.reset(GS::Texture2D::Create(1, 1));
 		unsigned int white = 0xFFFFFFFF;
 		m_White->SetData(&white, sizeof(white));
 
@@ -583,17 +583,17 @@ private:
 		m_Fallback->SetTexture("u_BaseColourMap", m_White);
 	}
 
-	Egss::PerspectiveCamera m_Camera;
+	GS::PerspectiveCamera m_Camera;
 
 	Loaded m_Gltf, m_Glb;
 	bool m_ShowGlb = false;
 	bool m_ContainersAgree = false;
 	std::string m_Comparison = "not loaded";
 
-	std::shared_ptr<Egss::Shader> m_Shader;
-	std::shared_ptr<Egss::Material> m_SceneMaterial;
-	std::shared_ptr<Egss::Material> m_Fallback;
-	std::shared_ptr<Egss::Texture2D> m_White;
+	std::shared_ptr<GS::Shader> m_Shader;
+	std::shared_ptr<GS::Material> m_SceneMaterial;
+	std::shared_ptr<GS::Material> m_Fallback;
+	std::shared_ptr<GS::Texture2D> m_White;
 
 	glm::mat4 m_Model = glm::mat4(1.0f);
 

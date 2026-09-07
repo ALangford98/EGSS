@@ -1,4 +1,4 @@
-# How EGSS works
+# How GS works
 
 Orientation, not reference. The README covers build and rendering theory; this
 is the shape of the thing — what calls what, and the handful of decisions that
@@ -11,22 +11,22 @@ explain the rest.
 You write one class. Everything else already exists:
 
 ```cpp
-class MyGame : public Egss::Layer
+class MyGame : public GS::Layer
 {
     void OnAttach() override            {}  // load textures, build state
-    void OnFixedUpdate(Egss::Timestep step) override {}  // simulate
-    void OnUpdate(Egss::Timestep ts) override {}         // draw
+    void OnFixedUpdate(GS::Timestep step) override {}  // simulate
+    void OnUpdate(GS::Timestep ts) override {}         // draw
     void OnImGuiRender() override       {}  // debug panels
-    void OnEvent(Egss::Event& e) override {} // one-shot input
+    void OnEvent(GS::Event& e) override {} // one-shot input
 };
 
-class App : public Egss::Application
+class App : public GS::Application
 {
 public:
     App() { PushLayer(new MyGame()); }
 };
 
-Egss::Application* Egss::CreateApplication() { return new App(); }
+GS::Application* GS::CreateApplication() { return new App(); }
 ```
 
 That last function is the only thing the engine requires of you. `TestEnv/src/TestApp.cpp`
@@ -87,7 +87,7 @@ changes ("key went down"). `Input::IsKeyPressed` asks what's true right now. Use
 polling for movement, events for actions:
 
 ```cpp
-if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))   // held → continuous
+if (GS::Input::IsKeyPressed(GS_KEY_LEFT))   // held → continuous
     x -= speed * ts;
 ```
 
@@ -138,10 +138,10 @@ matter how many segments. They are drawn unindexed, via `glDrawArrays(GL_LINES)`
 `Renderer2D::BeginScene` takes any `Camera`, so debug lines work under a
 perspective camera too. The "2D" is about the primitives, not the projection.
 
-**5. Interfaces live in `Egss/`, implementations in `Platform/`.** `Texture2D::Create`
+**5. Interfaces live in `GS/`, implementations in `Platform/`.** `Texture2D::Create`
 is declared in `Renderer/Texture.h` and *defined* in `Platform/OpenGL/OpenGLTexture.cpp`.
 If you're looking for how something actually works, it's in `Platform/`. If
-you're looking for what you can call, it's in `Egss/`.
+you're looking for what you can call, it's in `GS/`.
 
 ---
 
@@ -197,15 +197,15 @@ RenderCommand::SetClearColor({r,g,b,a});
 RenderCommand::Clear();
 
 // Input
-Input::IsKeyPressed(EGSS_KEY_SPACE);
-Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
+Input::IsKeyPressed(GS_KEY_SPACE);
+Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_LEFT);
 Input::GetMousePosition();          // {x, y}, window coordinates
 
 // Profiling — compiled out in Dist
-EGSS_PROFILE_SCOPE("MyThing");                 // RAII, times the enclosing scope
-EGSS_PROFILE_FUNCTION();                       // same, named after the function
-EGSS_PROFILE_BEGIN_SESSION("run", "trace.json");  // Chrome trace capture
-EGSS_PROFILE_END_SESSION();
+GS_PROFILE_SCOPE("MyThing");                 // RAII, times the enclosing scope
+GS_PROFILE_FUNCTION();                       // same, named after the function
+GS_PROFILE_BEGIN_SESSION("run", "trace.json");  // Chrome trace capture
+GS_PROFILE_END_SESSION();
 Instrumentor::GetLastFrame();                  // live per-scope totals
 
 // Audio — Init/Shutdown are handled by Application
@@ -631,7 +631,7 @@ outlive the framebuffer.
 
 ## Gotchas that will actually bite you
 
-- **New `.cpp` file? Re-run `./BuildProject.sh`** (or `./egss.py build`, which
+- **New `.cpp` file? Re-run `./BuildProject.sh`** (or `./gs.py build`, which
   always regenerates). premake expands file globs at *generation* time, so
   your file will compile in the editor and never link.
 - **Depth testing is on, and `z` decides what covers what — not draw order.**
@@ -645,7 +645,7 @@ outlive the framebuffer.
   first even when drawn earlier.
 - **`EndScene` is not optional.** Forget it and the last batch never flushes —
   you get a blank screen with no error.
-- **Asserts only exist in Debug.** `EGSS_ENABLE_ASSERTS` is only defined there.
+- **Asserts only exist in Debug.** `GS_ENABLE_ASSERTS` is only defined there.
 - **Every layer sees the same event.** If two layers act on one key press they
   will fight. Return `true` from a dispatcher lambda to mark the event handled;
   `Application` then stops walking the stack. Returning `false` means "I looked,

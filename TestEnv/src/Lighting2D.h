@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 // glm::two_pi -- do not rely on another header pulling this in.
@@ -61,19 +61,19 @@ public:
 
 		// Floor, ceiling and two walls -- a closed box, so the orbiting lights
 		// always have a surface to fall on.
-		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ 0.0f, -0.84f }, { 1.5f, 0.05f }));
-		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ 0.0f,  0.84f }, { 1.5f, 0.05f }));
-		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ -1.45f, 0.0f }, { 0.05f, 0.9f }));
-		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({  1.45f, 0.0f }, { 0.05f, 0.9f }));
+		m_World.AddBody(GS::RigidBody2D::MakeStaticBox({ 0.0f, -0.84f }, { 1.5f, 0.05f }));
+		m_World.AddBody(GS::RigidBody2D::MakeStaticBox({ 0.0f,  0.84f }, { 1.5f, 0.05f }));
+		m_World.AddBody(GS::RigidBody2D::MakeStaticBox({ -1.45f, 0.0f }, { 0.05f, 0.9f }));
+		m_World.AddBody(GS::RigidBody2D::MakeStaticBox({  1.45f, 0.0f }, { 0.05f, 0.9f }));
 
 		// One circle in the middle. With lights orbiting around it, its shadow
 		// sweeps the room -- the clearest way to watch tangent rays working.
-		m_World.AddBody(Egss::RigidBody2D::MakeStaticCircle({ 0.0f, 0.0f }, 0.22f));
+		m_World.AddBody(GS::RigidBody2D::MakeStaticCircle({ 0.0f, 0.0f }, 0.22f));
 
 		// Four steps climbing away from the bottom-left corner...
 		for (int i = 0; i < 4; i++)
 		{
-			m_World.AddBody(Egss::RigidBody2D::MakeStaticBox(
+			m_World.AddBody(GS::RigidBody2D::MakeStaticBox(
 				{ -1.15f + i * 0.20f, -0.70f + i * 0.13f }, { 0.09f, 0.035f }));
 		}
 
@@ -81,7 +81,7 @@ public:
 		// orbit have something to cast against.
 		for (int i = 0; i < 4; i++)
 		{
-			m_World.AddBody(Egss::RigidBody2D::MakeStaticBox(
+			m_World.AddBody(GS::RigidBody2D::MakeStaticBox(
 				{ 1.15f - i * 0.20f, 0.70f - i * 0.13f }, { 0.09f, 0.035f }));
 		}
 	}
@@ -91,13 +91,13 @@ public:
 	// control because it is driven by held keys. Doing it per frame made this
 	// demo unable to reproduce itself run to run, which also made it
 	// unrecordable.
-	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
+	void OnDemoFixedUpdate(GS::Timestep fixedStep) override
 	{
 		UpdateLightControl(fixedStep);
 		UpdateOrbit(fixedStep);
 	}
 
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 
 		m_FrameTime = ts.GetMilliseconds();
@@ -110,7 +110,7 @@ public:
 		if (m_ShowInteractive)
 			m_ActiveLights.push_back(m_Interactive);
 
-		Egss::Renderer2D::ResetStats();
+		GS::Renderer2D::ResetStats();
 
 		if (m_PerPixel)
 			RenderPerPixel();
@@ -153,67 +153,67 @@ public:
 		// Ambient is the clear colour now, not a term added per body. A pixel
 		// no light reaches keeps exactly this value, which is what makes the
 		// unlit case checkable by reading one pixel.
-		Egss::RenderCommand::SetClearColor(glm::vec4(glm::vec3(m_SurfaceAmbient), 1.0f));
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor(glm::vec4(glm::vec3(m_SurfaceAmbient), 1.0f));
+		GS::RenderCommand::Clear();
 
 		// --- The light map ---
 		{
-			EGSS_PROFILE_SCOPE("Lighting::LightPass");
+			GS_PROFILE_SCOPE("Lighting::LightPass");
 
 			// Additive, so two lights overlapping are brighter than either --
 			// with alpha blending the nearer one would simply hide the other.
-			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Additive);
+			GS::RenderCommand::SetBlendMode(GS::BlendMode::Additive);
 
 			// And depth testing OFF, which matters just as much. Every light
 			// polygon sits at the same z, and the depth test rejects anything
 			// at equal depth after the first -- so the second light was being
 			// discarded precisely where it overlapped the first. Additive
 			// blending cannot help if the fragments never reach it.
-			Egss::RenderCommand::SetDepthTest(false);
+			GS::RenderCommand::SetDepthTest(false);
 
-			Egss::Renderer2D::BeginScene(m_Camera);
+			GS::Renderer2D::BeginScene(m_Camera);
 
 			m_TotalRays = 0;
 			for (const Light& light : m_ActiveLights)
 				DrawLight(light);
 
-			Egss::Renderer2D::EndScene();
+			GS::Renderer2D::EndScene();
 		}
 
 		// --- The surfaces, multiplied through it ---
 		{
-			EGSS_PROFILE_SCOPE("Lighting::SurfacePass");
+			GS_PROFILE_SCOPE("Lighting::SurfacePass");
 
-			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Multiply);
+			GS::RenderCommand::SetBlendMode(GS::BlendMode::Multiply);
 
-			Egss::Renderer2D::BeginScene(m_Camera);
+			GS::Renderer2D::BeginScene(m_Camera);
 
 			const auto& bodies = m_World.GetBodies();
 			for (size_t i = 0; i < bodies.size(); i++)
 			{
-				const Egss::RigidBody2D& body = bodies[i];
+				const GS::RigidBody2D& body = bodies[i];
 
 				// Its own colour, with no lighting in it at all. Everything
 				// that varies across the surface came from the pass before.
 				glm::vec4 albedo = Albedo((unsigned int)i);
 
-				if (body.Shape == Egss::ColliderShape::Box)
-					Egss::Renderer2D::DrawQuad(body.Position, body.HalfExtents * 2.0f, albedo);
+				if (body.Shape == GS::ColliderShape::Box)
+					GS::Renderer2D::DrawQuad(body.Position, body.HalfExtents * 2.0f, albedo);
 				else
-					Egss::Renderer2D::DrawCircle(body.Position, body.Radius, albedo, 32);
+					GS::Renderer2D::DrawCircle(body.Position, body.Radius, albedo, 32);
 			}
 
-			Egss::Renderer2D::EndScene();
+			GS::Renderer2D::EndScene();
 		}
 
-		Egss::RenderCommand::SetDepthTest(true);
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
+		GS::RenderCommand::SetDepthTest(true);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::Alpha);
 
 		if (m_ShowColliders)
 		{
-			Egss::Renderer2D::BeginScene(m_Camera);
+			GS::Renderer2D::BeginScene(m_Camera);
 			DrawDebug();
-			Egss::Renderer2D::EndScene();
+			GS::Renderer2D::EndScene();
 		}
 	}
 
@@ -223,15 +223,15 @@ public:
 	// switching back and forth than described.
 	void RenderPerBody()
 	{
-		Egss::RenderCommand::SetClearColor({ 0.06f, 0.06f, 0.08f, 1.0f });
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor({ 0.06f, 0.06f, 0.08f, 1.0f });
+		GS::RenderCommand::Clear();
 
-		Egss::Renderer2D::BeginScene(m_Camera);
+		GS::Renderer2D::BeginScene(m_Camera);
 
 		const auto& bodies = m_World.GetBodies();
 		for (size_t i = 0; i < bodies.size(); i++)
 		{
-			const Egss::RigidBody2D& body = bodies[i];
+			const GS::RigidBody2D& body = bodies[i];
 			glm::vec2 position = body.Position;
 
 			// Lit by raycast rather than drawn flat. In darkness a surface is
@@ -239,15 +239,15 @@ public:
 			// reach it before it exists.
 			glm::vec4 color = ShadeSurface((unsigned int)i, body);
 
-			if (body.Shape == Egss::ColliderShape::Box)
+			if (body.Shape == GS::ColliderShape::Box)
 			{
-				Egss::Renderer2D::DrawQuad(position, body.HalfExtents * 2.0f, color);
+				GS::Renderer2D::DrawQuad(position, body.HalfExtents * 2.0f, color);
 			}
 			else
 			{
 				// A real circle now, not a stand-in quad -- it joins the same
 				// triangle batch as the light, so it costs no extra draw call.
-				Egss::Renderer2D::DrawCircle(position, body.Radius, color, 32);
+				GS::Renderer2D::DrawCircle(position, body.Radius, color, 32);
 			}
 		}
 
@@ -257,25 +257,25 @@ public:
 		// End the map pass before touching the blend mode: blending is global
 		// state, and anything still batched would be drawn with whatever mode
 		// is set at flush time rather than the one it was submitted under.
-		Egss::Renderer2D::EndScene();
+		GS::Renderer2D::EndScene();
 
 		if (m_ShowLight)
 		{
-			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Additive);
-			Egss::RenderCommand::SetDepthTest(false);
+			GS::RenderCommand::SetBlendMode(GS::BlendMode::Additive);
+			GS::RenderCommand::SetDepthTest(false);
 
-			Egss::Renderer2D::BeginScene(m_Camera);
+			GS::Renderer2D::BeginScene(m_Camera);
 
-			EGSS_PROFILE_SCOPE("Lighting::LightPass");
+			GS_PROFILE_SCOPE("Lighting::LightPass");
 			m_TotalRays = 0;
 
 			for (const Light& light : m_ActiveLights)
 				DrawLight(light);
 
-			Egss::Renderer2D::EndScene();
+			GS::Renderer2D::EndScene();
 
-			Egss::RenderCommand::SetDepthTest(true);
-			Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
+			GS::RenderCommand::SetDepthTest(true);
+			GS::RenderCommand::SetBlendMode(GS::BlendMode::Alpha);
 		}
 	}
 
@@ -299,7 +299,7 @@ public:
 	// The ring lights ride a circle around the scene. Their positions are
 	// derived every frame rather than stored, so changing the count or the
 	// orbit radius needs no bookkeeping -- the next frame simply recomputes.
-	void UpdateOrbit(Egss::Timestep ts)
+	void UpdateOrbit(GS::Timestep ts)
 	{
 		if (!m_Paused)
 			m_OrbitAngle += m_OrbitSpeed * (float)ts;
@@ -370,7 +370,7 @@ public:
 
 			// Cast far enough ahead that the light's own radius is accounted
 			// for -- it is a circle, not a point.
-			Egss::RaycastHit hit = m_World.Raycast(from, direction, distance + m_LightCollisionRadius);
+			GS::RaycastHit hit = m_World.Raycast(from, direction, distance + m_LightCollisionRadius);
 
 			if (!hit.Hit || hit.Distance > distance + m_LightCollisionRadius)
 			{
@@ -408,17 +408,17 @@ public:
 	// That split is the whole of input handling in this engine. See
 	// docs/ENGINE.md, decision 2.
 	// ---------------------------------------------------------------------
-	void UpdateLightControl(Egss::Timestep ts)
+	void UpdateLightControl(GS::Timestep ts)
 	{
 		if (m_Control == LightControl::Keyboard)
 		{
 			glm::vec2 move(0.0f);
 
 			// Polled, not events: held keys are continuous movement.
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))  move.x -= 1.0f;
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) move.x += 1.0f;
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))  move.y -= 1.0f;
-			if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))    move.y += 1.0f;
+			if (GS::Input::IsKeyPressed(GS_KEY_LEFT))  move.x -= 1.0f;
+			if (GS::Input::IsKeyPressed(GS_KEY_RIGHT)) move.x += 1.0f;
+			if (GS::Input::IsKeyPressed(GS_KEY_DOWN))  move.y -= 1.0f;
+			if (GS::Input::IsKeyPressed(GS_KEY_UP))    move.y += 1.0f;
 
 			// Normalise, or moving diagonally is 1.41x faster than straight.
 			if (glm::dot(move, move) > 0.0f)
@@ -439,7 +439,7 @@ public:
 				// same sweep that blocks the keyboard blocks this too. In open
 				// space it lands exactly on the cursor; against a wall it
 				// stops at the surface instead of appearing on the far side.
-				glm::vec2 target = ScreenToWorld(Egss::Input::GetMousePosition());
+				glm::vec2 target = ScreenToWorld(GS::Input::GetMousePosition());
 				m_Interactive.Position = MoveWithCollision(m_Interactive.Position,
 					target - m_Interactive.Position);
 			}
@@ -458,7 +458,7 @@ public:
 	//   3. clip      -> world, via the inverse of the camera's view-projection
 	glm::vec2 ScreenToWorld(const std::pair<float, float>& mouse) const
 	{
-		Egss::Window& window = Egss::Application::Get().GetWindow();
+		GS::Window& window = GS::Application::Get().GetWindow();
 
 		float width = (float)window.GetWidth();
 		float height = (float)window.GetHeight();
@@ -481,7 +481,7 @@ public:
 	//
 	// Aiming at the centre works even for a wall, whose centre is inside
 	// itself: the ray hits its near face first, which is the face being lit.
-	glm::vec4 ShadeSurface(unsigned int index, const Egss::RigidBody2D& body)
+	glm::vec4 ShadeSurface(unsigned int index, const GS::RigidBody2D& body)
 	{
 		glm::vec3 accumulated(m_SurfaceAmbient);
 
@@ -495,7 +495,7 @@ public:
 
 			// A little past the centre, so a ray that only grazes the near
 			// face still registers as reaching it.
-			Egss::RaycastHit hit = m_World.Raycast(light.Position, toBody, distance + 0.05f);
+			GS::RaycastHit hit = m_World.Raycast(light.Position, toBody, distance + 0.05f);
 
 			if (!hit.Hit || hit.Body != index)
 				continue;
@@ -525,7 +525,7 @@ public:
 		//    shadow's edge. Remove the offsets and you get spikes and gaps.
 		const float nudge = 0.0001f;
 
-		for (const Egss::RigidBody2D& body : m_World.GetBodies())
+		for (const GS::RigidBody2D& body : m_World.GetBodies())
 		{
 			// A circle has no corners, so its HalfExtents is meaningless --
 			// reading it would invent four corners in the wrong place. What a
@@ -542,7 +542,7 @@ public:
 			//
 			// base is the angle to the centre; half is the angle it subtends,
 			// asin(radius / distance). Add and subtract it for the two edges.
-			if (body.Shape == Egss::ColliderShape::Circle)
+			if (body.Shape == GS::ColliderShape::Circle)
 			{
 				glm::vec2 toCentre = body.Position - light.Position;
 				float distance = glm::length(toCentre);
@@ -571,7 +571,7 @@ public:
 				continue;
 			}
 
-			if (body.Shape != Egss::ColliderShape::Box)
+			if (body.Shape != GS::ColliderShape::Box)
 				continue;
 
 			const glm::vec2 corners[4] = {
@@ -621,7 +621,7 @@ public:
 		for (float angle : m_Angles)
 		{
 			glm::vec2 direction = { std::cos(angle), std::sin(angle) };
-			Egss::RaycastHit hit = m_World.Raycast(light.Position, direction, light.Radius);
+			GS::RaycastHit hit = m_World.Raycast(light.Position, direction, light.Radius);
 
 			// Overshoot the hit slightly so the polygon laps onto the surface
 			// it stopped at. Land exactly on the surface and the wall is never
@@ -659,7 +659,7 @@ public:
 			colorA.a = light.Color.a * fa;
 			colorB.a = light.Color.a * fb;
 
-			Egss::Renderer2D::DrawTriangle(
+			GS::Renderer2D::DrawTriangle(
 				glm::vec3(light.Position, z), glm::vec3(a, z), glm::vec3(b, z),
 				light.Color, colorA, colorB);
 		}
@@ -670,7 +670,7 @@ public:
 		if (m_ShowRays)
 		{
 			for (const glm::vec2& hit : m_Hits)
-				Egss::Renderer2D::DrawLine(glm::vec3(light.Position, z + 0.1f),
+				GS::Renderer2D::DrawLine(glm::vec3(light.Position, z + 0.1f),
 					glm::vec3(hit, z + 0.1f), glm::vec4(1.0f, 1.0f, 1.0f, 0.25f));
 		}
 	}
@@ -686,13 +686,13 @@ public:
 	{
 		const auto& bodies = m_World.GetBodies();
 
-		for (const Egss::RigidBody2D& body : bodies)
+		for (const GS::RigidBody2D& body : bodies)
 		{
 			glm::vec2 position = body.Position;
 			glm::vec4 outline = { 0.2f, 0.9f, 0.5f, 1.0f };
 
-			if (body.Shape == Egss::ColliderShape::Box)
-				Egss::Renderer2D::DrawRect(position, body.HalfExtents * 2.0f, outline);
+			if (body.Shape == GS::ColliderShape::Box)
+				GS::Renderer2D::DrawRect(position, body.HalfExtents * 2.0f, outline);
 			else
 				DrawCircleOutline(position, body.Radius, outline);
 		}
@@ -717,16 +717,16 @@ public:
 		{
 			float angle = (float)i / (float)segments * glm::two_pi<float>();
 			glm::vec2 next = centre + glm::vec2(std::cos(angle), std::sin(angle)) * radius;
-			Egss::Renderer2D::DrawLine(previous, next, color);
+			GS::Renderer2D::DrawLine(previous, next, color);
 			previous = next;
 		}
 	}
 
-	void OnDemoEvent(Egss::Event& e) override
+	void OnDemoEvent(GS::Event& e) override
 	{
-		Egss::EventDispatcher dispatcher(e);
+		GS::EventDispatcher dispatcher(e);
 
-		dispatcher.Dispatch<Egss::WindowResizeEvent>([this](Egss::WindowResizeEvent& e)
+		dispatcher.Dispatch<GS::WindowResizeEvent>([this](GS::WindowResizeEvent& e)
 		{
 			if (e.GetHeight() > 0)
 			{
@@ -736,16 +736,16 @@ public:
 			return false;
 		});
 
-		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& e)
+		dispatcher.Dispatch<GS::KeyPressedEvent>([this](GS::KeyPressedEvent& e)
 		{
 			if (e.GetRepeatCount() > 0)
 				return false;
 
-			if (e.GetKeyCode() == EGSS_KEY_R)
+			if (e.GetKeyCode() == GS_KEY_R)
 				BuildScene();
 
 			// An edge, so it belongs here rather than in the polled path.
-			if (e.GetKeyCode() == EGSS_KEY_M)
+			if (e.GetKeyCode() == GS_KEY_M)
 				m_Control = (LightControl)(((int)m_Control + 1) % (int)LightControl::Count);
 
 			return false;
@@ -755,7 +755,7 @@ public:
 	void OnDemoImGui() override
 	{
 
-		auto stats = Egss::Renderer2D::GetStats();
+		auto stats = GS::Renderer2D::GetStats();
 		ImGui::SetNextWindowPos(ImVec2(20.0f, 180.0f), ImGuiCond_FirstUseEver);
 		ImGui::Begin("Lighting2D");
 
@@ -851,8 +851,8 @@ public:
 	}
 private:
 	//the map, and the query structure the light casts into.
-	Egss::OrthographicCamera m_Camera;
-	Egss::PhysicsWorld2D m_World;
+	GS::OrthographicCamera m_Camera;
+	GS::PhysicsWorld2D m_World;
 
 	bool m_ShowColliders = false;
 	bool m_ShowRays = false;

@@ -11,12 +11,12 @@
 // Pushed last in TestApp.cpp, so it sits on top of the stack and sees events
 // before the demos do.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 #include "DemoRegistry.h"
 
-class DemoSelector : public Egss::Layer
+class DemoSelector : public GS::Layer
 {
 public:
 	DemoSelector()
@@ -104,11 +104,11 @@ public:
 		ImGui::End();
 	}
 
-	void OnEvent(Egss::Event& e) override
+	void OnEvent(GS::Event& e) override
 	{
-		Egss::EventDispatcher dispatcher(e);
+		GS::EventDispatcher dispatcher(e);
 
-		dispatcher.Dispatch<Egss::KeyPressedEvent>([](Egss::KeyPressedEvent& e)
+		dispatcher.Dispatch<GS::KeyPressedEvent>([](GS::KeyPressedEvent& e)
 		{
 			if (e.GetRepeatCount() > 0)
 				return false;
@@ -117,11 +117,11 @@ public:
 			// number rather than by a counter of its own, so two shots taken
 			// in the same run can never collide and the filename says when it
 			// was taken.
-			if (e.GetKeyCode() == EGSS_KEY_F2)
+			if (e.GetKeyCode() == GS_KEY_F2)
 			{
-				Egss::Application& app = Egss::Application::Get();
+				GS::Application& app = GS::Application::Get();
 
-				std::string path = "screenshots/egss-"
+				std::string path = "screenshots/gs-"
 					+ std::to_string(app.GetFrameCount()) + ".png";
 
 				app.CaptureFrame(path);
@@ -130,7 +130,7 @@ public:
 
 			// F1 rather than Tab: ImGui uses Tab to cycle widget focus, which
 			// turns a slider into a text field and then swallows the keyboard.
-			if (e.GetKeyCode() != EGSS_KEY_F1)
+			if (e.GetKeyCode() != GS_KEY_F1)
 				return false;
 
 			g_ActiveDemo = (g_ActiveDemo + 1) % s_DemoCount;

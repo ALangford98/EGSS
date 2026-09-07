@@ -49,7 +49,7 @@
 // VoxelIslands/VoxelStress; a large fixed bound gets the practical result
 // (nothing reachable in a session) without that risk.
 
-#include <Egss.h>
+#include <GS.h>
 
 #include "Vegetation.h"
 #include <imgui.h>
@@ -88,11 +88,11 @@ public:
 		BuildShader();
 		BuildIslands();
 
-		m_Field = std::make_shared<Egss::VoxelField3D>();
+		m_Field = std::make_shared<GS::VoxelField3D>();
 		m_Field->Create({ s_SideX, s_SideY, s_SideZ }, s_Voxel,
 			{ -0.5f * (s_SideX - 1) * s_Voxel, s_OriginY, -0.5f * (s_SideZ - 1) * s_Voxel });
 
-		Egss::RigidBody3D ground = Egss::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
+		GS::RigidBody3D ground = GS::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
 		ground.Friction = 0.8f;
 		ground.Restitution = 0.0f;
 		m_World.Gravity = { 0.0f, -9.81f, 0.0f };
@@ -101,7 +101,7 @@ public:
 		// Built once and drawn with a transform each. A limb is a unit tube
 		// from y=0 to y=1, so scaling by (radius, length, radius) puts it
 		// between any two points.
-		m_LimbMesh.reset(new Egss::Mesh(MakeTube({
+		m_LimbMesh.reset(new GS::Mesh(MakeTube({
 			{ 0.00f, 1.00f, 1.00f },
 			{ 0.35f, 0.94f, 0.94f },
 			{ 1.00f, 0.72f, 0.72f } }, 10), "Limb"));
@@ -114,17 +114,17 @@ public:
 		// A person's eyes sit about 0.22 m above the shoulders and 0.67 above
 		// the hips, and the mesh has to agree with that or the camera ends up
 		// inside it.
-		m_TorsoMesh.reset(new Egss::Mesh(MakeTube({
+		m_TorsoMesh.reset(new GS::Mesh(MakeTube({
 			{ 0.00f, 0.150f, 0.105f },
 			{ 0.10f, 0.163f, 0.108f },
 			{ 0.22f, 0.140f, 0.096f },
 			{ 0.36f, 0.158f, 0.104f },
 			{ 0.46f, 0.140f, 0.094f } }, 12), "Torso"));
 
-		m_HeadMesh.reset(new Egss::Mesh(MakeOvoid({ 0.098f, 0.125f, 0.108f }, 12, 8), "Head"));
-		m_HandMesh.reset(new Egss::Mesh(MakeOvoid({ 0.045f, 0.055f, 0.030f }, 8, 5), "Hand"));
-		m_FootMesh.reset(new Egss::Mesh(MakeOvoid({ 0.048f, 0.045f, 0.100f }, 8, 5), "Foot"));
-		m_JointMesh.reset(new Egss::Mesh(MakeOvoid({ 1.0f, 1.0f, 1.0f }, 8, 5), "Joint"));
+		m_HeadMesh.reset(new GS::Mesh(MakeOvoid({ 0.098f, 0.125f, 0.108f }, 12, 8), "Head"));
+		m_HandMesh.reset(new GS::Mesh(MakeOvoid({ 0.045f, 0.055f, 0.030f }, 8, 5), "Hand"));
+		m_FootMesh.reset(new GS::Mesh(MakeOvoid({ 0.048f, 0.045f, 0.100f }, 8, 5), "Foot"));
+		m_JointMesh.reset(new GS::Mesh(MakeOvoid({ 1.0f, 1.0f, 1.0f }, 8, 5), "Joint"));
 
 		BuildWater();
 
@@ -136,9 +136,9 @@ public:
 		// Before any streaming, so the very first chunks can come from it.
 		m_Cache.Open("openworld.chunks", FingerprintDensity());
 		if (m_Cache.Rebuilt())
-			EGSS_INFO("Chunk cache: starting fresh (absent, or a different world)");
+			GS_INFO("Chunk cache: starting fresh (absent, or a different world)");
 		else
-			EGSS_INFO("Chunk cache: {0} chunks already stored", m_Cache.Entries());
+			GS_INFO("Chunk cache: {0} chunks already stored", m_Cache.Entries());
 
 		m_Controller.Cfg.HasWater = true;
 		m_Controller.Cfg.WaterLevel = s_SeaLevel;
@@ -164,7 +164,7 @@ public:
 
 	// --- Update ---------------------------------------------------------
 
-	void OnDemoFixedUpdate(Egss::Timestep step) override
+	void OnDemoFixedUpdate(GS::Timestep step) override
 	{
 		float dt = step;
 
@@ -245,7 +245,7 @@ public:
 	// throws it rather than dropping it dead.
 	void UpdateCarry(float dt)
 	{
-		bool pressed = Egss::Input::IsKeyPressed(EGSS_KEY_E);
+		bool pressed = GS::Input::IsKeyPressed(GS_KEY_E);
 		bool edge = pressed && !m_WasCarryKey;
 		m_WasCarryKey = pressed;
 
@@ -260,7 +260,7 @@ public:
 		if (m_Held < 0 && m_HeldTool < 0)
 			return;
 
-		Egss::RigidBody3D& body = m_Held >= 0
+		GS::RigidBody3D& body = m_Held >= 0
 			? m_World.GetBody(m_Rocks[m_Held].Handle)
 			: m_World.GetBody(m_Tools[m_HeldTool].Handle);
 
@@ -315,7 +315,7 @@ public:
 			m_ThrowVelocity = glm::vec3(0.0f);
 
 			BeginPickup(m_World.GetBody(m_Tools[tool].Handle));
-			m_World.GetBody(m_Tools[tool].Handle).Type = Egss::BodyType::Kinematic;
+			m_World.GetBody(m_Tools[tool].Handle).Type = GS::BodyType::Kinematic;
 			return;
 		}
 
@@ -326,10 +326,10 @@ public:
 		m_ThrowVelocity = glm::vec3(0.0f);
 
 		BeginPickup(m_World.GetBody(m_Rocks[rock].Handle));
-		m_World.GetBody(m_Rocks[rock].Handle).Type = Egss::BodyType::Kinematic;
+		m_World.GetBody(m_Rocks[rock].Handle).Type = GS::BodyType::Kinematic;
 	}
 
-	void BeginPickup(Egss::RigidBody3D& body)
+	void BeginPickup(GS::RigidBody3D& body)
 	{
 		m_PickupFrom = body.Position;
 		m_PickupOrientation = body.Orientation;
@@ -393,13 +393,13 @@ public:
 		if (m_Held < 0 && m_HeldTool < 0)
 			return;
 
-		Egss::RigidBody3D& body = m_Held >= 0
+		GS::RigidBody3D& body = m_Held >= 0
 			? m_World.GetBody(m_Rocks[m_Held].Handle)
 			: m_World.GetBody(m_Tools[m_HeldTool].Handle);
 
 		RestoreHeldCollider();
 
-		body.Type = Egss::BodyType::Dynamic;
+		body.Type = GS::BodyType::Dynamic;
 
 		// Clamped, so a fast flick of the mouse does not launch a rock across
 		// the island -- the throw should come from the player moving, not from
@@ -444,22 +444,22 @@ public:
 		Veg::Ring(centre, dir, radius, sides, u, v, out);
 	}
 
-	static void Segment(Egss::MeshData& data, const glm::vec3& base, const glm::vec3& tip,
+	static void Segment(GS::MeshData& data, const glm::vec3& base, const glm::vec3& tip,
 		float baseRadius, float tipRadius, int sides)
 	{
 		Veg::Segment(data, base, tip, baseRadius, tipRadius, sides);
 	}
 
-	static void LeafCluster(Egss::MeshData& data, const glm::vec3& centre, float radius,
+	static void LeafCluster(GS::MeshData& data, const glm::vec3& centre, float radius,
 		int segments, int rings, unsigned int seed, int path)
 	{
 		Veg::LeafCluster(data, centre, radius, segments, rings, seed, path);
 	}
 
-	static void Finish(Egss::MeshData& data) { Veg::Finish(data); }
+	static void Finish(GS::MeshData& data) { Veg::Finish(data); }
 
 	static void MakeTreeMesh(unsigned int seed, const TreeParams& tree,
-		Egss::MeshData& outBark, Egss::MeshData& outLeaves)
+		GS::MeshData& outBark, GS::MeshData& outLeaves)
 	{
 		Veg::MakeTreeMesh(seed, tree, outBark, outLeaves);
 	}
@@ -476,7 +476,7 @@ public:
 		// same capsule becomes dynamic and gravity does the rest. Nothing is
 		// added or removed, which matters because PhysicsWorld3D has no way to
 		// remove a body.
-		Egss::PhysicsWorld3D::BodyHandle Body = 0;
+		GS::PhysicsWorld3D::BodyHandle Body = 0;
 		float HalfHeight = 1.0f;
 		int Hits = 1;
 		bool Felled = false;
@@ -665,10 +665,10 @@ public:
 		float RadiusZ;
 	};
 
-	static Egss::MeshData MakeTube(const std::vector<BodyRing>& rings, int sides,
+	static GS::MeshData MakeTube(const std::vector<BodyRing>& rings, int sides,
 		bool capEnds = true)
 	{
-		Egss::MeshData data;
+		GS::MeshData data;
 
 		if (rings.size() < 2)
 			return data;
@@ -719,7 +719,7 @@ public:
 			}
 		}
 
-		Egss::Submesh all;
+		GS::Submesh all;
 		all.IndexCount = (unsigned int)data.Indices.size();
 		data.Submeshes.push_back(all);
 		data.RecalculateBounds();
@@ -729,7 +729,7 @@ public:
 
 	// An ovoid: a sphere squashed independently on each axis. Heads, hands and
 	// feet are all this shape with different numbers.
-	static Egss::MeshData MakeOvoid(const glm::vec3& radii, int sides, int rings)
+	static GS::MeshData MakeOvoid(const glm::vec3& radii, int sides, int rings)
 	{
 		std::vector<BodyRing> stack;
 
@@ -798,14 +798,14 @@ public:
 		frame[2] = glm::vec4(forward, 0.0f);
 		frame[3] = glm::vec4(head, 1.0f);
 
-		auto part = [&](const std::shared_ptr<Egss::Mesh>& mesh, const glm::vec3& local,
+		auto part = [&](const std::shared_ptr<GS::Mesh>& mesh, const glm::vec3& local,
 			const glm::vec3& scale, const glm::vec4& colour)
 		{
 			if (!mesh)
 				return;
 
 			m_Material->Set("u_Color", colour);
-			Egss::Renderer::Submit(m_Material, mesh,
+			GS::Renderer::Submit(m_Material, mesh,
 				frame * glm::translate(glm::mat4(1.0f), local)
 				* glm::scale(glm::mat4(1.0f), scale));
 		};
@@ -906,7 +906,7 @@ public:
 		// the mesh does the rest.
 		(void)tipRadius;
 
-		Egss::Renderer::Submit(m_Material, m_LimbMesh,
+		GS::Renderer::Submit(m_Material, m_LimbMesh,
 			frame * glm::scale(glm::mat4(1.0f), glm::vec3(baseRadius, length, baseRadius)));
 	}
 
@@ -919,11 +919,11 @@ public:
 
 		m_Material->Set("u_Color", colour);
 
-		Egss::Renderer::Submit(m_Material, m_JointMesh,
+		GS::Renderer::Submit(m_Material, m_JointMesh,
 			glm::translate(glm::mat4(1.0f), at) * glm::scale(glm::mat4(1.0f), glm::vec3(radius)));
 	}
 
-	void DrawOriented(const std::shared_ptr<Egss::Mesh>& mesh, const glm::vec3& at,
+	void DrawOriented(const std::shared_ptr<GS::Mesh>& mesh, const glm::vec3& at,
 		const glm::vec3& facing, const glm::vec4& colour)
 	{
 		if (!mesh)
@@ -931,7 +931,7 @@ public:
 
 		m_Material->Set("u_Color", colour);
 
-		Egss::Renderer::Submit(m_Material, mesh,
+		GS::Renderer::Submit(m_Material, mesh,
 			glm::translate(glm::mat4(1.0f), at) * glm::mat4_cast(ShaftTowards(facing)));
 	}
 
@@ -967,7 +967,7 @@ public:
 	struct Tool
 	{
 		ToolKind Kind;
-		Egss::PhysicsWorld3D::BodyHandle Handle;
+		GS::PhysicsWorld3D::BodyHandle Handle;
 		glm::vec3 HalfExtents;
 	};
 
@@ -984,9 +984,9 @@ public:
 
 	// Handle and head as two meshes, so they can be two colours -- wood and
 	// metal -- without a second material or a texture.
-	static void MakeToolMesh(ToolKind kind, Egss::MeshData& outWood, Egss::MeshData& outMetal)
+	static void MakeToolMesh(ToolKind kind, GS::MeshData& outWood, GS::MeshData& outMetal)
 	{
-		auto box = [](Egss::MeshData& data, const glm::vec3& centre, const glm::vec3& half)
+		auto box = [](GS::MeshData& data, const glm::vec3& centre, const glm::vec3& half)
 		{
 			const glm::vec3 normals[6] = {
 				{ 1,0,0 }, { -1,0,0 }, { 0,1,0 }, { 0,-1,0 }, { 0,0,1 }, { 0,0,-1 }
@@ -1046,21 +1046,21 @@ public:
 	{
 		for (int i = 0; i < (int)ToolKind::Count; i++)
 		{
-			Egss::MeshData wood, metal;
+			GS::MeshData wood, metal;
 			MakeToolMesh((ToolKind)i, wood, metal);
 
 			Finish(wood);
 			Finish(metal);
 
-			m_ToolWood[i].reset(new Egss::Mesh(wood, "ToolWood"));
-			m_ToolMetal[i].reset(new Egss::Mesh(metal, "ToolMetal"));
+			m_ToolWood[i].reset(new GS::Mesh(wood, "ToolWood"));
+			m_ToolMetal[i].reset(new GS::Mesh(metal, "ToolMetal"));
 
 			// Laid out in front of the spawn, far enough apart to aim at one.
 			glm::vec3 at = near + glm::vec3(1.4f + (float)i * 0.9f, 1.0f, 0.6f);
 
 			glm::vec3 half(0.10f, 0.42f, 0.10f);
 
-			Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(at, half, s_ToolMass);
+			GS::RigidBody3D body = GS::RigidBody3D::MakeBox(at, half, s_ToolMass);
 			body.Friction = 0.8f;
 			body.Restitution = 0.0f;
 			body.LinearDamping = 0.3f;
@@ -1084,14 +1084,14 @@ public:
 
 			for (const Tool& tool : m_Tools)
 			{
-				const Egss::RigidBody3D& body = m_World.GetBody(tool.Handle);
+				const GS::RigidBody3D& body = m_World.GetBody(tool.Handle);
 
 				glm::mat4 transform = glm::translate(glm::mat4(1.0f), body.Position)
 					* glm::mat4_cast(body.Orientation)
 					* glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -tool.HalfExtents.y, 0.0f));
 
 				int i = (int)tool.Kind;
-				Egss::Renderer::Submit(m_Material,
+				GS::Renderer::Submit(m_Material,
 					pass == 0 ? m_ToolWood[i] : m_ToolMetal[i], transform);
 			}
 		}
@@ -1109,7 +1109,7 @@ public:
 	// collider's own half-extents -- so there is never a rock that is neither.
 	void UpdatePickaxe()
 	{
-		bool swinging = Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
+		bool swinging = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_LEFT);
 		bool edge = swinging && !m_WasSwinging;
 		m_WasSwinging = swinging;
 
@@ -1174,7 +1174,7 @@ public:
 
 			float d = m_Field->DistanceAt(lattice.x, lattice.y, lattice.z);
 
-			if (d < Egss::VoxelField3D::Far * 0.5f && d <= 0.0f)
+			if (d < GS::VoxelField3D::Far * 0.5f && d <= 0.0f)
 			{
 				point = at;
 				distance = t;
@@ -1306,11 +1306,11 @@ public:
 		tree.Felled = true;
 		m_Felled++;
 
-		Egss::RigidBody3D& body = m_World.GetBody(tree.Body);
+		GS::RigidBody3D& body = m_World.GetBody(tree.Body);
 
 		float mass = s_TreeMass * tree.Scale * tree.Scale * tree.Scale;
 
-		body.Type = Egss::BodyType::Dynamic;
+		body.Type = GS::BodyType::Dynamic;
 		body.SetMass(mass);
 		body.RecalculateInertia();
 		body.UpdateInertiaWorld();
@@ -1347,7 +1347,7 @@ public:
 	{
 		Rock parent = m_Rocks[index];
 
-		const Egss::RigidBody3D& before = m_World.GetBody(parent.Handle);
+		const GS::RigidBody3D& before = m_World.GetBody(parent.Handle);
 
 		glm::vec3 half = parent.HalfExtents;
 
@@ -1383,19 +1383,19 @@ public:
 
 			// The parent's mesh, cut by the same plane and re-normalised into
 			// the piece's own -1..1 box.
-			Egss::MeshData cutMesh;
+			GS::MeshData cutMesh;
 			{
-				Egss::MeshData scaled = *parent.Shape;
+				GS::MeshData scaled = *parent.Shape;
 
-				for (Egss::MeshVertex& v : scaled.Vertices)
+				for (GS::MeshVertex& v : scaled.Vertices)
 					v.Position *= half;
 
-				Egss::MeshData clipped;
+				GS::MeshData clipped;
 				ClipMesh(scaled, axis, cut, piece == 0, clipped);
 
-				for (const Egss::MeshVertex& v : clipped.Vertices)
+				for (const GS::MeshVertex& v : clipped.Vertices)
 				{
-					Egss::MeshVertex moved = v;
+					GS::MeshVertex moved = v;
 					moved.Position = (v.Position - offset) / pieceHalf;
 					cutMesh.Vertices.push_back(moved);
 				}
@@ -1404,17 +1404,17 @@ public:
 				Finish(cutMesh);
 			}
 
-			std::shared_ptr<Egss::MeshData> shape =
-				std::make_shared<Egss::MeshData>(std::move(cutMesh));
+			std::shared_ptr<GS::MeshData> shape =
+				std::make_shared<GS::MeshData>(std::move(cutMesh));
 
-			std::shared_ptr<Egss::Mesh> mesh = shape->Indices.empty()
-				? nullptr : std::make_shared<Egss::Mesh>(*shape, "RockPiece");
+			std::shared_ptr<GS::Mesh> mesh = shape->Indices.empty()
+				? nullptr : std::make_shared<GS::Mesh>(*shape, "RockPiece");
 
 			float pieceFraction = piece == 0 ? f : 1.0f - f;
 
 			if (piece == 0)
 			{
-				Egss::RigidBody3D& body = m_World.GetBody(parent.Handle);
+				GS::RigidBody3D& body = m_World.GetBody(parent.Handle);
 
 				body.HalfExtents = pieceHalf;
 				body.SetMass(parentMass * pieceFraction);
@@ -1433,7 +1433,7 @@ public:
 				continue;
 			}
 
-			Egss::RigidBody3D body = Egss::RigidBody3D::MakeBox(at, pieceHalf,
+			GS::RigidBody3D body = GS::RigidBody3D::MakeBox(at, pieceHalf,
 				parentMass * pieceFraction);
 
 			body.Orientation = orientation;
@@ -1478,9 +1478,9 @@ public:
 	{
 		for (size_t i = 0; i < m_Rocks.size(); i++)
 		{
-			Egss::RigidBody3D& body = m_World.GetBody(m_Rocks[i].Handle);
+			GS::RigidBody3D& body = m_World.GetBody(m_Rocks[i].Handle);
 
-			if (body.Type != Egss::BodyType::Dynamic)
+			if (body.Type != GS::BodyType::Dynamic)
 			{
 				m_Rocks[i].PreviousVelocity = body.Velocity;
 				continue;
@@ -1667,10 +1667,10 @@ public:
 					// Three calls, each with exactly one coordinate on the
 					// boundary, hit only that one axis's low neighbour (plus
 					// this chunk, redundantly-but-harmlessly, each time).
-					int lx = cx * Egss::VoxelField3D::ChunkSize;
-					int ly = cy * Egss::VoxelField3D::ChunkSize;
-					int lz = cz * Egss::VoxelField3D::ChunkSize;
-					const int mid = Egss::VoxelField3D::ChunkSize / 2;
+					int lx = cx * GS::VoxelField3D::ChunkSize;
+					int ly = cy * GS::VoxelField3D::ChunkSize;
+					int lz = cz * GS::VoxelField3D::ChunkSize;
+					const int mid = GS::VoxelField3D::ChunkSize / 2;
 
 					m_Field->MarkDirtyAt(lx, ly + mid, lz + mid);
 					m_Field->MarkDirtyAt(lx + mid, ly, lz + mid);
@@ -1807,7 +1807,7 @@ public:
 			}
 		}
 
-		Egss::MeshData data;
+		GS::MeshData data;
 
 		if (markedFaces == 1)
 		{
@@ -1820,20 +1820,20 @@ public:
 
 			switch (face)
 			{
-				case Egss::VoxelTransition::PosX: interiorMax.x -= stride; layerMin.x = interiorMax.x; break;
-				case Egss::VoxelTransition::NegX: interiorMin.x += stride; layerMax.x = interiorMin.x; break;
-				case Egss::VoxelTransition::PosY: interiorMax.y -= stride; layerMin.y = interiorMax.y; break;
-				case Egss::VoxelTransition::NegY: interiorMin.y += stride; layerMax.y = interiorMin.y; break;
-				case Egss::VoxelTransition::PosZ: interiorMax.z -= stride; layerMin.z = interiorMax.z; break;
-				case Egss::VoxelTransition::NegZ: interiorMin.z += stride; layerMax.z = interiorMin.z; break;
+				case GS::VoxelTransition::PosX: interiorMax.x -= stride; layerMin.x = interiorMax.x; break;
+				case GS::VoxelTransition::NegX: interiorMin.x += stride; layerMax.x = interiorMin.x; break;
+				case GS::VoxelTransition::PosY: interiorMax.y -= stride; layerMin.y = interiorMax.y; break;
+				case GS::VoxelTransition::NegY: interiorMin.y += stride; layerMax.y = interiorMin.y; break;
+				case GS::VoxelTransition::PosZ: interiorMax.z -= stride; layerMin.z = interiorMax.z; break;
+				case GS::VoxelTransition::NegZ: interiorMin.z += stride; layerMax.z = interiorMin.z; break;
 			}
 
-			data = Egss::MarchingTetrahedra::Mesh(*m_Field, interiorMin, interiorMax, stride);
-			Egss::VoxelTransition::MeshBoundaryLayer(*m_Field, layerMin, layerMax, stride, boundaryMask, ratio, data);
+			data = GS::MarchingTetrahedra::Mesh(*m_Field, interiorMin, interiorMax, stride);
+			GS::VoxelTransition::MeshBoundaryLayer(*m_Field, layerMin, layerMax, stride, boundaryMask, ratio, data);
 
 			if (!data.Indices.empty())
 			{
-				Egss::Submesh all;
+				GS::Submesh all;
 				all.IndexCount = (unsigned int)data.Indices.size();
 				data.Submeshes.push_back(all);
 				data.RecalculateBounds();
@@ -1841,7 +1841,7 @@ public:
 		}
 		else
 		{
-			data = Egss::MarchingTetrahedra::Mesh(*m_Field, min, max, stride);
+			data = GS::MarchingTetrahedra::Mesh(*m_Field, min, max, stride);
 		}
 
 		size_t key = ChunkKey(chunk);
@@ -1853,15 +1853,15 @@ public:
 		}
 
 		ChunkEntry entry;
-		entry.MeshPtr = std::make_shared<Egss::Mesh>(data, "OpenWorldChunk");
+		entry.MeshPtr = std::make_shared<GS::Mesh>(data, "OpenWorldChunk");
 		entry.Stride = stride;
 		entry.Coord = chunk;
 
 		if (m_Grass && stride == 1)
 		{
-			Egss::MeshData blades = BuildGrass(data, chunk);
+			GS::MeshData blades = BuildGrass(data, chunk);
 			if (!blades.Indices.empty())
-				entry.GrassPtr = std::make_shared<Egss::Mesh>(blades, "OpenWorldGrass");
+				entry.GrassPtr = std::make_shared<GS::Mesh>(blades, "OpenWorldGrass");
 		}
 
 		// The bounds describe the chunk's extent in the field, not its
@@ -1882,7 +1882,7 @@ public:
 	// Only stride-1 chunks get grass. That is not a special case bolted on: a
 	// stride-2 chunk is already the renderer saying this is far enough away to
 	// halve its detail, and grass is the first thing that should go.
-	Egss::MeshData BuildGrass(const Egss::MeshData& terrain, const glm::ivec3& chunk) const
+	GS::MeshData BuildGrass(const GS::MeshData& terrain, const glm::ivec3& chunk) const
 	{
 		Grass::Settings settings;
 		settings.Density = m_GrassDensity;
@@ -2206,7 +2206,7 @@ public:
 	// stone in this style at all.
 	// The boulder mesh moved to `Rocks.h` so the terrain lab could have it
 	// too. Kept as a one-line forward here rather than renaming every call.
-	static Egss::MeshData MakeRockMesh(unsigned int seed)
+	static GS::MeshData MakeRockMesh(unsigned int seed)
 	{
 		return Boulder::Build(seed);
 	}
@@ -2218,8 +2218,8 @@ public:
 	// while the cross-section is a simple polygon, which holds for these blobs
 	// because every one of them is star-shaped about its own centre -- it would
 	// not hold for a torus, and this is not a general mesh boolean.
-	static void ClipMesh(const Egss::MeshData& in, int axis, float cut, bool keepBelow,
-		Egss::MeshData& out)
+	static void ClipMesh(const GS::MeshData& in, int axis, float cut, bool keepBelow,
+		GS::MeshData& out)
 	{
 		out.Vertices.clear();
 		out.Indices.clear();
@@ -2387,7 +2387,7 @@ public:
 			// rock lands near 20 kg and a 1.1 m one near 400.
 			float mass = 2000.0f * half.x * half.y * half.z;
 
-			Egss::RigidBody3D rock = Egss::RigidBody3D::MakeBox({ at.x, y, at.y }, half, mass);
+			GS::RigidBody3D rock = GS::RigidBody3D::MakeBox({ at.x, y, at.y }, half, mass);
 
 			// Turned about the vertical only. A box tipped onto a corner has to
 			// fall over before it rests, which is a second of every rock
@@ -2404,9 +2404,9 @@ public:
 			Rock made;
 			made.Handle = m_World.AddBody(rock);
 			made.HalfExtents = half;
-			made.Shape = std::make_shared<Egss::MeshData>(
+			made.Shape = std::make_shared<GS::MeshData>(
 				MakeRockMesh(101u + (unsigned int)(i % s_RockShapes) * 37u));
-			made.MeshPtr = std::make_shared<Egss::Mesh>(*made.Shape, "Rock");
+			made.MeshPtr = std::make_shared<GS::Mesh>(*made.Shape, "Rock");
 			made.Health = HealthFor(half);
 
 			m_Rocks.push_back(made);
@@ -2420,13 +2420,13 @@ public:
 	{
 		for (int i = 0; i < s_TreeShapes; i++)
 		{
-			Egss::MeshData bark, leaves;
+			GS::MeshData bark, leaves;
 			MakeTreeMesh(313u + (unsigned int)i * 101u, TreeParams(), bark, leaves);
 
-			m_TreeMeshes[i].reset(new Egss::Mesh(bark, "Tree"));
+			m_TreeMeshes[i].reset(new GS::Mesh(bark, "Tree"));
 
 			if (!leaves.Indices.empty())
-				m_LeafMeshes[i].reset(new Egss::Mesh(leaves, "TreeLeaves"));
+				m_LeafMeshes[i].reset(new GS::Mesh(leaves, "TreeLeaves"));
 		}
 
 		float scatter = glm::min(island.Radius * 0.7f, s_ChunkWorld * 2.0f);
@@ -2466,7 +2466,7 @@ public:
 			// moving after fifteen seconds, because a round collider on a
 			// slope has no rolling resistance for the solver to spend. A
 			// square trunk is invisible at this scale and lies where it falls.
-			Egss::RigidBody3D trunk = Egss::RigidBody3D::MakeStaticBox(
+			GS::RigidBody3D trunk = GS::RigidBody3D::MakeStaticBox(
 				tree.Position + glm::vec3(0.0f, tree.HalfHeight, 0.0f),
 				glm::vec3(s_TreeRadius * tree.Scale, tree.HalfHeight, s_TreeRadius * tree.Scale));
 
@@ -2498,7 +2498,7 @@ public:
 
 		for (const Tree& tree : m_Trees)
 		{
-			const Egss::RigidBody3D& body = m_World.GetBody(tree.Body);
+			const GS::RigidBody3D& body = m_World.GetBody(tree.Body);
 
 			// Drawn from the body in both states, so felling changes nothing
 			// about how a tree is rendered -- only what moves it. The mesh
@@ -2510,7 +2510,7 @@ public:
 				* glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -tree.HalfHeight, 0.0f))
 				* glm::scale(glm::mat4(1.0f), glm::vec3(tree.Scale));
 
-			Egss::Renderer::Submit(m_Material, m_TreeMeshes[tree.Shape], transform);
+			GS::Renderer::Submit(m_Material, m_TreeMeshes[tree.Shape], transform);
 		}
 
 		if (!m_Leaves)
@@ -2523,7 +2523,7 @@ public:
 			if (!m_LeafMeshes[tree.Shape])
 				continue;
 
-			const Egss::RigidBody3D& body = m_World.GetBody(tree.Body);
+			const GS::RigidBody3D& body = m_World.GetBody(tree.Body);
 
 			glm::mat4 transform =
 				glm::translate(glm::mat4(1.0f), body.Position)
@@ -2531,7 +2531,7 @@ public:
 				* glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -tree.HalfHeight, 0.0f))
 				* glm::scale(glm::mat4(1.0f), glm::vec3(tree.Scale));
 
-			Egss::Renderer::Submit(m_Material, m_LeafMeshes[tree.Shape], transform);
+			GS::Renderer::Submit(m_Material, m_LeafMeshes[tree.Shape], transform);
 		}
 	}
 
@@ -2541,7 +2541,7 @@ public:
 		glm::vec3 normal(0.0f);
 		m_World.GroundBelow(near, ground, normal);
 
-		Egss::RigidBody3D body = Egss::RigidBody3D::MakeCapsule(
+		GS::RigidBody3D body = GS::RigidBody3D::MakeCapsule(
 			{ near.x, ground + s_EyeHeight + 1.0f, near.z }, s_WalkerRadius,
 			s_WalkerHalfHeight, 75.0f);
 
@@ -2560,7 +2560,7 @@ public:
 
 	// --- Draw ---------------------------------------------------------------
 
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 		(void)ts;
 
@@ -2568,7 +2568,7 @@ public:
 		// outlives whichever demo last touched it -- a demo that assumes the
 		// default is at the mercy of the one selected before it, which is
 		// exactly how this demo's water came to be culled from below.
-		Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
 		// Under the surface the sky is not the sky. Clearing to the water
 		// colour is most of what makes being submerged *look* like being
@@ -2576,16 +2576,16 @@ public:
 		// dry sand and the only blue left is the distant sea seen edge-on.
 		m_Underwater = m_Camera.GetPosition().y < s_SeaLevel;
 
-		Egss::RenderCommand::SetClearColor(m_Underwater
+		GS::RenderCommand::SetClearColor(m_Underwater
 			? glm::vec4(m_Deep, 1.0f)
 			: glm::vec4(0.53f, 0.68f, 0.79f, 1.0f));
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::Clear();
 
-		Egss::Renderer::ResetStats();
+		GS::Renderer::ResetStats();
 
-		Egss::Frustum frustum = Egss::Frustum::FromViewProjection(m_Camera.GetViewProjectionMatrix());
+		GS::Frustum frustum = GS::Frustum::FromViewProjection(m_Camera.GetViewProjectionMatrix());
 
-		Egss::Renderer::BeginScene(m_Camera);
+		GS::Renderer::BeginScene(m_Camera);
 
 		m_Material->Set("u_SunDirection", glm::normalize(glm::vec3(-0.4f, -1.0f, -0.5f)));
 		m_Material->Set("u_SunColor", glm::vec3(1.0f, 0.96f, 0.88f));
@@ -2619,7 +2619,7 @@ public:
 		// the terrain pass, since that is the one whose cost the texture
 		// toggle actually changes.
 		if (m_MeasureGpu)
-			Egss::RenderCommand::BeginGpuTimer();
+			GS::RenderCommand::BeginGpuTimer();
 
 		m_ChunksDrawn = 0;
 		for (const auto& [key, entry] : m_Chunks)
@@ -2627,12 +2627,12 @@ public:
 			if (m_Culling && !frustum.Intersects(entry.Bounds))
 				continue;
 
-			Egss::Renderer::Submit(m_Material, entry.MeshPtr, glm::mat4(1.0f));
+			GS::Renderer::Submit(m_Material, entry.MeshPtr, glm::mat4(1.0f));
 			m_ChunksDrawn++;
 		}
 
 		if (m_MeasureGpu)
-			m_LastGpuMs = Egss::RenderCommand::EndGpuTimerMs();
+			m_LastGpuMs = GS::RenderCommand::EndGpuTimerMs();
 
 		// Its own colour, a shade off the ground's, so the blades read against
 		// what they are standing in rather than disappearing into it.
@@ -2648,7 +2648,7 @@ public:
 			if (m_Culling && !frustum.Intersects(entry.Bounds))
 				continue;
 
-			Egss::Renderer::Submit(m_Material, entry.GrassPtr, glm::mat4(1.0f));
+			GS::Renderer::Submit(m_Material, entry.GrassPtr, glm::mat4(1.0f));
 			m_GrassDrawn++;
 		}
 
@@ -2664,23 +2664,23 @@ public:
 		// does not wrongly reject whatever renders behind it -- there is
 		// nothing else transparent here yet, but the ocean is one surface
 		// and does not need to sort against itself.
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::Alpha);
-		Egss::RenderCommand::SetDepthWrite(false);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::Alpha);
+		GS::RenderCommand::SetDepthWrite(false);
 
 		m_Material->Set("u_Terrain", 0);
 		m_Material->Set("u_Waves", 1);
 		m_Material->Set("u_Color", m_WaterColour);
 		m_Material->Set("u_Textured", 0);
-		Egss::Renderer::Submit(m_Material, m_Water, glm::mat4(1.0f));
+		GS::Renderer::Submit(m_Material, m_Water, glm::mat4(1.0f));
 
 		m_Material->Set("u_Waves", 0);
 
-		Egss::RenderCommand::SetDepthWrite(true);
-		Egss::RenderCommand::SetBlendMode(Egss::BlendMode::None);
+		GS::RenderCommand::SetDepthWrite(true);
+		GS::RenderCommand::SetBlendMode(GS::BlendMode::None);
 
-		Egss::Renderer::EndScene();
+		GS::Renderer::EndScene();
 
-		m_Stats = Egss::Renderer::GetStats();
+		m_Stats = GS::Renderer::GetStats();
 	}
 
 	// Identifies the world the cache belongs to, by **sampling the terrain
@@ -2738,7 +2738,7 @@ public:
 
 		for (const Rock& rock : m_Rocks)
 		{
-			const Egss::RigidBody3D& body = m_World.GetBody(rock.Handle);
+			const GS::RigidBody3D& body = m_World.GetBody(rock.Handle);
 
 			glm::mat4 transform = glm::translate(glm::mat4(1.0f), body.Position)
 				* glm::mat4_cast(body.Orientation)
@@ -2746,7 +2746,7 @@ public:
 				* glm::scale(glm::mat4(1.0f), rock.HalfExtents);
 
 			if (rock.MeshPtr)
-				Egss::Renderer::Submit(m_Material, rock.MeshPtr, transform);
+				GS::Renderer::Submit(m_Material, rock.MeshPtr, transform);
 		}
 	}
 
@@ -2758,7 +2758,7 @@ public:
 	// to bump into, and it is three lines.
 	void ApplyUndertow()
 	{
-		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+		GS::RigidBody3D& body = m_World.GetBody(m_Walker);
 
 		glm::vec2 flat(body.Position.x, body.Position.z);
 		float distance = glm::length(flat);
@@ -2857,7 +2857,7 @@ public:
 		float half = 0.5f * (s_SideX - 1) * s_Voxel;
 		float span = half * 2.0f;
 
-		Egss::MeshData data;
+		GS::MeshData data;
 
 		const int n = s_WaterSegments;
 
@@ -2893,12 +2893,12 @@ public:
 			}
 		}
 
-		Egss::Submesh all;
+		GS::Submesh all;
 		all.IndexCount = (unsigned int)data.Indices.size();
 		data.Submeshes.push_back(all);
 		data.RecalculateBounds();
 
-		m_Water = std::make_shared<Egss::Mesh>(data, "Water");
+		m_Water = std::make_shared<GS::Mesh>(data, "Water");
 	}
 
 	// --- Shader ---------------------------------------------------------
@@ -3071,10 +3071,10 @@ public:
 			}
 		)";
 
-		m_Shader.reset(Egss::Shader::Create("OpenWorldSun", vertexSrc, fragmentSrc));
-		m_Material = Egss::Material::Create(m_Shader);
+		m_Shader.reset(GS::Shader::Create("OpenWorldSun", vertexSrc, fragmentSrc));
+		m_Material = GS::Material::Create(m_Shader);
 
-		m_GroundTexture.reset(Egss::Texture2D::Create("assets/models/checker.png"));
+		m_GroundTexture.reset(GS::Texture2D::Create("assets/models/checker.png"));
 		m_Material->SetTexture("u_BaseColourMap", m_GroundTexture);
 	}
 
@@ -3306,11 +3306,11 @@ public:
 	static constexpr float s_ReliefFine = 0.35f;
 	static constexpr int s_IslandCount = 5;
 
-	// Egss::VoxelField3D::ChunkSize is a runtime constant expression too,
+	// GS::VoxelField3D::ChunkSize is a runtime constant expression too,
 	// but this keeps the arithmetic in one place at the top of the file.
 	static constexpr float s_ChunkWorld = 16.0f * s_Voxel;
 
-	Egss::PerspectiveCamera m_Camera;
+	GS::PerspectiveCamera m_Camera;
 	FirstPersonController m_Controller;
 
 	bool m_FirstPerson = true;
@@ -3351,12 +3351,12 @@ public:
 
 	std::vector<Island> m_Islands;
 
-	std::shared_ptr<Egss::VoxelField3D> m_Field;
+	std::shared_ptr<GS::VoxelField3D> m_Field;
 
 	struct ChunkEntry
 	{
-		std::shared_ptr<Egss::Mesh> MeshPtr;
-		Egss::Aabb Bounds;
+		std::shared_ptr<GS::Mesh> MeshPtr;
+		GS::Aabb Bounds;
 
 		// Which lattice this mesh was built on. Kept per chunk rather than
 		// recomputed from the distance, because the distance is what the
@@ -3367,7 +3367,7 @@ public:
 		glm::ivec3 Coord{ 0 };
 
 		// Null on a coarse chunk, or on one with no grass-worthy ground.
-		std::shared_ptr<Egss::Mesh> GrassPtr;
+		std::shared_ptr<GS::Mesh> GrassPtr;
 	};
 	std::map<size_t, ChunkEntry> m_Chunks;
 	std::unordered_set<size_t> m_Filled;
@@ -3382,19 +3382,19 @@ public:
 	size_t m_RingCursor = 0;
 	int m_ChunksDrawn = 0;
 
-	std::shared_ptr<Egss::Mesh> m_Water;
+	std::shared_ptr<GS::Mesh> m_Water;
 
 	struct Rock
 	{
-		Egss::PhysicsWorld3D::BodyHandle Handle;
+		GS::PhysicsWorld3D::BodyHandle Handle;
 		glm::vec3 HalfExtents;
 
 		// Its own shape, because a rock that has been split is no longer any
 		// of the shapes it started as -- it is a piece of one, with a flat face
 		// where the cut went. Kept as data as well as a mesh so the next cut
 		// has something to cut.
-		std::shared_ptr<Egss::MeshData> Shape;
-		std::shared_ptr<Egss::Mesh> MeshPtr;
+		std::shared_ptr<GS::MeshData> Shape;
+		std::shared_ptr<GS::Mesh> MeshPtr;
 
 		// Hit points, not a swing count. A rock breaks because something hit
 		// it hard enough, whether that was a pickaxe, a fall, or another rock
@@ -3423,8 +3423,8 @@ public:
 	glm::vec4 m_RockColour{ 0.30f, 0.30f, 0.33f, 1.0f };
 
 	std::vector<Tree> m_Trees;
-	std::shared_ptr<Egss::Mesh> m_TreeMeshes[s_TreeShapes];
-	std::shared_ptr<Egss::Mesh> m_LeafMeshes[s_TreeShapes];
+	std::shared_ptr<GS::Mesh> m_TreeMeshes[s_TreeShapes];
+	std::shared_ptr<GS::Mesh> m_LeafMeshes[s_TreeShapes];
 	glm::vec4 m_BarkColour{ 0.31f, 0.22f, 0.14f, 1.0f };
 
 	// A shade off the grass, so a canopy reads against the ground it is
@@ -3433,8 +3433,8 @@ public:
 	bool m_Leaves = true;
 
 	std::vector<Tool> m_Tools;
-	std::shared_ptr<Egss::Mesh> m_ToolWood[(int)ToolKind::Count];
-	std::shared_ptr<Egss::Mesh> m_ToolMetal[(int)ToolKind::Count];
+	std::shared_ptr<GS::Mesh> m_ToolWood[(int)ToolKind::Count];
+	std::shared_ptr<GS::Mesh> m_ToolMetal[(int)ToolKind::Count];
 
 	int m_Held = -1;
 	int m_HeldTool = -1;
@@ -3451,8 +3451,8 @@ public:
 	int m_Felled = 0;
 	int m_Dug = 0;
 
-	std::shared_ptr<Egss::Mesh> m_LimbMesh, m_TorsoMesh, m_HeadMesh;
-	std::shared_ptr<Egss::Mesh> m_HandMesh, m_FootMesh, m_JointMesh;
+	std::shared_ptr<GS::Mesh> m_LimbMesh, m_TorsoMesh, m_HeadMesh;
+	std::shared_ptr<GS::Mesh> m_HandMesh, m_FootMesh, m_JointMesh;
 	bool m_ThirdPerson = true;
 	float m_BodyYaw = -90.0f;
 	glm::vec3 m_CameraFocus{ 0.0f };
@@ -3466,9 +3466,9 @@ public:
 	float m_WaveTime = 0.0f;
 	float m_Undertow = 0.0f;
 
-	std::shared_ptr<Egss::Shader> m_Shader;
-	std::shared_ptr<Egss::Material> m_Material;
-	std::shared_ptr<Egss::Texture2D> m_GroundTexture;
+	std::shared_ptr<GS::Shader> m_Shader;
+	std::shared_ptr<GS::Material> m_Material;
+	std::shared_ptr<GS::Texture2D> m_GroundTexture;
 	// Off by default now the terrain is meant to read as sand rather than as
 	// a test surface -- the checker is a debug texture. The toggle stays,
 	// because the textured-vs-untextured GPU comparison still wants it.
@@ -3530,8 +3530,8 @@ public:
 	bool m_MeasureGpu = false;
 	double m_LastGpuMs = 0.0;
 
-	Egss::PhysicsWorld3D m_World;
-	Egss::PhysicsWorld3D::BodyHandle m_Walker = 0;
+	GS::PhysicsWorld3D m_World;
+	GS::PhysicsWorld3D::BodyHandle m_Walker = 0;
 
-	Egss::Renderer::Statistics m_Stats;
+	GS::Renderer::Statistics m_Stats;
 };

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Egss.h>
+#include <GS.h>
 #include "VoxelPlanet.h"
 
 #include <queue>
@@ -119,7 +119,7 @@ public:
 	// end against. That is the same division of labour the ocean sphere has
 	// always used, and it is why this grid can be six metres a cell while the
 	// coast reads at the resolution of the chunks.
-	void BuildMesh(Egss::MeshData& out) const;
+	void BuildMesh(GS::MeshData& out) const;
 
 	// **Re-read the ground where somebody dug, then let the water find out
 	// what that changed.**
@@ -596,7 +596,7 @@ inline void SurfaceWater::Report() const
 
 	float cell = 2.0f * m_Reach / (float)(Side - 1);
 
-	EGSS_TRACE("Surface water: {0} of {1} columns wet ({2:.1f}%) in {3} sheets, "
+	GS_TRACE("Surface water: {0} of {1} columns wet ({2:.1f}%) in {3} sheets, "
 		"{4:.0f} m^3; each sheet level to {5:.5f} m inside the seeded ring, "
 		"ground above its own surface by at most {6:.5f} m; {7} quads drawn "
 		"({8:.1f}% of the wet columns are in one), from {9} seeded rim columns",
@@ -612,14 +612,14 @@ inline void SurfaceWater::Report() const
 	// the flood corrects it in one column -- and the drawn mesh leaves that
 	// ring out, so it is measured here and never seen. Print it rather than
 	// trusting the number in this comment; it is a property of the site.
-	EGSS_TRACE("  the map and the terrain disagree by up to {0:.3f} m at the "
+	GS_TRACE("  the map and the terrain disagree by up to {0:.3f} m at the "
 		"seeded rim, which is why the outer {1} columns are not drawn",
 		worstSeam, s_SeedMargin);
 }
 
-inline void SurfaceWater::BuildMesh(Egss::MeshData& out) const
+inline void SurfaceWater::BuildMesh(GS::MeshData& out) const
 {
-	out = Egss::MeshData();
+	out = GS::MeshData();
 
 	if (!m_Valid)
 		return;
@@ -653,7 +653,7 @@ inline void SurfaceWater::BuildMesh(Egss::MeshData& out) const
 		// The flood already knows it: the level it settled at, less the ground
 		// it settled on. It costs a float that was already in the vertex and
 		// otherwise unused -- this mesh has no texture.
-		Egss::MeshVertex point;
+		GS::MeshVertex point;
 		point.Position = glm::vec3(glm::dvec3(m_Direction[at])
 			* (double)m_Level[at] - m_Site);
 		point.Normal = m_Direction[at];
@@ -680,11 +680,11 @@ inline void SurfaceWater::BuildMesh(Egss::MeshData& out) const
 
 	if (out.Indices.empty())
 	{
-		out = Egss::MeshData();
+		out = GS::MeshData();
 		return;
 	}
 
-	Egss::Submesh all;
+	GS::Submesh all;
 	all.IndexCount = (unsigned int)out.Indices.size();
 	out.Submeshes.push_back(all);
 	out.RecalculateBounds();

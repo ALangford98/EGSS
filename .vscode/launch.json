@@ -9,7 +9,7 @@
             "args": [],
             "stopAtEntry": false,
             // Must be the executable's own directory: that is how the $ORIGIN
-            // rpath resolves libEGSS.so.
+            // rpath resolves libGS.so.
             "cwd": "${workspaceFolder}/bin/Debug-linux-x86_64/TestEnv",
             "environment": [],
             "externalConsole": false,

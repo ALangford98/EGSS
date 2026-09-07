@@ -2,6 +2,7 @@
 .vs/
 bin/
 bin-int/
+__pycache__/
 
 # Claude Code worktrees. These are real git worktrees living inside the tree,
 # so each has a .git file of its own and `git add .` reports them as embedded
@@ -14,9 +15,9 @@ bin-int/
 
 # premake-generated project files (regenerate with BuildProject.sh / .bat)
 /Makefile
-/EGSS/Makefile
-/EGSS/vendor/Makefile
-/EGSS/vendor/Glad/Makefile
+/GS/Makefile
+/GS/vendor/Makefile
+/GS/vendor/Glad/Makefile
 /TestEnv/Makefile
 *.sln
 *.vcxproj

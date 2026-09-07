@@ -22,7 +22,7 @@
 // is centred on the camera. A streak that leaves downwind reappears upwind, so
 // the field is endless and costs one draw call of a few thousand triangles.
 
-#include <Egss.h>
+#include <GS.h>
 
 #include <glm/glm.hpp>
 
@@ -39,9 +39,9 @@ namespace WindStreaks {
 	// phase, because a vertex has three floats spare there and this mesh has
 	// no lighting to do. That is worth saying out loud rather than leaving for
 	// someone to discover from the shader.
-	inline Egss::MeshData BuildMesh(int count, float extent, unsigned int seed = 7u)
+	inline GS::MeshData BuildMesh(int count, float extent, unsigned int seed = 7u)
 	{
-		Egss::MeshData mesh;
+		GS::MeshData mesh;
 
 		if (count <= 0)
 			return mesh;
@@ -96,7 +96,7 @@ namespace WindStreaks {
 				{ at, at + 1, at + 2, at, at + 2, at + 3 });
 		}
 
-		Egss::Submesh all;
+		GS::Submesh all;
 		all.IndexCount = (unsigned int)mesh.Indices.size();
 
 		mesh.Submeshes.push_back(all);

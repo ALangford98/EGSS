@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Egss.h>
+#include <GS.h>
 #include "Demo.h"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -37,14 +37,14 @@ public:
 
 	void OnDemoAttach() override
 	{
-		m_Sphere.reset(Egss::Mesh::CreateSphere(1.0f, 48, 24));
-		m_Ground.reset(Egss::Mesh::CreatePlane(14.0f));
+		m_Sphere.reset(GS::Mesh::CreateSphere(1.0f, 48, 24));
+		m_Ground.reset(GS::Mesh::CreatePlane(14.0f));
 
 		// Loaded rather than generated, so the demo says something about real
 		// assets. Both are smooth-normalled, which matters -- see the note on
 		// the outline pass.
-		m_Torus.reset(Egss::Mesh::Load("assets/models/torus.obj"));
-		m_Icosahedron.reset(Egss::Mesh::Load("assets/models/icosahedron.obj"));
+		m_Torus.reset(GS::Mesh::Load("assets/models/torus.obj"));
+		m_Icosahedron.reset(GS::Mesh::Load("assets/models/icosahedron.obj"));
 
 		BuildShaders();
 	}
@@ -52,22 +52,22 @@ public:
 	// Anything that moves lives here, not in OnDemoUpdate. A demo that spins
 	// from wall-clock time cannot reproduce itself run to run, let alone under
 	// replay.
-	void OnDemoFixedUpdate(Egss::Timestep step) override
+	void OnDemoFixedUpdate(GS::Timestep step) override
 	{
 		m_Spin += m_SpinRate * step;
 		if (m_Spin > 360.0f)
 			m_Spin -= 360.0f;
 	}
 
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 		(void)ts;
 
-		Egss::RenderCommand::SetClearColor(m_Background);
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor(m_Background);
+		GS::RenderCommand::Clear();
 
 		PositionCamera();
-		Egss::Renderer::BeginScene(m_Camera);
+		GS::Renderer::BeginScene(m_Camera);
 
 		glm::vec3 lightDirection = glm::normalize(glm::vec3(
 			std::cos(glm::radians(m_LightAngle)) * -0.8f,
@@ -84,7 +84,7 @@ public:
 		m_Scene->Set("u_RimWidth", m_RimWidth);
 		m_Scene->Set("u_RimStrength", m_RimStrength);
 
-		Egss::Window& window = Egss::Application::Get().GetWindow();
+		GS::Window& window = GS::Application::Get().GetWindow();
 		glm::vec3 viewport((float)window.GetWidth(), (float)window.GetHeight(), 0.0f);
 		m_OutlineScene->Set("u_Viewport", viewport);
 		m_OutlineScene->Set("u_OutlinePixels", m_OutlinePixels);
@@ -102,14 +102,14 @@ public:
 		// correct behaviour from the mechanism, and not what anyone wants.
 		DrawGround();
 
-		Egss::Renderer::EndScene();
+		GS::Renderer::EndScene();
 	}
 
 	void OnDemoImGui() override;
 
 private:
 	// One object: outline pass, then the shaded pass over the top.
-	void DrawObject(const std::shared_ptr<Egss::Mesh>& mesh, const glm::vec3& where,
+	void DrawObject(const std::shared_ptr<GS::Mesh>& mesh, const glm::vec3& where,
 		float spin, const glm::vec4& colour)
 	{
 		if (!mesh)
@@ -128,9 +128,9 @@ private:
 			// **Cull the front faces**, leaving the far side of the inflated
 			// copy. Drawing the near side instead would simply cover the model
 			// in flat black -- the inflated hull encloses it.
-			Egss::RenderCommand::SetCullFace(Egss::CullFace::Front);
+			GS::RenderCommand::SetCullFace(GS::CullFace::Front);
 			m_Outline->Set("u_NormalMatrix", normalMatrix);
-			Egss::Renderer::Submit(m_Outline, mesh, transform);
+			GS::Renderer::Submit(m_Outline, mesh, transform);
 
 			// **Back to None, which is the engine's default -- not to Back.**
 			// Cull state is global and outlives the demo that set it: leaving
@@ -138,12 +138,12 @@ private:
 			// faces, which made OpenWorld's single-sided water plane vanish the
 			// moment the camera went under it. Cube3D already restored to None;
 			// this did not.
-			Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+			GS::RenderCommand::SetCullFace(GS::CullFace::None);
 		}
 
 		m_Object->Set("u_NormalMatrix", normalMatrix);
 		m_Object->Set("u_BaseColour", colour);
-		Egss::Renderer::Submit(m_Object, mesh, transform);
+		GS::Renderer::Submit(m_Object, mesh, transform);
 	}
 
 	void DrawGround()
@@ -153,7 +153,7 @@ private:
 
 		m_Object->Set("u_NormalMatrix", glm::mat4(1.0f));
 		m_Object->Set("u_BaseColour", glm::vec4(0.30f, 0.31f, 0.38f, 1.0f));
-		Egss::Renderer::Submit(m_Object, m_Ground, glm::mat4(1.0f));
+		GS::Renderer::Submit(m_Object, m_Ground, glm::mat4(1.0f));
 	}
 
 	void PositionCamera()
@@ -171,13 +171,13 @@ private:
 
 	void BuildShaders();
 
-	Egss::PerspectiveCamera m_Camera{ 50.0f, 1280.0f / 720.0f, 0.1f, 200.0f };
+	GS::PerspectiveCamera m_Camera{ 50.0f, 1280.0f / 720.0f, 0.1f, 200.0f };
 
-	std::shared_ptr<Egss::Mesh> m_Sphere, m_Torus, m_Icosahedron, m_Ground;
+	std::shared_ptr<GS::Mesh> m_Sphere, m_Torus, m_Icosahedron, m_Ground;
 
-	std::shared_ptr<Egss::Shader> m_Shader, m_OutlineShader;
-	std::shared_ptr<Egss::Material> m_Scene, m_Object;
-	std::shared_ptr<Egss::Material> m_OutlineScene, m_Outline;
+	std::shared_ptr<GS::Shader> m_Shader, m_OutlineShader;
+	std::shared_ptr<GS::Material> m_Scene, m_Object;
+	std::shared_ptr<GS::Material> m_OutlineScene, m_Outline;
 
 	// --- Cel parameters ---
 	int m_Bands = 4;
@@ -300,9 +300,9 @@ inline void CelShading::BuildShaders()
 		}
 	)";
 
-	m_Shader.reset(Egss::Shader::Create("Cel", vertexSrc, fragmentSrc));
-	m_Scene = Egss::Material::Create(m_Shader);
-	m_Object = Egss::Material::CreateInstance(m_Scene);
+	m_Shader.reset(GS::Shader::Create("Cel", vertexSrc, fragmentSrc));
+	m_Scene = GS::Material::Create(m_Shader);
+	m_Object = GS::Material::CreateInstance(m_Scene);
 
 	// --- The outline hull ---------------------------------------------------
 	//
@@ -367,9 +367,9 @@ inline void CelShading::BuildShaders()
 		void main() { color = u_OutlineColour; }
 	)";
 
-	m_OutlineShader.reset(Egss::Shader::Create("CelOutline", outlineVertexSrc, outlineFragmentSrc));
-	m_OutlineScene = Egss::Material::Create(m_OutlineShader);
-	m_Outline = Egss::Material::CreateInstance(m_OutlineScene);
+	m_OutlineShader.reset(GS::Shader::Create("CelOutline", outlineVertexSrc, outlineFragmentSrc));
+	m_OutlineScene = GS::Material::Create(m_OutlineShader);
+	m_Outline = GS::Material::CreateInstance(m_OutlineScene);
 }
 
 inline void CelShading::OnDemoImGui()

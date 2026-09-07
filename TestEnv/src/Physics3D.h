@@ -11,7 +11,7 @@
 //
 // Things marked TRY: are deliberate places to experiment.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -44,11 +44,11 @@ public:
 		m_Camera.SetRotation(-92.0f, -26.0f);
 
 		BuildShader();
-		m_Cube.reset(Egss::Mesh::CreateCube(1.0f));
-		m_Sphere.reset(Egss::Mesh::CreateSphere(0.5f, 24, 12));
+		m_Cube.reset(GS::Mesh::CreateCube(1.0f));
+		m_Sphere.reset(GS::Mesh::CreateSphere(0.5f, 24, 12));
 		// Unit radius and unit half-height, so the scale in the draw call is
 		// the capsule's own diameter and segment length.
-		m_Cylinder.reset(Egss::Mesh::CreateCylinder(0.5f, 0.5f, 24));
+		m_Cylinder.reset(GS::Mesh::CreateCylinder(0.5f, 0.5f, 24));
 
 		BuildScene();
 	}
@@ -63,14 +63,14 @@ public:
 		m_SpawnAccumulator = 0.0f;
 
 		// Floor.
-		Egss::RigidBody3D floor = Egss::RigidBody3D::MakeStaticBox({ 0, -0.5f, 0 }, { 9.0f, 0.5f, 7.0f });
+		GS::RigidBody3D floor = GS::RigidBody3D::MakeStaticBox({ 0, -0.5f, 0 }, { 9.0f, 0.5f, 7.0f });
 		floor.Friction = 0.7f;
 		m_World.AddBody(floor);
 
 		// A ramp to tumble down. Rotated about z, so downhill runs towards +x
 		// -- the same arrangement the solver was checked against, which makes
 		// what you see here directly comparable to the numbers.
-		Egss::RigidBody3D ramp = Egss::RigidBody3D::MakeStaticBox({ -3.5f, 2.2f, 0 }, { 4.0f, 0.25f, 2.5f });
+		GS::RigidBody3D ramp = GS::RigidBody3D::MakeStaticBox({ -3.5f, 2.2f, 0 }, { 4.0f, 0.25f, 2.5f });
 		ramp.Orientation = glm::angleAxis(glm::radians(-22.0f), glm::vec3(0, 0, 1));
 		ramp.Friction = 0.6f;
 		m_World.AddBody(ramp);
@@ -78,10 +78,10 @@ public:
 		// Low walls, so things stay in shot. The near one is deliberately
 		// shorter than the rest -- the camera looks over it, and a wall the
 		// same height as the others simply hides the floor.
-		m_World.AddBody(Egss::RigidBody3D::MakeStaticBox({ 9.0f, 0.6f, 0 }, { 0.5f, 1.1f, 7.0f }));
-		m_World.AddBody(Egss::RigidBody3D::MakeStaticBox({ -9.0f, 0.6f, 0 }, { 0.5f, 1.1f, 7.0f }));
-		m_World.AddBody(Egss::RigidBody3D::MakeStaticBox({ 0, 0.6f, -7.0f }, { 9.0f, 1.1f, 0.5f }));
-		m_World.AddBody(Egss::RigidBody3D::MakeStaticBox({ 0, 0.15f, 7.0f }, { 9.0f, 0.65f, 0.5f }));
+		m_World.AddBody(GS::RigidBody3D::MakeStaticBox({ 9.0f, 0.6f, 0 }, { 0.5f, 1.1f, 7.0f }));
+		m_World.AddBody(GS::RigidBody3D::MakeStaticBox({ -9.0f, 0.6f, 0 }, { 0.5f, 1.1f, 7.0f }));
+		m_World.AddBody(GS::RigidBody3D::MakeStaticBox({ 0, 0.6f, -7.0f }, { 9.0f, 1.1f, 0.5f }));
+		m_World.AddBody(GS::RigidBody3D::MakeStaticBox({ 0, 0.15f, 7.0f }, { 9.0f, 0.65f, 0.5f }));
 
 		m_StaticCount = (unsigned int)m_World.GetBodyCount();
 
@@ -105,7 +105,7 @@ public:
 	{
 		for (int i = 0; i < 4; i++)
 		{
-			Egss::RigidBody3D box = Egss::RigidBody3D::MakeBox(
+			GS::RigidBody3D box = GS::RigidBody3D::MakeBox(
 				// Off to one side, clear of the ramp's run-out. Standing in
 				// the middle it was simply bowled over by the first sphere
 				// down, which is honest physics and a poor demonstration of
@@ -132,7 +132,7 @@ public:
 			float radius = 0.22f;
 			float halfHeight = 0.35f + 0.15f * std::fabs(std::sin((float)m_SpawnCounter));
 
-			Egss::RigidBody3D capsule = Egss::RigidBody3D::MakeCapsule(
+			GS::RigidBody3D capsule = GS::RigidBody3D::MakeCapsule(
 				where, radius, halfHeight, 1.0f);
 			// Turned onto its side, across the slope.
 			capsule.Orientation = glm::angleAxis(glm::half_pi<float>(),
@@ -149,7 +149,7 @@ public:
 		{
 			float half = 0.3f + 0.1f * std::fabs(std::sin((float)m_SpawnCounter));
 
-			Egss::RigidBody3D crate = Egss::RigidBody3D::MakeBox(where, glm::vec3(half), 1.0f);
+			GS::RigidBody3D crate = GS::RigidBody3D::MakeBox(where, glm::vec3(half), 1.0f);
 			crate.Orientation = glm::angleAxis(0.7f * std::sin((float)m_SpawnCounter * 2.3f),
 				glm::normalize(glm::vec3(0.3f, 1.0f, 0.6f)));
 			crate.AngularVelocity = { 1.5f, 2.0f, -1.0f };
@@ -161,7 +161,7 @@ public:
 		{
 			float radius = 0.25f + 0.12f * std::fabs(std::cos((float)m_SpawnCounter * 1.7f));
 
-			Egss::RigidBody3D ball = Egss::RigidBody3D::MakeSphere(where, radius, 1.0f);
+			GS::RigidBody3D ball = GS::RigidBody3D::MakeSphere(where, radius, 1.0f);
 			ball.Restitution = m_Bounciness;
 			// High enough to roll rather than slide, which is what makes a
 			// sphere reach the bottom of the ramp behind the crates.
@@ -176,7 +176,7 @@ public:
 	// ---------------------------------------------------------------------
 	// Simulation
 	// ---------------------------------------------------------------------
-	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
+	void OnDemoFixedUpdate(GS::Timestep fixedStep) override
 	{
 		// Camera movement lives here rather than in OnDemoUpdate, so how far
 		// it travels does not depend on the frame rate -- and so a recorded
@@ -201,7 +201,7 @@ public:
 		m_World.Step(fixedStep);
 	}
 
-	void MoveCamera(Egss::Timestep step)
+	void MoveCamera(GS::Timestep step)
 	{
 		if (ImGui::GetIO().WantCaptureKeyboard)
 			return;
@@ -209,12 +209,12 @@ public:
 		glm::vec3 position = m_Camera.GetPosition();
 		float move = m_CameraSpeed * step;
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) position += m_Camera.GetForward() * move;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) position -= m_Camera.GetForward() * move;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) position -= m_Camera.GetRight() * move;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) position += m_Camera.GetRight() * move;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_Q)) position.y -= move;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_E)) position.y += move;
+		if (GS::Input::IsKeyPressed(GS_KEY_W)) position += m_Camera.GetForward() * move;
+		if (GS::Input::IsKeyPressed(GS_KEY_S)) position -= m_Camera.GetForward() * move;
+		if (GS::Input::IsKeyPressed(GS_KEY_A)) position -= m_Camera.GetRight() * move;
+		if (GS::Input::IsKeyPressed(GS_KEY_D)) position += m_Camera.GetRight() * move;
+		if (GS::Input::IsKeyPressed(GS_KEY_Q)) position.y -= move;
+		if (GS::Input::IsKeyPressed(GS_KEY_E)) position.y += move;
 
 		m_Camera.SetPosition(position);
 
@@ -222,10 +222,10 @@ public:
 		float yaw = m_Camera.GetYaw();
 		float pitch = m_Camera.GetPitch();
 
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))  yaw -= look;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) yaw += look;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))    pitch += look;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))  pitch -= look;
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT))  yaw -= look;
+		if (GS::Input::IsKeyPressed(GS_KEY_RIGHT)) yaw += look;
+		if (GS::Input::IsKeyPressed(GS_KEY_UP))    pitch += look;
+		if (GS::Input::IsKeyPressed(GS_KEY_DOWN))  pitch -= look;
 
 		m_Camera.SetRotation(yaw, pitch);
 	}
@@ -233,17 +233,17 @@ public:
 	// ---------------------------------------------------------------------
 	// Drawing
 	// ---------------------------------------------------------------------
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 		m_FrameTime = ts.GetMilliseconds();
 
-		float alpha = Egss::Application::Get().GetInterpolationAlpha();
+		float alpha = GS::Application::Get().GetInterpolationAlpha();
 
-		Egss::RenderCommand::SetClearColor({ 0.05f, 0.06f, 0.09f, 1.0f });
-		Egss::RenderCommand::Clear();
-		Egss::RenderCommand::SetDepthTest(true);
+		GS::RenderCommand::SetClearColor({ 0.05f, 0.06f, 0.09f, 1.0f });
+		GS::RenderCommand::Clear();
+		GS::RenderCommand::SetDepthTest(true);
 
-		Egss::Renderer::BeginScene(m_Camera);
+		GS::Renderer::BeginScene(m_Camera);
 
 		m_SceneMaterial->Set("u_LightPosition", glm::vec3(2.0f, 9.0f, 6.0f));
 		m_SceneMaterial->Set("u_LightColor", glm::vec3(1.0f, 0.97f, 0.9f));
@@ -253,7 +253,7 @@ public:
 		const auto& bodies = m_World.GetBodies();
 		for (size_t i = 0; i < bodies.size(); i++)
 		{
-			const Egss::RigidBody3D& body = bodies[i];
+			const GS::RigidBody3D& body = bodies[i];
 
 			// Position interpolates linearly; orientation has to **slerp**.
 			// glm::mix on two quaternions is a straight lerp, which leaves an
@@ -266,15 +266,15 @@ public:
 				* glm::mat4_cast(orientation);
 
 			glm::vec4 colour;
-			if (body.Type == Egss::BodyType::Static)
+			if (body.Type == GS::BodyType::Static)
 			{
 				colour = { 0.34f, 0.36f, 0.42f, 1.0f };
 			}
 			else
 			{
-				if (body.Shape == Egss::ColliderShape3D::Sphere)
+				if (body.Shape == GS::ColliderShape3D::Sphere)
 					colour = { 0.95f, 0.62f, 0.28f, 1.0f };
-				else if (body.Shape == Egss::ColliderShape3D::Capsule)
+				else if (body.Shape == GS::ColliderShape3D::Capsule)
 					colour = { 0.55f, 0.85f, 0.45f, 1.0f };
 				else
 					colour = { 0.42f, 0.68f, 0.95f, 1.0f };
@@ -290,14 +290,14 @@ public:
 
 			m_SceneMaterial->Set("u_Color", colour);
 
-			if (body.Shape == Egss::ColliderShape3D::Box)
+			if (body.Shape == GS::ColliderShape3D::Box)
 			{
 				// The cube mesh is one unit across, so it scales by the full
 				// extents rather than the half ones.
-				Egss::Renderer::Submit(m_SceneMaterial, m_Cube,
+				GS::Renderer::Submit(m_SceneMaterial, m_Cube,
 					glm::scale(transform, body.HalfExtents * 2.0f));
 			}
-			else if (body.Shape == Egss::ColliderShape3D::Capsule)
+			else if (body.Shape == GS::ColliderShape3D::Capsule)
 			{
 				// Exactly what a capsule is: a cylinder between two
 				// hemispheres. Two fixed meshes cover every size, because a
@@ -310,32 +310,32 @@ public:
 				// balls stuck on the ends.
 				float d = body.Radius * 2.0f;
 
-				Egss::Renderer::Submit(m_SceneMaterial, m_Cylinder,
+				GS::Renderer::Submit(m_SceneMaterial, m_Cylinder,
 					glm::scale(transform, { d, body.HalfHeight * 2.0f, d }));
 
 				for (float end : { -1.0f, 1.0f })
 				{
 					glm::mat4 cap = glm::translate(transform,
 						{ 0.0f, end * body.HalfHeight, 0.0f });
-					Egss::Renderer::Submit(m_SceneMaterial, m_Sphere,
+					GS::Renderer::Submit(m_SceneMaterial, m_Sphere,
 						glm::scale(cap, glm::vec3(d)));
 				}
 			}
 			else
 			{
-				Egss::Renderer::Submit(m_SceneMaterial, m_Sphere,
+				GS::Renderer::Submit(m_SceneMaterial, m_Sphere,
 					glm::scale(transform, glm::vec3(body.Radius * 2.0f)));
 			}
 		}
 
-		Egss::Renderer::EndScene();
+		GS::Renderer::EndScene();
 	}
 
-	void OnDemoEvent(Egss::Event& e) override
+	void OnDemoEvent(GS::Event& e) override
 	{
-		Egss::EventDispatcher dispatcher(e);
+		GS::EventDispatcher dispatcher(e);
 
-		dispatcher.Dispatch<Egss::WindowResizeEvent>([this](Egss::WindowResizeEvent& e)
+		dispatcher.Dispatch<GS::WindowResizeEvent>([this](GS::WindowResizeEvent& e)
 		{
 			if (e.GetHeight() > 0)
 			{
@@ -345,14 +345,14 @@ public:
 			return false;
 		});
 
-		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& e)
+		dispatcher.Dispatch<GS::KeyPressedEvent>([this](GS::KeyPressedEvent& e)
 		{
 			if (e.GetRepeatCount() > 0)
 				return false;
 
-			if (e.GetKeyCode() == EGSS_KEY_SPACE) SpawnBody();
-			if (e.GetKeyCode() == EGSS_KEY_P)     m_Paused = !m_Paused;
-			if (e.GetKeyCode() == EGSS_KEY_R)     BuildScene();
+			if (e.GetKeyCode() == GS_KEY_SPACE) SpawnBody();
+			if (e.GetKeyCode() == GS_KEY_P)     m_Paused = !m_Paused;
+			if (e.GetKeyCode() == GS_KEY_R)     BuildScene();
 
 			return false;
 		});
@@ -371,7 +371,7 @@ public:
 		ImGui::Text("Contacts: %zu", m_World.GetContacts().size());
 
 		size_t points = 0;
-		for (const Egss::Contact3D& contact : m_World.GetContacts())
+		for (const GS::Contact3D& contact : m_World.GetContacts())
 			points += (size_t)contact.PointCount;
 		ImGui::Text("Contact points: %zu", points);
 
@@ -485,21 +485,21 @@ private:
 			}
 		)";
 
-		m_Shader.reset(Egss::Shader::Create("Physics3D", vertexSrc, fragmentSrc));
-		Egss::Renderer::GetShaderLibrary().Add(m_Shader);
+		m_Shader.reset(GS::Shader::Create("Physics3D", vertexSrc, fragmentSrc));
+		GS::Renderer::GetShaderLibrary().Add(m_Shader);
 
-		m_SceneMaterial = Egss::Material::Create(m_Shader);
+		m_SceneMaterial = GS::Material::Create(m_Shader);
 	}
 
 private:
-	Egss::PerspectiveCamera m_Camera;
-	Egss::PhysicsWorld3D m_World;
+	GS::PerspectiveCamera m_Camera;
+	GS::PhysicsWorld3D m_World;
 
-	std::shared_ptr<Egss::Shader> m_Shader;
-	std::shared_ptr<Egss::Material> m_SceneMaterial;
-	std::shared_ptr<Egss::Mesh> m_Cube;
-	std::shared_ptr<Egss::Mesh> m_Sphere;
-	std::shared_ptr<Egss::Mesh> m_Cylinder;
+	std::shared_ptr<GS::Shader> m_Shader;
+	std::shared_ptr<GS::Material> m_SceneMaterial;
+	std::shared_ptr<GS::Mesh> m_Cube;
+	std::shared_ptr<GS::Mesh> m_Sphere;
+	std::shared_ptr<GS::Mesh> m_Cylinder;
 
 	unsigned int m_StaticCount = 0;
 	int m_SpawnCounter = 0;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 // Which demo is live, and the base class every demo derives from.
@@ -66,11 +66,11 @@ inline DemoId g_ActiveDemo = 16;
 //
 // Now the guard lives in one place and the Layer entry points are `final`, so
 // a derived class cannot take the unguarded path even by accident.
-class DemoLayer : public Egss::Layer
+class DemoLayer : public GS::Layer
 {
 public:
 	DemoLayer(const std::string& name)
-		: Egss::Layer(name)
+		: GS::Layer(name)
 	{
 	}
 
@@ -84,7 +84,7 @@ public:
 	// what a person does through the keyboard and mouse; an ImGui slider is
 	// neither, so moving one used to desynchronise every replay of that session
 	// silently. Register the variable and the recorder samples it per fixed step
-	// and the player writes it back. See `Egss::ReplayParams`.
+	// and the player writes it back. See `GS::ReplayParams`.
 	//
 	// Names are prefixed with the demo's own, because "Gravity" belongs to
 	// Physics2D *and* to Physics3D and a recording that confused the two would
@@ -96,17 +96,17 @@ public:
 	// matter -- while adding entries to every file.
 	void RegisterParam(const std::string& name, float* value)
 	{
-		Egss::ReplayParams::RegisterFloat(GetName() + "/" + name, value);
+		GS::ReplayParams::RegisterFloat(GetName() + "/" + name, value);
 	}
 
 	void RegisterParam(const std::string& name, int* value)
 	{
-		Egss::ReplayParams::RegisterInt(GetName() + "/" + name, value);
+		GS::ReplayParams::RegisterInt(GetName() + "/" + name, value);
 	}
 
 	void RegisterParam(const std::string& name, bool* value)
 	{
-		Egss::ReplayParams::RegisterBool(GetName() + "/" + name, value);
+		GS::ReplayParams::RegisterBool(GetName() + "/" + name, value);
 	}
 
 	bool IsActive() const { return m_DemoId == g_ActiveDemo; }
@@ -116,10 +116,10 @@ public:
 	virtual void OnDemoAttach() {}
 	virtual void OnDemoActivated() {}     // became the live demo
 	virtual void OnDemoDeactivated() {}   // stopped being it -- stop loops here
-	virtual void OnDemoFixedUpdate(Egss::Timestep step) { (void)step; }
-	virtual void OnDemoUpdate(Egss::Timestep ts) { (void)ts; }
+	virtual void OnDemoFixedUpdate(GS::Timestep step) { (void)step; }
+	virtual void OnDemoUpdate(GS::Timestep ts) { (void)ts; }
 	virtual void OnDemoImGui() {}
-	virtual void OnDemoEvent(Egss::Event& e) { (void)e; }
+	virtual void OnDemoEvent(GS::Event& e) { (void)e; }
 
 	// --- Layer, sealed ----------------------------------------------------
 	// OnAttach is deliberately *not* guarded: assets have to be built whether
@@ -128,7 +128,7 @@ public:
 	// mistake the audio bug was.
 	void OnAttach() final { OnDemoAttach(); }
 
-	void OnFixedUpdate(Egss::Timestep step) final
+	void OnFixedUpdate(GS::Timestep step) final
 	{
 		if (!IsActive())
 			return;
@@ -136,7 +136,7 @@ public:
 		OnDemoFixedUpdate(step);
 	}
 
-	void OnUpdate(Egss::Timestep ts) final
+	void OnUpdate(GS::Timestep ts) final
 	{
 		// Activation edges are detected here rather than by the selector, so a
 		// demo can start and stop continuous things without anything else
@@ -172,7 +172,7 @@ public:
 		// than distorting -- which is the right failure, because a stretched
 		// scene is the kind of wrong that is easy to look at and not notice.
 		if (g_Viewport.Valid())
-			Egss::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
+			GS::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
 				(unsigned int)g_Viewport.Y, (unsigned int)g_Viewport.Width,
 				(unsigned int)g_Viewport.Height);
 
@@ -181,9 +181,9 @@ public:
 		// Put it back, or ImGui draws its panels into the demo's pane.
 		if (g_Viewport.Valid())
 		{
-			Egss::Window& window = Egss::Application::Get().GetWindow();
+			GS::Window& window = GS::Application::Get().GetWindow();
 
-			Egss::RenderCommand::SetViewport(0, 0, window.GetWidth(),
+			GS::RenderCommand::SetViewport(0, 0, window.GetWidth(),
 				window.GetHeight());
 		}
 	}
@@ -209,7 +209,7 @@ public:
 		OnDemoImGui();
 	}
 
-	void OnEvent(Egss::Event& e) final
+	void OnEvent(GS::Event& e) final
 	{
 		if (!IsActive())
 			return;

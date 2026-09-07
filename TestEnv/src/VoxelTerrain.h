@@ -27,7 +27,7 @@
 // from a thread; making that break needs a load and a strength per connection
 // rather than a yes or no, and that is the next piece.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -87,7 +87,7 @@ private:
 
 	void Generate()
 	{
-		m_Field = std::make_shared<Egss::VoxelField3D>();
+		m_Field = std::make_shared<GS::VoxelField3D>();
 		m_Field->Create({ s_SideX, s_SideY, s_SideZ }, s_Voxel,
 			{ -0.5f * (s_SideX - 1) * s_Voxel, 0.0f, -0.5f * (s_SideZ - 1) * s_Voxel });
 
@@ -205,7 +205,7 @@ private:
 
 		m_World.Gravity = { 0.0f, -9.81f, 0.0f };
 
-		Egss::RigidBody3D ground = Egss::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
+		GS::RigidBody3D ground = GS::RigidBody3D::MakeSdf({ 0.0f, 0.0f, 0.0f }, m_Field);
 		ground.Friction = 0.8f;
 		ground.Restitution = 0.0f;
 		m_World.AddBody(ground);
@@ -231,7 +231,7 @@ private:
 		glm::vec3 normal(0.0f);
 		m_World.GroundBelow({ 0.0f, 30.0f, 0.0f }, ground, normal);
 
-		Egss::RigidBody3D body = Egss::RigidBody3D::MakeCapsule(
+		GS::RigidBody3D body = GS::RigidBody3D::MakeCapsule(
 			{ 0.0f, ground + s_EyeHeight + 1.0f, 0.0f }, s_WalkerRadius,
 			s_WalkerHalfHeight, 75.0f);
 
@@ -245,9 +245,9 @@ private:
 		m_Walker = m_World.AddBody(body);
 	}
 
-	void MoveWalker(Egss::Timestep step)
+	void MoveWalker(GS::Timestep step)
 	{
-		Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+		GS::RigidBody3D& body = m_World.GetBody(m_Walker);
 
 		// Upright, every step. See SpawnWalker.
 		body.Orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
@@ -264,10 +264,10 @@ private:
 		glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
 
 		glm::vec3 wish(0.0f);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) wish += forward;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) wish -= forward;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) wish += right;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) wish -= right;
+		if (GS::Input::IsKeyPressed(GS_KEY_W)) wish += forward;
+		if (GS::Input::IsKeyPressed(GS_KEY_S)) wish -= forward;
+		if (GS::Input::IsKeyPressed(GS_KEY_D)) wish += right;
+		if (GS::Input::IsKeyPressed(GS_KEY_A)) wish -= right;
 
 		// Feet on something? Asked of the world rather than of the contacts,
 		// because `GroundBelow` already marches a distance field correctly --
@@ -301,7 +301,7 @@ private:
 			velocity.z = 0.0f;
 		}
 
-		if (m_Grounded && Egss::Input::IsKeyPressed(EGSS_KEY_SPACE))
+		if (m_Grounded && GS::Input::IsKeyPressed(GS_KEY_SPACE))
 			velocity.y = m_JumpSpeed;
 
 		body.Velocity = velocity;
@@ -332,14 +332,14 @@ private:
 			// One cell of overlap: the last cell of a chunk reads the first
 			// lattice plane of the next, and without it every boundary is a
 			// crack.
-			Egss::MeshData data = Egss::MarchingCubes::Mesh(*m_Field, min, max);
+			GS::MeshData data = GS::MarchingCubes::Mesh(*m_Field, min, max);
 
 			size_t key = ChunkKey(chunk);
 
 			if (data.Indices.empty())
 				m_Chunks.erase(key);
 			else
-				m_Chunks[key] = std::make_shared<Egss::Mesh>(data, "VoxelChunk");
+				m_Chunks[key] = std::make_shared<GS::Mesh>(data, "VoxelChunk");
 		}
 
 		m_Field->ClearDirtyChunks();
@@ -396,7 +396,7 @@ private:
 		if (!m_Tension)
 			return;
 
-		Egss::VoxelStressSettings settings;
+		GS::VoxelStressSettings settings;
 		settings.Density = m_Density;
 		settings.Strength = m_Strength;
 		settings.AnchorHeight = 0;
@@ -410,7 +410,7 @@ private:
 		m_LastCollapses = 0;
 		for (int round = 0; round < m_MaxRounds; round++)
 		{
-			int broke = Egss::VoxelStress::Relieve(*m_Field, settings, 6);
+			int broke = GS::VoxelStress::Relieve(*m_Field, settings, 6);
 			if (broke == 0)
 				break;
 
@@ -429,19 +429,19 @@ private:
 	// Whatever the edit cut free, handed to the solver.
 	void CollectIslands()
 	{
-		std::vector<Egss::VoxelIsland> islands = Egss::VoxelIslands::Find(
+		std::vector<GS::VoxelIsland> islands = GS::VoxelIslands::Find(
 			*m_Field, 0, (size_t)glm::max(m_MinIslandVoxels, 1));
 
-		for (const Egss::VoxelIsland& island : islands)
+		for (const GS::VoxelIsland& island : islands)
 		{
-			Egss::VoxelField3D piece = Egss::VoxelIslands::Extract(*m_Field, island);
+			GS::VoxelField3D piece = GS::VoxelIslands::Extract(*m_Field, island);
 
-			Egss::MeshData data = Egss::MarchingCubes::Mesh(piece);
+			GS::MeshData data = GS::MarchingCubes::Mesh(piece);
 			if (data.Indices.empty())
 				continue;
 
 			Debris debris;
-			debris.Mesh = std::make_shared<Egss::Mesh>(data, "Debris");
+			debris.Mesh = std::make_shared<GS::Mesh>(data, "Debris");
 
 			// The mesh comes out in world coordinates and the body has both a
 			// position and an orientation, so the mesh has to be carried into
@@ -467,13 +467,13 @@ private:
 			// The body sits at the centre of *mass*, not the middle of the
 			// bounding box -- a rigid body's position has to be its centre of
 			// mass or gravity applies a torque that should not exist.
-			auto boxes = std::make_shared<std::vector<Egss::CompoundChild>>(
-				Egss::VoxelIslands::Decompose(*m_Field, island));
+			auto boxes = std::make_shared<std::vector<GS::CompoundChild>>(
+				GS::VoxelIslands::Decompose(*m_Field, island));
 
 			if (boxes->empty())
 				continue;
 
-			Egss::RigidBody3D body = Egss::RigidBody3D::MakeCompound(island.Centre,
+			GS::RigidBody3D body = GS::RigidBody3D::MakeCompound(island.Centre,
 				boxes, island.Volume * m_Density);
 			body.Orientation = island.Orientation;
 			body.UpdateInertiaWorld();
@@ -495,7 +495,7 @@ private:
 
 	// --- Layer -------------------------------------------------------------
 
-	void OnDemoFixedUpdate(Egss::Timestep step) override
+	void OnDemoFixedUpdate(GS::Timestep step) override
 	{
 		Look(step);
 
@@ -508,10 +508,10 @@ private:
 		// the keyboard are in the replay stream and events are not, so a digging
 		// session records and replays.
 		// Space is jump on foot, so it only digs from the fly camera.
-		bool dig = (!m_FirstPerson && Egss::Input::IsKeyPressed(EGSS_KEY_SPACE))
-			|| Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_LEFT);
-		bool add = (!m_FirstPerson && Egss::Input::IsKeyPressed(EGSS_KEY_F))
-			|| Egss::Input::IsMouseButtonPressed(EGSS_MOUSE_BUTTON_RIGHT);
+		bool dig = (!m_FirstPerson && GS::Input::IsKeyPressed(GS_KEY_SPACE))
+			|| GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_LEFT);
+		bool add = (!m_FirstPerson && GS::Input::IsKeyPressed(GS_KEY_F))
+			|| GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_RIGHT);
 
 		// One edit per press rather than per step, or holding the key hollows
 		// out the map in a second.
@@ -534,22 +534,22 @@ private:
 	// with the mouse replays exactly like one done with the arrows. Deltas are
 	// taken between two *sampled* positions rather than from an event, because
 	// events are not in the stream.
-	void Look(Egss::Timestep step)
+	void Look(GS::Timestep step)
 	{
 		float dt = step;
 
 		// Tab captures, Escape releases -- Escape because a captured cursor is
 		// a mode you can get stuck in, and the key everyone tries first should
 		// be the way out.
-		bool toggle = Egss::Input::IsKeyPressed(EGSS_KEY_TAB);
+		bool toggle = GS::Input::IsKeyPressed(GS_KEY_TAB);
 		if (toggle && !m_WasToggling)
 			SetMouseLook(!m_MouseLook);
-		else if (m_MouseLook && Egss::Input::IsKeyPressed(EGSS_KEY_ESCAPE))
+		else if (m_MouseLook && GS::Input::IsKeyPressed(GS_KEY_ESCAPE))
 			SetMouseLook(false);
 
 		m_WasToggling = toggle;
 
-		auto [mouseX, mouseY] = Egss::Input::GetMousePosition();
+		auto [mouseX, mouseY] = GS::Input::GetMousePosition();
 
 		if (m_MouseLook)
 		{
@@ -577,10 +577,10 @@ private:
 
 		// These two were the wrong way round: left arrow turned the camera
 		// right. Nobody noticed because the fix is to press the other key.
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_LEFT))  m_Yaw -= m_LookRate * dt;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_RIGHT)) m_Yaw += m_LookRate * dt;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_UP))    m_Pitch += m_LookRate * dt;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_DOWN))  m_Pitch -= m_LookRate * dt;
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT))  m_Yaw -= m_LookRate * dt;
+		if (GS::Input::IsKeyPressed(GS_KEY_RIGHT)) m_Yaw += m_LookRate * dt;
+		if (GS::Input::IsKeyPressed(GS_KEY_UP))    m_Pitch += m_LookRate * dt;
+		if (GS::Input::IsKeyPressed(GS_KEY_DOWN))  m_Pitch -= m_LookRate * dt;
 
 		m_Pitch = glm::clamp(m_Pitch, -85.0f, 85.0f);
 		m_Camera.SetRotation(m_Yaw, m_Pitch);
@@ -597,8 +597,8 @@ private:
 		m_MouseLook = on;
 		m_MouseSampled = false;
 
-		if (!Egss::Input::IsPlayingBack())
-			Egss::Application::Get().GetWindow().SetCursorCaptured(on);
+		if (!GS::Input::IsPlayingBack())
+			GS::Application::Get().GetWindow().SetCursorCaptured(on);
 	}
 
 	// Said in both modes, because a captured cursor is a state you can get
@@ -612,7 +612,7 @@ private:
 			ImGui::TextDisabled("Tab captures the mouse to look");
 	}
 
-	void MoveCamera(Egss::Timestep step)
+	void MoveCamera(GS::Timestep step)
 	{
 		float dt = step;
 
@@ -620,12 +620,12 @@ private:
 		glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
 
 		glm::vec3 move(0.0f);
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_W)) move += forward;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_S)) move -= forward;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_D)) move += right;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_A)) move -= right;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_E)) move.y += 1.0f;
-		if (Egss::Input::IsKeyPressed(EGSS_KEY_Q)) move.y -= 1.0f;
+		if (GS::Input::IsKeyPressed(GS_KEY_W)) move += forward;
+		if (GS::Input::IsKeyPressed(GS_KEY_S)) move -= forward;
+		if (GS::Input::IsKeyPressed(GS_KEY_D)) move += right;
+		if (GS::Input::IsKeyPressed(GS_KEY_A)) move -= right;
+		if (GS::Input::IsKeyPressed(GS_KEY_E)) move.y += 1.0f;
+		if (GS::Input::IsKeyPressed(GS_KEY_Q)) move.y -= 1.0f;
 
 		if (glm::length(move) > 1e-4f)
 			m_Camera.SetPosition(m_Camera.GetPosition() + glm::normalize(move) * m_Speed * dt);
@@ -638,14 +638,14 @@ private:
 		SetMouseLook(false);
 	}
 
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 		m_FrameTime = ts.GetMilliseconds();
 
-		Egss::RenderCommand::SetClearColor({ 0.44f, 0.55f, 0.68f, 1.0f });
-		Egss::RenderCommand::Clear();
+		GS::RenderCommand::SetClearColor({ 0.44f, 0.55f, 0.68f, 1.0f });
+		GS::RenderCommand::Clear();
 
-		Egss::Renderer::BeginScene(m_Camera);
+		GS::Renderer::BeginScene(m_Camera);
 
 		m_Material->Set("u_SunDirection", glm::normalize(glm::vec3(-0.4f, -0.8f, -0.45f)));
 		m_Material->Set("u_SunColor", glm::vec3(1.0f, 0.96f, 0.88f));
@@ -657,7 +657,7 @@ private:
 		{
 			m_Material->Set("u_Color", glm::vec4(0.44f, 0.46f, 0.42f, 1.0f));
 			for (const auto& entry : m_Chunks)
-				Egss::Renderer::Submit(m_Material, entry.second, glm::mat4(1.0f));
+				GS::Renderer::Submit(m_Material, entry.second, glm::mat4(1.0f));
 		}
 		else
 		{
@@ -665,15 +665,15 @@ private:
 			// culling goes with it: half the edges of a closed surface belong
 			// to triangles facing away, and culling them leaves a wireframe
 			// with holes in exactly the places worth looking at.
-			Egss::RenderCommand::SetPolygonMode(Egss::PolygonMode::Line);
-			Egss::RenderCommand::SetCullFace(Egss::CullFace::None);
+			GS::RenderCommand::SetPolygonMode(GS::PolygonMode::Line);
+			GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
 			m_Material->Set("u_Color", glm::vec4(0.85f, 0.90f, 0.80f, 1.0f));
 			for (const auto& entry : m_Chunks)
-				Egss::Renderer::Submit(m_Material, entry.second, glm::mat4(1.0f));
+				GS::Renderer::Submit(m_Material, entry.second, glm::mat4(1.0f));
 
-			Egss::RenderCommand::SetPolygonMode(Egss::PolygonMode::Fill);
-			Egss::RenderCommand::SetCullFace(Egss::CullFace::Back);
+			GS::RenderCommand::SetPolygonMode(GS::PolygonMode::Fill);
+			GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 		}
 
 		// **And where it put them.** Drawn after the surface and without depth
@@ -681,16 +681,16 @@ private:
 		// the point of looking at them at all.
 		if (m_ShowPoints)
 		{
-			Egss::RenderCommand::SetPolygonMode(Egss::PolygonMode::Point);
-			Egss::RenderCommand::SetPointSize(4.0f);
-			Egss::RenderCommand::SetDepthTest(false);
+			GS::RenderCommand::SetPolygonMode(GS::PolygonMode::Point);
+			GS::RenderCommand::SetPointSize(4.0f);
+			GS::RenderCommand::SetDepthTest(false);
 
 			m_Material->Set("u_Color", glm::vec4(1.0f, 0.55f, 0.25f, 1.0f));
 			for (const auto& entry : m_Chunks)
-				Egss::Renderer::Submit(m_Material, entry.second, glm::mat4(1.0f));
+				GS::Renderer::Submit(m_Material, entry.second, glm::mat4(1.0f));
 
-			Egss::RenderCommand::SetDepthTest(true);
-			Egss::RenderCommand::SetPolygonMode(Egss::PolygonMode::Fill);
+			GS::RenderCommand::SetDepthTest(true);
+			GS::RenderCommand::SetPolygonMode(GS::PolygonMode::Fill);
 		}
 
 		// Debris is drawn from its body's transform, so what you see falling is
@@ -698,16 +698,16 @@ private:
 		m_Material->Set("u_Color", glm::vec4(0.62f, 0.44f, 0.34f, 1.0f));
 		for (const Debris& debris : m_Debris)
 		{
-			const Egss::RigidBody3D& body = m_World.GetBody(debris.Body);
+			const GS::RigidBody3D& body = m_World.GetBody(debris.Body);
 
 			glm::mat4 transform = glm::translate(glm::mat4(1.0f), body.Position)
 				* glm::mat4_cast(body.Orientation)
 				* debris.ToLocal;
 
-			Egss::Renderer::Submit(m_Material, debris.Mesh, transform);
+			GS::Renderer::Submit(m_Material, debris.Mesh, transform);
 		}
 
-		Egss::Renderer::EndScene();
+		GS::Renderer::EndScene();
 	}
 
 	void OnDemoImGui() override
@@ -730,7 +730,7 @@ private:
 			ImGui::SliderFloat("Walk speed", &m_WalkSpeed, 1.0f, 12.0f);
 			if (ImGui::Button("Put me back on the map"))
 			{
-				Egss::RigidBody3D& body = m_World.GetBody(m_Walker);
+				GS::RigidBody3D& body = m_World.GetBody(m_Walker);
 				float ground = 0.0f;
 				glm::vec3 normal(0.0f);
 				m_World.GroundBelow({ 0.0f, 30.0f, 0.0f }, ground, normal, m_Walker);
@@ -857,18 +857,18 @@ private:
 			}
 		)";
 
-		m_Shader.reset(Egss::Shader::Create("VoxelSun", vertexSrc, fragmentSrc));
-		m_Material = Egss::Material::Create(m_Shader);
+		m_Shader.reset(GS::Shader::Create("VoxelSun", vertexSrc, fragmentSrc));
+		m_Material = GS::Material::Create(m_Shader);
 	}
 
 	struct Debris
 	{
-		Egss::PhysicsWorld3D::BodyHandle Body = 0;
-		std::shared_ptr<Egss::Mesh> Mesh;
+		GS::PhysicsWorld3D::BodyHandle Body = 0;
+		std::shared_ptr<GS::Mesh> Mesh;
 		glm::mat4 ToLocal = glm::mat4(1.0f);
 	};
 
-	Egss::PerspectiveCamera m_Camera;
+	GS::PerspectiveCamera m_Camera;
 	// Yaw 0 looks along +x in this camera, not -z: from z = +34 the map is at
 	// -90 degrees. Worth stating, because "the terrain is off to one side"
 	// looks exactly like a generation bug.
@@ -888,18 +888,18 @@ private:
 	// at about half a mousepad.
 	float m_Sensitivity = 0.1f;
 
-	std::shared_ptr<Egss::VoxelField3D> m_Field;
-	std::map<size_t, std::shared_ptr<Egss::Mesh>> m_Chunks;
-	std::shared_ptr<Egss::Shader> m_Shader;
-	std::shared_ptr<Egss::Material> m_Material;
+	std::shared_ptr<GS::VoxelField3D> m_Field;
+	std::map<size_t, std::shared_ptr<GS::Mesh>> m_Chunks;
+	std::shared_ptr<GS::Shader> m_Shader;
+	std::shared_ptr<GS::Material> m_Material;
 
-	Egss::PhysicsWorld3D m_World;
+	GS::PhysicsWorld3D m_World;
 	std::vector<Debris> m_Debris;
 
 	// First person by default: the map is meant to be walked on, and the fly
 	// camera is for looking at what you did to it.
 	bool m_FirstPerson = true;
-	Egss::PhysicsWorld3D::BodyHandle m_Walker = 0;
+	GS::PhysicsWorld3D::BodyHandle m_Walker = 0;
 	bool m_Grounded = false;
 	float m_WalkSpeed = 5.0f;
 	float m_JumpSpeed = 6.0f;

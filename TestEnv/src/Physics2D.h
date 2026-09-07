@@ -9,7 +9,7 @@
 //
 // Things marked TRY: are deliberate places to experiment.
 
-#include <Egss.h>
+#include <GS.h>
 #include <imgui.h>
 
 // glm::two_pi -- do not rely on another header pulling this in.
@@ -50,9 +50,9 @@ public:
 	// Synthesised rather than loaded, so the sandbox still needs no asset
 	// files. A sine that drops in pitch under an exponential decay is about
 	// the cheapest thing that reads as an impact rather than a beep.
-	static std::shared_ptr<Egss::AudioClip> MakeImpactClip()
+	static std::shared_ptr<GS::AudioClip> MakeImpactClip()
 	{
-		const unsigned int rate = Egss::AudioEngine::GetSampleRate();
+		const unsigned int rate = GS::AudioEngine::GetSampleRate();
 		const float seconds = 0.14f;
 		const unsigned int frames = (unsigned int)(seconds * rate);
 
@@ -71,14 +71,14 @@ public:
 			samples[i] = std::sin(phase) * envelope * 0.7f;
 		}
 
-		return Egss::AudioClip::CreateFromSamples(std::move(samples), 1);
+		return GS::AudioClip::CreateFromSamples(std::move(samples), 1);
 	}
 
 	// A steady tone, so occlusion is audible as a change in timbre rather
 	// than something you have to catch during a one-shot.
-	static std::shared_ptr<Egss::AudioClip> MakeToneClip()
+	static std::shared_ptr<GS::AudioClip> MakeToneClip()
 	{
-		const unsigned int rate = Egss::AudioEngine::GetSampleRate();
+		const unsigned int rate = GS::AudioEngine::GetSampleRate();
 		const float seconds = 1.0f;
 
 		// A whole number of cycles, so the loop point is seamless.
@@ -98,7 +98,7 @@ public:
 				+ std::sin(phase * 7.0f) * 0.15f) * 0.6f;
 		}
 
-		return Egss::AudioClip::CreateFromSamples(std::move(samples), 1);
+		return GS::AudioClip::CreateFromSamples(std::move(samples), 1);
 	}
 
 	// Continuous things belong on the activation edges, not in OnDemoAttach.
@@ -106,15 +106,15 @@ public:
 
 	void OnDemoDeactivated() override
 	{
-		Egss::AudioEngine::Stop(m_Emitter);
-		m_Emitter = Egss::InvalidVoice;
+		GS::AudioEngine::Stop(m_Emitter);
+		m_Emitter = GS::InvalidVoice;
 	}
 
 	void StartEmitter()
 	{
-		Egss::AudioEngine::Stop(m_Emitter);
+		GS::AudioEngine::Stop(m_Emitter);
 
-		Egss::Audio3DParams params;
+		GS::Audio3DParams params;
 		params.Position = { m_EmitterPosition.x, m_EmitterPosition.y, 0.0f };
 		params.Volume = 0.45f;
 		params.Loop = true;
@@ -122,7 +122,7 @@ public:
 		params.MaxDistance = m_ListenerMaxDistance;
 		params.DopplerFactor = 0.0f;
 
-		m_Emitter = Egss::AudioEngine::PlayAt(m_ToneClip, params);
+		m_Emitter = GS::AudioEngine::PlayAt(m_ToneClip, params);
 	}
 
 	// A reverb zone is just a region the game tests the listener against. The
@@ -134,7 +134,7 @@ public:
 		glm::vec2 offset = glm::abs(m_ListenerPosition - m_ZoneCentre);
 		m_ListenerInZone = offset.x <= m_ZoneHalfExtents.x && offset.y <= m_ZoneHalfExtents.y;
 
-		Egss::ReverbSettings settings;
+		GS::ReverbSettings settings;
 		if (m_ListenerInZone)
 		{
 			settings.Wet = m_ZoneWet;
@@ -148,7 +148,7 @@ public:
 			settings.Wet = 0.0f;
 		}
 
-		Egss::AudioEngine::SetReverb(settings);
+		GS::AudioEngine::SetReverb(settings);
 	}
 
 	// Occlusion is a game question, not an audio one -- the engine has no idea
@@ -157,7 +157,7 @@ public:
 	// rather than snapping.
 	void UpdateOcclusion()
 	{
-		if (!Egss::AudioEngine::IsPlaying(m_Emitter))
+		if (!GS::AudioEngine::IsPlaying(m_Emitter))
 			StartEmitter();
 
 		glm::vec2 delta = m_EmitterPosition - m_ListenerPosition;
@@ -166,7 +166,7 @@ public:
 		if (distance < 0.0001f)
 		{
 			m_Occlusion = 0.0f;
-			Egss::AudioEngine::SetVoiceOcclusion(m_Emitter, 0.0f);
+			GS::AudioEngine::SetVoiceOcclusion(m_Emitter, 0.0f);
 			return;
 		}
 
@@ -182,7 +182,7 @@ public:
 		}
 
 		m_Occlusion = (float)blocked / 3.0f;
-		Egss::AudioEngine::SetVoiceOcclusion(m_Emitter, m_Occlusion);
+		GS::AudioEngine::SetVoiceOcclusion(m_Emitter, m_Occlusion);
 	}
 
 	void BuildScene()
@@ -191,16 +191,16 @@ public:
 
 		// Static geometry: floor and two walls. Static bodies are just bodies
 		// with zero inverse mass, so the solver needs no special case.
-		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ 0.0f, -0.82f }, { 1.5f, 0.06f }));
-		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ -1.45f, 0.0f }, { 0.06f, 0.9f }));
-		m_World.AddBody(Egss::RigidBody2D::MakeStaticBox({ 1.45f, 0.0f }, { 0.06f, 0.9f }));
+		m_World.AddBody(GS::RigidBody2D::MakeStaticBox({ 0.0f, -0.82f }, { 1.5f, 0.06f }));
+		m_World.AddBody(GS::RigidBody2D::MakeStaticBox({ -1.45f, 0.0f }, { 0.06f, 0.9f }));
+		m_World.AddBody(GS::RigidBody2D::MakeStaticBox({ 1.45f, 0.0f }, { 0.06f, 0.9f }));
 
 		// A ramp. This used to be a staircase of axis-aligned boxes, because
 		// the solver had no rotation and a slope was not expressible -- it is
 		// the single best thing to point a new collider at, since a body on a
 		// slope exercises the contact normal, friction and the angular terms
 		// all at once and disagrees visibly when any of them is wrong.
-		Egss::RigidBody2D ramp = Egss::RigidBody2D::MakeStaticBox(
+		GS::RigidBody2D ramp = GS::RigidBody2D::MakeStaticBox(
 			{ -0.70f, -0.45f }, { 0.58f, 0.035f });
 		ramp.Rotation = glm::radians(-22.0f);   // descending to the right
 		ramp.Friction = 0.55f;
@@ -208,7 +208,7 @@ public:
 
 		// A second, shallower one below it, so something that leaves the first
 		// has somewhere to go.
-		Egss::RigidBody2D lower = Egss::RigidBody2D::MakeStaticBox(
+		GS::RigidBody2D lower = GS::RigidBody2D::MakeStaticBox(
 			{ 0.35f, -0.66f }, { 0.45f, 0.035f });
 		lower.Rotation = glm::radians(9.0f);
 		lower.Friction = 0.55f;
@@ -226,7 +226,7 @@ public:
 	{
 		for (int i = 0; i < 5; i++)
 		{
-			Egss::RigidBody2D box = Egss::RigidBody2D::MakeBox(
+			GS::RigidBody2D box = GS::RigidBody2D::MakeBox(
 				{ 0.55f, -0.7f + i * 0.13f }, { 0.06f, 0.06f }, 1.0f);
 			box.Restitution = 0.0f;
 			box.Friction = 0.6f;
@@ -248,7 +248,7 @@ public:
 		{
 			float half = 0.05f + 0.015f * std::abs(std::cos(m_SpawnCounter * 1.7f));
 
-			Egss::RigidBody2D crate = Egss::RigidBody2D::MakeBox(
+			GS::RigidBody2D crate = GS::RigidBody2D::MakeBox(
 				{ x, 0.75f }, { half, half }, 1.0f);
 			crate.Rotation = 0.6f * std::sin(m_SpawnCounter * 3.1f);
 			// A little spin on the way in, so it is obvious the rotation is
@@ -262,7 +262,7 @@ public:
 			return;
 		}
 
-		Egss::RigidBody2D circle = Egss::RigidBody2D::MakeCircle(
+		GS::RigidBody2D circle = GS::RigidBody2D::MakeCircle(
 			{ x, 0.75f }, 0.045f + 0.02f * std::abs(std::cos(m_SpawnCounter)), 1.0f);
 		circle.Restitution = m_Bounciness;
 		circle.Friction = 0.3f;
@@ -276,7 +276,7 @@ public:
 
 	// Simulation. The world wants a fixed dt, which is precisely what this
 	// callback provides -- the two were built for each other.
-	void OnDemoFixedUpdate(Egss::Timestep fixedStep) override
+	void OnDemoFixedUpdate(GS::Timestep fixedStep) override
 	{
 		if (m_Paused)
 			return;
@@ -294,11 +294,11 @@ public:
 
 		// The listener sits slightly in front of the plane looking at it, so
 		// sources are never at exactly zero distance.
-		Egss::AudioListener listener;
+		GS::AudioListener listener;
 		listener.Position = { m_ListenerPosition.x, m_ListenerPosition.y, 1.0f };
 		listener.Forward = { 0.0f, 0.0f, -1.0f };
 		listener.Up = { 0.0f, 1.0f, 0.0f };
-		Egss::AudioEngine::SetListener(listener);
+		GS::AudioEngine::SetListener(listener);
 
 		m_World.Gravity = { 0.0f, m_Gravity };
 		m_World.Step(fixedStep);
@@ -319,7 +319,7 @@ public:
 	{
 		m_CurrentContacts.clear();
 
-		for (const Egss::Contact& contact : m_World.GetContacts())
+		for (const GS::Contact& contact : m_World.GetContacts())
 		{
 			unsigned long long key = ((unsigned long long)contact.A << 32) | contact.B;
 			m_CurrentContacts.insert(key);
@@ -338,7 +338,7 @@ public:
 			// works out gain and pan from where the listener is, so moving the
 			// listener slider below changes what you hear without this code
 			// knowing anything about it.
-			Egss::Audio3DParams params;
+			GS::Audio3DParams params;
 			params.Position = { contact.Point.x, contact.Point.y, 0.0f };
 			params.Volume = std::min(impulse * 1.6f, 1.0f) * m_ImpactVolume;
 			// Vary the pitch so repeated hits don't sound mechanical.
@@ -349,31 +349,31 @@ public:
 			// not worth the confusion.
 			params.DopplerFactor = 0.0f;
 
-			Egss::AudioEngine::PlayAt(m_ImpactClip, params);
+			GS::AudioEngine::PlayAt(m_ImpactClip, params);
 		}
 
 		m_PreviousContacts.swap(m_CurrentContacts);
 	}
 
-	void OnDemoUpdate(Egss::Timestep ts) override
+	void OnDemoUpdate(GS::Timestep ts) override
 	{
 		m_FrameTime = ts.GetMilliseconds();
 
 		// The world stores each body's position at the start of the step, so
 		// rendering can sit between the last two states instead of snapping
 		// to the newest one.
-		float alpha = Egss::Application::Get().GetInterpolationAlpha();
+		float alpha = GS::Application::Get().GetInterpolationAlpha();
 
-		Egss::Renderer2D::ResetStats();
-		Egss::RenderCommand::SetClearColor({ 0.06f, 0.06f, 0.08f, 1.0f });
-		Egss::RenderCommand::Clear();
+		GS::Renderer2D::ResetStats();
+		GS::RenderCommand::SetClearColor({ 0.06f, 0.06f, 0.08f, 1.0f });
+		GS::RenderCommand::Clear();
 
-		Egss::Renderer2D::BeginScene(m_Camera);
+		GS::Renderer2D::BeginScene(m_Camera);
 
 		const auto& bodies = m_World.GetBodies();
 		for (size_t i = 0; i < bodies.size(); i++)
 		{
-			const Egss::RigidBody2D& body = bodies[i];
+			const GS::RigidBody2D& body = bodies[i];
 			glm::vec2 position = glm::mix(body.PreviousPosition, body.Position, alpha);
 
 			// Rotation interpolates exactly as position does. Both are stored
@@ -382,7 +382,7 @@ public:
 			float rotation = glm::mix(body.PreviousRotation, body.Rotation, alpha);
 
 			glm::vec4 color;
-			if (body.Type == Egss::BodyType::Static)
+			if (body.Type == GS::BodyType::Static)
 				color = { 0.30f, 0.32f, 0.38f, 1.0f };
 			else if (!body.Awake)
 				// Asleep bodies are drawn dimmer, which makes it obvious when
@@ -391,13 +391,13 @@ public:
 			else
 				color = { 0.45f, 0.70f, 0.95f, 1.0f };
 
-			if (body.Shape == Egss::ColliderShape::Box)
+			if (body.Shape == GS::ColliderShape::Box)
 			{
 				// Degrees, not radians: DrawRotatedQuad converts, and the
 				// physics works in radians throughout. Passing radians here
 				// draws a box turned about a seventh of the way it should be,
 				// which looks like a solver bug rather than a units mistake.
-				Egss::Renderer2D::DrawRotatedQuad(position, body.HalfExtents * 2.0f,
+				GS::Renderer2D::DrawRotatedQuad(position, body.HalfExtents * 2.0f,
 					glm::degrees(rotation), color);
 			}
 			else
@@ -408,7 +408,7 @@ public:
 				// the stand-in became a lie: a square spinning on a slope
 				// reads as a tumbling crate, not a rolling ball. The debug
 				// spoke is what shows the spin now that the fill is round.
-				Egss::Renderer2D::DrawCircle(position, body.Radius, color);
+				GS::Renderer2D::DrawCircle(position, body.Radius, color);
 			}
 		}
 
@@ -419,17 +419,17 @@ public:
 			DrawRayFan();
 
 		// Where the ears are.
-		Egss::Renderer2D::DrawRect(m_ListenerPosition, { 0.07f, 0.07f },
+		GS::Renderer2D::DrawRect(m_ListenerPosition, { 0.07f, 0.07f },
 			glm::vec4(1.0f, 0.85f, 0.2f, 1.0f));
 
 		// The reverb zone, brighter while the listener is inside it.
 		glm::vec4 zoneColor = m_ListenerInZone
 			? glm::vec4(0.55f, 0.45f, 1.0f, 1.0f)
 			: glm::vec4(0.30f, 0.25f, 0.55f, 1.0f);
-		Egss::Renderer2D::DrawRect(m_ZoneCentre, m_ZoneHalfExtents * 2.0f, zoneColor);
+		GS::Renderer2D::DrawRect(m_ZoneCentre, m_ZoneHalfExtents * 2.0f, zoneColor);
 
 		// The emitter, and the three rays deciding how muffled it sounds.
-		Egss::Renderer2D::DrawRect(m_EmitterPosition, { 0.09f, 0.09f },
+		GS::Renderer2D::DrawRect(m_EmitterPosition, { 0.09f, 0.09f },
 			glm::vec4(0.4f, 1.0f, 0.6f, 1.0f));
 
 		glm::vec2 delta = m_EmitterPosition - m_ListenerPosition;
@@ -446,14 +446,14 @@ public:
 					? glm::vec4(1.0f, 0.3f, 0.3f, 1.0f)
 					: glm::vec4(0.4f, 1.0f, 0.6f, 1.0f);
 
-				Egss::Renderer2D::DrawLine(m_ListenerPosition + offset,
+				GS::Renderer2D::DrawLine(m_ListenerPosition + offset,
 					m_EmitterPosition + offset, color);
 			}
 		}
 		DrawCircleOutline(m_ListenerPosition, m_ListenerMaxDistance,
 			glm::vec4(1.0f, 0.85f, 0.2f, 0.25f));
 
-		Egss::Renderer2D::EndScene();
+		GS::Renderer2D::EndScene();
 	}
 
 	// A ring of rays from one point, stopping at whatever they hit. This is
@@ -469,23 +469,23 @@ public:
 			float angle = (float)i / (float)m_RayCount * glm::two_pi<float>();
 			glm::vec2 direction = { std::cos(angle), std::sin(angle) };
 
-			Egss::RaycastHit hit = m_World.Raycast(m_RayOrigin, direction, maxDistance);
+			GS::RaycastHit hit = m_World.Raycast(m_RayOrigin, direction, maxDistance);
 
 			if (hit.Hit)
 			{
 				// Fade with distance, so the shape of what is reachable reads
 				// at a glance.
 				float brightness = 1.0f - hit.Fraction * 0.7f;
-				Egss::Renderer2D::DrawLine(m_RayOrigin, hit.Point,
+				GS::Renderer2D::DrawLine(m_RayOrigin, hit.Point,
 					glm::vec4(0.95f * brightness, 0.85f * brightness, 0.35f * brightness, 1.0f));
 
 				// Surface normal at the hit.
-				Egss::Renderer2D::DrawLine(hit.Point, hit.Point + hit.Normal * 0.04f,
+				GS::Renderer2D::DrawLine(hit.Point, hit.Point + hit.Normal * 0.04f,
 					glm::vec4(1.0f, 0.35f, 0.35f, 1.0f));
 			}
 			else
 			{
-				Egss::Renderer2D::DrawLine(m_RayOrigin, m_RayOrigin + direction * maxDistance,
+				GS::Renderer2D::DrawLine(m_RayOrigin, m_RayOrigin + direction * maxDistance,
 					glm::vec4(0.22f, 0.22f, 0.16f, 1.0f));
 			}
 		}
@@ -495,7 +495,7 @@ public:
 	{
 		const auto& bodies = m_World.GetBodies();
 
-		for (const Egss::RigidBody2D& body : bodies)
+		for (const GS::RigidBody2D& body : bodies)
 		{
 			glm::vec2 position = glm::mix(body.PreviousPosition, body.Position, alpha);
 			float rotation = glm::mix(body.PreviousRotation, body.Rotation, alpha);
@@ -503,7 +503,7 @@ public:
 			glm::vec4 outline = body.Awake ? glm::vec4(0.2f, 0.9f, 0.5f, 1.0f)
 			                               : glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
 
-			if (body.Shape == Egss::ColliderShape::Box)
+			if (body.Shape == GS::ColliderShape::Box)
 			{
 				DrawBoxOutline(position, body.HalfExtents, rotation, outline);
 			}
@@ -514,15 +514,15 @@ public:
 				// A spoke, because a circle's outline gives no way to see it
 				// turning. Watching this line roll is the quickest check that
 				// a disc on the ramp is rolling and not sliding.
-				Egss::Renderer2D::DrawLine(position,
+				GS::Renderer2D::DrawLine(position,
 					position + glm::vec2(std::cos(rotation), std::sin(rotation)) * body.Radius,
 					outline);
 			}
 
 			// Velocity, so a body behaving oddly shows why.
-			if (body.Type != Egss::BodyType::Static && body.Awake)
+			if (body.Type != GS::BodyType::Static && body.Awake)
 			{
-				Egss::Renderer2D::DrawLine(position, position + body.Velocity * 0.08f,
+				GS::Renderer2D::DrawLine(position, position + body.Velocity * 0.08f,
 					glm::vec4(1.0f, 0.55f, 0.2f, 1.0f));
 			}
 		}
@@ -533,19 +533,19 @@ public:
 		// Every point, not just the representative one: a face contact has two
 		// and the difference between one and two is exactly what stops a crate
 		// rocking, so seeing which one you got is worth the extra lines.
-		for (const Egss::Contact& contact : m_World.GetContacts())
+		for (const GS::Contact& contact : m_World.GetContacts())
 		{
 			for (int p = 0; p < contact.PointCount; p++)
 			{
 				const glm::vec2& point = contact.Points[p].Position;
 
-				Egss::Renderer2D::DrawLine(point, point + contact.Normal * 0.08f,
+				GS::Renderer2D::DrawLine(point, point + contact.Normal * 0.08f,
 					glm::vec4(1.0f, 0.9f, 0.3f, 1.0f));
 
 				// A tick across the normal, so a single point is
 				// distinguishable from two that nearly coincide.
 				glm::vec2 tangent = { -contact.Normal.y, contact.Normal.x };
-				Egss::Renderer2D::DrawLine(point - tangent * 0.012f, point + tangent * 0.012f,
+				GS::Renderer2D::DrawLine(point - tangent * 0.012f, point + tangent * 0.012f,
 					glm::vec4(1.0f, 0.6f, 0.2f, 1.0f));
 			}
 		}
@@ -567,7 +567,7 @@ public:
 		};
 
 		for (int i = 0; i < 4; i++)
-			Egss::Renderer2D::DrawLine(corners[i], corners[(i + 1) % 4], color);
+			GS::Renderer2D::DrawLine(corners[i], corners[(i + 1) % 4], color);
 	}
 
 	// Renderer2D has no circle primitive, so this walks one out of line
@@ -581,16 +581,16 @@ public:
 		{
 			float angle = (float)i / (float)segments * glm::two_pi<float>();
 			glm::vec2 next = centre + glm::vec2(std::cos(angle), std::sin(angle)) * radius;
-			Egss::Renderer2D::DrawLine(previous, next, color);
+			GS::Renderer2D::DrawLine(previous, next, color);
 			previous = next;
 		}
 	}
 
-	void OnDemoEvent(Egss::Event& e) override
+	void OnDemoEvent(GS::Event& e) override
 	{
-		Egss::EventDispatcher dispatcher(e);
+		GS::EventDispatcher dispatcher(e);
 
-		dispatcher.Dispatch<Egss::WindowResizeEvent>([this](Egss::WindowResizeEvent& e)
+		dispatcher.Dispatch<GS::WindowResizeEvent>([this](GS::WindowResizeEvent& e)
 		{
 			if (e.GetHeight() > 0)
 			{
@@ -600,16 +600,16 @@ public:
 			return false;
 		});
 
-		dispatcher.Dispatch<Egss::KeyPressedEvent>([this](Egss::KeyPressedEvent& e)
+		dispatcher.Dispatch<GS::KeyPressedEvent>([this](GS::KeyPressedEvent& e)
 		{
 			if (e.GetRepeatCount() > 0)
 				return false;
 
-			if (e.GetKeyCode() == EGSS_KEY_SPACE)
+			if (e.GetKeyCode() == GS_KEY_SPACE)
 				SpawnCircle();
-			if (e.GetKeyCode() == EGSS_KEY_P)
+			if (e.GetKeyCode() == GS_KEY_P)
 				m_Paused = !m_Paused;
-			if (e.GetKeyCode() == EGSS_KEY_R)
+			if (e.GetKeyCode() == GS_KEY_R)
 				BuildScene();
 
 			return false;
@@ -619,8 +619,8 @@ public:
 	void OnDemoImGui() override
 	{
 
-		auto stats = Egss::Renderer2D::GetStats();
-		Egss::Application& app = Egss::Application::Get();
+		auto stats = GS::Renderer2D::GetStats();
+		GS::Application& app = GS::Application::Get();
 
 		ImGui::SetNextWindowPos(ImVec2(20.0f, 180.0f), ImGuiCond_FirstUseEver);
 		ImGui::Begin("Physics2D");
@@ -638,20 +638,20 @@ public:
 			stats.DrawCalls, stats.QuadCount, stats.LineCount);
 
 		ImGui::Separator();
-		ImGui::Text("Audio: %s   %u/%u voices", Egss::AudioEngine::GetBackendName(),
-			Egss::AudioEngine::GetActiveVoiceCount(), Egss::AudioEngine::GetMaxVoices());
+		ImGui::Text("Audio: %s   %u/%u voices", GS::AudioEngine::GetBackendName(),
+			GS::AudioEngine::GetActiveVoiceCount(), GS::AudioEngine::GetMaxVoices());
 
-		float master = Egss::AudioEngine::GetMasterVolume();
+		float master = GS::AudioEngine::GetMasterVolume();
 		if (ImGui::SliderFloat("Master volume", &master, 0.0f, 1.0f))
-			Egss::AudioEngine::SetMasterVolume(master);
+			GS::AudioEngine::SetMasterVolume(master);
 
 		ImGui::SliderFloat("Impact volume", &m_ImpactVolume, 0.0f, 1.0f);
 		ImGui::SliderFloat("Impact threshold", &m_ImpactThreshold, 0.0f, 0.5f);
 		ImGui::SliderFloat2("Listener", &m_ListenerPosition.x, -1.4f, 1.4f);
 		ImGui::SliderFloat2("Emitter", &m_EmitterPosition.x, -1.4f, 1.4f);
 
-		Egss::VoiceDebug debug;
-		if (Egss::AudioEngine::GetVoiceDebug(m_Emitter, debug))
+		GS::VoiceDebug debug;
+		if (GS::AudioEngine::GetVoiceDebug(m_Emitter, debug))
 		{
 			ImGui::Text("emitter: %.2fm  gain %.2f  pan %+.2f", debug.Distance, debug.Gain, debug.Pan);
 			ImGui::Text("occlusion: %.2f requested, %.2f applied", m_Occlusion, debug.Occlusion);
@@ -664,7 +664,7 @@ public:
 
 		ImGui::Separator();
 		ImGui::Text("Reverb zone: %s", m_ListenerInZone ? "inside" : "outside");
-		ImGui::Text("applied wet %.3f", Egss::AudioEngine::GetReverb().Wet);
+		ImGui::Text("applied wet %.3f", GS::AudioEngine::GetReverb().Wet);
 		ImGui::SliderFloat2("Zone centre", &m_ZoneCentre.x, -1.4f, 1.4f);
 		ImGui::SliderFloat("Zone wet", &m_ZoneWet, 0.0f, 1.0f);
 		ImGui::SliderFloat("Zone room size", &m_ZoneRoomSize, 0.0f, 0.95f);
@@ -709,8 +709,8 @@ public:
 	}
 
 private:
-	Egss::OrthographicCamera m_Camera;
-	Egss::PhysicsWorld2D m_World;
+	GS::OrthographicCamera m_Camera;
+	GS::PhysicsWorld2D m_World;
 
 	unsigned int m_StaticCount = 0;
 	int m_SpawnCounter = 0;
@@ -729,14 +729,14 @@ private:
 	float m_SpawnRate = 6.0f;
 	int m_MaxBodies = 150;
 
-	std::shared_ptr<Egss::AudioClip> m_ImpactClip;
+	std::shared_ptr<GS::AudioClip> m_ImpactClip;
 	std::unordered_set<unsigned long long> m_PreviousContacts;
 	std::unordered_set<unsigned long long> m_CurrentContacts;
 	float m_ImpactVolume = 0.55f;
 	glm::vec2 m_ListenerPosition = { -1.0f, 0.35f };
 	glm::vec2 m_EmitterPosition = { 1.1f, -0.3f };
-	std::shared_ptr<Egss::AudioClip> m_ToneClip;
-	Egss::VoiceHandle m_Emitter = Egss::InvalidVoice;
+	std::shared_ptr<GS::AudioClip> m_ToneClip;
+	GS::VoiceHandle m_Emitter = GS::InvalidVoice;
 	float m_Occlusion = 0.0f;
 
 	glm::vec2 m_ZoneCentre = { 0.85f, -0.1f };

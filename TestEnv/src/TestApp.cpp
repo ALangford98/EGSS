@@ -18,7 +18,7 @@
 //
 // See docs/ENGINE.md for how the pieces fit together.
 
-#include <Egss.h>
+#include <GS.h>
 
 #include "DemoRegistry.h"
 #include "EditorShell.h"
@@ -27,7 +27,7 @@
 #include "ProfilerPanel.h"
 #include "AudioRaceStress.h"
 
-class TestEnv : public Egss::Application
+class TestEnv : public GS::Application
 {
 public:
 	TestEnv()
@@ -55,14 +55,14 @@ public:
 		PushLayer(new DemoSelector());
 		PushLayer(new ProfilerPanel());
 		// Inert without --audio-stress. Pushed unconditionally so
-		// `./egss.py sanitize --thread` can turn it on from the command line --
+		// `./gs.py sanitize --thread` can turn it on from the command line --
 		// see the note in AudioRaceStress.h for why a race sweep needs it.
 		PushLayer(new AudioRaceStress());
 	}
 };
 
 // The one function the engine requires of you.
-Egss::Application* Egss::CreateApplication()
+GS::Application* GS::CreateApplication()
 {
 	return new TestEnv();
 }
