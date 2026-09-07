@@ -3442,25 +3442,34 @@ public:
 		glm::vec3 gustAxis = glm::length(m_WindFixed) > 1e-5f
 			? glm::normalize(m_WindFixed) : glm::vec3(1.0f, 0.0f, 0.0f);
 
-		for (const auto& [key, chunk] : it->second.Chunks())
+		// **Groups, not chunks.** A chunk's mesh is one bind-and-submit, and
+		// 963 of them was the whole draw-call budget on a landed Earth; a
+		// group is up to 27 chunks concatenated into one buffer at chunk-
+		// stream time (`VoxelPlanet::RebuildGroup`), so this loop draws at
+		// most a few dozen times regardless. Everything below is the same
+		// per-draw placement the chunk loop used to do, just against the
+		// group's own reference point instead of each member's.
+		for (const auto& [key, group] : it->second.Groups())
 		{
-			glm::dvec3 turned = ToScene(index, chunk.Origin);
+			glm::dvec3 turned = ToScene(index, group.Origin);
 			glm::vec3 placed = glm::vec3(centre + turned);
 
-			// **The chunk's own origin is the reference.** It is already the
-			// point every vertex in this mesh is measured from, so the offset
-			// the shader forms is exactly `a_Position` up to the spin -- a few
-			// tens of metres, and exact as a float. The radius is
-			// rotation-invariant, so it comes from the unturned original.
+			// **The group's own origin is the reference.** Every member
+			// chunk's vertices were re-expressed against it when the group
+			// was built, so the offset the shader forms is exactly
+			// `a_Position` up to the spin, the same as a single chunk was.
+			// The radius is rotation-invariant, so it comes from the
+			// unturned original.
 			SetReference(material, placed, turned,
-				glm::length(chunk.Origin), sea);
+				glm::length(group.Origin), sea);
 
-			Egss::Renderer::Submit(material, chunk.MeshPtr,
+			Egss::Renderer::Submit(material, group.MeshPtr,
 				glm::translate(glm::mat4(1.0f), placed) * spin);
 
-			// Grass rides the same transform: it was scattered over this
-			// chunk's own triangles, so it is in the chunk's frame already.
-			if (chunk.GrassPtr)
+			// Grass rides the same transform: it was scattered over the
+			// group's own triangles and re-expressed the same way, so it is
+			// in the group's frame already.
+			if (group.GrassPtr)
 			{
 				if (!grass)
 				{
@@ -3468,22 +3477,29 @@ public:
 					DressGrass(grass, index);
 				}
 
-				// Per chunk, because it is where the chunk sits along the
-				// wind. Cheap: the material is bound per draw anyway, so this
-				// rides along with uniforms that were already being sent.
+				// Per group, because it is where the group sits along the
+				// wind. Cheap: the material is bound per draw anyway, so
+				// this rides along with uniforms that were already being
+				// sent. Exact, not approximate -- see the note by
+				// `RebuildGroup`, this is the same linear split a single
+				// chunk's offset always was.
 				grass->Set("u_GustOffset",
-					GustPhase(chunk.Origin, glm::dvec3(gustAxis)));
+					GustPhase(group.Origin, glm::dvec3(gustAxis)));
 
-				// **How much of this chunk's grass to draw.** Full inside
-				// 20 m, a fifth by the edge of the stride-1 radius. The
-				// distance is the chunk's, so every blade in it agrees -- see
-				// the note in the shader for why that matters.
+				// **How much of this group's grass to draw.** Full inside
+				// 20 m, a fifth by the edge of the stride-1 radius. Judged
+				// from the group's own distance rather than each member
+				// chunk's, so the falloff now steps in group-sized (up to
+				// 72 m) increments instead of chunk-sized (24 m) ones --
+				// coarser, but still a soft per-blade random discard rather
+				// than a hard edge. Revisit with a smaller grass-only group
+				// size if a capture shows banding.
 				float away = glm::length(placed);
 
 				grass->Set("u_Keep", glm::mix(1.0f, 0.20f,
 					glm::smoothstep(20.0f, 52.0f, away)));
 
-				Egss::Renderer::Submit(grass, chunk.GrassPtr,
+				Egss::Renderer::Submit(grass, group.GrassPtr,
 					glm::translate(glm::mat4(1.0f), placed) * spin);
 			}
 		}
@@ -7176,8 +7192,9 @@ private:
 		{
 			VoxelPlanet& planet = m_Planets[(size_t)m_Ground];
 
-			ImGui::Text("%zu chunks meshed, %zu triangles",
-				planet.MeshedChunks(), planet.TriangleCount());
+			ImGui::Text("%zu chunks meshed, %zu triangles, %zu groups",
+				planet.MeshedChunks(), planet.TriangleCount(),
+				planet.Groups().size());
 
 			int perStride[3];
 			size_t trianglesPerStride[3];

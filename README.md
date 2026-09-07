@@ -969,14 +969,14 @@ Groups 1-5 from the original plan are done. What follows is what remains.
       tessellation so the near switch is invisible; level 2 is a generation
       shallower and grows its leaf clusters by the cube root of the tips it
       lost. Found by ablation: trees were 6.14 M of the frame's 9.07 M triangles
-- [ ] **Merge or LOD the chunk meshes, on the planet.** 963 of the remaining
-      1,001 draw calls are terrain chunks — distinct geometry, so instancing
-      does not apply. Landed on TerrainLab first (see the changelog,
-      2026-09-04): fixed 3x3x3 chunk groups, 93 draws down to 9 in the default
-      view. `VoxelPlanet.h` still needs it, and is the harder case — chunks
-      stream in and out and already carry a stride-based LOD, so merging there
-      has to stay within one stride band and lean on the same `VoxelTransition`
-      stitching that already joins bands
+- [x] **Merge or LOD the chunk meshes.** Distinct geometry per chunk, so
+      instancing does not apply — fixed 3x3x3 chunk groups instead, one GPU
+      mesh each. Landed on TerrainLab first (93 draws down to 9 in the
+      default view, see the changelog, 2026-09-04), then `VoxelPlanet.h`
+      (1,459 meshed chunks down to 167 groups on a landed Earth, see the
+      changelog, 2026-09-07) — the harder case, since chunks stream and
+      already carry a stride-based LOD, though it turned out concatenation
+      does not care what stride a member chunk was meshed at
 - [x] **Terrain LOD on a sphere** — stride 1/2/4 with hysteresis, scaled by the
       body's voxel size, which took a landed Earth's terrain from 2,774,250
       triangles to 500,825 and the frame from about 16.2 ms of GPU to about
@@ -1267,6 +1267,44 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 ---
 
 # Changelog
+
+### 2026-09-07 (the planet's chunks merge into groups too, 1,459 draws down to 167)
+
+**The other half of the chunk-merge roadmap item.** `VoxelPlanet.h`'s chunks
+now draw the same way `TerrainLab.h`'s do — fixed 3x3x3 groups, one GPU mesh
+each — but a streamed, LOD'd planet needed two things a static field did not.
+
+**Streaming, not editing, is what dirties a group here.** `MeshChunk` used to
+upload a GPU mesh straight from the marched `MeshData` and throw the CPU copy
+away; now it keeps the CPU data on the `Chunk` (`Data`, and `Grass` for the
+blades) and marks the chunk's group dirty instead. `EvictBeyond` does the
+same before it erases. One `RebuildDirtyGroups()` call, at the end of both
+`StreamAround` and `EvictBeyond`, concatenates whichever groups changed —
+and since every path that dirties a group already goes through the existing
+per-frame streaming budget, so does the rebuild: no new throttling needed.
+
+**Concatenating chunks from different sites needs the vertices moved, not
+just appended.** Each chunk's mesh is measured from its own lattice origin —
+that split is what keeps a planet off a 0.76 m grid at radius — so folding
+one into a group means re-expressing its vertices against the *group's*
+origin first: `offset = float(chunk.Origin - group.Origin)`, exact, since a
+group spans at most two chunk-widths. Grass rides the same offset, which
+turns out to make its `u_GustOffset` wind uniform exact after merging too —
+it was always `dot(chunk.Origin, axis) + dot(a_Position, axis)`, a linear
+split that doesn't care which origin the two pieces are divided at.
+
+**One thing the merge does make coarser: grass's distance falloff.** `u_Keep`
+used to fade blade density per chunk (24 m); merged, it can only be judged
+once per group (72 m). Still a soft per-blade random discard rather than a
+hard edge, and accepted rather than solved — a smaller grass-only group size
+is the fallback if a capture ever shows banding.
+
+Verified on a landed Earth: a temporary self-test found terrain and grass
+triangle counts exactly preserved under grouping (317,979 and 2,761,449
+respectively, group sum == chunk sum both times) while draw calls fell from
+1,459 meshed chunks to 167 groups. Captures taken with
+`--lockstep --hide-ui --capture-step` came back byte-identical across
+repeated runs and across Debug and Release.
 
 ### 2026-09-04 (chunk meshes merge into groups, 93 draws down to 9)
 

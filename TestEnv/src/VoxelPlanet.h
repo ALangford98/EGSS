@@ -23,6 +23,7 @@
 
 #include <Egss.h>
 
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include "ChunkCache.h"
@@ -2372,27 +2373,19 @@ public:
 		if (data.Indices.empty())
 		{
 			m_Chunks.erase(key);
+			DirtyGroup(chunk);
 			return;
 		}
 
-		if (data.Submeshes.empty())
-		{
-			Egss::Submesh all;
-			all.IndexCount = (unsigned int)data.Indices.size();
-			data.Submeshes.push_back(all);
-		}
-
-		data.RecalculateBounds();
-
 		Chunk entry;
-		entry.MeshPtr = std::make_shared<Egss::Mesh>(data, "PlanetChunk");
 		entry.Centre = ChunkCentreFixed(chunk);
 		entry.Origin = ChunkOriginFixed(chunk);
 
-		entry.GrassPtr = ChunkGrass(data, chunk, stride, entry.Origin);
+		entry.Grass = ChunkGrass(data, chunk, stride, entry.Origin);
 		entry.Triangles = data.Indices.size() / 3;
 		entry.Stride = stride;
 		entry.Coord = chunk;
+		entry.Data = std::move(data);
 
 		// **Plants outlive the mesh they arrived with.** They are a function
 		// of the chunk index and reproduce identically, so recomputing them on
@@ -2409,6 +2402,7 @@ public:
 			PlantChunk(chunk, entry.Plants);
 
 		m_Chunks[key] = std::move(entry);
+		DirtyGroup(chunk);
 	}
 
 	// **Grass over one chunk's triangles.** The scattering itself is
@@ -2425,11 +2419,11 @@ public:
 	// The second is where grass belongs. It is asked of the same fields the
 	// surface is coloured from, so a blade never stands on a seabed, on rock
 	// above the tree line, or in a desert.
-	std::shared_ptr<Egss::Mesh> ChunkGrass(const Egss::MeshData& data,
+	Egss::MeshData ChunkGrass(const Egss::MeshData& data,
 		const glm::ivec3& chunk, int stride, const glm::dvec3& origin) const
 	{
 		if (!m_Settings.Vegetated || stride != 1 || m_Settings.GrassDensity <= 0.0f)
-			return nullptr;
+			return Egss::MeshData();
 
 		Grass::Settings settings;
 		settings.Density = m_Settings.GrassDensity;
@@ -2474,10 +2468,7 @@ public:
 					* glm::smoothstep(0.25f, 0.55f, wet);
 			});
 
-		if (blades.Indices.empty())
-			return nullptr;
-
-		return std::make_shared<Egss::Mesh>(blades, "PlanetGrass");
+		return blades;
 	}
 
 	// `MeshChunk`, plus the neighbours that meshing it just invalidated.
@@ -2896,6 +2887,8 @@ public:
 		// detail beats terrain that is not on screen yet.
 		UpdateLod(focus, (int)glm::max(budget - spent, 0.0f));
 
+		RebuildDirtyGroups();
+
 		return meshed;
 	}
 
@@ -2955,10 +2948,15 @@ public:
 		for (auto it = m_Chunks.begin(); it != m_Chunks.end(); )
 		{
 			if (glm::length(it->second.Centre - focus) > radius)
+			{
+				DirtyGroup(it->second.Coord);
 				it = m_Chunks.erase(it);
+			}
 			else
 				++it;
 		}
+
+		RebuildDirtyGroups();
 	}
 
 	// **And give the voxels back, not only the meshes.**
@@ -3002,19 +3000,23 @@ public:
 
 	struct Chunk
 	{
-		std::shared_ptr<Egss::Mesh> MeshPtr;
+		// **CPU only.** A per-chunk GPU mesh used to sit here; chunks are now
+		// drawn in fixed 3x3x3 groups instead (see RebuildGroup), so this is
+		// kept only long enough to be concatenated into whichever group's
+		// buffer it belongs to -- never uploaded on its own.
+		Egss::MeshData Data;
 
 		// **Grass, on stride-1 chunks only.** Not a special case bolted on: a
 		// stride-2 chunk is the streamer saying this is far enough away to
-		// halve its detail, and grass is the first thing that should go. Null
-		// on every other chunk, and on every body with no vegetation.
-		std::shared_ptr<Egss::Mesh> GrassPtr;
+		// halve its detail, and grass is the first thing that should go.
+		// Empty on every other chunk, and on every body with no vegetation.
+		Egss::MeshData Grass;
 
 		// **In the planet's frame, in double, and the mesh is not.** The
-		// vertices in `MeshPtr` are measured from this chunk's own lattice
-		// origin and are never more than 24 m from it; this is where that
-		// origin is. Keeping the two apart is the whole point -- one is small
-		// enough for a float and the other is not.
+		// vertices in `Data` (and `Grass`) are measured from this chunk's own
+		// lattice origin and are never more than 24 m from it; this is where
+		// that origin is. Keeping the two apart is the whole point -- one is
+		// small enough for a float and the other is not.
 		glm::dvec3 Centre = glm::dvec3(0.0);
 		glm::dvec3 Origin = glm::dvec3(0.0);
 
@@ -3034,6 +3036,116 @@ public:
 	};
 
 	const std::unordered_map<size_t, Chunk>& Chunks() const { return m_Chunks; }
+
+	// --- Chunk groups ---------------------------------------------------
+
+	// **Draw calls, not triangles.** Same reasoning as `TerrainLab.h`'s
+	// merge: a chunk's mesh is already cheap, what costs is one bind-and-
+	// submit per chunk, and 963 of them was the whole draw-call budget on a
+	// landed Earth. Nine divides evenly by three, matching the group size
+	// used there.
+	static constexpr int s_GroupSize = 3;
+
+	struct Group
+	{
+		std::shared_ptr<Egss::Mesh> MeshPtr;
+		std::shared_ptr<Egss::Mesh> GrassPtr;
+
+		// The group's own reference point, in double -- the anchor every
+		// member chunk's vertices are re-expressed against when concatenated.
+		// See RebuildGroup.
+		glm::dvec3 Origin = glm::dvec3(0.0);
+	};
+
+	const std::unordered_map<size_t, Group>& Groups() const { return m_Groups; }
+
+	// Chunk coordinates here are never negative -- `StreamAround` clamps to
+	// `[0, ChunkCount)` before a chunk is ever meshed -- so plain truncating
+	// division groups them correctly, the same as `TerrainLab.h`.
+	static glm::ivec3 GroupCoord(const glm::ivec3& chunk)
+	{
+		return chunk / s_GroupSize;
+	}
+
+	void DirtyGroup(const glm::ivec3& chunk)
+	{
+		m_DirtyGroups.insert(Key(GroupCoord(chunk)));
+	}
+
+	// One merged GPU mesh for every live chunk in `group`, concatenated from
+	// `m_Chunks` -- pure vertex/index append, since the chunks were already
+	// watertight against each other before batching. A second, separate
+	// concatenation does the same for grass. Each member's vertices are
+	// re-expressed against the *group's* origin rather than its own before
+	// being appended: `offset = float(chunk.Origin - group.Origin)`, exact
+	// because it's at most a couple of chunk-widths, done in double and
+	// narrowed once. Erases the group entirely if nothing is left in it.
+	void RebuildGroup(const glm::ivec3& group)
+	{
+		Egss::MeshData terrain;
+		Egss::MeshData grass;
+		glm::ivec3 base = group * s_GroupSize;
+		glm::dvec3 origin = ChunkOriginFixed(base);
+
+		for (int dz = 0; dz < s_GroupSize; dz++)
+			for (int dy = 0; dy < s_GroupSize; dy++)
+				for (int dx = 0; dx < s_GroupSize; dx++)
+				{
+					auto it = m_Chunks.find(Key(base + glm::ivec3(dx, dy, dz)));
+
+					if (it == m_Chunks.end())
+						continue;
+
+					glm::vec3 rebase = glm::vec3(it->second.Origin - origin);
+
+					Append(terrain, it->second.Data, rebase);
+					Append(grass, it->second.Grass, rebase);
+				}
+
+		size_t key = Key(group);
+
+		if (terrain.Indices.empty())
+		{
+			m_Groups.erase(key);
+			return;
+		}
+
+		Group entry;
+		entry.Origin = origin;
+		entry.MeshPtr = std::make_shared<Egss::Mesh>(terrain, "PlanetChunkGroup");
+
+		if (!grass.Indices.empty())
+			entry.GrassPtr = std::make_shared<Egss::Mesh>(grass, "PlanetGrassGroup");
+
+		m_Groups[key] = std::move(entry);
+	}
+
+	// Appends `from`'s vertices and indices onto `into`, shifting every
+	// vertex position by `rebase` -- the one thing plain concatenation can't
+	// do, and the reason this isn't just an `insert` on each array.
+	static void Append(Egss::MeshData& into, const Egss::MeshData& from,
+		const glm::vec3& rebase)
+	{
+		unsigned int offset = (unsigned int)into.Vertices.size();
+
+		into.Vertices.insert(into.Vertices.end(),
+			from.Vertices.begin(), from.Vertices.end());
+
+		for (size_t i = into.Vertices.size() - from.Vertices.size();
+			i < into.Vertices.size(); i++)
+			into.Vertices[i].Position += rebase;
+
+		for (unsigned int index : from.Indices)
+			into.Indices.push_back(index + offset);
+	}
+
+	void RebuildDirtyGroups()
+	{
+		for (size_t key : m_DirtyGroups)
+			RebuildGroup(Unkey(key));
+
+		m_DirtyGroups.clear();
+	}
 
 	bool HasChunkMesh(const glm::ivec3& chunk) const
 	{
@@ -3827,6 +3939,13 @@ private:
 	std::vector<unsigned char> m_Scratch;
 
 	std::unordered_map<size_t, Chunk> m_Chunks;
+
+	// One merged GPU mesh per fixed 3x3x3 group of chunks -- see the
+	// "Chunk groups" section above. `m_DirtyGroups` is drained by
+	// `RebuildDirtyGroups`, called after every streaming, LOD and eviction
+	// pass, so it never holds more than one pass's worth of work.
+	std::unordered_map<size_t, Group> m_Groups;
+	std::set<size_t> m_DirtyGroups;
 
 	// Off until something lands: see SetLod.
 	bool m_Lod = false;

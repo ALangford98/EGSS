@@ -38,11 +38,17 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
-- **Chunk meshes merge into fixed 3x3x3 groups.** TerrainLab's terrain draws
-  93 chunks as 9 groups in the default view (27 at most). Verified
-  byte-identical before/after captures plus a self-test editing exactly on a
-  group seam. See the changelog, 2026-09-04. `VoxelPlanet.h`'s 963 chunks are
-  the harder half of the same roadmap item and still need it.
+- **Chunk meshes merge into fixed 3x3x3 groups, on the planet too.**
+  `VoxelPlanet.h`'s chunks now draw the same way TerrainLab's do: 1,459
+  meshed chunks down to 167 groups on a landed Earth. Harder than the flat
+  field — chunks stream, so a group is dirtied by `StreamAround`/
+  `EvictBeyond` rather than an edit, and each member's vertices have to be
+  re-expressed against the group's own double-precision origin before being
+  concatenated. Verified by a self-test showing triangle counts exactly
+  preserved under grouping, plus byte-identical captures across repeated
+  runs and Debug/Release. See the changelog, 2026-09-07. This finishes the
+  roadmap item that started with TerrainLab's 93-down-to-9 (changelog,
+  2026-09-04).
 - **The context pipeline.** This file, a generated trap index
   (`./egss.py traps`, `--check` to detect drift), and a tiered read ladder in
   `CLAUDE.md`. Answering "what are we working on" cold went from ~252k tokens
@@ -64,10 +70,6 @@ Nothing is in flight. Unstarted, in the order they were last discussed:
   constant with a hook where a stat should be — carry capacity trained by use.
   The owner deferred this ("further down the line"), so **ask before starting
   it**.
-- **Merge or LOD the chunk meshes, on the planet.** The TerrainLab half is
-  done (above); `VoxelPlanet.h` still draws one call per chunk. Harder there —
-  chunks stream and already carry a stride-based LOD, so the merge has to
-  respect both. See `README.md` "Still outstanding".
 
 ## When this file is wrong
 
