@@ -34,12 +34,16 @@
 
 #include "Demo.h"
 #include "DemoRegistry.h"
+#include "EditorHistory.h"
 #include "EditorProject.h"
 #include "EditorSceneView.h"
 
 // Off with `--no-editor`, because a layout is a preference and somebody
 // debugging a single panel should not have to fight one.
 inline bool g_EditorShell = true;
+
+class EditorShell;
+inline EditorShell* g_EditorShellInstance = nullptr;
 
 class EditorShell : public GS::Layer
 {
@@ -48,12 +52,25 @@ public:
 
 	void OnAttach() override
 	{
+		g_EditorShellInstance = this;
+
 		const std::vector<std::string>& arguments =
 			GS::Application::GetCommandLine();
 
 		for (const std::string& argument : arguments)
 			if (argument == "--no-editor")
 				g_EditorShell = false;
+	}
+
+	// "Reset to default" (EditorMenuBar.h) needs a way back to the original
+	// arrangement even after BuildLayout has already run once this session.
+	// Setting m_Built false alone is not enough -- BuildLayout's own guard
+	// treats an already-split dock as "leave it alone", which is exactly
+	// what must be bypassed here and nowhere else.
+	void ResetToDefaultLayout()
+	{
+		m_Built = false;
+		m_ForceDefault = true;
 	}
 
 	void OnImGuiRender() override
@@ -129,34 +146,11 @@ public:
 
 		ImGui::End();
 
-		// The spare pane. Named rather than left blank so it has somewhere to
-		// dock to before there is anything to put in it.
-		ImGui::Begin("Assets");
-
-		ImGui::SeparatorText("Scene");
-		ImGui::TextDisabled("%s", g_EditorScenePath.empty() ? "(unsaved)" : g_EditorScenePath.c_str());
-		ImGui::InputText("##savepath", m_SavePath, sizeof(m_SavePath));
-		ImGui::SameLine();
-		if (ImGui::Button("Save"))
-			SaveEditorScene(m_SavePath);
-		ImGui::SameLine();
-		if (ImGui::Button("Open"))
-		{
-			OpenEditorScene(m_SavePath);
-			// The scene may have just been rebuilt with its generation counters
-			// reset (Scene::Clear, inside Scene::Load) -- a selection held from
-			// before this looks valid but can now alias an unrelated entity.
-			if (g_EditorSceneView)
-				g_EditorSceneView->Select(GS::InvalidEntity);
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("New"))
-		{
-			g_EditorScene.Clear();
-			g_EditorScenePath.clear();
-			if (g_EditorSceneView)
-				g_EditorSceneView->Select(GS::InvalidEntity);
-		}
+		// Named "Tools" now -- scene save/open/new moved to the File menu
+		// (EditorMenuBar.h), and "Open as starting scene" moved there too,
+		// below. What is left here is exactly the entity-creation controls,
+		// which is what "Tools" means in a conventional editor layout.
+		ImGui::Begin("Tools");
 
 		ImGui::SeparatorText("Preset shapes");
 		// One button per MeshCache primitive key -- see MeshCache::Get. Each
@@ -187,28 +181,23 @@ public:
 		if (ImGui::Button("Import"))
 			PlaceMesh(m_ImportPath, "Imported");
 
-		ImGui::SeparatorText("Open as starting scene");
-		for (int i = 0; i < s_DemoCount; i++)
-		{
-			if (!s_Demos[i].CanOpenInEditor || !s_DemoInstances[i])
-				continue;
+		ImGui::End();
 
-			if (ImGui::Button(s_Demos[i].Name))
-			{
-				g_EditorScene.Clear();
-				g_EditorScenePath.clear();
-				if (g_EditorSceneView)
-					g_EditorSceneView->Select(GS::InvalidEntity);
-				s_DemoInstances[i]->OnExportToScene(g_EditorScene);
-			}
-		}
+		ImGui::Begin("Terminal");
+		ImGui::TextDisabled("Not built yet -- terminal sub-project.");
+		ImGui::End();
 
+		ImGui::Begin("Build Output");
+		ImGui::TextDisabled("Not built yet.");
+		ImGui::End();
+
+		ImGui::Begin("Textures");
+		ImGui::TextDisabled("Not built yet.");
 		ImGui::End();
 	}
 
 private:
 	char m_ImportPath[256] = "assets/models/";
-	char m_SavePath[256] = "scene.txt";
 
 	// Places a mesh -- imported or preset alike, both resolve through
 	// MeshCache -- at the origin, tags it, and selects it, so a placed
@@ -219,15 +208,15 @@ private:
 		if (!geometry)
 			return;
 
-		GS::Entity entity = g_EditorScene.CreateEntity(name);
-
 		GS::MeshComponent mesh;
 		mesh.SourcePath = path;
 		mesh.Geometry = geometry;
-		entity.Add<GS::MeshComponent>(mesh);
+
+		GS::EntityId selection = EditorHistory::Push(
+			std::make_unique<PlaceEntityCommand>(name, GS::TransformComponent{}, mesh, std::nullopt));
 
 		if (g_EditorSceneView)
-			g_EditorSceneView->Select(entity.GetId());
+			g_EditorSceneView->Select(selection);
 	}
 
 	// Places a default-constructed camera and selects it. Separate from
@@ -236,11 +225,11 @@ private:
 	// in common besides "make an entity and select it".
 	void PlaceCamera()
 	{
-		GS::Entity entity = g_EditorScene.CreateEntity("Camera");
-		entity.Add<GS::CameraComponent>();
+		GS::EntityId selection = EditorHistory::Push(std::make_unique<PlaceEntityCommand>(
+			"Camera", GS::TransformComponent{}, std::nullopt, GS::CameraComponent{}));
 
 		if (g_EditorSceneView)
-			g_EditorSceneView->Select(entity.GetId());
+			g_EditorSceneView->Select(selection);
 	}
 
 	// Built once into `imgui.ini`. Every demo has a panel and only one of them
@@ -253,9 +242,13 @@ private:
 		// Already arranged, by this code on an earlier run or by hand since.
 		// Leaving it alone is the difference between a starting point and a
 		// cage.
-		if (ImGui::DockBuilderGetNode(dock)
-			&& ImGui::DockBuilderGetNode(dock)->IsSplitNode())
+		bool alreadyArranged = ImGui::DockBuilderGetNode(dock)
+			&& ImGui::DockBuilderGetNode(dock)->IsSplitNode();
+
+		if (alreadyArranged && !m_ForceDefault)
 			return;
+
+		m_ForceDefault = false;
 
 		ImGui::DockBuilderRemoveNode(dock);
 		ImGui::DockBuilderAddNode(dock, ImGuiDockNodeFlags_DockSpace);
@@ -269,12 +262,15 @@ private:
 		ImGuiID right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right,
 			0.26f, nullptr, &centre);
 
+		// The output well: terminal, build log, textures -- none built yet,
+		// but the slot exists now so each lands here without another layout
+		// pass, the same reasoning DockBuilderDockWindow below applies to it.
 		ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down,
 			0.22f, nullptr, &centre);
 
-		// The selector goes under the controls rather than beside them: it is
-		// a list that is read top to bottom and it is used far less often than
-		// whatever is above it.
+		// Tools under the Outliner: creation controls read far less often
+		// than the entity list above them, the same relationship the demo
+		// selector used to have with the controls above it.
 		ImGuiID lower = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down,
 			0.40f, nullptr, &left);
 
@@ -290,16 +286,23 @@ private:
 		// too fragile: a demo's panel is titled whatever its author chose,
 		// which is not the name in the registry, and a list of both in a third
 		// file is exactly the kind of thing that silently falls out of step.
+		//
+		// **Unchanged from before this reshuffle: `g_DemoDock` is `left`, not
+		// `lower`.** `left` is where the Outliner sits and where each demo's
+		// own panel tabs in alongside it; `lower` is the smaller strip
+		// reserved for the two lists (Demos, Tools) below it. Pointing
+		// `g_DemoDock` at `lower` instead would dock every demo's own panel
+		// into that small list strip rather than the main left column -- a
+		// real regression this reshuffle must not introduce.
 		g_DemoDock = (unsigned int)left;
 
 		ImGui::DockBuilderDockWindow("Demos", lower);
+		ImGui::DockBuilderDockWindow("Tools", lower);
 		ImGui::DockBuilderDockWindow("Profiler", right);
-		ImGui::DockBuilderDockWindow("Assets", bottom);
+		ImGui::DockBuilderDockWindow("Terminal", bottom);
+		ImGui::DockBuilderDockWindow("Build Output", bottom);
+		ImGui::DockBuilderDockWindow("Textures", bottom);
 
-		// The Outliner and Inspector are core editor panels -- an entity list
-		// and the properties of whatever is selected -- so they get the two
-		// prominent slots left column/right column would otherwise have gone
-		// to nobody: left (above the demo selector) and under the Profiler.
 		ImGui::DockBuilderDockWindow("Outliner", left);
 		ImGui::DockBuilderDockWindow("Inspector", rightLower);
 
@@ -307,4 +310,5 @@ private:
 	}
 
 	bool m_Built = false;
+	bool m_ForceDefault = false;
 };

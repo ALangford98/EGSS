@@ -16,6 +16,7 @@
 #include <imgui.h>
 
 #include "Demo.h"
+#include "EditorHistory.h"
 #include "EditorProject.h"
 
 // Forward-declared so it can be set from OnAttach() below: a member function
@@ -124,10 +125,7 @@ public:
 			if (e.GetRepeatCount() > 0)
 				return false;
 			if (e.GetKeyCode() == GS_KEY_DELETE && g_EditorScene.IsValid(m_Selected))
-			{
-				g_EditorScene.DestroyEntity(m_Selected);
-				m_Selected = GS::InvalidEntity;
-			}
+				m_Selected = EditorHistory::Push(std::make_unique<DeleteEntityCommand>(m_Selected));
 			return false;
 		});
 	}
@@ -170,14 +168,51 @@ public:
 		if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected))
 		{
 			ImGui::DragFloat3("Position", &transform->Position.x, 0.01f);
+			if (ImGui::IsItemActivated())
+				m_EditBeforeVec3 = transform->Position;
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::TransformComponent, glm::vec3>>(
+					m_Selected, &GS::TransformComponent::Position, m_EditBeforeVec3, transform->Position));
+
 			ImGui::DragFloat3("Rotation", &transform->Rotation.x, 0.5f);
+			if (ImGui::IsItemActivated())
+				m_EditBeforeVec3 = transform->Rotation;
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::TransformComponent, glm::vec3>>(
+					m_Selected, &GS::TransformComponent::Rotation, m_EditBeforeVec3, transform->Rotation));
+
 			ImGui::DragFloat3("Scale", &transform->Scale.x, 0.01f, 0.02f, 20.0f);
+			if (ImGui::IsItemActivated())
+				m_EditBeforeVec3 = transform->Scale;
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::TransformComponent, glm::vec3>>(
+					m_Selected, &GS::TransformComponent::Scale, m_EditBeforeVec3, transform->Scale));
 		}
 
 		if (auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(m_Selected))
 		{
 			ImGui::ColorEdit4("Mesh colour", &mesh->Color.x);
+			if (ImGui::IsItemActivated())
+				m_EditBeforeVec4 = mesh->Color;
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::MeshComponent, glm::vec4>>(
+					m_Selected, &GS::MeshComponent::Color, m_EditBeforeVec4, mesh->Color));
+
 			ImGui::Checkbox("Visible", &mesh->Visible);
+			// Not negated. A Checkbox activates on the mouse-*down* frame and
+			// only toggles on release -- ImGui::Checkbox's `pressed` comes
+			// from ButtonBehavior's default PressedOnClickRelease -- so the
+			// value is still the pre-click one here. Measured against the
+			// vendored ImGui 1.92.9b with a null-backend probe: activation on
+			// frame N with value 1, deactivated-after-edit on frame N+1 with
+			// value 0. Negating would store 0 and make Undo a no-op, which is
+			// the bug this capture exists to fix.
+			if (ImGui::IsItemActivated())
+				m_EditBeforeBool = mesh->Visible;
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::MeshComponent, bool>>(
+					m_Selected, &GS::MeshComponent::Visible, m_EditBeforeBool, mesh->Visible));
+
 			ImGui::TextDisabled("Source: %s",
 				mesh->SourcePath.empty() ? "(none)" : mesh->SourcePath.c_str());
 		}
@@ -185,14 +220,22 @@ public:
 		if (auto* camera = g_EditorScene.GetComponent<GS::CameraComponent>(m_Selected))
 		{
 			ImGui::SliderFloat("Fov", &camera->Fov, 10.0f, 120.0f);
+			if (ImGui::IsItemActivated())
+				m_EditBeforeFloat = camera->Fov;
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::CameraComponent, float>>(
+					m_Selected, &GS::CameraComponent::Fov, m_EditBeforeFloat, camera->Fov));
+
 			ImGui::Checkbox("Active camera", &camera->Active);
+			if (ImGui::IsItemActivated())   // not negated -- see "Visible" above
+				m_EditBeforeBool = camera->Active;
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::CameraComponent, bool>>(
+					m_Selected, &GS::CameraComponent::Active, m_EditBeforeBool, camera->Active));
 		}
 
 		if (ImGui::Button("Delete"))
-		{
-			g_EditorScene.DestroyEntity(m_Selected);
-			m_Selected = GS::InvalidEntity;
-		}
+			m_Selected = EditorHistory::Push(std::make_unique<DeleteEntityCommand>(m_Selected));
 
 		ImGui::End();
 	}
@@ -485,6 +528,18 @@ private:
 
 		if (!down)
 		{
+			// The drag just ended (m_DragAxis was set) -- push one command
+			// for the whole gesture here, not per-frame while dragging, so
+			// Undo puts the object back where it was grabbed in a single
+			// step rather than replaying every intermediate frame.
+			if (m_DragAxis >= 0)
+			{
+				if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected))
+					if (transform->Position != m_DragStartPosition)
+						EditorHistory::Push(std::make_unique<EditFieldCommand<GS::TransformComponent, glm::vec3>>(
+							m_Selected, &GS::TransformComponent::Position, m_DragStartPosition, transform->Position));
+			}
+
 			m_DragAxis = -1;
 			m_HoverAxis = -1;
 
@@ -626,6 +681,17 @@ private:
 
 	bool m_ShowGizmo = true;
 	int m_DragAxis = -1;
+	// Captured once, on the frame a widget gesture begins (IsItemActivated),
+	// and used against the post-gesture value on IsItemDeactivatedAfterEdit
+	// -- a per-frame local re-read every frame (the previous approach)
+	// always equals the just-changed value by the release frame, since this
+	// whole function re-runs every frame regardless of whether a drag is in
+	// progress. Only one ImGui item can be "active" at a time, so one member
+	// per value type safely covers every field of that type below.
+	glm::vec3 m_EditBeforeVec3{ 0.0f };
+	glm::vec4 m_EditBeforeVec4{ 0.0f };
+	bool m_EditBeforeBool = false;
+	float m_EditBeforeFloat = 0.0f;
 	int m_HoverAxis = -1;
 	bool m_MouseDownLastFrame = false;
 	float m_DragStartT = 0.0f;

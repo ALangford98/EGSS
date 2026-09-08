@@ -38,6 +38,19 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
+- **A menu bar and conventional editor layout, sub-project 1's next step
+  after scene composition.** `EditorMenuBar.h` adds File/Edit/View/Help;
+  File covers project open/save/rename via a new `ProjectManifest`
+  (`EditorProject.h`, `project.gsproj`); Edit drives a minimal undo/redo
+  command stack (`EditorHistory.h`: `PlaceEntityCommand`/
+  `DeleteEntityCommand`/`EditFieldCommand`, wired into the Place/Delete/Edit
+  UI actions); View switches named layout presets (`editor_layouts.txt`).
+  `EditorShell.h`'s docking is reshuffled to match: Outliner/Tools/Demos
+  left, Profiler/Inspector right, Terminal/Build Output/Textures tabbed
+  along the bottom (all three still stubs -- the terminal is next, below).
+  Verified with a headless capture showing the panel placement, and a
+  temporary self-test round-tripping a project manifest through
+  create/open/rename/reopen (8/8 passed).
 - **Editor scene composition, sub-project 1 of the editor pivot.** The editor
   boots into `EditorShell.h`/`EditorSceneView.h` (`g_ActiveDemo` starts at
   `InvalidDemo`); `g_EditorScene` starts blank only on a first run with no
@@ -46,7 +59,7 @@ Last landed, newest first:
   `GS::Scene::Save`/`Load`
   round-trip a scene through a `gs-scene` text format keyed by
   `MeshComponent::SourcePath` and resolved through the new `GS::MeshCache`;
-  the Assets panel can open any opted-in demo's placed content as a starting
+  File > Open Demo can open any opted-in demo's placed content as a starting
   scene via `DemoLayer::OnExportToScene`. Cube3D is the one demo that opts in
   so far (`CanOpenInEditor = true`). Verified end-to-end: a hand-built scene
   and the same scene saved-then-reloaded via `--scene` render byte-identical
@@ -78,11 +91,33 @@ Last landed, newest first:
 ## What is next
 
 **In flight: the editor pivot.** Sub-project 1 (editor boot + scene
-composition) landed — see "Last landed" above. Next up is sub-project 2, a
-mesh authoring tool, followed by (3) a logic/module attachment mechanism and
-(4) play-in-editor. Only Cube3D opts into the editor so far; the other 16
-demos each need their own `OnExportToScene` before they can be opened as a
-starting scene the same way. See `docs/superpowers/specs/` for the design doc.
+composition, then the menu bar and layout reshuffle) landed — see "Last
+landed" above. Only Cube3D opts into the editor so far; the other 16 demos
+each need their own `OnExportToScene` before they can be opened as a
+starting scene the same way.
+
+The owner has since reordered what comes next, ahead of the mesh-authoring
+tool originally planned as sub-project 2. Agreed order, newest discussion
+first:
+
+1. **An embedded terminal** — a PTY plus libvterm (MIT, same library
+   Neovim's own `:terminal` uses) turning shell output into a styled
+   character grid, rendered in ImGui. Deliberately built as a generic
+   grid-of-cells widget, not terminal-specific, because step 2 needs the
+   same thing.
+2. **An embedded Neovim-based text editor** — spawns `nvim --embed`,
+   speaks its msgpack-RPC UI protocol, renders the resulting cell grid with
+   the same widget step 1 built. Neovim is Apache 2.0 (verified), so this is
+   clear to build.
+3. **A scripting language runtime** — this is sub-project 3's logic/module
+   attachment mechanism, now decided: JavaScript (authored as TypeScript,
+   which compiles away before anything runs, so it costs nothing beyond
+   whichever JS engine executes it), likely via QuickJS to keep it vendorable
+   like the rest of `GS/vendor/`. Comes after the editor so there is
+   somewhere to write a script.
+
+Mesh authoring (the original sub-project 2) and play-in-editor (sub-project
+4) are still queued; their exact slot in the list above hasn't been fixed.
 
 Unstarted, in the order they were last discussed:
 

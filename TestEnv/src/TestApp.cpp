@@ -21,8 +21,10 @@
 #include <GS.h>
 
 #include "DemoRegistry.h"
+#include "EditorMenuBar.h"
 #include "EditorShell.h"
 #include "EditorSceneView.h"
+#include "EditorHistory.h"
 #include "DemoSelector.h"
 #include "DemoWarmup.h"
 #include "EditorProject.h"
@@ -45,6 +47,7 @@ public:
 		// the shell said where -- and `FirstUseEver` only fires once. It
 		// handles no events, so sitting at the bottom of the stack costs
 		// nothing.
+		PushLayer(new EditorMenuBar());
 		PushLayer(new EditorShell());
 		PushLayer(new EditorSceneView());
 
@@ -76,6 +79,12 @@ public:
 	// the context) is still alive, avoids that.
 	~TestEnv() override
 	{
+		// EditorHistory::s_Commands can also hold shared_ptr<Mesh> (a
+		// Place/DeleteEntityCommand's captured MeshComponent) -- a third
+		// owner alongside g_EditorScene and MeshCache that needs clearing
+		// before the GL context goes away, for the same reason as the line
+		// below.
+		EditorHistory::Clear();
 		g_EditorScene.Clear();
 	}
 };
