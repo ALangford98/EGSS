@@ -203,8 +203,15 @@ public:
 	// ---------------------------------------------------------------------
 	void BuildScene()
 	{
+		// sourcePath is the MeshCache key this geometry came from -- stamped
+		// onto the MeshComponent directly, here, rather than recovered later
+		// by matching the pointer against m_Primitives/m_Loaded/m_Beacon (see
+		// the note on the old SourcePathFor, since removed). A pointer match
+		// cannot tell two loads of "the mesh currently in m_Loaded" apart, and
+		// that ambiguity was the whole bug.
 		auto add = [this](const char* name, const std::shared_ptr<GS::Mesh>& mesh,
-			const glm::vec3& position, const glm::vec4& color, float scale = 1.0f)
+			const std::string& sourcePath, const glm::vec3& position,
+			const glm::vec4& color, float scale = 1.0f)
 		{
 			GS::Entity entity = m_Scene.CreateEntity(name);
 
@@ -214,6 +221,7 @@ public:
 
 			GS::MeshComponent mesh_;
 			mesh_.Geometry = mesh;
+			mesh_.SourcePath = sourcePath;
 			mesh_.Color = color;
 			entity.Add<GS::MeshComponent>(mesh_);
 
@@ -223,15 +231,16 @@ public:
 		// A wide, flat cube rather than the plane primitive: a plane is one
 		// quad with a single normal, so it goes uniformly dark as the light
 		// moves, and a floor is where that is most obvious.
-		GS::Entity floor = add("Floor", m_Primitives[0], { 0.0f, -1.2f, 0.0f },
-			{ 0.55f, 0.57f, 0.62f, 1.0f });
+		GS::Entity floor = add("Floor", m_Primitives[0], "primitive:cube",
+			{ 0.0f, -1.2f, 0.0f }, { 0.55f, 0.57f, 0.62f, 1.0f });
 		floor.Get<GS::TransformComponent>()->Scale = { 12.0f, 0.2f, 12.0f };
 
-		add("Cube",   m_Primitives[0], { -2.2f, 0.0f,  0.0f }, { 1.00f, 0.55f, 0.35f, 1.0f });
-		add("Sphere", m_Primitives[1], {  0.0f, 0.0f,  0.0f }, { 0.45f, 0.75f, 1.00f, 1.0f });
-		add("Riser",  m_Primitives[0], {  2.2f, 0.0f, -1.4f }, { 0.65f, 1.00f, 0.55f, 1.0f }, 0.7f);
+		add("Cube",   m_Primitives[0], "primitive:cube",   { -2.2f, 0.0f,  0.0f }, { 1.00f, 0.55f, 0.35f, 1.0f });
+		add("Sphere", m_Primitives[1], "primitive:sphere", {  0.0f, 0.0f,  0.0f }, { 0.45f, 0.75f, 1.00f, 1.0f });
+		add("Riser",  m_Primitives[0], "primitive:cube",   {  2.2f, 0.0f, -1.4f }, { 0.65f, 1.00f, 0.55f, 1.0f }, 0.7f);
 
 		m_Spinner = add("Icosahedron", m_Loaded ? m_Loaded : m_Primitives[1],
+			m_Loaded ? "assets/models/icosahedron.obj" : "primitive:sphere",
 			{ 2.2f, 0.4f, 1.2f }, { 0.90f, 0.60f, 1.00f, 1.0f }, 0.8f).GetId();
 
 		// The one object in the scene whose colours it does not choose. Three
@@ -240,8 +249,8 @@ public:
 		// and the Color below is never applied to them.
 		if (m_Beacon)
 		{
-			GS::Entity beacon = add("Beacon", m_Beacon, { -2.2f, -1.1f, 1.6f },
-				{ 1.0f, 1.0f, 1.0f, 1.0f });
+			GS::Entity beacon = add("Beacon", m_Beacon, "assets/models/beacon.obj",
+				{ -2.2f, -1.1f, 1.6f }, { 1.0f, 1.0f, 1.0f, 1.0f });
 
 			auto* component = beacon.Get<GS::MeshComponent>();
 			component->Materials = LoadMaterialsFor(m_Beacon, "assets/models/beacon.obj");
@@ -251,6 +260,42 @@ public:
 		m_Selected = m_Spinner;
 
 		BuildEnclosure();
+	}
+
+	// What OnExportToScene hands the editor: every entity this demo places,
+	// translated into fresh SourcePath-tagged MeshComponents so the result is
+	// immediately saveable -- not just viewable. Each source MeshComponent
+	// already carries its own SourcePath (set where it was assigned -- see
+	// BuildScene, LoadMeshFromPath, and the Inspector's mesh-swap combo), so
+	// this only copies it; a mesh with no SourcePath was built ad hoc and has
+	// nothing to reload from, so it is skipped rather than exported
+	// half-described.
+	void OnExportToScene(GS::Scene& scene) override
+	{
+		auto& meshes = m_Scene.View<GS::MeshComponent>();
+
+		for (size_t i = 0; i < meshes.Size(); i++)
+		{
+			const GS::MeshComponent& source = meshes.Components()[i];
+			if (!source.Geometry || source.SourcePath.empty())
+				continue;
+
+			GS::EntityId owner = meshes.Owner(i);
+			auto* sourceTag = m_Scene.GetComponent<GS::TagComponent>(owner);
+			auto* sourceTransform = m_Scene.GetComponent<GS::TransformComponent>(owner);
+			if (!sourceTransform)
+				continue;
+
+			GS::Entity entity = scene.CreateEntity(sourceTag ? sourceTag->Name : "Entity");
+			*entity.Get<GS::TransformComponent>() = *sourceTransform;
+
+			GS::MeshComponent mesh;
+			mesh.SourcePath = source.SourcePath;
+			mesh.Geometry = GS::MeshCache::Get(source.SourcePath);
+			mesh.Color = source.Color;
+			mesh.Visible = source.Visible;
+			entity.Add<GS::MeshComponent>(mesh);
+		}
 	}
 
 	// Four walls and a ceiling, hidden unless asked for.
@@ -291,6 +336,7 @@ public:
 
 			GS::MeshComponent mesh;
 			mesh.Geometry = m_Primitives[0];
+			mesh.SourcePath = "primitive:cube";
 			mesh.Color = { 0.40f, 0.42f, 0.48f, 1.0f };
 			mesh.Visible = m_ShowEnclosure;
 			entity.Add<GS::MeshComponent>(mesh);
@@ -352,9 +398,15 @@ public:
 		m_Loaded.reset(loaded);
 
 		// Assign it to whatever is selected, so loading a file has a visible
-		// effect rather than quietly filling a slot.
+		// effect rather than quietly filling a slot. SourcePath is the path
+		// that was actually just loaded -- m_LoadPath -- not a fixed guess,
+		// since m_Loaded is reassigned every time this runs and a stale
+		// constant here is exactly the bug this replaced.
 		if (auto* mesh = m_Scene.GetComponent<GS::MeshComponent>(m_Selected))
+		{
 			mesh->Geometry = m_Loaded;
+			mesh->SourcePath = m_LoadPath;
+		}
 
 		FrameMesh();
 	}
@@ -1533,10 +1585,22 @@ public:
 
 			if (ImGui::Combo("Mesh", &choice, meshNames, 4))
 			{
+				// SourcePath alongside Geometry, or this entity would carry
+				// mismatched geometry and source the next time it is exported
+				// or saved -- exactly the aliasing SourcePathFor used to hide.
+				static const char* primitivePaths[3] =
+					{ "primitive:cube", "primitive:sphere", "primitive:plane" };
+
 				if (choice < 3)
+				{
 					selectedMesh->Geometry = m_Primitives[choice];
+					selectedMesh->SourcePath = primitivePaths[choice];
+				}
 				else if (m_Loaded)
+				{
 					selectedMesh->Geometry = m_Loaded;
+					selectedMesh->SourcePath = m_LoadPath;
+				}
 			}
 
 			ImGui::InputText(".obj path", m_LoadPath, sizeof(m_LoadPath));

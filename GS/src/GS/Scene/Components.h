@@ -70,6 +70,12 @@ namespace GS {
 		// type it is declared from inside the same struct.
 		std::shared_ptr<GS::Mesh> Geometry;
 
+		// The cache key Geometry was resolved through -- "primitive:cube", or
+		// a file path. Empty means this mesh was built ad hoc and has nothing
+		// to reload from, which Scene::Save uses to skip it rather than write
+		// a reference nothing can follow.
+		std::string SourcePath;
+
 		// One material per submesh, in the same order as Geometry's. A model
 		// whose file switched material partway through needs one each, so this
 		// is a vector rather than the single material it started as -- a mesh
@@ -99,6 +105,21 @@ namespace GS {
 		glm::vec4 Color = { 1.0f, 0.95f, 0.8f, 1.0f };
 		float Radius = 2.0f;
 		bool Enabled = true;
+	};
+
+	// A viewpoint an entity carries with it. Position and yaw/pitch are read
+	// off TransformComponent -- there is no reason for a camera to have two
+	// places to be -- so this is only the lens.
+	struct CameraComponent
+	{
+		float Fov = 45.0f;
+		float NearClip = 0.1f;
+		float FarClip = 1000.0f;
+
+		// At most one camera in a scene drives the runtime view. A second
+		// entity with this set simply loses -- whichever is found first wins,
+		// which is enough until something needs to switch cameras at runtime.
+		bool Active = false;
 	};
 
 }

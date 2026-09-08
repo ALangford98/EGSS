@@ -45,11 +45,10 @@ constexpr DemoId InvalidDemo = -1;
 
 // Index into s_Demos. Change to whichever demo you are working on.
 //
-// **16 is the terrain lab**, which is where the ground, the weather and the
-// vegetation are being worked on. It is the last entry because the array's
-// order is the recording file format -- see the note in `DemoRegistry.h` --
-// so a new demo is appended and never inserted, whatever it is for.
-inline DemoId g_ActiveDemo = 16;
+// InvalidDemo means "the editor, not a demo" -- the new default. --demo
+// still boots straight into a single demo exactly as before; see
+// SelectDemoFromCommandLine in DemoRegistry.h.
+inline DemoId g_ActiveDemo = InvalidDemo;
 
 // Base for every demo layer.
 //
@@ -120,6 +119,15 @@ public:
 	virtual void OnDemoUpdate(GS::Timestep ts) { (void)ts; }
 	virtual void OnDemoImGui() {}
 	virtual void OnDemoEvent(GS::Event& e) { (void)e; }
+
+	// Describes this demo's placed content -- meshes, transforms, a camera --
+	// in terms of the destination scene's own components, so the editor can
+	// open it as a starting point. Default does nothing, which is also what
+	// keeps a demo out of the editor's "Open" list; see DemoEntry::CanOpenInEditor.
+	// Deliberately not part of OnDemoAttach: exporting happens once, on
+	// request, into a *different* scene than the one the demo is still
+	// running against.
+	virtual void OnExportToScene(GS::Scene& scene) { (void)scene; }
 
 	// --- Layer, sealed ----------------------------------------------------
 	// OnAttach is deliberately *not* guarded: assets have to be built whether

@@ -1,5 +1,6 @@
 #include "gspch.h"
 #include "GS/Renderer/Renderer.h"
+#include "GS/Renderer/MeshCache.h"
 
 namespace GS {
 
@@ -15,6 +16,14 @@ namespace GS {
 	void Renderer::Shutdown()
 	{
 		Renderer2D::Shutdown();
+
+		// MeshCache's store is a function-local static, so without this it is
+		// destroyed after main() returns -- after the GL context is gone.
+		// Clearing it here, while the context is still current (this runs
+		// from ~Application, before the window is destroyed), frees every
+		// cached VertexArray/VertexBuffer while glDeleteVertexArrays/
+		// glDeleteBuffers still have a context to call into.
+		MeshCache::Clear();
 	}
 
 	void Renderer::OnWindowResize(unsigned int width, unsigned int height)

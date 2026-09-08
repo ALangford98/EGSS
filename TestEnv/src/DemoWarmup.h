@@ -129,8 +129,9 @@ private:
 		m_Target = g_ActiveDemo;
 		g_ActiveDemo = warmup;
 
+		const char* targetName = (m_Target == InvalidDemo) ? "the editor" : s_Demos[m_Target].ShortName;
 		GS_INFO("Warmup: {0} for {1} steps, then {2}",
-			s_Demos[warmup].ShortName, m_WarmupSteps, s_Demos[m_Target].ShortName);
+			s_Demos[warmup].ShortName, m_WarmupSteps, targetName);
 	}
 
 	// Index or short name, the same two spellings `--demo` takes.

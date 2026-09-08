@@ -68,6 +68,7 @@
 #include "GS/Renderer/ObjLoader.h"
 #include "GS/Renderer/MtlLoader.h"
 #include "GS/Renderer/GltfLoader.h"
+#include "GS/Renderer/MeshCache.h"
 #include "GS/Renderer/Camera.h"
 #include "GS/Renderer/OrthographicCamera.h"
 #include "GS/Renderer/PerspectiveCamera.h"

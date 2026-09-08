@@ -2,6 +2,11 @@
 #include "GS/Scene/Scene.h"
 
 #include "GS/Debug/Instrumentor.h"
+#include "GS/Renderer/MeshCache.h"
+#include "GS/Log.h"
+#include <fstream>
+#include <sstream>
+#include <iomanip>
 
 namespace GS {
 
@@ -136,6 +141,161 @@ namespace GS {
 			const RigidBody2D& body = m_Physics.GetBody(link.Body);
 			transform->Position = glm::vec3(body.Position, transform->Position.z);
 		}
+	}
+
+	static void WriteFloats(std::ofstream& out, std::initializer_list<float> values)
+	{
+		for (float v : values)
+			out << ' ' << v;
+	}
+
+	bool Scene::Save(const std::string& path) const
+	{
+		std::ofstream out(path);
+		if (!out)
+		{
+			GS_WARN("Scene::Save: could not write '{0}'", path);
+			return false;
+		}
+
+		out << "gs-scene 1\n";
+
+		// A float needs 9 significant digits (max_digits10) to round-trip
+		// exactly; the default stream precision is 6, which silently drops
+		// bits for anything that isn't a round number. Set once, before any
+		// float is written, rather than per-value in WriteFloats.
+		out.precision(9);
+
+		Scene* self = const_cast<Scene*>(this);
+
+		for (EntityId entity : m_Live)
+		{
+			out << "entity\n";
+
+			if (TagComponent* tag = self->GetComponent<TagComponent>(entity))
+				out << "tag " << tag->Name << "\n";
+
+			if (TransformComponent* t = self->GetComponent<TransformComponent>(entity))
+			{
+				out << "transform";
+				WriteFloats(out, { t->Position.x, t->Position.y, t->Position.z,
+					t->Rotation.x, t->Rotation.y, t->Rotation.z,
+					t->Scale.x, t->Scale.y, t->Scale.z });
+				out << "\n";
+			}
+
+			// A mesh with no SourcePath was built ad hoc and has nothing to
+			// reload from -- silently dropped rather than written as a
+			// reference nothing can follow.
+			if (MeshComponent* mesh = self->GetComponent<MeshComponent>(entity))
+			{
+				if (!mesh->SourcePath.empty())
+				{
+					out << "mesh " << mesh->SourcePath;
+					WriteFloats(out, { mesh->Color.r, mesh->Color.g, mesh->Color.b, mesh->Color.a });
+					out << ' ' << (mesh->Visible ? 1 : 0) << "\n";
+				}
+			}
+
+			if (CameraComponent* camera = self->GetComponent<CameraComponent>(entity))
+			{
+				out << "camera";
+				WriteFloats(out, { camera->Fov, camera->NearClip, camera->FarClip });
+				out << ' ' << (camera->Active ? 1 : 0) << "\n";
+			}
+		}
+
+		return true;
+	}
+
+	bool Scene::Load(const std::string& path)
+	{
+		std::ifstream in(path);
+		if (!in)
+		{
+			GS_WARN("Scene::Load: could not read '{0}'", path);
+			return false;
+		}
+
+		std::string tag;
+		int version = 0;
+		in >> tag >> version;
+
+		if (tag != "gs-scene")
+		{
+			// A version number would be misleading here -- a file that isn't a
+			// gs-scene file at all can still parse a "1" into `version` by
+			// coincidence, which would print "is version 1; this build reads 1"
+			// and read as a version problem rather than the wrong file.
+			GS_WARN("Scene::Load: '{0}' is not a gs-scene file (found tag '{1}')", path, tag);
+			Clear();
+			return false;
+		}
+
+		if (version != 1)
+		{
+			GS_WARN("Scene::Load: '{0}' is version {1}; this build reads 1", path, version);
+			Clear();
+			return false;
+		}
+
+		std::string line;
+		std::getline(in, line);   // rest of the header line
+
+		Clear();
+		Entity current;
+
+		while (std::getline(in, line))
+		{
+			std::istringstream fields(line);
+			std::string kind;
+			fields >> kind;
+
+			if (kind == "entity")
+			{
+				current = CreateEntity();
+			}
+			else if (kind == "tag" && current)
+			{
+				std::string name;
+				std::getline(fields, name);
+				size_t from = name.find_first_not_of(' ');
+				current.Get<TagComponent>()->Name = from == std::string::npos ? "" : name.substr(from);
+			}
+			else if (kind == "transform" && current)
+			{
+				TransformComponent t;
+				fields >> t.Position.x >> t.Position.y >> t.Position.z
+					>> t.Rotation.x >> t.Rotation.y >> t.Rotation.z
+					>> t.Scale.x >> t.Scale.y >> t.Scale.z;
+				*current.Get<TransformComponent>() = t;
+			}
+			else if (kind == "mesh" && current)
+			{
+				std::string sourcePath;
+				fields >> sourcePath;
+
+				MeshComponent mesh;
+				mesh.SourcePath = sourcePath;
+				fields >> mesh.Color.r >> mesh.Color.g >> mesh.Color.b >> mesh.Color.a;
+				int visible = 1;
+				fields >> visible;
+				mesh.Visible = visible != 0;
+				mesh.Geometry = MeshCache::Get(sourcePath);
+
+				current.Add<MeshComponent>(mesh);
+			}
+			else if (kind == "camera" && current)
+			{
+				CameraComponent camera;
+				int active = 0;
+				fields >> camera.Fov >> camera.NearClip >> camera.FarClip >> active;
+				camera.Active = active != 0;
+				current.Add<CameraComponent>(camera);
+			}
+		}
+
+		return true;
 	}
 
 }

@@ -93,6 +93,22 @@ namespace GS {
 		// other way round for bodies the transform drives). Call from
 		// OnFixedUpdate.
 		void StepPhysics(float fixedStep);
+
+		// --- Persistence --------------------------------------------------
+		// A hand-written, explicit format -- there is no component
+		// registration to walk generically, so this names exactly the
+		// components a scene file is allowed to carry: Tag, Transform, Mesh
+		// (by SourcePath, resolved through MeshCache) and Camera. Adding a
+		// fifth persisted component means adding one more explicit case here,
+		// the same way adding a demo means adding one more line to
+		// DemoRegistry.h.
+		bool Save(const std::string& path) const;
+
+		// Clears the scene once the header is confirmed valid, before parsing
+		// begins -- a scene half-overwritten by a truncated file is a worse
+		// state than empty. A file that cannot even be opened does *not*
+		// clear: a typo'd path should not destroy the scene that was open.
+		bool Load(const std::string& path);
 	private:
 		template<typename T>
 		ComponentStore<T>& Store()

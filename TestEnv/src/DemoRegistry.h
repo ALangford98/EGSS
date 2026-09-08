@@ -38,6 +38,12 @@ struct DemoEntry
 	const char* Name;       // shown in the dropdown
 	const char* ShortName;  // shown on the quick-select buttons
 	DemoLayer* (*Create)();
+
+	// Whether this demo's placed content (meshes, transforms, camera) can be
+	// opened as a starting scene in the editor -- see DemoLayer::OnExportToScene.
+	// False for every demo that has never implemented the hook, which is
+	// every demo but Cube3D as of this line.
+	bool CanOpenInEditor = false;
 };
 
 // Add a line here and you are done.
@@ -51,7 +57,7 @@ struct DemoEntry
 inline const DemoEntry s_Demos[] =
 {
 	{ "Engine",   "Breakout (2D, batched quads)", "Breakout",  []() -> DemoLayer* { return new Breakout(); } },
-	{ "Engine",   "Cube3D (3D, lit meshes)",      "Cube3D",    []() -> DemoLayer* { return new Cube3D(); } },
+	{ "Engine",   "Cube3D (3D, lit meshes)",      "Cube3D",    []() -> DemoLayer* { return new Cube3D(); }, true },
 	{ "Engine",   "Physics2D (rigid bodies)",     "Physics",   []() -> DemoLayer* { return new Physics2D(); } },
 	{ "Engine",   "Physics3D (boxes and spheres)","Physics3D", []() -> DemoLayer* { return new Physics3D(); } },
 	{ "Engine",   "Lighting2D (visibility)",      "Lighting",  []() -> DemoLayer* { return new Lighting2D(); } },
@@ -77,6 +83,13 @@ inline const DemoEntry s_Demos[] =
 };
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));
+
+// One pointer per demo, filled by PushAllDemos. A demo is attached (OnAttach
+// has run) the moment this is populated, which is what lets the editor ask an
+// already-running demo to export its content instead of constructing a second,
+// never-attached instance whose OnDemoAttach (where the content is actually
+// built) never fires.
+inline DemoLayer* s_DemoInstances[s_DemoCount] = {};
 
 // The folders, in the order they first appear above -- so a folder's position
 // is decided by where its first demo was added, and adding a demo to an
@@ -206,6 +219,7 @@ inline void PushAllDemos(GS::Application& app)
 	{
 		DemoLayer* demo = s_Demos[i].Create();
 		demo->SetDemoId(i);
+		s_DemoInstances[i] = demo;
 		app.PushLayer(demo);
 	}
 

@@ -34,6 +34,8 @@
 
 #include "Demo.h"
 #include "DemoRegistry.h"
+#include "EditorProject.h"
+#include "EditorSceneView.h"
 
 // Off with `--no-editor`, because a layout is a preference and somebody
 // debugging a single panel should not have to fight one.
@@ -130,13 +132,117 @@ public:
 		// The spare pane. Named rather than left blank so it has somewhere to
 		// dock to before there is anything to put in it.
 		ImGui::Begin("Assets");
-		ImGui::TextDisabled("Nothing here yet.");
-		ImGui::TextDisabled("Docked bottom-centre, ready for a texture browser");
-		ImGui::TextDisabled("or whatever the next thing needs a pane for.");
+
+		ImGui::SeparatorText("Scene");
+		ImGui::TextDisabled("%s", g_EditorScenePath.empty() ? "(unsaved)" : g_EditorScenePath.c_str());
+		ImGui::InputText("##savepath", m_SavePath, sizeof(m_SavePath));
+		ImGui::SameLine();
+		if (ImGui::Button("Save"))
+			SaveEditorScene(m_SavePath);
+		ImGui::SameLine();
+		if (ImGui::Button("Open"))
+		{
+			OpenEditorScene(m_SavePath);
+			// The scene may have just been rebuilt with its generation counters
+			// reset (Scene::Clear, inside Scene::Load) -- a selection held from
+			// before this looks valid but can now alias an unrelated entity.
+			if (g_EditorSceneView)
+				g_EditorSceneView->Select(GS::InvalidEntity);
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("New"))
+		{
+			g_EditorScene.Clear();
+			g_EditorScenePath.clear();
+			if (g_EditorSceneView)
+				g_EditorSceneView->Select(GS::InvalidEntity);
+		}
+
+		ImGui::SeparatorText("Preset shapes");
+		// One button per MeshCache primitive key -- see MeshCache::Get. Each
+		// placed entity is immediately saveable, because its SourcePath is
+		// exactly the key the cache resolved it through.
+		struct Preset { const char* Label; const char* Path; };
+		static const Preset presets[] = {
+			{ "Cube", "primitive:cube" }, { "Sphere", "primitive:sphere" },
+			{ "Plane", "primitive:plane" }, { "Cylinder", "primitive:cylinder" }
+		};
+		for (const Preset& preset : presets)
+		{
+			if (ImGui::Button(preset.Label))
+				PlaceMesh(preset.Path, preset.Label);
+			ImGui::SameLine();
+		}
+		// Not a preset shape -- a camera has no mesh or SourcePath to resolve
+		// through MeshCache -- but it belongs beside them: both are "make a
+		// new entity and select it" buttons for things a scene is built from.
+		if (ImGui::Button("Camera"))
+			PlaceCamera();
+		ImGui::NewLine();
+
+		ImGui::SeparatorText("Import");
+		ImGui::TextDisabled(".obj only -- see the plan's note on why glTF stays in ModelDemo for now.");
+		ImGui::InputText("##importpath", m_ImportPath, sizeof(m_ImportPath));
+		ImGui::SameLine();
+		if (ImGui::Button("Import"))
+			PlaceMesh(m_ImportPath, "Imported");
+
+		ImGui::SeparatorText("Open as starting scene");
+		for (int i = 0; i < s_DemoCount; i++)
+		{
+			if (!s_Demos[i].CanOpenInEditor || !s_DemoInstances[i])
+				continue;
+
+			if (ImGui::Button(s_Demos[i].Name))
+			{
+				g_EditorScene.Clear();
+				g_EditorScenePath.clear();
+				if (g_EditorSceneView)
+					g_EditorSceneView->Select(GS::InvalidEntity);
+				s_DemoInstances[i]->OnExportToScene(g_EditorScene);
+			}
+		}
+
 		ImGui::End();
 	}
 
 private:
+	char m_ImportPath[256] = "assets/models/";
+	char m_SavePath[256] = "scene.txt";
+
+	// Places a mesh -- imported or preset alike, both resolve through
+	// MeshCache -- at the origin, tags it, and selects it, so a placed
+	// object is immediately the thing the Inspector is showing.
+	void PlaceMesh(const std::string& path, const std::string& name)
+	{
+		std::shared_ptr<GS::Mesh> geometry = GS::MeshCache::Get(path);
+		if (!geometry)
+			return;
+
+		GS::Entity entity = g_EditorScene.CreateEntity(name);
+
+		GS::MeshComponent mesh;
+		mesh.SourcePath = path;
+		mesh.Geometry = geometry;
+		entity.Add<GS::MeshComponent>(mesh);
+
+		if (g_EditorSceneView)
+			g_EditorSceneView->Select(entity.GetId());
+	}
+
+	// Places a default-constructed camera and selects it. Separate from
+	// PlaceMesh rather than an overload of it: a camera has no mesh and
+	// nothing to resolve through MeshCache, so the two have almost nothing
+	// in common besides "make an entity and select it".
+	void PlaceCamera()
+	{
+		GS::Entity entity = g_EditorScene.CreateEntity("Camera");
+		entity.Add<GS::CameraComponent>();
+
+		if (g_EditorSceneView)
+			g_EditorSceneView->Select(entity.GetId());
+	}
+
 	// Built once into `imgui.ini`. Every demo has a panel and only one of them
 	// is ever visible, so they all dock to the same slot on the left and the
 	// active one takes it.
@@ -172,6 +278,13 @@ private:
 		ImGuiID lower = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down,
 			0.40f, nullptr, &left);
 
+		// The right column is split too: the Inspector under the Profiler.
+		// Both describe "the thing currently selected" -- a component's live
+		// values on top, a scope's timings below -- so they share a column
+		// rather than fighting the left column for space.
+		ImGuiID rightLower = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down,
+			0.45f, nullptr, &right);
+
 		// **The demo's own panel goes here, and `DemoLayer` puts it there by
 		// id rather than by name.** Docking by title was tried first and is
 		// too fragile: a demo's panel is titled whatever its author chose,
@@ -182,6 +295,13 @@ private:
 		ImGui::DockBuilderDockWindow("Demos", lower);
 		ImGui::DockBuilderDockWindow("Profiler", right);
 		ImGui::DockBuilderDockWindow("Assets", bottom);
+
+		// The Outliner and Inspector are core editor panels -- an entity list
+		// and the properties of whatever is selected -- so they get the two
+		// prominent slots left column/right column would otherwise have gone
+		// to nobody: left (above the demo selector) and under the Profiler.
+		ImGui::DockBuilderDockWindow("Outliner", left);
+		ImGui::DockBuilderDockWindow("Inspector", rightLower);
 
 		ImGui::DockBuilderFinish(dock);
 	}

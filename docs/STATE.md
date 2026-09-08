@@ -38,6 +38,19 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
+- **Editor scene composition, sub-project 1 of the editor pivot.** The editor
+  boots into `EditorShell.h`/`EditorSceneView.h` (`g_ActiveDemo` starts at
+  `InvalidDemo`); `g_EditorScene` starts blank only on a first run with no
+  `--scene` -- otherwise `LoadEditorProjectFromCommandLine` (`EditorProject.h`)
+  reopens whatever `editor_last_scene.txt` names from the previous session.
+  `GS::Scene::Save`/`Load`
+  round-trip a scene through a `gs-scene` text format keyed by
+  `MeshComponent::SourcePath` and resolved through the new `GS::MeshCache`;
+  the Assets panel can open any opted-in demo's placed content as a starting
+  scene via `DemoLayer::OnExportToScene`. Cube3D is the one demo that opts in
+  so far (`CanOpenInEditor = true`). Verified end-to-end: a hand-built scene
+  and the same scene saved-then-reloaded via `--scene` render byte-identical
+  captures.
 - **Chunk meshes merge into fixed 3x3x3 groups, on the planet too.**
   `VoxelPlanet.h`'s chunks now draw the same way TerrainLab's do: 1,459
   meshed chunks down to 167 groups on a landed Earth. Harder than the flat
@@ -64,13 +77,12 @@ Last landed, newest first:
 
 ## What is next
 
-**In flight: the editor pivot.** Boot the app into an editor environment
-(building on `EditorShell.h`) rather than a selected demo — import meshes,
-compose scenes in `GS::Scene`, attach logic, and eventually play the result
-in place. Being brainstormed as a sequence of sub-projects: (1) editor boot +
-scene composition, (2) a mesh authoring tool, (3) a logic/module attachment
-mechanism, (4) play-in-editor. See `docs/superpowers/specs/` for the design
-doc once it lands.
+**In flight: the editor pivot.** Sub-project 1 (editor boot + scene
+composition) landed — see "Last landed" above. Next up is sub-project 2, a
+mesh authoring tool, followed by (3) a logic/module attachment mechanism and
+(4) play-in-editor. Only Cube3D opts into the editor so far; the other 16
+demos each need their own `OnExportToScene` before they can be opened as a
+starting scene the same way. See `docs/superpowers/specs/` for the design doc.
 
 Unstarted, in the order they were last discussed:
 

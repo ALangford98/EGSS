@@ -44,6 +44,10 @@ public:
 			nullptr, s_DemoCount))
 			SetDemo(current);
 
+		ImGui::SameLine();
+		if (ImGui::Button("Editor"))
+			g_ActiveDemo = InvalidDemo;
+
 		ImGui::Spacing();
 
 		// Buttons as well as the dropdown: one click instead of two, and it
@@ -61,7 +65,10 @@ public:
 		for (int folder = 0; folder < DemoFolderCount(); folder++)
 		{
 			const char* name = DemoFolder(folder);
-			bool holdsActive = std::strcmp(s_Demos[g_ActiveDemo].Folder, name) == 0;
+			// No folder holds "the active demo" while the editor itself is
+			// active -- g_ActiveDemo is InvalidDemo, not an index into s_Demos.
+			bool holdsActive = g_ActiveDemo != InvalidDemo
+				&& std::strcmp(s_Demos[g_ActiveDemo].Folder, name) == 0;
 
 			// Only the *first* time this folder is seen -- after that it is
 			// whatever the user left it as, including across runs, since ImGui

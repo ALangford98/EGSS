@@ -22,8 +22,10 @@
 
 #include "DemoRegistry.h"
 #include "EditorShell.h"
+#include "EditorSceneView.h"
 #include "DemoSelector.h"
 #include "DemoWarmup.h"
+#include "EditorProject.h"
 #include "ProfilerPanel.h"
 #include "AudioRaceStress.h"
 
@@ -44,6 +46,11 @@ public:
 		// handles no events, so sitting at the bottom of the stack costs
 		// nothing.
 		PushLayer(new EditorShell());
+		PushLayer(new EditorSceneView());
+
+		// Load the editor's project state before demos, so if a demo's warmup
+		// or attach logic wants to know the editor's state, it is already set.
+		LoadEditorProjectFromCommandLine();
 
 		// Every demo in DemoRegistry.h, pushed and numbered. Adding one needs
 		// no change here.
@@ -58,6 +65,18 @@ public:
 		// `./gs.py sanitize --thread` can turn it on from the command line --
 		// see the note in AudioRaceStress.h for why a race sweep needs it.
 		PushLayer(new AudioRaceStress());
+	}
+
+	// g_EditorScene is a global with static storage duration, so without this
+	// it is destroyed after main() returns -- after the GL context is gone
+	// (~Application, and the glfwDestroyWindow inside it, already ran). Its
+	// MeshComponents hold VertexArray/VertexBuffer objects whose destructors
+	// call glDeleteVertexArrays/glDeleteBuffers, which is undefined behavior
+	// against a dead context. Clearing it here, while TestEnv (and therefore
+	// the context) is still alive, avoids that.
+	~TestEnv() override
+	{
+		g_EditorScene.Clear();
 	}
 };
 
