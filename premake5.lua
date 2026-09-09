@@ -48,10 +48,12 @@ IncludeDir["glm"] = "GS/vendor/glm"
 IncludeDir["ImGui"] = "GS/vendor/imgui"
 IncludeDir["stb_image"] = "GS/vendor/stb_image"
 IncludeDir["miniaudio"] = "GS/vendor/miniaudio"
+IncludeDir["libvterm"] = "GS/vendor/libvterm/include"
 
 include "GS/vendor/glfw"
 include "GS/vendor/Glad"
 include "GS/vendor/imgui_premake5.lua"
+include "GS/vendor/libvterm_premake5.lua"
 
 project "GS"
     -- Must match the case of the source folder: on Windows this resolved to
@@ -234,13 +236,15 @@ project "TestEnv"
         "GS/vendor/spdlog/include",
         "GS/src",
         "%{IncludeDir.glm}",
-        "%{IncludeDir.ImGui}"
+        "%{IncludeDir.ImGui}",
+        "%{IncludeDir.libvterm}"
     }
 
-    links 
+    links
     {
         "GS",
-        "ImGui"
+        "ImGui",
+        "libvterm"
     }
 
     -- Assets are loaded by relative path at runtime, so they have to sit next
@@ -281,7 +285,8 @@ project "TestEnv"
         links
         {
             "pthread",
-            "dl"
+            "dl",
+            "util"
         }
 
         -- Find libGS.so next to the executable instead of on the system path.

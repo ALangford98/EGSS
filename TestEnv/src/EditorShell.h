@@ -37,6 +37,8 @@
 #include "EditorHistory.h"
 #include "EditorProject.h"
 #include "EditorSceneView.h"
+#include "TerminalPanel.h"
+#include "TextEditorPanel.h"
 
 // Off with `--no-editor`, because a layout is a preference and somebody
 // debugging a single panel should not have to fight one.
@@ -94,9 +96,9 @@ public:
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 
 		// It covers the screen, so it must not steal focus or come forward
-		// over the panels docked into it. Input still reaches the demo,
-		// because the central node is passthru and a passthru node is a hole
-		// rather than a surface.
+		// over the panels docked into it. Input reaches the demo through the
+		// "Scene" window docked into the central node below, not through a
+		// passthru hole -- there is always a real window there now.
 		ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar
 			| ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize
 			| ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus
@@ -109,11 +111,38 @@ public:
 
 		ImGuiID dock = ImGui::GetID("EditorDock");
 
-		// **`PassthruCentralNode` is what leaves the middle transparent.**
-		// Without it the central node paints itself and the demo behind it is
-		// never seen -- which looks exactly like the scene failing to render.
-		ImGui::DockSpace(dock, ImVec2(0.0f, 0.0f),
-			ImGuiDockNodeFlags_PassthruCentralNode);
+		// **No `PassthruCentralNode` here.** That flag exists to leave an
+		// *empty* central node transparent -- but "Scene" and "Editor" are
+		// always docked into this one, so it is never empty, and the flag's
+		// own fallback for a non-empty central node is worse than not having
+		// it: ImGui still paints the whole dockspace with `ImGuiCol_WindowBg`
+		// every frame in that case (imgui.cpp's DockNodeUpdate, the
+		// `render_dockspace_bg` / `central_node_hole` branch), because the
+		// "hole" it would normally cut out only applies while the node is
+		// empty. That fill lands on top of the demo's already-rendered pixels
+		// -- raw GL, drawn earlier in the frame, outside ImGui's draw list --
+		// and was measured to darken Cube3D's lit icosahedron from
+		// (251,179,248) to functionally black. Leaving the flag off skips
+		// that whole code path.
+		ImGui::DockSpace(dock, ImVec2(0.0f, 0.0f));
+
+		// **The window `DockSpace()` actually hosts docking in is not
+		// "##EditorShell".** It creates its own internal child window (named
+		// "<caller>/DockSpace_<id>") to be the real dock host -- confirmed
+		// against the vendored ImGui source and a standalone probe against
+		// it (io.WantCaptureMouse over "Scene"'s rect stayed true even after
+		// giving "Scene" NoMouseInputs and cutting a hit-test hole on
+		// `ImGui::GetCurrentWindow()` captured right after
+		// `Begin("##EditorShell", ...)` -- that pointer is the wrong window).
+		// The right one is the root dock node's own `HostWindow`, the same
+		// pointer imgui.cpp's `DockNodeUpdate` uses internally for exactly
+		// this. Fetched here, right after `DockSpace()`, because `BuildLayout`
+		// below may destroy and recreate the *node* (DockBuilderRemoveNode/
+		// AddNode) on the first frame -- the underlying host *window* (found
+		// by name) is unaffected by that and this pointer stays valid.
+		ImGuiWindow* hostWindow = nullptr;
+		if (ImGuiDockNode* rootNode = ImGui::DockBuilderGetNode(dock))
+			hostWindow = rootNode->HostWindow;
 
 		if (!m_Built)
 			BuildLayout(dock, viewport->WorkSize);
@@ -129,22 +158,74 @@ public:
 				if (node->ChildNodes[0])
 					g_DemoDock = (unsigned int)node->ChildNodes[0]->ID;
 
-		if (ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dock))
-		{
-			ImVec2 size = ImGui::GetIO().DisplaySize;
-
-			// **OpenGL's origin is bottom-left and ImGui's is top-left.**
-			// Reading the rect straight through puts the viewport upside down
-			// in the window -- the demo appears at the top when the panels are
-			// at the bottom, which reads as a layout bug rather than an axis
-			// one.
-			g_Viewport.X = (int)central->Pos.x;
-			g_Viewport.Y = (int)(size.y - central->Pos.y - central->Size.y);
-			g_Viewport.Width = (int)central->Size.x;
-			g_Viewport.Height = (int)central->Size.y;
-		}
-
 		ImGui::End();
+
+		// "Scene" and "Editor" tab together in the center node. g_Viewport
+		// reflects whichever one is the selected tab this frame (or neither,
+		// same invalid-rect meaning the !g_EditorShell branch above already
+		// uses) -- ImGui::Begin() returns false for a docked window that
+		// isn't the currently selected tab, which is exactly the signal we
+		// need. Under --hide-ui neither Begin() call below ever runs (this
+		// whole function returns before reaching them, via the !g_EditorShell
+		// check, on any run that never draws UI at all -- and on a normal
+		// run where the UI later gets hidden mid-session, OnImGuiRender
+		// itself is simply never invoked by Application.cpp), so g_Viewport
+		// reverts to the full-window rect exactly as before this change.
+		g_Viewport = ViewportRect();
+
+		// NoMouseInputs so FindHoveredWindowEx (imgui.cpp) skips "Scene"
+		// entirely during its hover search rather than treating it as a
+		// normal window that happens to draw nothing -- otherwise every
+		// demo's own mouse handling (WASD look, click-to-select, gizmo drag;
+		// all of it gated on `!io.WantCaptureMouse`) goes dead the instant
+		// the mouse is over the viewport, because ImGui now believes a real
+		// window owns that input. This is not a corner case: it is the
+		// default, every-frame state whenever the editor shell is on.
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+		bool sceneVisible = ImGui::Begin("Scene", nullptr,
+			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBackground
+			| ImGuiWindowFlags_NoMouseInputs);
+		ImGui::PopStyleVar();
+
+		if (sceneVisible)
+		{
+			ImVec2 pos = ImGui::GetCursorScreenPos();
+			ImVec2 size = ImGui::GetContentRegionAvail();
+			ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+
+			// Same axis flip the old central-node code needed: OpenGL's
+			// origin is bottom-left, ImGui's is top-left.
+			g_Viewport.X = (int)pos.x;
+			g_Viewport.Y = (int)(displaySize.y - pos.y - size.y);
+			g_Viewport.Width = (int)size.x;
+			g_Viewport.Height = (int)size.y;
+
+			// NoMouseInputs alone only stops "Scene" itself from claiming
+			// the hover -- the search then falls through to whatever is
+			// still underneath it with no hole cut, which is the dockspace
+			// host window and, beneath that, "##EditorShell" itself (both
+			// span the full work area and neither has NoMouseInputs; either
+			// one would still swallow the input). Cutting the hole on both
+			// -- exactly what ImGui's own native `PassthruCentralNode`/
+			// `central_node_hole` mechanism did (imgui.cpp ~line 19511-19513,
+			// `SetWindowHitTestHole(host_window, ...)` followed by the same
+			// call on `host_window->ParentWindow`) -- is what actually
+			// reopens the hole all the way through to the demo. Verified
+			// empirically with a standalone probe against this vendored
+			// ImGui before writing this: neither hole alone was sufficient,
+			// only both together closed `io.WantCaptureMouse`.
+			if (hostWindow)
+			{
+				ImGui::SetWindowHitTestHole(hostWindow, pos, size);
+				if (hostWindow->ParentWindow)
+					ImGui::SetWindowHitTestHole(hostWindow->ParentWindow, pos, size);
+			}
+		}
+		ImGui::End();
+
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+		m_TextEditor.OnImGuiRender();
+		ImGui::PopStyleVar();
 
 		// Named "Tools" now -- scene save/open/new moved to the File menu
 		// (EditorMenuBar.h), and "Open as starting scene" moved there too,
@@ -183,9 +264,7 @@ public:
 
 		ImGui::End();
 
-		ImGui::Begin("Terminal");
-		ImGui::TextDisabled("Not built yet -- terminal sub-project.");
-		ImGui::End();
+		m_Terminal.OnImGuiRender();
 
 		ImGui::Begin("Build Output");
 		ImGui::TextDisabled("Not built yet.");
@@ -306,9 +385,14 @@ private:
 		ImGui::DockBuilderDockWindow("Outliner", left);
 		ImGui::DockBuilderDockWindow("Inspector", rightLower);
 
+		ImGui::DockBuilderDockWindow("Scene", centre);
+		ImGui::DockBuilderDockWindow("Editor", centre);
+
 		ImGui::DockBuilderFinish(dock);
 	}
 
 	bool m_Built = false;
 	bool m_ForceDefault = false;
+	TerminalPanel m_Terminal;
+	TextEditorPanel m_TextEditor;
 };

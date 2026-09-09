@@ -38,6 +38,46 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
+- **A self-built text editor, replacing the embedded-Neovim plan.** The
+  "Editor" tab (Task 1's stub) is now real: `TextBuffer.h` is a pure-logic
+  line buffer (insert/newline-with-indent/backspace/delete/cursor movement,
+  load/save), `EditorTheme.h` is an Everforest-dark palette verified against
+  the colorscheme's own source (`autoload/everforest.vim`'s dark/medium-
+  contrast block) rather than guessed, and `TextEditorPanel.h` (`EditorShell.h`
+  now owns one alongside `m_Terminal`) glues both through the same `CellGrid`
+  the terminal renders with -- a right-aligned line-number gutter, current-line
+  highlight, and an inline path field with Open/Save buttons (no menu
+  integration). `WantCaptureKeyboard` is set the instant the panel is
+  focused, and `HandleInput` skips the buffer entirely while `io.WantTextInput`
+  is true so the path field and the buffer never double-consume the same
+  typed character -- confirmed with a standalone probe against the real
+  vendored ImGui (mirroring the mouse-capture probe from Task 1 of this same
+  plan): a real click-then-type sequence never leaks a character into the
+  buffer, even typed the same frame the field is clicked. Verified with a
+  deterministic buffer-to-grid self-test (9/9), a supplementary self-test for
+  `InsertNewline`'s mid-line split with re-indentation that Task 2's own test
+  never exercised (9/9), a byte-identical `--hide-ui` capture against the
+  pre-task baseline (`TextEditorPanel` never constructs into active use under
+  `--hide-ui`), and an in-engine capture with the "Editor" tab forced selected
+  via `imgui.ini`'s own dock-tab ID (no live interaction needed) whose pixels
+  were sampled directly and matched the theme's `Background`/`Foreground`
+  bytes exactly. Live typing, indent-preserving Enter, and Open/Save against
+  the mouse-and-keyboard-driven UI still need a by-hand pass with a mapped
+  window -- same open item the terminal's own landing entry recorded, for the
+  same reason (no safe way to inject keyboard/mouse input in this session).
+- **An embedded terminal, sub-project 1's step after the menu bar.**
+  `TerminalPanel.h` replaces the "Terminal" stub with a real PTY-backed
+  shell: `Pty.h` wraps `forkpty()`, `libvterm` (vendored,
+  `GS/vendor/libvterm`) turns its output into a styled cell grid, and
+  `CellGrid.h` (a generic, PTY-agnostic grid-of-cells widget -- the
+  embedded text editor after this reuses it) renders it in ImGui.
+  Verified with a deterministic self-test feeding a known escape sequence
+  directly into libvterm (8/8 checks), and with an in-engine headless
+  capture showing a real `forkpty()`-spawned zsh printing its own themed,
+  colored prompt into the panel. Typing, panel-resize propagating to the
+  shell's reported terminal size, and restart-on-exit still need a by-hand
+  pass with a mapped window -- this session ran against a live desktop with
+  no safe way to inject keyboard input, so that check is still open.
 - **A menu bar and conventional editor layout, sub-project 1's next step
   after scene composition.** `EditorMenuBar.h` adds File/Edit/View/Help;
   File covers project open/save/rename via a new `ProjectManifest`
@@ -97,19 +137,13 @@ each need their own `OnExportToScene` before they can be opened as a
 starting scene the same way.
 
 The owner has since reordered what comes next, ahead of the mesh-authoring
-tool originally planned as sub-project 2. Agreed order, newest discussion
-first:
+tool originally planned as sub-project 2. The embedded text editor (originally
+planned as an embedded-Neovim wrapper; decided against that in favor of a
+self-built buffer + panel to avoid an external runtime dependency, per
+`docs/superpowers/specs/2026-09-09-embedded-text-editor-design.md`) landed —
+see "Last landed" above. Agreed order, newest discussion first:
 
-1. **An embedded terminal** — a PTY plus libvterm (MIT, same library
-   Neovim's own `:terminal` uses) turning shell output into a styled
-   character grid, rendered in ImGui. Deliberately built as a generic
-   grid-of-cells widget, not terminal-specific, because step 2 needs the
-   same thing.
-2. **An embedded Neovim-based text editor** — spawns `nvim --embed`,
-   speaks its msgpack-RPC UI protocol, renders the resulting cell grid with
-   the same widget step 1 built. Neovim is Apache 2.0 (verified), so this is
-   clear to build.
-3. **A scripting language runtime** — this is sub-project 3's logic/module
+1. **A scripting language runtime** — this is sub-project 3's logic/module
    attachment mechanism, now decided: JavaScript (authored as TypeScript,
    which compiles away before anything runs, so it costs nothing beyond
    whichever JS engine executes it), likely via QuickJS to keep it vendorable

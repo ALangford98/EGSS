@@ -17,6 +17,7 @@ __pycache__/
 /Makefile
 /GS/Makefile
 /GS/vendor/Makefile
+/GS/vendor/*.make
 /GS/vendor/Glad/Makefile
 /TestEnv/Makefile
 *.sln
