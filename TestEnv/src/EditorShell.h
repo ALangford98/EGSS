@@ -37,6 +37,8 @@
 #include "EditorHistory.h"
 #include "EditorProject.h"
 #include "EditorSceneView.h"
+#include "FileTreePanel.h"
+#include "ScriptEngine.h"
 #include "TerminalPanel.h"
 #include "TextEditorPanel.h"
 
@@ -54,6 +56,8 @@ public:
 
 	void OnAttach() override
 	{
+		m_TextEditor.SetScriptEngine(&m_ScriptEngine);
+
 		g_EditorShellInstance = this;
 
 		const std::vector<std::string>& arguments =
@@ -124,7 +128,19 @@ public:
 		// and was measured to darken Cube3D's lit icosahedron from
 		// (251,179,248) to functionally black. Leaving the flag off skips
 		// that whole code path.
+		// A second, distinct ImGui fill path (imgui.cpp:19529-19534) paints
+		// ImGuiCol_DockingEmptyBg over the *empty* central node every frame
+		// -- this is separate from the non-empty-node fill the comment above
+		// already explains, and it now fires unconditionally since removing
+		// PassthruCentralNode also removed that fill's own zero-color
+		// fallback. Neutralized here rather than relied upon never
+		// happening: an empty central node is a real, reachable state (a
+		// stale imgui.ini/layout preset from before Scene/Editor existed,
+		// or both tabs dragged out at runtime -- see the migration safety
+		// net below this DockSpace() call for the actual recovery).
+		ImGui::PushStyleColor(ImGuiCol_DockingEmptyBg, IM_COL32(0, 0, 0, 0));
 		ImGui::DockSpace(dock, ImVec2(0.0f, 0.0f));
+		ImGui::PopStyleColor();
 
 		// **The window `DockSpace()` actually hosts docking in is not
 		// "##EditorShell".** It creates its own internal child window (named
@@ -146,6 +162,24 @@ public:
 
 		if (!m_Built)
 			BuildLayout(dock, viewport->WorkSize);
+
+		// Migration safety net: an imgui.ini saved before "Scene"/"Editor"
+		// existed, a layout preset saved before this change, or both tabs
+		// dragged out of the central node at runtime all leave it with
+		// nothing docked in it. Re-dock them the same frame this is
+		// detected, rather than let the node sit empty -- Part A above
+		// keeps that state from looking broken, but the demo/editor still
+		// need somewhere to actually render, so this closes the gap for
+		// real rather than just hiding its symptom.
+		if (ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dock))
+		{
+			if (central->Windows.Size == 0)
+			{
+				ImGui::DockBuilderDockWindow("Scene", central->ID);
+				ImGui::DockBuilderDockWindow("Editor", central->ID);
+				ImGui::DockBuilderFinish(dock);
+			}
+		}
 
 		// The central node's rectangle, in ImGui's screen coordinates. This is
 		// read a frame after the panels were laid out, which is a frame of lag
@@ -264,10 +298,25 @@ public:
 
 		ImGui::End();
 
+		std::string clickedFile = m_FileTree.OnImGuiRender();
+		if (!clickedFile.empty())
+			m_TextEditor.OpenFile(clickedFile);
+
 		m_Terminal.OnImGuiRender();
 
 		ImGui::Begin("Build Output");
-		ImGui::TextDisabled("Not built yet.");
+		if (!m_TextEditor.LastRunError().empty())
+		{
+			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", m_TextEditor.LastRunError().c_str());
+		}
+		else if (!m_TextEditor.LastRunOutput().empty())
+		{
+			ImGui::TextUnformatted(m_TextEditor.LastRunOutput().c_str());
+		}
+		else
+		{
+			ImGui::TextDisabled("Run a script from the Editor tab to see its output here.");
+		}
 		ImGui::End();
 
 		ImGui::Begin("Textures");
@@ -382,6 +431,7 @@ private:
 		ImGui::DockBuilderDockWindow("Build Output", bottom);
 		ImGui::DockBuilderDockWindow("Textures", bottom);
 
+		ImGui::DockBuilderDockWindow("Files", left);
 		ImGui::DockBuilderDockWindow("Outliner", left);
 		ImGui::DockBuilderDockWindow("Inspector", rightLower);
 
@@ -394,5 +444,7 @@ private:
 	bool m_Built = false;
 	bool m_ForceDefault = false;
 	TerminalPanel m_Terminal;
+	ScriptEngine m_ScriptEngine;
 	TextEditorPanel m_TextEditor;
+	FileTreePanel m_FileTree;
 };

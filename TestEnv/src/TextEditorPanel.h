@@ -7,10 +7,12 @@
 
 #include "CellGrid.h"
 #include "EditorTheme.h"
+#include "ScriptEngine.h"
 #include "TextBuffer.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 // Copies the buffer's visible window into the CellGrid: a right-aligned
@@ -54,7 +56,11 @@ inline void RenderBufferToGrid(const TextBuffer& buffer, CellGrid& grid, const E
 	}
 
 	int cursorScreenRow = buffer.CursorRow() - scrollRow;
-	grid.SetCursor(gutterCols + buffer.CursorCol(), cursorScreenRow,
+	// Clamped, not scrolled -- there is no horizontal scroll offset yet
+	// (a real feature, deferred; see docs/STATE.md). This just keeps the
+	// cursor visible at the right edge instead of vanishing past it.
+	int cursorScreenCol = std::min(buffer.CursorCol(), textCols - 1);
+	grid.SetCursor(gutterCols + std::max(0, cursorScreenCol), cursorScreenRow,
 		cursorScreenRow >= 0 && cursorScreenRow < rows);
 }
 
@@ -97,6 +103,24 @@ public:
 		ImGui::End();
 	}
 
+	void SetScriptEngine(ScriptEngine* engine) { m_ScriptEngine = engine; }
+
+	const std::string& LastRunOutput() const { return m_LastRunOutput; }
+	const std::string& LastRunError() const { return m_LastRunError; }
+
+	bool OpenFile(const std::string& path)
+	{
+		// `path` is a distinct object from m_PathBuffer (never itself a view
+		// into it), so this strncpy is never a self-copy -- relevant because
+		// the Open button passes m_PathBuffer by value into this by-reference
+		// parameter, constructing a temporary std::string first.
+		strncpy(m_PathBuffer, path.c_str(), sizeof(m_PathBuffer) - 1);
+		m_PathBuffer[sizeof(m_PathBuffer) - 1] = '\0';
+		bool ok = m_Buffer.LoadFromFile(path);
+		m_StatusMessage = ok ? "Opened." : "Could not open file.";
+		return ok;
+	}
+
 private:
 	void DrawFileBar()
 	{
@@ -105,10 +129,24 @@ private:
 		ImGui::PopItemWidth();
 		ImGui::SameLine();
 		if (ImGui::Button("Open"))
-			m_StatusMessage = m_Buffer.LoadFromFile(m_PathBuffer) ? "Opened." : "Could not open file.";
+			OpenFile(m_PathBuffer);
 		ImGui::SameLine();
 		if (ImGui::Button("Save"))
 			m_StatusMessage = m_Buffer.SaveToFile(m_PathBuffer) ? "Saved." : "Could not save file.";
+		ImGui::SameLine();
+		if (ImGui::Button("Run"))
+		{
+			if (m_ScriptEngine)
+			{
+				ScriptEngine::ScriptResult result = m_ScriptEngine->RunScript(m_Buffer.FullText());
+				m_LastRunOutput = result.Output;
+				m_LastRunError = result.Ok ? "" : result.Error;
+			}
+			else
+			{
+				m_LastRunError = "No script engine.";
+			}
+		}
 		if (!m_StatusMessage.empty())
 		{
 			ImGui::SameLine();
@@ -173,4 +211,7 @@ private:
 	char m_PathBuffer[512] = "";
 	std::string m_StatusMessage;
 	int m_ScrollRow = 0;
+	ScriptEngine* m_ScriptEngine = nullptr; // not owned -- set by EditorShell
+	std::string m_LastRunOutput;
+	std::string m_LastRunError;
 };

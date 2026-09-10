@@ -49,11 +49,13 @@ IncludeDir["ImGui"] = "GS/vendor/imgui"
 IncludeDir["stb_image"] = "GS/vendor/stb_image"
 IncludeDir["miniaudio"] = "GS/vendor/miniaudio"
 IncludeDir["libvterm"] = "GS/vendor/libvterm/include"
+IncludeDir["quickjs"] = "GS/vendor/quickjs"
 
 include "GS/vendor/glfw"
 include "GS/vendor/Glad"
 include "GS/vendor/imgui_premake5.lua"
 include "GS/vendor/libvterm_premake5.lua"
+include "GS/vendor/quickjs_premake5.lua"
 
 project "GS"
     -- Must match the case of the source folder: on Windows this resolved to
@@ -237,14 +239,16 @@ project "TestEnv"
         "GS/src",
         "%{IncludeDir.glm}",
         "%{IncludeDir.ImGui}",
-        "%{IncludeDir.libvterm}"
+        "%{IncludeDir.libvterm}",
+        "%{IncludeDir.quickjs}"
     }
 
     links
     {
         "GS",
         "ImGui",
-        "libvterm"
+        "libvterm",
+        "quickjs"
     }
 
     -- Assets are loaded by relative path at runtime, so they have to sit next

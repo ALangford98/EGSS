@@ -15,3 +15,6 @@
 [submodule "GS/vendor/libvterm"]
 	path = GS/vendor/libvterm
 	url = https://github.com/neovim/libvterm.git
+[submodule "GS/vendor/quickjs"]
+	path = GS/vendor/quickjs
+	url = https://github.com/quickjs-ng/quickjs.git

@@ -38,6 +38,75 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
+- **A file tree panel, first of four sub-projects toward "recreate any
+  existing demo inside the editor" (file tree, entity/component scripting,
+  recreate one demo, text-editor refinements).** `FileTreePanel.h` is a new
+  "Files" dock tab (tabbed with "Outliner" in the upper-left slot) that
+  walks the open project's folder with `std::filesystem` fresh every frame
+  rather than caching a tree -- ImGui's own `TreeNode` already tracks each
+  node's open/closed state by ID for the running session, so there was
+  nothing left to keep in sync by hand -- that state resets on relaunch (it
+  isn't serialized to `imgui.ini`, only window/table/dock layout is), which
+  is fine for a live filesystem view. A returning session with an existing
+  `imgui.ini` from before this landed will show "Files" as a floating window
+  rather than docked, until "Reset to default layout" is used -- the same
+  pattern every panel added to this editor has had, since `BuildLayout` only
+  runs its full split-and-dock sequence on a layout it built itself.
+  Directories sort before files, alphabetically within each group, and
+  dot-prefixed entries are skipped.
+  Clicking a file returns its path from `OnImGuiRender()`, which
+  `EditorShell` forwards into a new `TextEditorPanel::OpenFile(path)` --
+  the same method the "Editor" tab's own "Open" button now calls, so a
+  tree click and typing a path by hand go through identical logic. No
+  project open shows a disabled placeholder instead of an empty panel.
+  Verified with a byte-identical `--hide-ui` capture (Cube3D, step 5,
+  matching MD5 before and after) confirming the panel is never drawn
+  outside `EditorShell::OnImGuiRender`, plus a visual capture of a real
+  project (a handful of files and subfolders created by hand) showing the
+  tree correctly sorted. The live click-through itself (click "Files",
+  expand a folder, click a file, confirm it loads into "Editor") was not
+  attempted with a real window in this session: `xdotool`/`grim` are
+  present but the immediately preceding scripting-runtime entry above
+  already reproduced them being unreliable for this exact purpose in this
+  environment, and opening a window here steals keyboard focus from
+  whatever else the machine is doing. Same disclosed gap as every prior
+  by-hand UI check in this pivot; still open.
+- **A scripting runtime: TypeScript scripts run from the editor's "Editor"
+  tab via a new "Run" button, output routed to the "Build Output" panel.**
+  QuickJS (vendored `GS/vendor/quickjs`, `quickjs-libc.c` deliberately
+  excluded so no script gets file/process/OS access) is the engine; the real,
+  unmodified `lib/typescript.js` from `typescript@5.6.3` is vendored as
+  `TestEnv/assets/typescript.js` (refresh instructions in the plan) and
+  transpiles a script's TypeScript to JS inside the same QuickJS context that
+  then runs it. `ScriptEngine.h` owns one persistent `JSContext` across runs,
+  but each run's transpiled code executes inside its own function scope so a
+  script's top-level declarations don't collide with the next run's -- and
+  captures `console.log`/`console.error`/`console.warn` output and thrown
+  errors into a `ScriptResult{Ok, Output, Error}`; `TextBuffer::FullText()`
+  joins the buffer's lines the same way `SaveToFile` already does, so what a
+  script saves and what it runs agree byte-for-byte. `TextEditorPanel`'s file
+  bar gained a "Run" button beside Open/Save; `EditorShell` owns the one
+  `ScriptEngine` instance, wires it into the text editor in `OnAttach`, and
+  the "Build Output" stub now shows the script's captured output, or its
+  error in red, or a placeholder if nothing has run yet. No engine/scene
+  bindings exist -- `console.log` is the only I/O surface.
+  `ts.transpileModule()` is a single-file, no-`Program` API and never runs the
+  type checker -- a genuine type error (`let x: string = 5`) transpiles clean
+  and runs; only syntax errors (e.g. `let x: number = ;` -> "Expression
+  expected.") surface as diagnostics. Verified with
+  deterministic self-tests (QuickJS smoke test 4/4, `ScriptEngine`'s
+  transpile-run-recover cycle including a deliberate-throw path 6/6) and a
+  byte-identical `--hide-ui` capture (Cube3D, step 5, matching SHA-256 before
+  and after) confirming `ScriptEngine` never runs unless "Run" is clicked,
+  which `--hide-ui` never allows. The live click-through itself (type a
+  script, click Run, read "Build Output", then a deliberately broken script
+  for the red-error path) could not be driven in this session: no GUI-
+  automation tool exists here, and a first-hand check reproduced the exact
+  trap `CLAUDE.md` already documents -- `grim` refuses to capture this
+  compositor's output at all, and `xdotool search` returned two window IDs
+  for the one live TestEnv window, i.e. it cannot be trusted to target the
+  right one. Same disclosed gap as every prior by-hand UI check in this
+  pivot; still open.
 - **A self-built text editor, replacing the embedded-Neovim plan.** The
   "Editor" tab (Task 1's stub) is now real: `TextBuffer.h` is a pure-logic
   line buffer (insert/newline-with-indent/backspace/delete/cursor movement,
@@ -65,6 +134,10 @@ Last landed, newest first:
   the mouse-and-keyboard-driven UI still need a by-hand pass with a mapped
   window -- same open item the terminal's own landing entry recorded, for the
   same reason (no safe way to inject keyboard/mouse input in this session).
+  There is no horizontal scrolling yet -- a cursor or loaded-file content past
+  the visible text width clamps at the right edge (`RenderBufferToGrid`)
+  rather than rendering there; a real `m_ScrollCol` mirroring `m_ScrollRow` is
+  a known, deferred gap.
 - **An embedded terminal, sub-project 1's step after the menu bar.**
   `TerminalPanel.h` replaces the "Terminal" stub with a real PTY-backed
   shell: `Pty.h` wraps `forkpty()`, `libvterm` (vendored,
@@ -136,22 +209,18 @@ landed" above. Only Cube3D opts into the editor so far; the other 16 demos
 each need their own `OnExportToScene` before they can be opened as a
 starting scene the same way.
 
-The owner has since reordered what comes next, ahead of the mesh-authoring
-tool originally planned as sub-project 2. The embedded text editor (originally
+The owner had reordered what comes next, ahead of the mesh-authoring tool
+originally planned as sub-project 2: the embedded text editor (originally
 planned as an embedded-Neovim wrapper; decided against that in favor of a
 self-built buffer + panel to avoid an external runtime dependency, per
-`docs/superpowers/specs/2026-09-09-embedded-text-editor-design.md`) landed —
-see "Last landed" above. Agreed order, newest discussion first:
-
-1. **A scripting language runtime** — this is sub-project 3's logic/module
-   attachment mechanism, now decided: JavaScript (authored as TypeScript,
-   which compiles away before anything runs, so it costs nothing beyond
-   whichever JS engine executes it), likely via QuickJS to keep it vendorable
-   like the rest of `GS/vendor/`. Comes after the editor so there is
-   somewhere to write a script.
+`docs/superpowers/specs/2026-09-09-embedded-text-editor-design.md`), then a
+scripting language runtime (sub-project 3's logic/module attachment
+mechanism — JavaScript authored as TypeScript over QuickJS). Both have now
+landed — see "Last landed" above.
 
 Mesh authoring (the original sub-project 2) and play-in-editor (sub-project
-4) are still queued; their exact slot in the list above hasn't been fixed.
+4) are still queued; which comes next hasn't been decided — **ask before
+starting either**.
 
 Unstarted, in the order they were last discussed:
 

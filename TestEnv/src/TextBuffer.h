@@ -7,6 +7,7 @@
 // blank cells, same disclosed cut the embedded terminal already made).
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -18,6 +19,14 @@ public:
 
 	int LineCount() const { return (int)m_Lines.size(); }
 	const std::string& Line(int row) const { return m_Lines[(size_t)row]; }
+
+	std::string FullText() const
+	{
+		std::string result;
+		for (const std::string& line : m_Lines)
+			result += line + '\n';
+		return result;
+	}
 
 	int CursorRow() const { return m_CursorRow; }
 	int CursorCol() const { return m_CursorCol; }
@@ -127,6 +136,9 @@ public:
 
 	bool LoadFromFile(const std::string& path)
 	{
+		if (!std::filesystem::is_regular_file(path))
+			return false;
+
 		std::ifstream file(path);
 		if (!file.is_open())
 			return false;
@@ -150,12 +162,8 @@ public:
 		if (!file.is_open())
 			return false;
 
-		for (size_t i = 0; i < m_Lines.size(); i++)
-		{
-			file << m_Lines[i];
-			if (i + 1 < m_Lines.size())
-				file << '\n';
-		}
+		for (const std::string& line : m_Lines)
+			file << line << '\n';
 		return true;
 	}
 
