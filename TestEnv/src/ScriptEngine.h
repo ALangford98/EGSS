@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -327,6 +328,101 @@ public:
 		char hex[9];
 		snprintf(hex, sizeof(hex), "%08x", hash);
 		return std::string(hex);
+	}
+
+	// The optimize-lock (Task 6 of the transpiler plan): true if a
+	// generated file's current content no longer matches the hash
+	// TranspileToCpp stamped it with -- i.e. it's been hand-edited
+	// ("graduated") since it was last generated, and rebuilding it needs
+	// the owner's say-so rather than a silent overwrite. True for a file
+	// with no stamp at all (hand-written, or from before this existed) --
+	// unstamped means "protect it," not "assume it's safe." False (safe
+	// to overwrite freely) for a file that doesn't exist yet.
+	//
+	// Finds the body by searching for its known starting text rather than
+	// hardcoding "skip N header comment lines", so a future wording change
+	// to those comments can't silently break this check.
+	static bool IsGeneratedFileHandEdited(const std::string& cppPath)
+	{
+		std::ifstream file(cppPath);
+		if (!file)
+			return false;
+
+		std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+		const std::string marker = "// GS-GENERATED: ";
+		if (content.rfind(marker, 0) != 0)
+			return true;
+
+		size_t hashStart = marker.size();
+		size_t hashEnd = content.find('\n', hashStart);
+		if (hashEnd == std::string::npos)
+			return true;
+		std::string storedHash = content.substr(hashStart, hashEnd - hashStart);
+
+		size_t bodyStart = content.find("#include <GS.h>");
+		if (bodyStart == std::string::npos)
+			return true;
+
+		return Fnv1aHex(content.substr(bodyStart)) != storedHash;
+	}
+
+	// Shells out to a real compiler against this project's own actual
+	// include paths (GS_REPO_ROOT, baked in absolutely by premake5.lua at
+	// generation time -- the running executable has no other reliable way
+	// to find GS/src from wherever its own bin/<config>/TestEnv/ happens
+	// to sit) and the same platform/config defines *this build* was
+	// compiled with, read via the same preprocessor guards rather than
+	// hardcoded, so a Release or Dist build's syntax-check doesn't quietly
+	// check against Debug's defines instead.
+	static bool RunSyntaxCheck(const std::string& cppPath, std::string& diagnostics)
+	{
+#ifndef GS_REPO_ROOT
+		diagnostics = "Syntax-checking isn't implemented on this platform yet (no GS_REPO_ROOT).";
+		return false;
+#else
+		std::string root = GS_REPO_ROOT;
+		std::string defines = "-DGS_PLATFORM_LINUX ";
+#ifdef GS_DEBUG
+		defines += "-DGS_DEBUG -DGS_ENABLE_ASSERTS ";
+#endif
+#ifdef GS_RELEASE
+		defines += "-DGS_RELEASE ";
+#endif
+#ifdef GS_DIST
+		defines += "-DGS_DIST ";
+#endif
+#ifdef GS_PROFILE
+		defines += "-DGS_PROFILE ";
+#endif
+
+		std::string errPath = cppPath + ".synerr";
+		// `timeout` wraps the whole thing: calling std::system (fork+exec)
+		// from a process that already has other threads running (audio,
+		// in this app) is a known hazard -- a lock held by another thread
+		// at the instant of fork() can leave the forked child deadlocked
+		// before exec() ever replaces it. A bound here turns "the editor
+		// hangs forever" into "the syntax-check reports a timeout error",
+		// which is what an unrelated bug in this fork/exec path should
+		// degrade to, not a frozen UI.
+		std::string command = "timeout 10 g++ -std=c++17 -fsyntax-only " + defines
+			+ "-I\"" + root + "/GS/vendor/spdlog/include\" "
+			+ "-I\"" + root + "/GS/src\" "
+			+ "-I\"" + root + "/GS/vendor/glm\" "
+			+ "-I\"" + root + "/GS/vendor/imgui\" "
+			+ "-I\"" + root + "/GS/vendor/libvterm/include\" "
+			+ "-I\"" + root + "/GS/vendor/quickjs\" "
+			+ "\"" + cppPath + "\" 2> \"" + errPath + "\"";
+
+		int result = std::system(command.c_str());
+
+		std::ifstream errFile(errPath);
+		diagnostics.assign((std::istreambuf_iterator<char>(errFile)), std::istreambuf_iterator<char>());
+		errFile.close();
+		std::remove(errPath.c_str());
+
+		return result == 0;
+#endif
 	}
 
 	// GSS-to-C++ codegen, Task 1 of the transpiler plan: the subset named

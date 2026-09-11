@@ -284,6 +284,14 @@ project "TestEnv"
         defines
         {
             "GS_PLATFORM_LINUX",
+            -- Absolute, baked in at generation time -- the GSS-to-C++
+            -- transpiler's syntax-check step needs to hand g++ real
+            -- -I paths, and the executable has no other way to find
+            -- GS/src from wherever it happens to be run (bin/<config>/
+            -- TestEnv/, always three directories deep, but "always
+            -- three directories deep" is exactly the kind of assumption
+            -- that quietly breaks if this layout ever changes).
+            'GS_REPO_ROOT="' .. _MAIN_SCRIPT_DIR .. '"',
         }
 
         links

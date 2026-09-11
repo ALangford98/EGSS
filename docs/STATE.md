@@ -38,7 +38,7 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
-- **GSS-to-C++ transpiler, Tasks 1-4 of 6 landed** (plan:
+- **GSS-to-C++ transpiler, all 6 of 6 tasks landed** (plan:
   `docs/superpowers/plans/2026-09-11-gss-to-cpp-transpiler.md`, spec:
   `docs/superpowers/specs/2026-09-11-gss-to-cpp-transpiler-design.md`).
   `ScriptEngine::TranspileToCpp(source, className, error, outCpp)`
@@ -47,11 +47,18 @@ Last landed, newest first:
   `Math.*`, calls to same-file functions, arrow functions, template
   literals, simple classes, and simple generics into real C++ in a
   `GeneratedScripts` namespace, stamped with a `GS-GENERATED: <FNV-1a
-  hash>` line the not-yet-built optimize-lock (Task 6) will read. **Not
-  yet wired up**: imports (calling one fails the same "unrecognized call"
-  way anything else unsupported does) and the syntax-check-on-save + live
-  panel UI (Task 5) — these tasks only prove `TranspileToCpp` itself
-  works, called directly, not from the editor.
+  hash>` line the optimize-lock reads to detect a hand-edit. The `.gss`
+  file open in the "Editor" tab now gets a live split-pane C++ preview,
+  Ctrl+S (or a new "Build (Ctrl+S)" button) transpiles + syntax-checks +
+  writes the `.cpp` (protected by the optimize-lock's three-way Cancel/
+  Overwrite/Save-a-copy prompt when it's been hand-edited since), and
+  saving a module fans that same check out to every script that imports
+  it, one consolidated dialog rather than one popup per file. **Still not
+  done, by design, not oversight**: imports aren't resolved before
+  transpiling yet (calling an imported function fails the same
+  "unrecognized call" way anything else unsupported does), and compiled
+  code is never wired into Play — the spec's static-vs-dynamic execution
+  question (see its "Goal" section) is still open on purpose.
   **Two real design/bug findings from Task 1, found by testing, not
   anticipated in the design**: requiring an explicit type annotation on
   *every* declaration turns out to be unworkable, since
@@ -105,6 +112,42 @@ Last landed, newest first:
   invocation (TestEnv's own Linux/Debug defines) confirming a real
   compiler accepts it, which is what caught the deadline and lambda-call
   bugs above. Clean three-config build after each task.
+  **Task 5 (syntax-check + live panel)**: include paths come from
+  `premake5.lua`'s real `includedirs`, anchored by a new `GS_REPO_ROOT`
+  premake `define` (absolute, baked in at generation time -- the running
+  executable has no other reliable way to find `GS/src` from wherever its
+  own `bin/<config>/TestEnv/` happens to sit). **Real bug, not
+  anticipated**: the second `RunSyntaxCheck` call in the self-test hung
+  the whole process. Root cause: `std::system` (fork+exec) from a process
+  that already has other threads running (this app's audio thread) is a
+  known hazard -- a lock another thread held at the instant of `fork()`
+  can leave the forked child deadlocked before `exec()` replaces it.
+  Fixed by wrapping the compiler invocation in `timeout 10`, so that class
+  of hazard degrades to a reported timeout instead of a frozen editor;
+  confirmed empirically to resolve it, though the exact mechanism wasn't
+  isolated further than that plausible, well-documented cause.
+  **Task 6 (optimize-lock + fan-out)**: `ScriptEngine::
+  IsGeneratedFileHandEdited` finds a generated file's body by searching
+  for its known starting text rather than hardcoding "skip N header
+  lines" (so a future comment-wording change can't silently break it) and
+  treats a file with no stamp at all as hand-written -- protected, not
+  assumed safe. `PlayMode::FindDependentScripts` parses the dependency
+  manifest fresh per call.
+  Verified: Tasks 5-6's non-UI logic with a temporary self-test (11/11);
+  the UI itself with a `--capture` against the real, running editor
+  (via a temporary, since-deleted `EditorShell` accessor and
+  `ImGui::SetWindowFocus`, since "Scene"/"Editor" share a tab group) that
+  opened the actual `paddle.gss` and showed the split pane, the
+  extension-gated "Build (Ctrl+S)" button, and the live preview firing
+  for real. **That capture surfaced a genuine, previously-unknown
+  finding**: `paddle.gss`'s `const paddleSpeed = 2.2;` (and likely
+  similar lines elsewhere) has no type annotation, so it isn't compilable
+  as written today under the "class members always need one" rule --
+  not a transpiler bug, a real, disclosed consequence of running a new,
+  stricter tool against code that predates it. Clicking the popups
+  themselves still needs a human -- no GUI automation tool exists here.
+  Clean three-config build; Cube3D's byte-identical `--hide-ui` capture
+  confirmed unchanged.
 
 - **Auto-closing pairs in the embedded text editor** -- typing `(`/`[`/`{`/
   `"`/`'` inserts its match too, cursor left between them; typing a closer
@@ -564,13 +607,32 @@ entity's Transform (`scene.findByTag`) and spawning/destroying entities
 updated to use them yet (still no bricks) -- that's now possible, but
 nobody's asked for it.
 
-The owner also asked, separately, for scripts to eventually be readable and
-buildable as both TypeScript and raw C++ — a TS-as-macro-layer that
-compiles down to a native C++ implementation you can then hand-optimize,
-with the C++ becoming the entity's real source of truth from that point on
-(not kept in sync back to TS). Deliberately sequenced *after* demo
-recreation work, so its scope is designed against scripts that actually
-exist rather than guessed at — not started.
+**The GSS-to-C++ transpiler is fully built and paused at a deliberate
+decision point, not blocked on anything.** All 6 tasks of
+`docs/superpowers/plans/2026-09-11-gss-to-cpp-transpiler.md` landed:
+`ScriptEngine::TranspileToCpp` mechanically translates the core language
+subset (see the spec for the exact list) into real, `g++`-verified C++;
+the Editor tab shows a live split-pane preview for a `.gss` file; Ctrl+S
+transpiles + syntax-checks + writes the `.cpp`, protected by a hash-based
+optimize-lock (Cancel/Overwrite/Save-a-copy) that also fans out to every
+script that imports a saved module. **What was explicitly left
+undecided, on purpose, per the spec's own "Goal" section**: how a
+compiled script actually *runs*. Discussed after the plan shipped:
+**static linking was chosen** (the compiled `.cpp` joins `TestEnv/src/`
+for real, rebuild+restart to test it) over dynamic `.so` loading — see
+the reasoning recorded in this session's own conversation history, in
+short: this project's iteration loop only needs a rare, deliberate
+"graduate to C++" moment rather than continuous reload, a C++ plugin
+system's ABI/unsafe-unload risks are a bad trade against how cheap and
+safe restarting this editor already is, and it matches the
+already-established glob-and-relink build model. Concretely unstarted
+follow-up, whenever this resumes: an explicit registration table mapping
+a generated class's name to a constructible type (same reasoning
+`DemoRegistry.h` already uses against self-registering static
+initializers: a forgotten include should be a compile error, not a
+silent no-op), and wiring `PlayMode` to run a scripted entity's
+registered native class instead of interpreting its `.gss` when one
+exists. **Ask before starting this** — the owner asked to hold here.
 
 Mesh authoring (a separate, earlier-planned sub-project, before this thread
 existed) is also still queued; which comes next hasn't been decided —

@@ -66,6 +66,44 @@ namespace PlayMode {
 		}
 	}
 
+	// The transpiler's dependency-manifest fan-out (Task 6): every script
+	// this manifest records as depending (transitively) on `modulePath`.
+	// Reads the manifest fresh each call rather than caching it -- this is
+	// only ever called right after a save, not per-frame, so there's no
+	// performance reason to hold it in memory between calls.
+	inline std::vector<std::string> FindDependentScripts(const std::string& modulePath)
+	{
+		std::vector<std::string> dependents;
+		if (g_EditorProjectPath.empty())
+			return dependents;
+
+		std::string path = (std::filesystem::path(g_EditorProjectPath) / DependencyManifestPath()).string();
+		std::ifstream in(path);
+		if (!in)
+			return dependents;
+
+		std::string line, currentScript;
+		while (std::getline(in, line))
+		{
+			std::istringstream fields(line);
+			std::string kind;
+			fields >> kind;
+
+			if (kind == "script")
+			{
+				fields >> currentScript;
+			}
+			else if (kind == "import" && !currentScript.empty())
+			{
+				std::string module;
+				fields >> module;
+				if (module == modulePath)
+					dependents.push_back(currentScript);
+			}
+		}
+		return dependents;
+	}
+
 	inline void Play()
 	{
 		if (s_Playing)
