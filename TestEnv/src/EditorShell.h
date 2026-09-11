@@ -287,6 +287,9 @@ public:
 		// new entity and select it" buttons for things a scene is built from.
 		if (ImGui::Button("Camera"))
 			PlaceCamera();
+		ImGui::SameLine();
+		if (ImGui::Button("Light"))
+			PlaceLight();
 		ImGui::NewLine();
 
 		ImGui::SeparatorText("Import");
@@ -355,6 +358,18 @@ private:
 	{
 		GS::EntityId selection = EditorHistory::Push(std::make_unique<PlaceEntityCommand>(
 			"Camera", GS::TransformComponent{}, std::nullopt, GS::CameraComponent{}));
+
+		if (g_EditorSceneView)
+			g_EditorSceneView->Select(selection);
+	}
+
+	// Same shape as PlaceCamera -- no mesh, nothing to resolve through
+	// MeshCache -- with std::nullopt for the camera slot so the command's
+	// four-way constructor still reads as "everything this entity has".
+	void PlaceLight()
+	{
+		GS::EntityId selection = EditorHistory::Push(std::make_unique<PlaceEntityCommand>(
+			"Light", GS::TransformComponent{}, std::nullopt, std::nullopt, GS::LightComponent{}));
 
 		if (g_EditorSceneView)
 			g_EditorSceneView->Select(selection);

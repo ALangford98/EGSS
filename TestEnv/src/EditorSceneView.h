@@ -14,10 +14,12 @@
 
 #include <GS.h>
 #include <imgui.h>
+#include <cstring>
 
 #include "Demo.h"
 #include "EditorHistory.h"
 #include "EditorProject.h"
+#include "PlayMode.h"
 
 // Forward-declared so it can be set from OnAttach() below: a member function
 // body is a complete-class context for the class's *own* members, but that
@@ -26,6 +28,21 @@
 // does.
 class EditorSceneView;
 inline EditorSceneView* g_EditorSceneView = nullptr;
+
+// Rotation-only, matching TransformComponent::GetTransform()'s own X-then-Y-
+// then-Z order, against a local forward of (0,0,-1) -- zero rotation faces
+// -Z, the same convention the editor fly-camera's default yaw already
+// assumes. Shared by DrawCameraRays (an indicator ray) and ActiveCamera (an
+// active CameraComponent's actual view direction while Playing) so the two
+// never drift apart on what "which way is this camera facing" means.
+inline glm::vec3 ForwardFromRotation(const glm::vec3& rotationDegrees)
+{
+	glm::mat4 rotation =
+		glm::rotate(glm::mat4(1.0f), glm::radians(rotationDegrees.x), glm::vec3(1, 0, 0))
+		* glm::rotate(glm::mat4(1.0f), glm::radians(rotationDegrees.y), glm::vec3(0, 1, 0))
+		* glm::rotate(glm::mat4(1.0f), glm::radians(rotationDegrees.z), glm::vec3(0, 0, 1));
+	return glm::normalize(glm::vec3(rotation * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f)));
+}
 
 class EditorSceneView : public GS::Layer
 {
@@ -75,8 +92,9 @@ public:
 		RenderMeshes();
 		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
-		GS::Renderer2D::BeginScene(m_Camera);
+		GS::Renderer2D::BeginScene(ActiveCamera());
 		DrawSelectionBox();
+		DrawCameraRays();
 		if (m_ShowGizmo)
 			DrawGizmo();
 		GS::Renderer2D::EndScene();
@@ -234,6 +252,47 @@ public:
 					m_Selected, &GS::CameraComponent::Active, m_EditBeforeBool, camera->Active));
 		}
 
+		if (auto* light = g_EditorScene.GetComponent<GS::LightComponent>(m_Selected))
+		{
+			ImGui::ColorEdit4("Light colour", &light->Color.x);
+			if (ImGui::IsItemActivated())
+				m_EditBeforeVec4 = light->Color;
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::LightComponent, glm::vec4>>(
+					m_Selected, &GS::LightComponent::Color, m_EditBeforeVec4, light->Color));
+
+			ImGui::DragFloat("Radius", &light->Radius, 0.05f, 0.0f, 100.0f);
+			if (ImGui::IsItemActivated())
+				m_EditBeforeFloat = light->Radius;
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::LightComponent, float>>(
+					m_Selected, &GS::LightComponent::Radius, m_EditBeforeFloat, light->Radius));
+
+			ImGui::Checkbox("Enabled", &light->Enabled);
+			if (ImGui::IsItemActivated())   // not negated -- see "Visible" above
+				m_EditBeforeBool = light->Enabled;
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::LightComponent, bool>>(
+					m_Selected, &GS::LightComponent::Enabled, m_EditBeforeBool, light->Enabled));
+		}
+
+		ImGui::SeparatorText("Script");
+		if (auto* script = g_EditorScene.GetComponent<GS::ScriptComponent>(m_Selected))
+		{
+			char pathBuf[512];
+			strncpy(pathBuf, script->ScriptPath.c_str(), sizeof(pathBuf) - 1);
+			pathBuf[sizeof(pathBuf) - 1] = '\0';
+			if (ImGui::InputText("##scriptpath", pathBuf, sizeof(pathBuf)))
+				script->ScriptPath = pathBuf;
+			if (ImGui::Button("Remove Script"))
+				g_EditorScene.RemoveComponent<GS::ScriptComponent>(m_Selected);
+		}
+		else
+		{
+			if (ImGui::Button("Add Script"))
+				g_EditorScene.AddComponent<GS::ScriptComponent>(m_Selected, GS::ScriptComponent{});
+		}
+
 		if (ImGui::Button("Delete"))
 			m_Selected = EditorHistory::Push(std::make_unique<DeleteEntityCommand>(m_Selected));
 
@@ -299,9 +358,48 @@ private:
 		m_SceneMaterial = GS::Material::Create(m_Shader);
 	}
 
+	// While Playing, an entity's `CameraComponent::Active` should be what
+	// the viewport shows -- otherwise watching a recreated demo means
+	// manually flying the editor's own camera into place every time Play
+	// starts. Falls back to the free-fly camera whenever nothing qualifies
+	// (not Playing, or no active CameraComponent in the scene), which is
+	// also what every demo without a camera entity gets today.
+	//
+	// m_PlayCamera is a separate object rather than repointing m_Camera
+	// itself so that Stop() leaves the free-fly camera exactly where the
+	// user left it -- it is never written to while an active CameraComponent
+	// is driving the view.
+	GS::PerspectiveCamera& ActiveCamera()
+	{
+		if (PlayMode::IsPlaying())
+		{
+			auto& cameras = g_EditorScene.View<GS::CameraComponent>();
+			for (size_t i = 0; i < cameras.Size(); i++)
+			{
+				GS::CameraComponent& camera = cameras.Components()[i];
+				if (!camera.Active)
+					continue;
+
+				GS::EntityId owner = cameras.Owner(i);
+				auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(owner);
+				if (!transform)
+					continue;
+
+				glm::vec3 forward = ForwardFromRotation(transform->Rotation);
+
+				m_PlayCamera.SetProjection(camera.Fov, m_Camera.GetAspectRatio(), camera.NearClip, camera.FarClip);
+				m_PlayCamera.SetPosition(transform->Position);
+				m_PlayCamera.SetOrientation(forward, glm::vec3(0.0f, 1.0f, 0.0f));
+				return m_PlayCamera;
+			}
+		}
+
+		return m_Camera;
+	}
+
 	void RenderMeshes()
 	{
-		GS::Renderer::BeginScene(m_Camera);
+		GS::Renderer::BeginScene(ActiveCamera());
 
 		auto& meshes = g_EditorScene.View<GS::MeshComponent>();
 
@@ -422,6 +520,34 @@ private:
 			};
 			for (auto& edge : edges)
 				GS::Renderer2D::DrawLine(corner[edge[0]], corner[edge[1]], color);
+		}
+	}
+
+	// A CameraComponent has no mesh, so it renders as nothing at all --
+	// placed and then invisible. This is the whole fix: one line per camera
+	// entity, from its position along the direction it faces, so "which way
+	// is this camera looking" is answerable without opening the Inspector.
+	void DrawCameraRays()
+	{
+		auto& cameras = g_EditorScene.View<GS::CameraComponent>();
+
+		for (size_t i = 0; i < cameras.Size(); i++)
+		{
+			GS::EntityId entity = cameras.Owner(i);
+			auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(entity);
+			if (!transform)
+				continue;
+
+			// Rotation only -- translating a direction makes no sense, and
+			// baking in Scale would make the ray's length track the entity's
+			// scale instead of staying a fixed, readable size.
+			glm::vec3 forward = ForwardFromRotation(transform->Rotation);
+
+			glm::vec3 origin = transform->Position;
+			glm::vec3 tip = origin + forward * 0.75f;
+
+			glm::vec4 color(0.9f, 0.9f, 0.95f, 1.0f);
+			GS::Renderer2D::DrawLine(origin, tip, color);
 		}
 	}
 
@@ -667,6 +793,9 @@ private:
 
 private:
 	GS::PerspectiveCamera m_Camera;
+	// Reassigned every frame by ActiveCamera() while an active CameraComponent
+	// drives the view; its construction values here are never observed.
+	GS::PerspectiveCamera m_PlayCamera{ 45.0f, 16.0f / 9.0f, 0.1f, 1000.0f };
 	GS::OrthographicCamera m_BlitCamera{ -1.0f, 1.0f, -1.0f, 1.0f };
 
 	std::shared_ptr<GS::Framebuffer> m_Framebuffer;

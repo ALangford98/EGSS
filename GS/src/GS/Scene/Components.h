@@ -122,4 +122,12 @@ namespace GS {
 		bool Active = false;
 	};
 
+	// A TypeScript file's path, run against this entity while Play mode is
+	// active (TestEnv/src/PlayMode.h). The engine itself only knows this is
+	// a path -- same relationship MeshComponent has with SourcePath.
+	struct ScriptComponent
+	{
+		std::string ScriptPath;
+	};
+
 }

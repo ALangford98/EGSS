@@ -203,6 +203,22 @@ namespace GS {
 				WriteFloats(out, { camera->Fov, camera->NearClip, camera->FarClip });
 				out << ' ' << (camera->Active ? 1 : 0) << "\n";
 			}
+
+			// A script with no path was added but not yet pointed at a file --
+			// silently dropped, same reasoning the mesh block already uses for
+			// an empty SourcePath.
+			if (ScriptComponent* script = self->GetComponent<ScriptComponent>(entity))
+			{
+				if (!script->ScriptPath.empty())
+					out << "script " << script->ScriptPath << "\n";
+			}
+
+			if (LightComponent* light = self->GetComponent<LightComponent>(entity))
+			{
+				out << "light";
+				WriteFloats(out, { light->Color.r, light->Color.g, light->Color.b, light->Color.a, light->Radius });
+				out << ' ' << (light->Enabled ? 1 : 0) << "\n";
+			}
 		}
 
 		return true;
@@ -292,6 +308,21 @@ namespace GS {
 				fields >> camera.Fov >> camera.NearClip >> camera.FarClip >> active;
 				camera.Active = active != 0;
 				current.Add<CameraComponent>(camera);
+			}
+			else if (kind == "script" && current)
+			{
+				std::string path;
+				fields >> path;
+				current.Add<ScriptComponent>(ScriptComponent{ path });
+			}
+			else if (kind == "light" && current)
+			{
+				LightComponent light;
+				int enabled = 1;
+				fields >> light.Color.r >> light.Color.g >> light.Color.b >> light.Color.a
+					>> light.Radius >> enabled;
+				light.Enabled = enabled != 0;
+				current.Add<LightComponent>(light);
 			}
 		}
 

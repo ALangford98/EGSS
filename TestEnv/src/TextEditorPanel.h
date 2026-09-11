@@ -15,6 +15,96 @@
 #include <cstring>
 #include <string>
 
+// A single-line tokenizer: keywords, "..."/'...' strings and // comments
+// get their own color, everything else stays theme.Foreground. Line-local
+// only -- a construct that spans lines (/* */, a template literal) isn't
+// tracked across calls, so it just renders as plain text instead of being
+// colored wrong. Good enough for the small, single-purpose scripts this
+// editor actually opens (see TestEnv/assets/demos/*/*.gss); a real
+// multi-line lexer is more machinery than that use case has ever needed.
+inline std::vector<ImU32> TokenizeLineColors(const std::string& line, const EditorTheme& theme)
+{
+	static const char* keywords[] = {
+		"const", "let", "var", "function", "return", "if", "else", "for", "while", "do",
+		"class", "interface", "extends", "implements", "new", "this", "typeof", "true",
+		"false", "null", "undefined", "import", "export", "from", "as", "of", "in",
+		"break", "continue", "switch", "case", "default", "try", "catch", "finally",
+		"throw", "void", "number", "string", "boolean", "any", "static", "public",
+		"private", "readonly", "instanceof"
+	};
+
+	std::vector<ImU32> colors(line.size(), theme.Foreground);
+	size_t i = 0;
+	while (i < line.size())
+	{
+		if (line[i] == '/' && i + 1 < line.size() && line[i + 1] == '/')
+		{
+			for (size_t j = i; j < line.size(); j++)
+				colors[j] = theme.Comment;
+			break;
+		}
+
+		if (line[i] == '"' || line[i] == '\'')
+		{
+			char quote = line[i];
+			colors[i] = theme.StringLiteral;
+			i++;
+			while (i < line.size() && line[i] != quote)
+			{
+				colors[i] = theme.StringLiteral;
+				// Skip one escaped character so a `\"` inside the literal
+				// doesn't end it early.
+				if (line[i] == '\\' && i + 1 < line.size())
+				{
+					i++;
+					colors[i] = theme.StringLiteral;
+				}
+				i++;
+			}
+			if (i < line.size())
+			{
+				colors[i] = theme.StringLiteral;
+				i++;
+			}
+			continue;
+		}
+
+		if (std::isalpha((unsigned char)line[i]) || line[i] == '_')
+		{
+			size_t start = i;
+			while (i < line.size() && (std::isalnum((unsigned char)line[i]) || line[i] == '_'))
+				i++;
+			std::string word = line.substr(start, i - start);
+			for (const char* keyword : keywords)
+			{
+				if (word == keyword)
+				{
+					for (size_t j = start; j < i; j++)
+						colors[j] = theme.Keyword;
+					break;
+				}
+			}
+			continue;
+		}
+
+		i++;
+	}
+	return colors;
+}
+
+inline bool IsInSelection(int row, int col, int startRow, int startCol, int endRow, int endCol)
+{
+	if (row < startRow || row > endRow)
+		return false;
+	if (startRow == endRow)
+		return col >= startCol && col < endCol;
+	if (row == startRow)
+		return col >= startCol;
+	if (row == endRow)
+		return col < endCol;
+	return true;
+}
+
 // Copies the buffer's visible window into the CellGrid: a right-aligned
 // line-number gutter (current line highlighted), then the line text. A
 // free function (not a TextEditorPanel method) so a self-test can
@@ -23,6 +113,11 @@
 inline void RenderBufferToGrid(const TextBuffer& buffer, CellGrid& grid, const EditorTheme& theme,
 	int scrollRow, int gutterDigits, int gutterCols, int textCols, int rows)
 {
+	bool hasSelection = buffer.HasSelection();
+	int selStartRow = 0, selStartCol = 0, selEndRow = 0, selEndCol = 0;
+	if (hasSelection)
+		buffer.GetSelectionRange(selStartRow, selStartCol, selEndRow, selEndCol);
+
 	for (int screenRow = 0; screenRow < rows; screenRow++)
 	{
 		int bufferRow = scrollRow + screenRow;
@@ -46,11 +141,14 @@ inline void RenderBufferToGrid(const TextBuffer& buffer, CellGrid& grid, const E
 		}
 
 		const std::string* line = hasLine ? &buffer.Line(bufferRow) : nullptr;
+		std::vector<ImU32> lineColors = line ? TokenizeLineColors(*line, theme) : std::vector<ImU32>();
+
 		for (int col = 0; col < textCols; col++)
 		{
 			Cell& cell = grid.At(gutterCols + col, screenRow);
-			cell.Bg = theme.Background;
-			cell.Fg = theme.Foreground;
+			bool selected = hasSelection && IsInSelection(bufferRow, col, selStartRow, selStartCol, selEndRow, selEndCol);
+			cell.Bg = selected ? theme.SelectionBg : theme.Background;
+			cell.Fg = (line && col < (int)line->size()) ? lineColors[(size_t)col] : theme.Foreground;
 			cell.Codepoint = (line && col < (int)line->size()) ? (char32_t)(unsigned char)(*line)[col] : U' ';
 		}
 	}
@@ -174,25 +272,53 @@ private:
 		if (io.WantTextInput)
 			return;
 
+		bool shift = io.KeyShift;
+		bool ctrl = io.KeyCtrl;
+
+		// Clipboard/undo shortcuts first: Ctrl held changes what a letter
+		// key does entirely, so these must not also fall through to
+		// InputQueueCharacters below (Ctrl+C etc. don't produce printable
+		// characters anyway, but this keeps the two blocks unambiguous).
+		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z, true))
+		{
+			if (shift) m_Buffer.Redo();
+			else m_Buffer.Undo();
+		}
+		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, true)) m_Buffer.Redo();
+		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_A, true)) m_Buffer.SelectAll();
+		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_C, true) && m_Buffer.HasSelection())
+			ImGui::SetClipboardText(m_Buffer.GetSelectedText().c_str());
+		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_X, true) && m_Buffer.HasSelection())
+		{
+			ImGui::SetClipboardText(m_Buffer.GetSelectedText().c_str());
+			m_Buffer.DeleteSelection();
+		}
+		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_V, true))
+		{
+			const char* clipboard = ImGui::GetClipboardText();
+			if (clipboard)
+				m_Buffer.InsertText(clipboard);
+		}
+
 		for (int i = 0; i < io.InputQueueCharacters.Size; i++)
 		{
 			ImWchar c = io.InputQueueCharacters[i];
 			if (c >= 32 && c < 127) // printable ASCII only, matching CellGrid's own cut
-				m_Buffer.InsertChar((char)c);
+				m_Buffer.InsertCharWithPairing((char)c);
 		}
 
 		if (ImGui::IsKeyPressed(ImGuiKey_Enter, true)) m_Buffer.InsertNewline();
 		if (ImGui::IsKeyPressed(ImGuiKey_Backspace, true)) m_Buffer.Backspace();
 		if (ImGui::IsKeyPressed(ImGuiKey_Delete, true)) m_Buffer.Delete();
 		if (ImGui::IsKeyPressed(ImGuiKey_Tab, true)) m_Buffer.InsertTab();
-		if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) m_Buffer.MoveLeft();
-		if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) m_Buffer.MoveRight();
-		if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) m_Buffer.MoveUp();
-		if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) m_Buffer.MoveDown();
-		if (ImGui::IsKeyPressed(ImGuiKey_Home, true)) m_Buffer.MoveHome();
-		if (ImGui::IsKeyPressed(ImGuiKey_End, true)) m_Buffer.MoveEnd();
-		if (ImGui::IsKeyPressed(ImGuiKey_PageUp, true)) m_Buffer.MovePageUp(visibleRows);
-		if (ImGui::IsKeyPressed(ImGuiKey_PageDown, true)) m_Buffer.MovePageDown(visibleRows);
+		if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) m_Buffer.MoveLeft(shift);
+		if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) m_Buffer.MoveRight(shift);
+		if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) m_Buffer.MoveUp(shift);
+		if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) m_Buffer.MoveDown(shift);
+		if (ImGui::IsKeyPressed(ImGuiKey_Home, true)) m_Buffer.MoveHome(shift);
+		if (ImGui::IsKeyPressed(ImGuiKey_End, true)) m_Buffer.MoveEnd(shift);
+		if (ImGui::IsKeyPressed(ImGuiKey_PageUp, true)) m_Buffer.MovePageUp(visibleRows, shift);
+		if (ImGui::IsKeyPressed(ImGuiKey_PageDown, true)) m_Buffer.MovePageDown(visibleRows, shift);
 	}
 
 	void ScrollToCursor(int visibleRows)

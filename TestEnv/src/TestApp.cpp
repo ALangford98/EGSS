@@ -30,6 +30,7 @@
 #include "EditorProject.h"
 #include "ProfilerPanel.h"
 #include "AudioRaceStress.h"
+#include "PlayMode.h"
 
 class TestEnv : public GS::Application
 {
@@ -79,6 +80,22 @@ public:
 	// the context) is still alive, avoids that.
 	~TestEnv() override
 	{
+		// If the window closes while Play is still active (Play clicked,
+		// Stop never was -- the single most ordinary way to leave this
+		// feature), PlayMode::s_Prepared is still holding onto QuickJS
+		// JSValues that only Stop()'s own ReleasePreparedScript loop frees.
+		// Left alone, those outlive this function, and PlayMode::s_ScriptEngine's
+		// destructor -- running later, at static-destruction time -- calls
+		// JS_FreeRuntime into a runtime that still has live objects, which
+		// is a hard assertion inside QuickJS itself
+		// (quickjs.c: "JS_FreeRuntime: Assertion `list_empty(&rt->gc_obj_list)'
+		// failed"), not a recoverable error. Must run before g_EditorScene.Clear()
+		// below: Stop() reverts g_EditorScene from the Play-time snapshot via
+		// Scene::Load, which needs the scene in a normal, not-yet-torn-down
+		// state to load into.
+		if (PlayMode::IsPlaying())
+			PlayMode::Stop();
+
 		// EditorHistory::s_Commands can also hold shared_ptr<Mesh> (a
 		// Place/DeleteEntityCommand's captured MeshComponent) -- a third
 		// owner alongside g_EditorScene and MeshCache that needs clearing

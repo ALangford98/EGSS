@@ -18,6 +18,10 @@ struct EditorTheme
 	ImU32 Keyword;
 	ImU32 StringLiteral;
 	ImU32 Comment;
+	// Manual tint, unlike the values above -- not sourced from
+	// everforest.vim, just Background lightened a few steps so a selection
+	// reads as highlighted without fighting the token colors drawn over it.
+	ImU32 SelectionBg;
 };
 
 inline EditorTheme EverforestDark()
@@ -31,5 +35,6 @@ inline EditorTheme EverforestDark()
 	t.Keyword             = IM_COL32(0xe6, 0x7e, 0x80, 255); // red
 	t.StringLiteral       = IM_COL32(0xa7, 0xc0, 0x80, 255); // green
 	t.Comment             = IM_COL32(0x85, 0x92, 0x89, 255); // grey1
+	t.SelectionBg         = IM_COL32(0x42, 0x4a, 0x50, 255);
 	return t;
 }

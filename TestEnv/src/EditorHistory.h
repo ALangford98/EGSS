@@ -68,8 +68,9 @@ class PlaceEntityCommand : public EditorCommand
 {
 public:
 	PlaceEntityCommand(const std::string& name, const GS::TransformComponent& transform,
-		const std::optional<GS::MeshComponent>& mesh, const std::optional<GS::CameraComponent>& camera)
-		: m_Name(name), m_Transform(transform), m_Mesh(mesh), m_Camera(camera)
+		const std::optional<GS::MeshComponent>& mesh, const std::optional<GS::CameraComponent>& camera,
+		const std::optional<GS::LightComponent>& light = std::nullopt)
+		: m_Name(name), m_Transform(transform), m_Mesh(mesh), m_Camera(camera), m_Light(light)
 	{
 	}
 
@@ -81,6 +82,8 @@ public:
 			entity.Add<GS::MeshComponent>(*m_Mesh);
 		if (m_Camera)
 			entity.Add<GS::CameraComponent>(*m_Camera);
+		if (m_Light)
+			entity.Add<GS::LightComponent>(*m_Light);
 		m_Entity = entity.GetId();
 	}
 
@@ -95,6 +98,7 @@ private:
 	GS::TransformComponent m_Transform;
 	std::optional<GS::MeshComponent> m_Mesh;
 	std::optional<GS::CameraComponent> m_Camera;
+	std::optional<GS::LightComponent> m_Light;
 };
 
 // The inverse of Place: captures an existing entity's data at construction,
@@ -114,6 +118,10 @@ public:
 			m_Mesh = *mesh;
 		if (auto* camera = g_EditorScene.GetComponent<GS::CameraComponent>(entity))
 			m_Camera = *camera;
+		if (auto* script = g_EditorScene.GetComponent<GS::ScriptComponent>(entity))
+			m_Script = *script;
+		if (auto* light = g_EditorScene.GetComponent<GS::LightComponent>(entity))
+			m_Light = *light;
 	}
 
 	void Redo() override
@@ -133,6 +141,10 @@ public:
 			entity.Add<GS::MeshComponent>(*m_Mesh);
 		if (m_Camera)
 			entity.Add<GS::CameraComponent>(*m_Camera);
+		if (m_Script)
+			entity.Add<GS::ScriptComponent>(*m_Script);
+		if (m_Light)
+			entity.Add<GS::LightComponent>(*m_Light);
 		m_Entity = entity.GetId();
 
 		// Anything else on the stack that captured oldEntity (an
@@ -146,6 +158,8 @@ private:
 	GS::TransformComponent m_Transform;
 	std::optional<GS::MeshComponent> m_Mesh;
 	std::optional<GS::CameraComponent> m_Camera;
+	std::optional<GS::ScriptComponent> m_Script;
+	std::optional<GS::LightComponent> m_Light;
 };
 
 // One field of one component, changed once. `Component` and `Field` are

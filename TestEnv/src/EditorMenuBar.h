@@ -24,6 +24,7 @@
 #include "EditorHistory.h"
 #include "EditorSceneView.h"
 #include "EditorShell.h"
+#include "PlayMode.h"
 
 class EditorMenuBar : public GS::Layer
 {
@@ -70,12 +71,20 @@ public:
 			DrawEditMenu();
 			DrawViewMenu();
 			DrawHelpMenu();
+			DrawPlayControls();
 			ImGui::EndMainMenuBar();
 		}
 
 		DrawFileDialogs();
 		DrawViewDialogs();
 		DrawFindPopup();
+	}
+
+	void OnFixedUpdate(GS::Timestep step) override
+	{
+		if (g_ActiveDemo != InvalidDemo)
+			return;
+		PlayMode::OnFixedUpdate(step);
 	}
 private:
 	void DoUndo()
@@ -448,6 +457,32 @@ private:
 		ImGui::TextDisabled("Built from source -- no version number yet.");
 
 		ImGui::EndMenu();
+	}
+
+	// Plain buttons in the menu bar strip itself, not a dropdown -- always
+	// visible, matching how a game engine editor's play button typically
+	// works. Gated on g_ActiveDemo, same pattern Undo/Redo/Find already use:
+	// Play mode operates on g_EditorScene, meaningless while looking at a
+	// hardcoded C++ demo.
+	void DrawPlayControls()
+	{
+		if (g_ActiveDemo != InvalidDemo)
+			return;
+
+		ImGui::Separator();
+		if (!PlayMode::IsPlaying())
+		{
+			if (ImGui::Button("Play"))
+				PlayMode::Play();
+		}
+		else
+		{
+			if (ImGui::Button("Stop"))
+			{
+				PlayMode::Stop();
+				ResetForNewScene(); // Stop()'s Scene::Load is a scene swap like any other -- same stale-id-aliasing risk New/Open/Open Demo already guard against
+			}
+		}
 	}
 private:
 	char m_DialogPath[256] = "";

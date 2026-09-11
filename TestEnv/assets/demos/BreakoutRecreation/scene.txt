@@ -1,0 +1,15 @@
+gs-scene 1
+entity
+tag Paddle
+transform 0 -0.75 0 0 0 0 0.36 0.045 0.09
+mesh primitive:cube 0.85 0.85 0.90 1.0 1
+script assets/demos/BreakoutRecreation/paddle.gss
+entity
+tag Ball
+transform 0 -0.67 0 0 0 0 0.056 0.056 0.056
+mesh primitive:sphere 1.00 0.95 0.60 1.0 1
+script assets/demos/BreakoutRecreation/ball.gss
+entity
+tag Camera
+transform 0 0 2.2 0 0 0 1 1 1
+camera 45 0.1 1000 1

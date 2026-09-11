@@ -1,0 +1,39 @@
+// Recreates Breakout.h's paddle: bounded horizontal movement driven by
+// input, using the same constants Breakout.h itself defines (s_PaddleSpeed,
+// s_PaddleSize, and the half-width that falls out of its 16:9 default
+// window: s_WorldHalfHeight * aspect).
+//
+// Writes its own X position to a plain global each tick. The current
+// scripting API has no way for one entity's script to read another
+// entity's Transform ("querying other entities" is on the entity-scripting
+// spec's own deferred list), so this is the one channel actually available:
+// every entity's script runs in the same shared QuickJS context for the
+// length of one Play session (PlayMode::s_ScriptEngine is a single
+// instance, not one per entity), which makes an ordinary JS global a real,
+// already-existing line between two scripts -- not a new native binding.
+// ball.ts reads it to do the paddle-collision check Breakout.h itself does.
+
+const paddleSpeed = 2.2;
+const paddleHalfWidth = 0.18;   // s_PaddleSize.x * 0.5
+const worldHalfWidth = 1.6;     // s_WorldHalfHeight (0.9) * the 16:9 default aspect
+
+function OnUpdate(dt: number) {
+    let [x, y, z] = entity.getPosition();
+
+    if (input.isKeyDown("LEFT") || input.isKeyDown("A"))
+        x -= paddleSpeed * dt;
+    if (input.isKeyDown("RIGHT") || input.isKeyDown("D"))
+        x += paddleSpeed * dt;
+
+    const limit = worldHalfWidth - paddleHalfWidth;
+    x = Math.max(-limit, Math.min(limit, x));
+
+    entity.setPosition(x, y, z);
+
+    (globalThis as any).paddleX = x;
+}
+
+function OnStart() {
+    const [x, y, z] = entity.getPosition();
+    (globalThis as any).paddleX = x;
+}

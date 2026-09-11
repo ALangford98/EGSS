@@ -98,10 +98,10 @@ namespace GS {
 		// A hand-written, explicit format -- there is no component
 		// registration to walk generically, so this names exactly the
 		// components a scene file is allowed to carry: Tag, Transform, Mesh
-		// (by SourcePath, resolved through MeshCache) and Camera. Adding a
-		// fifth persisted component means adding one more explicit case here,
-		// the same way adding a demo means adding one more line to
-		// DemoRegistry.h.
+		// (by SourcePath, resolved through MeshCache), Camera, Script (by
+		// ScriptPath), and Light. Adding a seventh persisted component means
+		// adding one more explicit case here, the same way adding a demo
+		// means adding one more line to DemoRegistry.h.
 		bool Save(const std::string& path) const;
 
 		// Clears the scene once the header is confirmed valid, before parsing

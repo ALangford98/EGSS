@@ -38,6 +38,343 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
+- **GSS-to-C++ transpiler, Tasks 1-4 of 6 landed** (plan:
+  `docs/superpowers/plans/2026-09-11-gss-to-cpp-transpiler.md`, spec:
+  `docs/superpowers/specs/2026-09-11-gss-to-cpp-transpiler-design.md`).
+  `ScriptEngine::TranspileToCpp(source, className, error, outCpp)`
+  mechanically translates typed variables, arithmetic/`===`/`!==`/
+  ternary, `if`/`for`/`while`, the native `entity`/`input`/`scene` API,
+  `Math.*`, calls to same-file functions, arrow functions, template
+  literals, simple classes, and simple generics into real C++ in a
+  `GeneratedScripts` namespace, stamped with a `GS-GENERATED: <FNV-1a
+  hash>` line the not-yet-built optimize-lock (Task 6) will read. **Not
+  yet wired up**: imports (calling one fails the same "unrecognized call"
+  way anything else unsupported does) and the syntax-check-on-save + live
+  panel UI (Task 5) — these tasks only prove `TranspileToCpp` itself
+  works, called directly, not from the editor.
+  **Two real design/bug findings from Task 1, found by testing, not
+  anticipated in the design**: requiring an explicit type annotation on
+  *every* declaration turns out to be unworkable, since
+  `entity.getPosition()` has no TypeScript declaration file at all --
+  there's no correct annotation to write for `const pos =
+  entity.getPosition()` no matter how the script is written. Fixed by
+  falling back to C++'s own `auto` for an initialized local with no
+  annotation (the transpiler still infers nothing itself -- `auto` is
+  deduced by the compiler at the syntax-check step); required only when
+  there's neither a type nor an initializer. Class member variables
+  (top-level `let`/`const`) still always need one -- C++ doesn't allow
+  `auto` on a non-static data member at all. Separately, the codegen
+  driver's `JS_Call` had no `m_Deadline` set, unlike every other JS
+  execution point in this file -- the first test run hung the process
+  outright; fixed to match the established pattern.
+  **One more from Task 2**: calling a locally-declared lambda variable
+  isn't calling a "top-level function," so the entity/scene-prepending
+  rule Task 1 built rejected it outright. Fixed: an identifier call now
+  checks the top-level-function set first (prepend entity/scene), then a
+  lightweight local-variable table (call directly -- a `[&]` lambda
+  already captures what it needs), and only fails if neither recognizes
+  the name. Template literal interpolation is deliberately narrower than
+  "any expression": only a plain identifier (via that same lightweight,
+  non-lexically-scoped type table) or literal, rejecting a general
+  expression by name rather than tracking types through binary/call/
+  property-access forms too, which would be real inference.
+  **Task 3 (simple classes)**: a top-level class becomes its own C++
+  class, a sibling of the entity's generated class in the same namespace
+  -- not nested inside it, and its methods do *not* get entity/scene
+  prepended, since a class has no relation to the entity-script closure
+  model that prepending exists to preserve. `this.x` maps to `this->x`;
+  `extends` maps to public inheritance; everything comes out `public:`
+  (access modifiers/`readonly` aren't translated). Found while
+  implementing, not in the original plan: `super(...)` calls aren't a
+  recognized expression form, so a derived class's constructor can't call
+  its base constructor -- fields/methods/single-inheritance still work.
+  **Task 4 (simple generics)**: `<T>` and `<T extends number>` both
+  become a plain `template<typename T>` on a top-level function or
+  const-assigned arrow function (entity/scene still prepended). Every
+  constraint, simple or complex, is uniformly dropped rather than
+  translated or specially detected -- C++17 has no `concept` keyword to
+  express any of them with, so there was no correctness reason to tell a
+  simple constraint from a complex one, only to drop both the same way.
+  Generic classes are explicitly rejected by name rather than silently
+  mistranslated (`T` used as a field type with no enclosing `template<>`
+  would otherwise fail at the syntax-check step with a confusing error
+  instead of a clear one).
+  Verified with temporary self-tests (15, 11, 12, 8 -- 46 checks total,
+  0 failed) that don't stop at "the generated text looks right" -- every
+  case is additionally piped through a real `g++ -std=c++17 -fsyntax-only`
+  invocation (TestEnv's own Linux/Debug defines) confirming a real
+  compiler accepts it, which is what caught the deadline and lambda-call
+  bugs above. Clean three-config build after each task.
+
+- **Auto-closing pairs in the embedded text editor** -- typing `(`/`[`/`{`/
+  `"`/`'` inserts its match too, cursor left between them; typing a closer
+  that's already sitting right there steps over it instead of doubling
+  it; typing an opener with text selected wraps the selection instead of
+  replacing it; backspacing inside an empty auto-inserted pair removes
+  both characters together. Lives entirely in `TextBuffer::
+  InsertCharWithPairing` (new) plus a small addition to `Backspace`;
+  `InsertChar`/`InsertText` themselves are untouched, so pasted code and
+  `InsertTab`'s spaces aren't paired a second time on top of already-
+  balanced text. No lexical awareness -- a `(` typed inside a string or
+  comment pairs the same as anywhere else, the same simple-mechanical cut
+  the syntax highlighter's own single-line tokenizer already makes.
+  Unrelated to the GSS-to-C++ transpiler design in progress -- a general
+  editor QoL request, not part of that spec. Verified with a temporary
+  self-test (9/9, including the exact `function test(` case from the
+  request) and a clean three-config build.
+
+- **The scripting language has a name and an extension: GameStart Script,
+  `.gss`.** `ScriptEngine::ResolveImportPath` now tries `.gss` before
+  `.ts` when a bare import specifier has no extension; the Breakout
+  recreation's `paddle.ts`/`ball.ts` were renamed to `.gss` to match (a
+  plain rename, `scene.txt`'s two `script` lines updated, no content
+  changed). Confirmed via `--scene` that the renamed project still opens
+  and its scripts still resolve with no warnings. `.gs` (the name floated
+  before this one) never actually shipped anywhere, so there was nothing
+  else to migrate.
+
+- **Cross-file script imports** (spec:
+  `docs/superpowers/specs/2026-09-11-script-imports-design.md`). A script
+  can now `import { name } from "./relative/module"`; the target may
+  itself `export function`/`export const` and import further modules.
+  Not real ES modules -- QuickJS modules can't take function parameters,
+  and entity/input/scene being parameters (not globals) is specifically
+  what keeps two entities running the same script file from sharing
+  state, so making an entity's own script a real module would have
+  reopened that. Instead `ScriptEngine::PrepareEntityScript` resolves
+  imports itself, using the bundled TypeScript compiler's own parser
+  (`ts.createSourceFile`, not a hand-rolled scan) to find import/export
+  statements, splices each resolved module in as its own IIFE ahead of
+  the entity's code, then runs the existing single `ts.transpileModule`
+  call over the assembled text -- unchanged from before this feature.
+  Real, disclosed deviation from real ES modules: every entity gets its
+  own private copy of an imported module, so top-level mutable state in a
+  module is **not** shared across entities the way it would be in real
+  JS -- modules should be stateless helpers, which is what the actual use
+  case (shared movement/collision math) needs anyway. The module-parse
+  cache is scoped to one Play() session (cleared at the start of every
+  one), not `PlayMode::s_ScriptEngine`'s lifetime (which spans every
+  Play/Stop cycle for the whole app run) -- editing a module and pressing
+  Play again picks up the change, same freshness guarantee an entity's own
+  script already had.
+  **Built ahead of its only consumer, on request**: a
+  `.gs-dependencies.txt` manifest (`<project>/`) is written fresh at the
+  end of every Play() that resolved an import, listing each script's
+  transitive module dependencies. Nothing reads it yet -- it exists for
+  the not-yet-designed TS-to-C++ transpiler, which will need to know a
+  module edit should trigger the same overwrite-conflict handling a
+  direct script edit would. Also confirmed, separately: this repo's `.gs`
+  extension request needs no code at all -- nothing anywhere (file tree,
+  text editor, script runtime) has ever dispatched on file extension.
+  Verified with a temporary self-test (11/11: two entities sharing one
+  cached module independently, a module importing another module, two
+  modules exporting the same name under different import aliases not
+  colliding, a missing import and a circular import both failing to
+  prepare cleanly with a named error rather than crashing or hanging, the
+  manifest's content and its correct omission of a script that failed to
+  prepare, and a module edit between Stop and Play actually taking
+  effect) and a clean three-config build.
+- **Cross-entity scripting: `scene.findByTag`/`spawn`/`destroy`, the two
+  capabilities Breakout's recreation exposed as missing rather than
+  built.** A third `scene` parameter joins the existing `entity`/`input`
+  ones passed into every entity script (`ScriptEngine.h`'s wrapper is now
+  `(function(entity, input, scene) {...})` -- additive, no existing script
+  needed to change). `scene.findByTag(name)` linear-scans the live scene
+  and returns a native `Entity` binding (or `null`); `scene.spawn({
+  position?, scale?, mesh?, color?, tag? })` creates a real entity with a
+  Transform and, if `mesh` names a `MeshCache` key, a `MeshComponent`,
+  returning its binding; `scene.destroy(entity)` removes any entity, not
+  just the caller. Deliberately no `script` spawn option -- a spawned
+  entity running its own script would need `PlayMode`'s `s_Prepared`
+  bookkeeping reachable from `ScriptEngine.h`, a layering change not worth
+  it for bricks, which only need to exist and be destroyed.
+  **One real bug this created, found and fixed before it shipped**:
+  `scene.destroy()` can remove an entity that has its own running script
+  (self-destruction, or a ball destroying a brick that also scripts
+  itself) -- `PlayMode::OnFixedUpdate` still held its `PreparedScript` and
+  would have kept calling its stale `OnUpdate` every tick forever. Fixed
+  by checking `g_EditorScene.IsValid()` before each call and dropping any
+  entry that's gone stale (releasing its `JSValue`s), checked entity-by-
+  entity within the same pass rather than once up front, so an entity
+  destroyed earlier in the same tick doesn't get one extra spurious call.
+  Verified with a temporary self-test (9/9: findByTag locating and
+  mutating another entity, spawn producing a real entity with the
+  requested mesh/position, destroy removing the target, and -- reading a
+  value back out of the shared JS context via `RunScript`'s
+  `console.log`, the only public channel available for it -- confirming
+  the destroyed entity's script tick count stops changing across five more
+  fixed updates instead of continuing to climb) and a clean three-config
+  build. No capture-based regression sweep: this touches script bindings
+  and `PlayMode`'s update loop, not rendering or the `Scene::Save`/`Load`
+  format, so that check wouldn't have caught anything a lighter one
+  couldn't.
+- **Selection/clipboard, undo/redo, and syntax highlighting for the
+  embedded text editor, fourth and last of the editor-pivot's named
+  sub-projects.** `TextBuffer.h`: Shift+move extends a keyboard-driven
+  selection (mouse-drag was never wired to a cursor position to begin with,
+  so it stays out of scope); Ctrl+C/X/V go through `ImGui::Set/GetClipboardText`
+  (the OS clipboard, via the existing GLFW backend); Ctrl+Z/Ctrl+Shift+Z
+  (or Ctrl+Y) undo/redo off a snapshot stack that coalesces consecutive
+  same-kind edits (typing "hello" is one undo, not five) and breaks the
+  run on any cursor move, so type/move-away/move-back/type is two undos.
+  `TextEditorPanel.h`: a single-line tokenizer colors keywords/strings/
+  `//` comments using the `Keyword`/`StringLiteral`/`Comment` theme colors
+  that were already sitting there reserved for this; a construct spanning
+  lines (`/* */`, a template literal) just renders uncolored rather than
+  being tracked wrong, since the small single-purpose scripts this editor
+  actually opens don't use them. Verified with a temporary self-test
+  (13/13: coalesced-undo, selection+delete, multi-line select-all, paste
+  not inheriting newline's auto-indent, a mixed insert/newline/insert undo
+  chain) and a clean three-config build; no capture-based regression sweep
+  this time — this is self-contained editor content with no shared
+  invariant or serialization format riding on it, so a lighter check was
+  the right amount (the owner asked to calibrate verification cost to
+  what actually breaks expensively later, not apply the same weight
+  everywhere).
+- **Breakout's paddle and ball recreated inside the editor, third of four
+  sub-projects toward "recreate any existing demo inside the editor" (file
+  tree, entity/component scripting, this, text-editor refinements).**
+  `TestEnv/assets/demos/BreakoutRecreation/` is a real, checked-in editor
+  project (`project.gsproj` + `scene.txt` + `paddle.ts` + `ball.ts`) --
+  openable via File > Open or `--scene`, not a code-only construction. A
+  flattened-cube paddle and a sphere ball, each with a `ScriptComponent`,
+  reuse Breakout.h's exact constants (`s_PaddleSpeed`, `s_PaddleSize`,
+  `s_BallRadius`, `s_BallStartSpeed`) so the motion is numerically
+  comparable, not just visually similar. Deliberately cut, and disclosed as
+  such rather than silently dropped: no bricks (45 entities with no
+  spawn/destroy-from-script path to clear one), no score/lives/game-over
+  (no UI hook reaches a script), no "ball rides the paddle until Space"
+  launch phase, and the floor bounces the ball back instead of ending a
+  life (no lives to lose).
+  **One gap this exposed and fixed**: `ScriptEngine::KeyNameToCode` only
+  recognised single letters/digits and `"SPACE"` -- arrow keys had no name
+  at all, even though Breakout.h itself binds movement to both WASD and
+  arrows. Added `"LEFT"/"RIGHT"/"UP"/"DOWN"`.
+  **One real architectural finding, addressed rather than deferred**:
+  Breakout is a 2D game on an orthographic camera; the editor's `Scene`
+  viewport is 3D-only and always rendered from its own free-fly camera,
+  never from a placed `CameraComponent` -- watching this recreation would
+  have meant flying the camera into position by hand every time Play
+  starts. `EditorSceneView::ActiveCamera()` now renders from the scene's
+  active `CameraComponent` (its own `GS::PerspectiveCamera`, positioned and
+  oriented from that entity's `Transform` via the same rotation-only
+  `ForwardFromRotation()` helper `DrawCameraRays` uses) whenever Play is
+  active and one exists, falling back to the free-fly camera otherwise --
+  the free-fly camera's own state is never written to, so Stop() leaves it
+  exactly where the user left it.
+  **A second real finding, left as a finding rather than built**: the ball
+  needs the paddle's live X position for its collision check, and the
+  current scripting API has no way for one entity's script to query
+  another's Transform ("querying other entities" is the entity-scripting
+  spec's own deferred item). Solved without new native API surface: every
+  entity's script runs in the same shared QuickJS context for one Play
+  session (`PlayMode::s_ScriptEngine` is one instance, not one per entity),
+  so `paddle.ts` writes its X to a plain `globalThis.paddleX` each tick and
+  `ball.ts` reads it -- ordinary JS closure/global semantics, not a new
+  binding. Confirmed genuine (not just two idle simulations) by counting
+  actual paddle-catch events during verification.
+  Verified by running the actual `Breakout` class's own `Step()` (bricks
+  and the Space-to-launch phase neutralised via temporary accessors, since
+  neither is part of what this recreation claims to reproduce) side by
+  side with `PlayMode::Play()`/`OnFixedUpdate()` against the real project
+  files, both driven by the same synthetic `GS::Input::SetPlaybackSnapshot`
+  sequence (a simple chase controller steering input from the reference
+  ball's live position, so the paddle genuinely catches it instead of the
+  two runs diverging after the first miss) for 900 fixed steps (~15
+  simulated seconds, several bounce cycles, switching from WASD to arrow
+  names partway through to exercise both) -- paddle position matched to
+  1.2e-7 and ball position to 1.6e-4 (float rounding), with 5 real paddle
+  catches observed. A `--hide-ui` capture during Play shows the paddle and
+  ball rendered correctly from the scene's own camera. The same
+  byte-identical Cube3D `--hide-ui` capture (step 5) confirmed unchanged.
+- **Two small editor-viewport gaps flagged during the Play/Stop work,
+  picked up right after it landed: a camera-direction indicator and a way to
+  place lights.** `EditorSceneView::DrawCameraRays()` draws one short line
+  per `CameraComponent` entity, from its position along the direction its
+  `TransformComponent::Rotation` faces (rotation-only, in `GetTransform()`'s
+  own X-then-Y-then-Z order, against a local forward of `(0,0,-1)` -- the
+  same convention the editor fly-camera's default yaw already assumes) --
+  before this, a placed camera had no mesh and rendered as nothing at all.
+  A "Light" button next to "Camera" in the Tools panel places a
+  `GS::LightComponent` entity via the same `PlaceEntityCommand` path, and
+  the Inspector gained a colour/radius/enabled block for it, matching the
+  Camera block's shape. Two gaps found and fixed along the way, the same
+  class of bug the `ScriptComponent` fix below already went through once:
+  `Scene::Save`/`Load` had no `"light"` line at all (would have silently
+  dropped every placed light on the first Save), and `DeleteEntityCommand`
+  didn't capture/restore `LightComponent`, so undoing a light's deletion
+  would have resurrected it without its light. Both fixed to match the
+  existing per-component pattern; `Scene.h`'s persistence comment now names
+  Light as the sixth (well, seventh) persisted component. Verified with a
+  temporary self-test (12/12: forward-vector math against hand rotation,
+  Save/Load round-trip keeping `Radius`, undo-after-delete restoring the
+  placed `Radius` rather than a default one) and a `--hide-ui` capture
+  showing the ray render (a camera at the origin facing +X after a 90°
+  yaw shows a short line running right, as expected), plus the same
+  byte-identical Cube3D `--hide-ui` capture (step 5) confirmed unchanged
+  since neither addition touches any demo-layer code path.
+- **Play/Stop in the editor menu bar, second of four sub-projects toward
+  "recreate any existing demo inside the editor" (file tree, entity/component
+  scripting, recreate one demo, text-editor refinements).** `GS::ScriptComponent
+  { std::string ScriptPath; }` (`Components.h`) plus an Inspector Add/Remove
+  Script block (`EditorSceneView.h`) let any placed entity point at a `.ts`
+  file. `ScriptEngine.h` gained a native `Entity` binding (`getPosition`/
+  `setPosition`/`getRotation`/`setRotation`/`getScale`/`setScale`, backed by
+  `TransformComponent`) and a shared `Input.isKeyDown`, both passed into a
+  script's `OnStart`/`OnUpdate` as function *parameters* rather than globals
+  so two entities running the same script source never share state -- a
+  two-entity self-test exercised exactly that. `TestEnv/src/PlayMode.h` is
+  new: `Play()` snapshots `g_EditorScene` via the same `Scene::Save` a real
+  project already uses (to a scratch `play_snapshot.tmp`, outside the project
+  folder), prepares every `ScriptComponent`'d entity through `ScriptEngine`,
+  and runs each one's `OnUpdate` from a new `EditorMenuBar::OnFixedUpdate`
+  override every fixed step; `Stop()` reverts via `Scene::Load` on that same
+  snapshot, discarding whatever the scripts did. Plain "Play"/"Stop" buttons
+  sit in the menu bar strip itself (`DrawPlayControls()`), gated on
+  `g_ActiveDemo` the same way Undo/Redo/Find already are. A review during
+  Task 3 found and fixed a real Critical bug one level down: `Scene::Save`/
+  `Load` (`Scene.cpp`) never had a `"script"` line at all, so every
+  `Stop()` was silently and permanently deleting `ScriptComponent` from the
+  snapshot -- fixed with a line matching the existing `mesh` block's
+  convention, then re-verified.
+  Verified with deterministic self-tests (QuickJS smoke 4/4, `ScriptEngine`
+  transpile-run-recover 6/6 including the two-entity closure-collision case,
+  `PlayMode`'s own Play/tick/Stop-and-revert cycle 11/11 including the
+  script-survives-the-snapshot check the Scene.cpp fix required), a
+  byte-identical `--hide-ui` capture (Cube3D, step 5, matching MD5 against a
+  pre-this-plan reference build in a throwaway worktree at the prior commit --
+  `PlayMode::OnFixedUpdate` early-returns off-editor and `DrawPlayControls()`
+  only ever runs from `OnImGuiRender`, which `--hide-ui` skips), and a
+  code-driven capture standing in for the live click-through: no GUI-
+  automation tool exists in this environment, so a temporary layer
+  (deleted after use) placed a scripted cube through the same
+  `PlaceEntityCommand` path the Tools panel's "Cube" button uses, then drove
+  `PlayMode::Play()`/`OnFixedUpdate()`/`Stop()` from its own `OnFixedUpdate`
+  across real frames of a `--lockstep` run -- three captures (before Play,
+  mid-Play, after Stop) show the cube centered, then visibly shifted right
+  with its rendered position exactly 13 ticks x 0.1 units/tick = 1.3 units
+  off origin, then back to a pixel-for-pixel MD5 match of the pre-Play frame.
+  This exercises the exact `Play`/`OnFixedUpdate`/`Stop` calls the menu bar
+  buttons make, just from code instead of a mouse click -- the actual button
+  click-through itself is still open, same disclosed gap as every prior
+  by-hand UI check in this pivot.
+  **A review caught and this fixed a genuine crash-on-quit:** exiting the
+  app while Play was still active (Stop() never clicked -- the single most
+  ordinary way to leave this feature) hit a QuickJS shutdown assertion
+  (`quickjs.c:2704, JS_FreeRuntime: Assertion 'list_empty(&rt->gc_obj_list)'
+  failed`), reproduced 100% in both Debug and Release -- `PlayMode::s_Prepared`'s
+  `JSValue`s are only released by `Stop()`'s own `ReleasePreparedScript` loop,
+  so a process that exits mid-Play leaves them alive when
+  `PlayMode::s_ScriptEngine`'s destructor later calls `JS_FreeRuntime` into a
+  runtime that still has live objects. Fixed in `~TestEnv()` (`TestApp.cpp`):
+  `if (PlayMode::IsPlaying()) PlayMode::Stop();`, run before
+  `EditorHistory::Clear()`/`g_EditorScene.Clear()` (already there for the
+  same "before the GL context goes away" reason) so `Stop()`'s own
+  `Scene::Load` revert has a normal scene to load into. Verified with a
+  second temporary code-driven repro (deleted after use): Play at fixed
+  step 2, never call Stop, exit via `--capture-step` -- exit 0, no assertion,
+  in both Debug and Release, where the unfixed build crashed 100% of the
+  time under the identical repro.
 - **A file tree panel, first of four sub-projects toward "recreate any
   existing demo inside the editor" (file tree, entity/component scripting,
   recreate one demo, text-editor refinements).** `FileTreePanel.h` is a new
@@ -203,24 +540,41 @@ Last landed, newest first:
 
 ## What is next
 
-**In flight: the editor pivot.** Sub-project 1 (editor boot + scene
-composition, then the menu bar and layout reshuffle) landed — see "Last
-landed" above. Only Cube3D opts into the editor so far; the other 16 demos
-each need their own `OnExportToScene` before they can be opened as a
-starting scene the same way.
+**Done: the editor pivot's named "recreate any existing demo inside the
+editor" thread.** All four sub-projects have landed: 1 (editor boot + scene
+composition, menu bar, layout, terminal, text editor, scripting runtime,
+file tree), 2 (entity/component scripting: `ScriptComponent`, the native
+`Entity`/`Input` binding, `PlayMode`'s Play/Stop), 3 (Breakout's paddle and
+ball recreated as a real project under
+`TestEnv/assets/demos/BreakoutRecreation/`, plus the Play-mode
+active-camera rendering it needed), and 4 (text-editor selection/clipboard,
+undo/redo, syntax highlighting) — see "Last landed" above, plus the
+camera-ray and light-placement follow-up flagged during sub-project 2.
 
-The owner had reordered what comes next, ahead of the mesh-authoring tool
-originally planned as sub-project 2: the embedded text editor (originally
-planned as an embedded-Neovim wrapper; decided against that in favor of a
-self-built buffer + panel to avoid an external runtime dependency, per
-`docs/superpowers/specs/2026-09-09-embedded-text-editor-design.md`), then a
-scripting language runtime (sub-project 3's logic/module attachment
-mechanism — JavaScript authored as TypeScript over QuickJS). Both have now
-landed — see "Last landed" above.
+Only Cube3D opts into the editor's `OnExportToScene`; the other 16 demos
+each need their own before they can be opened as a starting scene that way
+(Breakout's recreation was built as a fresh project instead, not exported
+from the live demo) — whether that's worth doing for more demos hasn't
+been decided.
 
-Mesh authoring (the original sub-project 2) and play-in-editor (sub-project
-4) are still queued; which comes next hasn't been decided — **ask before
-starting either**.
+Sub-project 3 exposed two scripting capabilities as genuinely missing;
+both have since landed (see "Last landed" above): querying another
+entity's Transform (`scene.findByTag`) and spawning/destroying entities
+(`scene.spawn`/`scene.destroy`). Breakout's recreation itself hasn't been
+updated to use them yet (still no bricks) -- that's now possible, but
+nobody's asked for it.
+
+The owner also asked, separately, for scripts to eventually be readable and
+buildable as both TypeScript and raw C++ — a TS-as-macro-layer that
+compiles down to a native C++ implementation you can then hand-optimize,
+with the C++ becoming the entity's real source of truth from that point on
+(not kept in sync back to TS). Deliberately sequenced *after* demo
+recreation work, so its scope is designed against scripts that actually
+exist rather than guessed at — not started.
+
+Mesh authoring (a separate, earlier-planned sub-project, before this thread
+existed) is also still queued; which comes next hasn't been decided —
+**ask before starting any of these**.
 
 Unstarted, in the order they were last discussed:
 

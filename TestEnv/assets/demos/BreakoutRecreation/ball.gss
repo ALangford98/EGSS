@@ -1,0 +1,69 @@
+// Recreates Breakout.h's ball: constant-velocity motion, reflecting off
+// the world's walls and the paddle, using the same constants and the same
+// collision order Breakout.h's own Step() uses (walls, then paddle).
+//
+// One deliberate difference: Breakout.h treats the bottom edge as "out of
+// bounds" (lose a life, relaunch), which needs lives/score/game-over state
+// this recreation doesn't have a way to show (no UI hook reaches a script
+// today). This bounces off the bottom too, so the ball just keeps playing
+// forever instead of ever being "lost".
+//
+// Reads globalThis.paddleX, written every tick by paddle.ts -- see that
+// file for why a plain JS global is the real channel available here, not a
+// native "query another entity" call.
+
+const worldHalfWidth = 1.6;
+const worldHalfHeight = 0.9;
+const ballRadius = 0.028;
+const ballStartSpeed = 1.1;
+const paddleY = -0.75;
+const paddleFullWidth = 0.36;
+const paddleFullHeight = 0.045;
+
+let vx = ballStartSpeed * 0.45;
+let vy = ballStartSpeed;
+
+function OnUpdate(dt: number) {
+    let [x, y, z] = entity.getPosition();
+
+    x += vx * dt;
+    y += vy * dt;
+
+    // --- Walls, same order and same snap-back-then-reflect shape as
+    // Breakout.h's Step(). ---------------------------------------------
+    if (x - ballRadius < -worldHalfWidth) {
+        x = -worldHalfWidth + ballRadius;
+        vx = Math.abs(vx);
+    } else if (x + ballRadius > worldHalfWidth) {
+        x = worldHalfWidth - ballRadius;
+        vx = -Math.abs(vx);
+    }
+
+    if (y + ballRadius > worldHalfHeight) {
+        y = worldHalfHeight - ballRadius;
+        vy = -Math.abs(vy);
+    }
+
+    // Not in Breakout.h (there the floor means "lost") -- see the file
+    // comment above for why this recreation bounces here instead.
+    if (y - ballRadius < -worldHalfHeight) {
+        y = -worldHalfHeight + ballRadius;
+        vy = Math.abs(vy);
+    }
+
+    // --- Paddle collision, same box-overlap test as Breakout.h's
+    // file-scope Overlaps(), same steer-by-hit-offset angling. -----------
+    const paddleX = typeof (globalThis as any).paddleX === "number" ? (globalThis as any).paddleX : 0;
+
+    const overlapsX = Math.abs(x - paddleX) * 2 < (ballRadius * 2 + paddleFullWidth);
+    const overlapsY = Math.abs(y - paddleY) * 2 < (ballRadius * 2 + paddleFullHeight);
+
+    if (vy < 0 && overlapsX && overlapsY) {
+        vy = Math.abs(vy);
+
+        const offset = (x - paddleX) / (paddleFullWidth * 0.5);
+        vx = offset * ballStartSpeed;
+    }
+
+    entity.setPosition(x, y, z);
+}
