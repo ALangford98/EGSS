@@ -38,6 +38,51 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
+- **Mesh authoring — a vertex/face editor for meshes already placed in the
+  scene, landed via `docs/superpowers/plans/2026-09-12-mesh-authoring.md`
+  (9 tasks) plus its spec.** `EditableMesh` (welded points + coplanar-
+  grouped faces, `TestEnv/src/EditableMesh.h`), the `Mesh::Create*`/`Load`
+  MeshData split (`GS/src/GS/Renderer/Mesh.h`/`.cpp`), a new `ObjWriter`
+  (`GS/src/GS/Renderer/ObjWriter.h`/`.cpp`), and editor integration
+  (`TestEnv/src/EditorSceneView.h`: an "Edit Mesh" Inspector button, a
+  per-point overlay, the retargeted translate gizmo, Delete Point/Undo/
+  Redo/Done/Cancel). **Shippable now: Move (drag a point) and Delete
+  Point, plus session Undo/Redo and Done (export to `assets/<name>.obj`,
+  reload through the entity's own `MeshComponent`) or Cancel.**
+  **Known, deliberate scope gap — ask before extending:** Extrude and
+  Split Edge (and Delete Face) are fully implemented and tested at the
+  `EditableMesh` data layer but have **no UI path to reach them** — the
+  plan's own Task 9 heading promised buttons for all four operations but
+  its actual code only wired one; wiring the other three needs face-
+  picking and edge-picking UI that was never designed anywhere in this
+  plan (a genuine gap caught before dispatch, not an oversight discovered
+  later). A natural follow-up is a small new sub-project (brainstorm ->
+  spec -> plan) for that picking UI.
+  A final whole-branch review (after all 9 tasks individually passed
+  per-task review) caught two real, reachable bugs no per-task review
+  could have seen — both fixed in one closing round: (1) a session never
+  recorded *which* entity it belonged to, so deleting that entity (or
+  Ctrl+Z past its placement) while editing left the session stuck open
+  forever, locking the whole editor's selection; and, separately, seven
+  of eight `Select()` call sites could silently redirect a session's
+  live-preview/Done onto a different entity mid-edit -- both closed by a
+  new `m_MeshEditEntity` + `ValidateMeshEditSession()` check that runs
+  unconditionally every frame. (2) `RecalculateNormalsTouching`'s NaN-
+  normal risk (dragging one point onto another) was still reachable after
+  an earlier fix only closed it at creation time, not on every later
+  move -- given the same degenerate-cross guard `Mesh.cpp`'s own
+  `RecalculateNormals` already used. Also fixed: "Edit Mesh" no longer
+  activates a session on a mesh that failed to load (would have silently
+  exported an empty `.obj` on Done); a failed `Done` save no longer
+  closes the session, so a save failure doesn't silently discard the
+  edit. **Deferred, not fixed (tracked, not forgotten):** no guard against
+  Play starting while a session is open; `Rebuild()` hardcodes UV to
+  `(0,0)` for every point (the spec wanted UV carried forward from each
+  point's originating vertex -- `FromMeshData` drops the mapping that
+  would need); several Minor UX rough edges (bare clicks push a no-op
+  undo snapshot; global Ctrl+Z isn't redirected to a session's own undo
+  stack; the export path doesn't compose with the project's own path);
+  no README changelog entry for this feature yet.
 - **`ball.gss` graduated to compiled C++ -- the second and, for now, last
   script to (BreakoutRecreation's only other one).** Requested as "graduate
   the rest of the demos in order"; asked which of two readings that meant
@@ -1039,8 +1084,9 @@ that subset would need either rewriting to fit it or a new transpiler
 feature, same as both graduations here needed.
 
 Mesh authoring (a separate, earlier-planned sub-project, before this thread
-existed) is also still queued; which comes next hasn't been decided —
-**ask before starting any of these**.
+existed) is **landed** — see "Last landed" above, including the disclosed
+scope gap (Extrude/Split Edge/Delete Face have no UI path yet) and the
+deferred follow-up items from its closing whole-branch review.
 
 The Inspector's ID field (requested alongside the static-link execution
 wiring, above) is **landed** — see "Last landed" above.

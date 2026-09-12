@@ -321,7 +321,18 @@ private:
 			const glm::vec3& a = m_Points[(size_t)face.Points[0]].Position;
 			const glm::vec3& b = m_Points[(size_t)face.Points[1]].Position;
 			const glm::vec3& c = m_Points[(size_t)face.Points[2]].Position;
-			face.Normal = glm::normalize(glm::cross(b - a, c - a));
+
+			glm::vec3 crossProduct = glm::cross(b - a, c - a);
+			float length = glm::length(crossProduct);
+			// A degenerate cross product (a drag has put two of this face's
+			// points on top of each other, or collinear) has nothing to
+			// normalise -- keep the face's last valid normal rather than
+			// reach the GPU with NaN. Same guard as Mesh.cpp's own
+			// RecalculateNormals, applied here because dragging a point onto
+			// another is reachable through the wired Move path, not just a
+			// theoretical input.
+			if (length > 1e-8f)
+				face.Normal = crossProduct / length;
 		}
 	}
 

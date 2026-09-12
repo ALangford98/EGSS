@@ -76,6 +76,12 @@ public:
 		if (!IsActive())
 			return;
 
+		// First, unconditionally -- this must run even on a frame where the
+		// Inspector's own Done/Cancel buttons never get a chance to draw
+		// (the edited entity became invalid, or selection moved elsewhere),
+		// which is exactly the scenario it exists to catch.
+		ValidateMeshEditSession();
+
 		if (g_Viewport.Valid())
 			GS::RenderCommand::SetViewport((unsigned int)g_Viewport.X,
 				(unsigned int)g_Viewport.Y, (unsigned int)g_Viewport.Width,
@@ -291,6 +297,7 @@ public:
 			if (ImGui::Button("Edit Mesh") && !m_MeshEditActive && !PlayMode::IsPlaying())
 			{
 				GS::MeshData data;
+				bool loaded = true;
 				if (mesh->SourcePath.rfind("primitive:cube", 0) == 0)
 					data = GS::Mesh::CreateCubeData();
 				else if (mesh->SourcePath.rfind("primitive:plane", 0) == 0)
@@ -302,12 +309,22 @@ public:
 				else
 				{
 					std::string error;
-					GS::Mesh::LoadData(mesh->SourcePath, data, error);
+					loaded = GS::Mesh::LoadData(mesh->SourcePath, data, error);
+					if (!loaded)
+						GS_ERROR("Edit Mesh: could not load '{0}': {1}", mesh->SourcePath, error);
 				}
 
-				m_MeshEditSession = EditableMesh::FromMeshData(data);
-				m_MeshEditSelectedPoint = -1;
-				m_MeshEditActive = true;
+				// A session with nothing in it has nothing to pick, drag, or
+				// delete -- the only way out would be Done, which would then
+				// write an empty .obj and replace this entity's real Geometry
+				// with it. Better to leave the entity untouched and log why.
+				if (loaded && !data.Vertices.empty())
+				{
+					m_MeshEditEntity = m_Selected;
+					m_MeshEditSession = EditableMesh::FromMeshData(data);
+					m_MeshEditSelectedPoint = -1;
+					m_MeshEditActive = true;
+				}
 			}
 
 			if (m_MeshEditActive)
@@ -394,10 +411,20 @@ public:
 
 						EditorHistory::Push(std::make_unique<EditFieldCommand<GS::MeshComponent, std::string>>(
 							m_Selected, &GS::MeshComponent::SourcePath, oldPath, exportPath));
-					}
 
-					m_MeshEditActive = false;
-					m_MeshEditSelectedPoint = -1;
+						m_MeshEditActive = false;
+						m_MeshEditSelectedPoint = -1;
+						m_MeshEditEntity = GS::InvalidEntity;
+					}
+					else
+					{
+						// Session deliberately stays open on failure -- closing
+						// it here would silently discard the edit with no way
+						// to retry and nothing on screen to say anything went
+						// wrong. Logged instead; the user can retry Done (e.g.
+						// after freeing disk space) or Cancel out.
+						GS_ERROR("Edit Mesh: Done failed to save '{0}': {1}", exportPath, error);
+					}
 				}
 				ImGui::SameLine();
 				if (ImGui::Button("Cancel"))
@@ -408,6 +435,7 @@ public:
 
 					m_MeshEditActive = false;
 					m_MeshEditSelectedPoint = -1;
+					m_MeshEditEntity = GS::InvalidEntity;
 				}
 			}
 		}
@@ -931,6 +959,49 @@ private:
 		m_MeshEditPreviewDirty = false;
 	}
 
+	// Runs every frame regardless of what the Inspector draws this frame --
+	// unlike the Done/Cancel buttons, this cannot be starved by the entity
+	// becoming invalid (which is exactly the scenario it exists to catch).
+	// Two ways a session can go stale without ever reaching Done/Cancel:
+	// the edited entity is deleted (Delete key, Inspector "Delete", an Undo
+	// past its own placement) while m_Selected still names it -- or m_Selected
+	// is reassigned out from under the session by one of Select()'s several
+	// other call sites (PlaceMesh/PlaceCamera/PlaceLight in EditorShell.h,
+	// Undo/Redo and "Find Entity" in EditorMenuBar.h) while the entity being
+	// edited is still perfectly valid. Either way, m_MeshEditSession no
+	// longer corresponds to what m_Selected/the Outliner/the viewport click
+	// guard now mean by "the active entity", so leaving m_MeshEditActive true
+	// would either lock the editor out of ever selecting anything again (the
+	// Outliner and viewport-click guards both key off that one flag) or let
+	// RebuildMeshEditPreviewIfNeeded silently overwrite an unrelated entity's
+	// Geometry with the old session's data.
+	void ValidateMeshEditSession()
+	{
+		if (!m_MeshEditActive)
+			return;
+
+		bool entityGone = !g_EditorScene.IsValid(m_MeshEditEntity);
+		bool selectionMovedAway = m_Selected != m_MeshEditEntity;
+
+		if (!entityGone && !selectionMovedAway)
+			return;
+
+		// Best-effort restore: if the entity we were editing still exists
+		// (just not what's selected anymore), put its real, on-disk mesh
+		// back rather than leaving it showing the abandoned live preview --
+		// same intent as the Cancel button, just targeting the tracked
+		// entity instead of whatever m_Selected happens to be now.
+		if (!entityGone)
+		{
+			if (auto* editedMesh = g_EditorScene.GetComponent<GS::MeshComponent>(m_MeshEditEntity))
+				editedMesh->Geometry = GS::MeshCache::Get(editedMesh->SourcePath);
+		}
+
+		m_MeshEditActive = false;
+		m_MeshEditSelectedPoint = -1;
+		m_MeshEditEntity = GS::InvalidEntity;
+	}
+
 	// Returns null when nothing is selected, which is why every caller checks
 	// -- there is no light to fall back to dragging here, unlike Cube3D's own
 	// version of this function.
@@ -1268,6 +1339,11 @@ private:
 	int m_MeshEditSelectedPoint = -1;
 	glm::vec3 m_MeshEditSessionWorldPoint{ 0.0f };
 	bool m_MeshEditPreviewDirty = false;
+	// Which entity the open session belongs to -- m_Selected can move to a
+	// different, still-valid entity out from under an open session (several
+	// Select() call sites elsewhere have no reason to know one is open), and
+	// this is what ValidateMeshEditSession checks against to catch that.
+	GS::EntityId m_MeshEditEntity = GS::InvalidEntity;
 
 	int m_HoverAxis = -1;
 	bool m_MouseDownLastFrame = false;
