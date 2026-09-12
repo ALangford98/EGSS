@@ -8,23 +8,33 @@
 // today). This bounces off the bottom too, so the ball just keeps playing
 // forever instead of ever being "lost".
 //
-// Reads globalThis.paddleX, written every tick by paddle.ts -- see that
-// file for why a plain JS global is the real channel available here, not a
-// native "query another entity" call.
+// The second (and last) script graduated to compiled C++ -- see
+// CompiledScriptRegistry.h. Rewritten the same way paddle.gss was: index
+// access (`pos[0]`) instead of array destructuring, and explicit `: number`
+// on every top-level let/const (a class member can't use C++'s `auto`).
+// Reads the paddle's X via scene.findByTag("Paddle").getPosition()[0] --
+// calling a transform getter on a *local* holding a found entity (not the
+// `entity` parameter itself) needed one small transpiler fix, made
+// alongside this: emitCall only ever recognized entity.getPosition() by
+// checking the identifier was literally named "entity"; it now applies the
+// same getter/setter mapping to any identifier, since GS::Entity::Get<T>()
+// works the same regardless of which variable holds the handle.
+const worldHalfWidth: number = 1.6;
+const worldHalfHeight: number = 0.9;
+const ballRadius: number = 0.028;
+const ballStartSpeed: number = 1.1;
+const paddleY: number = -0.75;
+const paddleFullWidth: number = 0.36;
+const paddleFullHeight: number = 0.045;
 
-const worldHalfWidth = 1.6;
-const worldHalfHeight = 0.9;
-const ballRadius = 0.028;
-const ballStartSpeed = 1.1;
-const paddleY = -0.75;
-const paddleFullWidth = 0.36;
-const paddleFullHeight = 0.045;
-
-let vx = ballStartSpeed * 0.45;
-let vy = ballStartSpeed;
+let vx: number = ballStartSpeed * 0.45;
+let vy: number = ballStartSpeed;
 
 function OnUpdate(dt: number) {
-    let [x, y, z] = entity.getPosition();
+    const pos = entity.getPosition();
+    let x: number = pos[0];
+    let y: number = pos[1];
+    const z = pos[2];
 
     x += vx * dt;
     y += vy * dt;
@@ -53,7 +63,8 @@ function OnUpdate(dt: number) {
 
     // --- Paddle collision, same box-overlap test as Breakout.h's
     // file-scope Overlaps(), same steer-by-hit-offset angling. -----------
-    const paddleX = typeof (globalThis as any).paddleX === "number" ? (globalThis as any).paddleX : 0;
+    const paddle = scene.findByTag("Paddle");
+    const paddleX = paddle ? paddle.getPosition()[0] : 0;
 
     const overlapsX = Math.abs(x - paddleX) * 2 < (ballRadius * 2 + paddleFullWidth);
     const overlapsY = Math.abs(y - paddleY) * 2 < (ballRadius * 2 + paddleFullHeight);

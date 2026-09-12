@@ -108,32 +108,35 @@ namespace GS {
 		m_VertexArray->SetIndexBuffer(indexBuffer);
 	}
 
-	Mesh* Mesh::Load(const std::string& path)
+	bool Mesh::LoadData(const std::string& path, MeshData& out, std::string& error)
 	{
-		MeshData data;
-		std::string error;
-
+		size_t dot = path.find_last_of('.');
+		std::string extension = dot == std::string::npos ? "" : path.substr(dot);
 		// Deliberately *not* routed to GltfLoader. A Mesh is one vertex array;
 		// a glTF is a tree of nodes, and flattening one into the other would
 		// throw away the hierarchy, the materials and the placements -- which
 		// is the entire reason to have used glTF. Better to say so than to
 		// hand back a heap of triangles that is technically the right shape.
-		size_t dot = path.find_last_of('.');
-		std::string extension = dot == std::string::npos ? "" : path.substr(dot);
 		if (extension == ".gltf" || extension == ".glb")
 		{
-			GS_CORE_ERROR("Mesh::Load cannot load '{0}': a glTF is a scene, not a mesh. "
-				"Use GltfLoader::Load and build a Mesh per GltfModel::Meshes entry.", path);
-			return nullptr;
+			error = std::string("cannot load '") + path + "': a glTF is a scene, not a mesh. Use GltfLoader::Load and build a Mesh per GltfModel::Meshes entry.";
+			return false;
 		}
 
-		if (!ObjLoader::Load(path, data, error))
+		return ObjLoader::Load(path, out, error);
+	}
+
+	Mesh* Mesh::Load(const std::string& path)
+	{
+		MeshData data;
+		std::string error;
+
+		if (!Mesh::LoadData(path, data, error))
 		{
-			GS_CORE_ERROR("Mesh::Load failed: {0}", error);
+			GS_CORE_ERROR("Mesh::Load {0}", error);
 			return nullptr;
 		}
 
-		// The file name alone, so a panel showing it stays readable.
 		size_t slash = path.find_last_of("/\\");
 		std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
 
@@ -143,7 +146,7 @@ namespace GS {
 		return new Mesh(data, name);
 	}
 
-	Mesh* Mesh::CreateCube(float size)
+	MeshData Mesh::CreateCubeData(float size)
 	{
 		float h = size * 0.5f;
 
@@ -184,10 +187,15 @@ namespace GS {
 		}
 
 		data.RecalculateBounds();
-		return new Mesh(data, "Cube");
+		return data;
 	}
 
-	Mesh* Mesh::CreatePlane(float size)
+	Mesh* Mesh::CreateCube(float size)
+	{
+		return new Mesh(CreateCubeData(size), "Cube");
+	}
+
+	MeshData Mesh::CreatePlaneData(float size)
 	{
 		float h = size * 0.5f;
 
@@ -201,10 +209,15 @@ namespace GS {
 		data.Indices = { 0, 1, 2, 2, 3, 0 };
 
 		data.RecalculateBounds();
-		return new Mesh(data, "Plane");
+		return data;
 	}
 
-	Mesh* Mesh::CreateSphere(float radius, unsigned int segments, unsigned int rings)
+	Mesh* Mesh::CreatePlane(float size)
+	{
+		return new Mesh(CreatePlaneData(size), "Plane");
+	}
+
+	MeshData Mesh::CreateSphereData(float radius, unsigned int segments, unsigned int rings)
 	{
 		if (segments < 3) segments = 3;
 		if (rings < 2) rings = 2;
@@ -267,10 +280,15 @@ namespace GS {
 		}
 
 		data.RecalculateBounds();
-		return new Mesh(data, "Sphere");
+		return data;
 	}
 
-	Mesh* Mesh::CreateCylinder(float radius, float halfHeight, unsigned int segments)
+	Mesh* Mesh::CreateSphere(float radius, unsigned int segments, unsigned int rings)
+	{
+		return new Mesh(CreateSphereData(radius, segments, rings), "Sphere");
+	}
+
+	MeshData Mesh::CreateCylinderData(float radius, float halfHeight, unsigned int segments)
 	{
 		if (segments < 3) segments = 3;
 
@@ -318,7 +336,12 @@ namespace GS {
 		}
 
 		data.RecalculateBounds();
-		return new Mesh(data, "Cylinder");
+		return data;
+	}
+
+	Mesh* Mesh::CreateCylinder(float radius, float halfHeight, unsigned int segments)
+	{
+		return new Mesh(CreateCylinderData(radius, halfHeight, segments), "Cylinder");
 	}
 
 }

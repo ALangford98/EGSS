@@ -12,6 +12,9 @@
 
 namespace GS {
 
+	std::string ImGuiLayer::s_FontPath;
+	float ImGuiLayer::s_FontSizePixels = 16.0f;
+
 	ImGuiLayer::ImGuiLayer()
 		: Layer("ImGuiLayer")
 	{
@@ -39,6 +42,24 @@ namespace GS {
 			io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
 		ImGui::StyleColorsDark();
+
+		// Real, chosen size and file -- not ImGui's compiled-in default
+		// (ProggyClean, ~13px), whose glyphs this project's own fixed-grid
+		// renderers (CellGrid, used by both the terminal and the text
+		// editor) draw at their reported line height with no extra margin.
+		// AddFontFromFileTTF failing (bad path, corrupt file) leaves
+		// io.Fonts with no font at all unless something adds one --
+		// AddFontDefault() covers that rather than silently rendering
+		// nothing.
+		if (!s_FontPath.empty())
+		{
+			ImFont* font = io.Fonts->AddFontFromFileTTF(s_FontPath.c_str(), s_FontSizePixels);
+			if (!font)
+			{
+				GS_CORE_WARN("ImGuiLayer: could not load font '{0}', falling back to the default", s_FontPath);
+				io.Fonts->AddFontDefault();
+			}
+		}
 
 		// A panel that has left the main window is an OS window, and an OS
 		// window with rounded corners and a translucent background shows the

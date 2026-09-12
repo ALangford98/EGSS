@@ -151,11 +151,20 @@ namespace GS {
 		template<typename T>
 		T& Add(const T& component = T()) { return m_Scene->AddComponent<T>(m_Id, component); }
 
+		// const: reading a component through a handle doesn't mutate the
+		// handle itself, and m_Scene being a pointer member means calling
+		// its own non-const GetComponent/HasComponent through it needs no
+		// further change here -- constness doesn't propagate through a
+		// pointer. Found needing this while compiling a generated script
+		// that called Get<>() on a `const GS::Entity` local (from
+		// scene.findByTag, itself declared `const` in the source GSS) --
+		// the compiler correctly refused a non-const method on a const
+		// object.
 		template<typename T>
-		T* Get() { return m_Scene->GetComponent<T>(m_Id); }
+		T* Get() const { return m_Scene->GetComponent<T>(m_Id); }
 
 		template<typename T>
-		bool Has() { return m_Scene->HasComponent<T>(m_Id); }
+		bool Has() const { return m_Scene->HasComponent<T>(m_Id); }
 
 		template<typename T>
 		void Remove() { m_Scene->RemoveComponent<T>(m_Id); }

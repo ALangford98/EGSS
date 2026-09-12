@@ -17,6 +17,7 @@
 #include <imgui.h>
 #include <fstream>
 #include <cctype>
+#include <cstring>
 
 #include "Demo.h"
 #include "DemoRegistry.h"
@@ -24,6 +25,7 @@
 #include "EditorHistory.h"
 #include "EditorSceneView.h"
 #include "EditorShell.h"
+#include "FileBrowserPopup.h"
 #include "PlayMode.h"
 
 class EditorMenuBar : public GS::Layer
@@ -54,7 +56,11 @@ public:
 
 			if (e.GetKeyCode() == GS_KEY_Z) { DoUndo(); return true; }
 			if (e.GetKeyCode() == GS_KEY_Y) { DoRedo(); return true; }
-			if (e.GetKeyCode() == GS_KEY_F) { m_FindRequested = true; return true; }
+			// Not while the text editor itself is focused -- it has its own
+			// Ctrl+F (find text, not find entity), checked by polling
+			// rather than this event dispatch, and g_TextEditorFocused is
+			// what keeps the two from both firing off the same keypress.
+			if (e.GetKeyCode() == GS_KEY_F && !g_TextEditorFocused) { m_FindRequested = true; return true; }
 
 			return false;
 		});
@@ -177,6 +183,20 @@ private:
 		ImGui::EndMenu();
 	}
 
+	// One InputText + one "Browse..." button, shared by all three project
+	// dialogs below rather than repeated three times -- Browse opens
+	// m_FolderBrowser rooted at whatever's already typed (or the working
+	// directory if that's empty or not a real folder; FileBrowserPopup::Open
+	// falls back to that itself), so re-opening it narrows from wherever
+	// the field already points instead of restarting from scratch.
+	void DrawFolderField()
+	{
+		ImGui::InputText("Folder", m_DialogPath, sizeof(m_DialogPath));
+		ImGui::SameLine();
+		if (ImGui::Button("Browse...##folder"))
+			m_FolderBrowser.Open("Choose Project Folder", FileBrowserPopup::Mode::PickFolder, m_DialogPath);
+	}
+
 	void DrawFileDialogs()
 	{
 		if (m_PendingPopup)
@@ -187,7 +207,7 @@ private:
 
 		if (ImGui::BeginPopupModal("New Project", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 		{
-			ImGui::InputText("Folder", m_DialogPath, sizeof(m_DialogPath));
+			DrawFolderField();
 			ImGui::InputText("Name", m_DialogName, sizeof(m_DialogName));
 			if (ImGui::Button("Create") && CreateEditorProject(m_DialogPath, m_DialogName))
 			{
@@ -202,7 +222,7 @@ private:
 
 		if (ImGui::BeginPopupModal("Open Project", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 		{
-			ImGui::InputText("Folder", m_DialogPath, sizeof(m_DialogPath));
+			DrawFolderField();
 			if (ImGui::Button("Open"))
 			{
 				bool opened = OpenEditorProject(m_DialogPath);
@@ -224,7 +244,7 @@ private:
 
 		if (ImGui::BeginPopupModal("Save Project As", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 		{
-			ImGui::InputText("Folder", m_DialogPath, sizeof(m_DialogPath));
+			DrawFolderField();
 			ImGui::InputText("Name", m_DialogName, sizeof(m_DialogName));
 			if (ImGui::Button("Save") && SaveEditorProjectAs(m_DialogPath, m_DialogName))
 				ImGui::CloseCurrentPopup();
@@ -244,6 +264,20 @@ private:
 				ImGui::CloseCurrentPopup();
 			ImGui::EndPopup();
 		}
+
+		// Drawn once here rather than three times (one per dialog above) --
+		// only one of New/Open/Save-As can be open at a time anyway (they're
+		// all modals), so one shared browser and one shared result-apply is
+		// enough. Runs after every "if BeginPopupModal" block above so a
+		// Browse click made this frame still reaches ImGui::OpenPopup before
+		// the frame ends.
+		if (m_FolderBrowser.HasResult())
+		{
+			std::string picked = m_FolderBrowser.TakeResult();
+			strncpy(m_DialogPath, picked.c_str(), sizeof(m_DialogPath) - 1);
+			m_DialogPath[sizeof(m_DialogPath) - 1] = '\0';
+		}
+		m_FolderBrowser.Draw();
 	}
 
 	void DrawEditMenu()
@@ -487,6 +521,7 @@ private:
 private:
 	char m_DialogPath[256] = "";
 	char m_DialogName[128] = "";
+	FileBrowserPopup m_FolderBrowser;
 	char m_FindQuery[128] = "";
 	bool m_FindRequested = false;
 	// OpenPopup must run at the same ID-stack scope as the matching

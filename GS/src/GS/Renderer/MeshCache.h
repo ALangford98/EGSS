@@ -32,6 +32,14 @@ namespace GS {
 		// for the cached meshes' glDeleteVertexArrays/glDeleteBuffers calls
 		// to be well-defined.
 		static void Clear();
+
+		// Every mesh currently cached -- for a caller that wants to add up
+		// counts or sizes across all of them (the Profiler's asset stats,
+		// say) without this class needing an opinion on what "size" means
+		// for a mesh. A snapshot copy of the shared_ptrs, not a reference to
+		// the store itself, so it's safe to walk even if something else
+		// loads or Clear()s the cache while it's held.
+		static std::vector<std::shared_ptr<Mesh>> All();
 	};
 
 }

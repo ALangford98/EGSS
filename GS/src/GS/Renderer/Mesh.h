@@ -100,6 +100,9 @@ namespace GS {
 	public:
 		explicit Mesh(const MeshData& data, const std::string& name = "Mesh");
 
+		// Same as Load, minus the GPU upload and the "not a Mesh" glTF
+		// rejection's log line (the caller decides what to do with `error`).
+		static bool LoadData(const std::string& path, MeshData& out, std::string& error);
 		// Loads an .obj. Returns nullptr and logs on failure rather than
 		// throwing, since a missing model should not take the program with it.
 		static Mesh* Load(const std::string& path);
@@ -107,15 +110,27 @@ namespace GS {
 		// --- Primitives -------------------------------------------------
 		// Built rather than loaded, so a demo needs no asset files.
 
+		// Same geometry as CreateCube, minus the GPU upload -- the raw data
+		// Mesh's own constructor would otherwise consume and discard.
+		// Mesh authoring pulls this back out to build an editable topology
+		// from a mesh that's already been placed.
+		static MeshData CreateCubeData(float size = 1.0f);
 		// 24 vertices, not 8: a cube corner has three different normals
 		// depending on which face you are on, and a vertex carries one.
 		static Mesh* CreateCube(float size = 1.0f);
+
+		static MeshData CreatePlaneData(float size = 1.0f);
 		// Facing +Y, so it works as a floor.
 		static Mesh* CreatePlane(float size = 1.0f);
+
+		static MeshData CreateSphereData(float radius = 0.5f,
+			unsigned int segments = 32, unsigned int rings = 16);
 		// UV sphere. Segments run around the equator, rings from pole to pole.
 		static Mesh* CreateSphere(float radius = 0.5f,
 			unsigned int segments = 32, unsigned int rings = 16);
 
+		static MeshData CreateCylinderData(float radius = 0.5f, float halfHeight = 0.5f,
+			unsigned int segments = 24);
 		// A tube about the **y** axis, open at both ends, from -halfHeight to
 		// +halfHeight. No caps, because the one thing this exists for is the
 		// shaft of a capsule, whose ends are covered by hemispheres.

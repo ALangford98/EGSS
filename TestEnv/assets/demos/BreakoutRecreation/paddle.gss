@@ -3,22 +3,32 @@
 // s_PaddleSize, and the half-width that falls out of its 16:9 default
 // window: s_WorldHalfHeight * aspect).
 //
-// Writes its own X position to a plain global each tick. The current
-// scripting API has no way for one entity's script to read another
-// entity's Transform ("querying other entities" is on the entity-scripting
-// spec's own deferred list), so this is the one channel actually available:
-// every entity's script runs in the same shared QuickJS context for the
-// length of one Play session (PlayMode::s_ScriptEngine is a single
-// instance, not one per entity), which makes an ordinary JS global a real,
-// already-existing line between two scripts -- not a new native binding.
-// ball.ts reads it to do the paddle-collision check Breakout.h itself does.
-
-const paddleSpeed = 2.2;
-const paddleHalfWidth = 0.18;   // s_PaddleSize.x * 0.5
-const worldHalfWidth = 1.6;     // s_WorldHalfHeight (0.9) * the 16:9 default aspect
+// Rewritten to fit the GSS-to-C++ transpiler's supported subset (see
+// docs/superpowers/specs/2026-09-11-gss-to-cpp-transpiler-design.md) so this
+// is the entity graduated to compiled C++ -- CompiledScriptRegistry.h names
+// it, so PlayMode runs GeneratedScripts::Paddle natively and never
+// interprets this file's text for the "Paddle" entity anymore. Two changes
+// from the original: explicit `: number` on every top-level const (a class
+// member can't use C++'s `auto`), and index access (`pos[0]`) instead of
+// array destructuring (unsupported at all, mechanical or not). It no longer
+// writes `globalThis.paddleX` -- that bridge has no compiled equivalent, and
+// ball.gss now reads this entity's position the "real" way instead,
+// scene.findByTag("Paddle"), which is why removing the write doesn't lose
+// anything: ball.gss is the only reader and it changed to match.
+const paddleSpeed: number = 2.2;
+const paddleHalfWidth: number = 0.18;   // s_PaddleSize.x * 0.5
+const worldHalfWidth: number = 1.6;     // s_WorldHalfHeight (0.9) * the 16:9 default aspect
 
 function OnUpdate(dt: number) {
-    let [x, y, z] = entity.getPosition();
+    const pos = entity.getPosition();
+    // Explicitly typed, not `auto`-deduced from pos[0]: pos is a glm::vec3,
+    // so an untyped local here would come out `float`, and std::min/max
+    // (Math.min/max below) refuse to compare a float against paddleSpeed
+    // and worldHalfWidth's `double` -- a real transpile-time error this
+    // graduation surfaced, not a guess.
+    let x: number = pos[0];
+    const y = pos[1];
+    const z = pos[2];
 
     if (input.isKeyDown("LEFT") || input.isKeyDown("A"))
         x -= paddleSpeed * dt;
@@ -29,11 +39,4 @@ function OnUpdate(dt: number) {
     x = Math.max(-limit, Math.min(limit, x));
 
     entity.setPosition(x, y, z);
-
-    (globalThis as any).paddleX = x;
-}
-
-function OnStart() {
-    const [x, y, z] = entity.getPosition();
-    (globalThis as any).paddleX = x;
 }

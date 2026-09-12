@@ -15,10 +15,12 @@
 #include <GS.h>
 #include <imgui.h>
 #include <cstring>
+#include <filesystem>
 
 #include "Demo.h"
 #include "EditorHistory.h"
 #include "EditorProject.h"
+#include "FileBrowserPopup.h"
 #include "PlayMode.h"
 
 // Forward-declared so it can be set from OnAttach() below: a member function
@@ -95,6 +97,7 @@ public:
 		GS::Renderer2D::BeginScene(ActiveCamera());
 		DrawSelectionBox();
 		DrawCameraRays();
+		DrawLightGizmos();
 		if (m_ShowGizmo)
 			DrawGizmo();
 		GS::Renderer2D::EndScene();
@@ -180,8 +183,52 @@ public:
 			return;
 		}
 
+		// The editable ID a script references this entity by --
+		// GS::TagComponent::Name, already what scene.findByTag(name) looks
+		// up (Breakout's recreation already relies on exactly this: "tag
+		// Paddle"/"tag Ball" in scene.txt, scene.findByTag("Paddle") in
+		// ball.gss). Not a second, parallel ID system -- one already
+		// existed, serialized and resolvable, and simply had no Inspector
+		// field to edit it from; every entity kept whatever default name
+		// (PlaceEntityCommand's default: "Cube", "Light", ...) it was given
+		// at creation, with no way to rename it afterward short of hand-
+		// editing scene.txt. No uniqueness is enforced here, same as
+		// before this change -- scene.findByTag already just returns the
+		// first match, so two entities sharing a name means whichever a
+		// script asks for, it gets the earlier one silently. Disclosed,
+		// not fixed: enforcing it is a bigger, separate feature nobody
+		// asked for.
 		if (auto* tag = g_EditorScene.GetComponent<GS::TagComponent>(m_Selected))
-			ImGui::Text("%s  (id %u)", tag->Name.c_str(), m_Selected);
+		{
+			char nameBuf[256];
+			strncpy(nameBuf, tag->Name.c_str(), sizeof(nameBuf) - 1);
+			nameBuf[sizeof(nameBuf) - 1] = '\0';
+
+			ImGui::PushItemWidth(160.0f);
+			if (ImGui::InputText("ID##entityname", nameBuf, sizeof(nameBuf)))
+				tag->Name = nameBuf;
+			ImGui::PopItemWidth();
+			if (ImGui::IsItemActivated())
+				m_EditBeforeString = tag->Name;
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::TagComponent, std::string>>(
+					m_Selected, &GS::TagComponent::Name, m_EditBeforeString, tag->Name));
+
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Copy"))
+				ImGui::SetClipboardText(tag->Name.c_str());
+			ImGui::SameLine();
+			ImGui::TextDisabled("scene.findByTag(\"%s\")", tag->Name.c_str());
+
+			// Checked, not assumed: Scene::Load always Clear()s first and
+			// recreates entities in file order from scratch, so the handle
+			// (slot index + generation) only reproduces identically across
+			// a Save/Load round trip when nothing was created or destroyed
+			// in between -- which describes most real editing sessions
+			// (undo/redo, scene.spawn/destroy during Play, a deleted-then-
+			// replaced entity). The ID above is what stays put regardless.
+			ImGui::TextDisabled("entity handle %u -- can change after a Save/Load if anything was created or destroyed first", m_Selected);
+		}
 
 		if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected))
 		{
@@ -284,6 +331,18 @@ public:
 			pathBuf[sizeof(pathBuf) - 1] = '\0';
 			if (ImGui::InputText("##scriptpath", pathBuf, sizeof(pathBuf)))
 				script->ScriptPath = pathBuf;
+			ImGui::SameLine();
+			// Rooted at the open project's folder (falls back to the
+			// working directory itself if none is open) -- that's a real
+			// path only relative to the working directory, per how
+			// ScriptEngine/PlayMode actually open it (a plain
+			// std::ifstream against ScriptPath, no project-folder prefix),
+			// which is why the result is converted back to that below
+			// rather than kept as the absolute path the browser picked it
+			// with.
+			if (ImGui::Button("Browse...##script"))
+				m_ScriptBrowser.Open("Choose Script", FileBrowserPopup::Mode::PickFile,
+					g_EditorProjectPath.empty() ? "." : g_EditorProjectPath, ".gss");
 			if (ImGui::Button("Remove Script"))
 				g_EditorScene.RemoveComponent<GS::ScriptComponent>(m_Selected);
 		}
@@ -292,6 +351,18 @@ public:
 			if (ImGui::Button("Add Script"))
 				g_EditorScene.AddComponent<GS::ScriptComponent>(m_Selected, GS::ScriptComponent{});
 		}
+
+		if (m_ScriptBrowser.HasResult())
+		{
+			std::string picked = m_ScriptBrowser.TakeResult();
+			if (auto* script = g_EditorScene.GetComponent<GS::ScriptComponent>(m_Selected))
+			{
+				std::error_code ec;
+				std::filesystem::path relative = std::filesystem::relative(picked, std::filesystem::current_path(ec), ec);
+				script->ScriptPath = (ec || relative.empty()) ? picked : relative.generic_string();
+			}
+		}
+		m_ScriptBrowser.Draw();
 
 		if (ImGui::Button("Delete"))
 			m_Selected = EditorHistory::Push(std::make_unique<DeleteEntityCommand>(m_Selected));
@@ -317,11 +388,17 @@ private:
 		m_BlitCamera.SetProjection(-1.0f, 1.0f, -1.0f, 1.0f);
 	}
 
-	// Same shader Cube3D built -- a lit, textured mesh with a picking output
-	// -- minus the point light this view has no gizmo-draggable light for.
-	// Ambient-only lighting is enough to tell shapes apart; a light entity is
-	// exactly the kind of thing a scene *places* rather than the view owning
-	// one permanently.
+	// Cube3D's own point-light math (attenuation, Lambert diffuse, Blinn-
+	// Phong specular -- see its BuildShader for the derivation of each term)
+	// summed over however many enabled GS::LightComponent entities the scene
+	// actually has, rather than Cube3D's one hardcoded light -- a scene
+	// *places* lights, the view doesn't own one permanently. u_AmbientStrength
+	// is higher than Cube3D's default (0.10): Cube3D always has exactly one
+	// light: an editor scene can have zero, and 10% brightness with nothing
+	// placed would read as "broken," not "unlit." No u_Texture -- nothing in
+	// EditorSceneView's own placement flow (PlaceEntityCommand's primitives)
+	// sets MaterialsFromFile, so every submesh here is flat-colored; Cube3D's
+	// gltf/obj-loaded path is the only one that needs a sampler.
 	void BuildShader()
 	{
 		std::string vertexSrc = R"(
@@ -331,11 +408,14 @@ private:
 			layout(location = 2) in vec2 a_TexCoord;
 			uniform mat4 u_ViewProjection;
 			uniform mat4 u_Transform;
+			out vec3 v_WorldPosition;
 			out vec3 v_Normal;
 			void main()
 			{
+				vec4 world = u_Transform * vec4(a_Position, 1.0);
+				v_WorldPosition = world.xyz;
 				v_Normal = mat3(u_Transform) * a_Normal;
-				gl_Position = u_ViewProjection * u_Transform * vec4(a_Position, 1.0);
+				gl_Position = u_ViewProjection * world;
 			}
 		)";
 
@@ -343,19 +423,84 @@ private:
 			#version 330 core
 			layout(location = 0) out vec4 color;
 			layout(location = 1) out int entityID;
+			in vec3 v_WorldPosition;
 			in vec3 v_Normal;
 			uniform vec4 u_Color;
 			uniform int u_EntityID;
+
+			const int MAX_LIGHTS = 8;
+			uniform int u_LightCount;
+			uniform vec3 u_LightPositions[MAX_LIGHTS];
+			uniform vec3 u_LightColors[MAX_LIGHTS];
+			uniform float u_LightRanges[MAX_LIGHTS];
+			uniform vec3 u_CameraPosition;
+			uniform float u_AmbientStrength;
+
 			void main()
 			{
-				float shade = 0.5 + 0.5 * max(dot(normalize(v_Normal), normalize(vec3(0.4, 1.0, 0.6))), 0.0);
-				color = vec4(u_Color.rgb * shade, u_Color.a);
+				vec3 normal = normalize(v_Normal);
+				vec3 toEye  = normalize(u_CameraPosition - v_WorldPosition);
+				vec3 base   = u_Color.rgb;
+
+				vec3 lit = base * u_AmbientStrength;
+				for (int i = 0; i < u_LightCount; i++)
+				{
+					vec3 lightVector    = u_LightPositions[i] - v_WorldPosition;
+					float lightDistance = length(lightVector);
+					vec3 toLight        = lightVector / max(lightDistance, 0.0001);
+
+					float attenuation = 1.0 / (1.0 + 0.08 * lightDistance * lightDistance);
+					attenuation *= clamp(1.0 - lightDistance / max(u_LightRanges[i], 0.0001), 0.0, 1.0);
+
+					float diffuse = max(dot(normal, toLight), 0.0);
+
+					vec3 halfway   = normalize(toLight + toEye);
+					float specular = pow(max(dot(normal, halfway), 0.0), 48.0);
+
+					lit += base * diffuse * u_LightColors[i] * attenuation
+					     + specular * u_LightColors[i] * attenuation * 0.35;
+				}
+
+				color = vec4(lit, u_Color.a);
 				entityID = u_EntityID;
 			}
 		)";
 
 		m_Shader.reset(GS::Shader::Create("EditorSceneView", vertexSrc, fragmentSrc));
 		m_SceneMaterial = GS::Material::Create(m_Shader);
+	}
+
+	// Scene-wide (base-material) uniforms every submesh inherits: which
+	// enabled lights exist, where the camera is (for specular), and the
+	// ambient floor. Capped at 8 -- an editor scene has never needed more,
+	// and there's no light-culling here to make a higher cap free.
+	void UploadLights()
+	{
+		constexpr int kMaxLights = 8;
+		auto& lights = g_EditorScene.View<GS::LightComponent>();
+
+		int count = 0;
+		for (size_t i = 0; i < lights.Size() && count < kMaxLights; i++)
+		{
+			GS::LightComponent& light = lights.Components()[i];
+			if (!light.Enabled)
+				continue;
+
+			GS::EntityId owner = lights.Owner(i);
+			auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(owner);
+			if (!transform)
+				continue;
+
+			std::string index = std::to_string(count);
+			m_SceneMaterial->Set("u_LightPositions[" + index + "]", transform->Position);
+			m_SceneMaterial->Set("u_LightColors[" + index + "]", glm::vec3(light.Color));
+			m_SceneMaterial->Set("u_LightRanges[" + index + "]", light.Radius);
+			count++;
+		}
+
+		m_SceneMaterial->Set("u_LightCount", count);
+		m_SceneMaterial->Set("u_CameraPosition", ActiveCamera().GetPosition());
+		m_SceneMaterial->Set("u_AmbientStrength", m_AmbientStrength);
 	}
 
 	// While Playing, an entity's `CameraComponent::Active` should be what
@@ -400,6 +545,7 @@ private:
 	void RenderMeshes()
 	{
 		GS::Renderer::BeginScene(ActiveCamera());
+		UploadLights();
 
 		auto& meshes = g_EditorScene.View<GS::MeshComponent>();
 
@@ -548,6 +694,33 @@ private:
 
 			glm::vec4 color(0.9f, 0.9f, 0.95f, 1.0f);
 			GS::Renderer2D::DrawLine(origin, tip, color);
+		}
+	}
+
+	// A placed Light entity has no mesh (PlaceLight's own comment: "nothing
+	// to resolve through MeshCache"), and until now had no gizmo either --
+	// it was genuinely invisible in the viewport once deselected. A small
+	// axis-aligned "plus" through its position, tinted by its own colour
+	// (dimmed if disabled), is enough to find it -- same reasoning and the
+	// same Renderer2D::DrawLine mechanism DrawCameraRays already uses.
+	void DrawLightGizmos()
+	{
+		auto& lights = g_EditorScene.View<GS::LightComponent>();
+
+		for (size_t i = 0; i < lights.Size(); i++)
+		{
+			GS::LightComponent& light = lights.Components()[i];
+			GS::EntityId entity = lights.Owner(i);
+			auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(entity);
+			if (!transform)
+				continue;
+
+			glm::vec3 p = transform->Position;
+			glm::vec4 color = light.Enabled ? light.Color : glm::vec4(0.4f, 0.4f, 0.4f, 1.0f);
+			constexpr float s = 0.15f;
+			GS::Renderer2D::DrawLine(p - glm::vec3(s, 0.0f, 0.0f), p + glm::vec3(s, 0.0f, 0.0f), color);
+			GS::Renderer2D::DrawLine(p - glm::vec3(0.0f, s, 0.0f), p + glm::vec3(0.0f, s, 0.0f), color);
+			GS::Renderer2D::DrawLine(p - glm::vec3(0.0f, 0.0f, s), p + glm::vec3(0.0f, 0.0f, s), color);
 		}
 	}
 
@@ -804,6 +977,11 @@ private:
 
 	std::shared_ptr<GS::Shader> m_Shader;
 	std::shared_ptr<GS::Material> m_SceneMaterial;
+	// See BuildShader's comment: higher than Cube3D's 0.10 default because a
+	// scene here can have zero placed lights, where Cube3D always has one.
+	float m_AmbientStrength = 0.25f;
+
+	FileBrowserPopup m_ScriptBrowser;
 
 	GS::EntityId m_Selected = GS::InvalidEntity;
 	GS::EntityId m_Hovered = GS::InvalidEntity;
@@ -821,6 +999,7 @@ private:
 	glm::vec4 m_EditBeforeVec4{ 0.0f };
 	bool m_EditBeforeBool = false;
 	float m_EditBeforeFloat = 0.0f;
+	std::string m_EditBeforeString;
 	int m_HoverAxis = -1;
 	bool m_MouseDownLastFrame = false;
 	float m_DragStartT = 0.0f;

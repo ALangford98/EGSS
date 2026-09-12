@@ -6,6 +6,8 @@
 #include "GS/Events/KeyEvent.h"
 #include "GS/Events/MouseEvent.h"
 
+#include <string>
+
 namespace GS {
 
 	// Pushed as an overlay by Application, so it sits above every game layer
@@ -43,10 +45,27 @@ namespace GS {
 		// coordinate space.
 		void EnableViewports(bool enable) { m_ViewportsEnabled = enable; }
 		bool ViewportsEnabled() const { return m_ViewportsEnabled; }
+
+		// A real font instead of ImGui's tiny compiled-in default
+		// (ProggyClean) -- static, not an instance setter, because
+		// ImGuiLayer is constructed and attached inside Application's own
+		// constructor, before the owning app's constructor body (the
+		// earliest an instance method could be called) ever runs. The one
+		// place early enough is GS::CreateApplication() itself, before
+		// `new <App>()`. Empty path (the default) changes nothing -- every
+		// other engine user keeps today's font.
+		static void SetFontPath(const std::string& path, float sizePixels = 16.0f)
+		{
+			s_FontPath = path;
+			s_FontSizePixels = sizePixels;
+		}
 	private:
 		bool m_BlockEvents = true;
 		bool m_DockspaceEnabled = true;
 		bool m_ViewportsEnabled = false;
+
+		static std::string s_FontPath;
+		static float s_FontSizePixels;
 	};
 
 }

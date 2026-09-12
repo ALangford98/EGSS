@@ -38,6 +38,418 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
+- **`ball.gss` graduated to compiled C++ -- the second and, for now, last
+  script to (BreakoutRecreation's only other one).** Requested as "graduate
+  the rest of the demos in order"; asked which of two readings that meant
+  (there being only one remaining `.gss` file made "in order" ambiguous
+  against the other candidate, giving every demo `OnExportToScene`
+  support) and confirmed it meant this one.
+  **Two real, load-bearing findings, both fixed rather than worked
+  around**: (1) `ball.gss` read the paddle's position via `scene.
+  findByTag("Paddle").getPosition()[0]` -- calling a transform getter on
+  a *local* holding a found entity, not the `entity` parameter itself.
+  The transpiler's `emitCall` only ever recognized `entity.getPosition()`
+  by checking the callee object was literally the identifier `entity`;
+  it now applies the same getter/setter mapping to any identifier, since
+  `GS::Entity::Get<T>()` works the same regardless of which variable
+  holds the handle -- mechanical, not semantic, same trust this file's
+  identifier-call handling already places in a plausible name elsewhere.
+  (2) The syntax-check step then caught a genuine **engine**
+  const-correctness bug: `scene.findByTag` is declared with `const` in
+  the GSS (`const paddle = ...`), which becomes a real `const GS::Entity`
+  in the generated C++ -- and `GS::Entity::Get<T>()`/`Has<T>()` were never
+  marked `const`, so calling either on a const handle failed to compile.
+  Fixed in `GS/src/GS/Scene/Scene.h`: both are `const` now (safe --
+  `m_Scene` is a pointer member, so constness doesn't propagate through it
+  to `Scene::GetComponent`/`HasComponent`, which still need to stay
+  non-const since they can lazily allocate a component store).
+  Verified: a temporary self-test (5/5) using only externally observable
+  `TransformComponent` data (vx/vy are private members of the compiled
+  class now, invisible from outside) -- a wall bounce confirmed by x
+  clamping exactly at `worldHalfWidth-ballRadius` then *decreasing* the
+  next tick (proving vx actually flipped sign, not just that x stopped
+  moving); a paddle catch confirmed the same way -- a hand-timed ceiling
+  bounce, a hand-timed fall to the paddle's row, the paddle placed
+  directly under the ball via a plain Transform write (no script
+  involved), then a check that y rose on the following tick instead of
+  continuing to fall, which only happens if the compiled `Ball` actually
+  read the compiled `Paddle`'s live position through `scene.findByTag` and
+  bounced off it -- the one genuinely new risk in this graduation, not
+  just re-proving math that was already correct when this file was
+  interpreted. Also confirmed visually: the real project, both scripts
+  now compiled, run for 25 fixed steps with no error, the ball visibly
+  moving under its own independent physics. Clean three-config build and
+  a byte-identical Cube3D `--hide-ui` capture. All temporary
+  test/generation scaffolding removed afterward; `ball.cpp` and its
+  registry entry are the real, permanent artifacts, alongside the
+  `emitCall`/`Entity::Get`/`Has` fixes.
+- **The Inspector's ID field, requested 2026-09-11, queued behind the
+  static-link execution work and the four "make the engine usable"
+  sub-projects, both since finished.** Design question it was queued
+  with -- "entity handle vs. a user-editable string name" -- resolved in
+  favor of the string: `GS::TagComponent::Name` already existed, was
+  already what `scene.findByTag(name)` resolves by (Breakout's
+  recreation already depends on exactly this), and was already
+  serialized -- it just had no Inspector field to edit it from. Every
+  entity kept whatever default name `PlaceEntityCommand` gave it at
+  creation ("Cube", "Light", ...) with no way to rename it short of
+  hand-editing `scene.txt`. Building a second, parallel ID system next to
+  one that already solved the same problem would have been exactly the
+  duplicate machinery this project's own conventions warn against.
+  `EditorSceneView`'s Inspector now shows an editable `InputText` labeled
+  "ID" (undo-tracked through the same `EditFieldCommand` template every
+  other field already uses -- confirmed it works for a `std::string`
+  field, not just the `float`/`vec3`/`vec4`/`bool` ones it had been used
+  for so far), a "Copy" button next to it (`SetClipboardText`, so the
+  exact string can be pasted straight into a script), a live
+  `scene.findByTag("<name>")` hint showing the call that would find this
+  entity, and the raw entity handle underneath for reference.
+  **Explicitly not built, and disclosed rather than silently left out**:
+  no uniqueness is enforced on the name -- `scene.findByTag` already just
+  returns the first match by a linear scan, so two entities sharing a
+  name means a script asking for either gets the earlier one silently;
+  fixing that is a separate, bigger feature nobody asked for.
+  **A claim checked before it went in the UI, not assumed**: the disclosed
+  caveat text originally said the entity handle is "not stable across a
+  Save/Load" -- reading `Scene::Load`'s actual implementation first
+  showed that's only true when something was created or destroyed
+  in between (`Load` always `Clear()`s and recreates entities in file
+  order from scratch, so a churn-free round trip is actually
+  deterministic) -- corrected to say precisely that, rather than ship an
+  overbroad claim that happened to sound right.
+  Verified: a temporary self-test (5/5) confirmed the rename applies,
+  undoes, and redoes correctly, and that the renamed value is exactly what
+  a `scene.findByTag` linear scan would match against. The Inspector UI
+  itself was confirmed with a real capture (`BreakoutRecreation`'s
+  "Paddle" entity force-selected) showing the ID field pre-filled,
+  editable, with the Copy button and handle caveat both rendering
+  correctly. Clean three-config build and a byte-identical Cube3D
+  `--hide-ui` capture (Inspector UI only, no demo-layer or rendering path
+  touched).
+- **Profiler → friendly stats -- last of the four "make the engine usable"
+  sub-projects; all four are now landed** (lighting, project I/O, text
+  editor above, this one). `ProfilerPanel` gained an "Overview" tab (opens
+  first) showing FPS (smoothed over the last 60 frames -- reads the same
+  "Frame" scope entry the existing frame-time line already did, not
+  `Instrumentor::GetLastFrameMicros()`, which is documented as summing
+  every nested scope and is explicitly not "time in the frame"), process
+  memory (`/proc/self/status`'s `VmRSS`, Linux-only -- this repo only
+  targets Linux), draw calls and triangle count (`GS::Renderer`/
+  `Renderer2D::GetStats()`, which already existed and were already
+  correct, just never surfaced here), and cached-mesh count/size (a new
+  `MeshCache::All()` enumeration -- a thin snapshot of the existing store,
+  not new tracking -- times each `Mesh`'s own already-tracked vertex/
+  triangle counts). The old detailed scope table, frame/swap breakdown and
+  trace-capture button all still exist, moved under a second "Advanced"
+  tab rather than deleted -- still genuinely useful for tracking down what
+  got slow, which "FPS: 62" alone can't answer.
+  **A real gap found and fixed along the way, not just used as-is**:
+  `Renderer`/`Renderer2D::GetStats()` were only ever reset by whichever
+  demo happened to call `ResetStats()` itself at the top of its own
+  `OnUpdate` (about half of them do) -- anything else, including the
+  editor's own `EditorSceneView` scene rendering, had no reset at all, so
+  reading the counters there would only ever have grown, never reflecting
+  one real frame. `ProfilerPanel` now resets both right after reading them
+  each frame, which is safe with the demos that already reset (confirmed:
+  they read `GetStats()` from their own `OnImGuiRender`, which -- push
+  order -- runs before `ProfilerPanel`'s does, so both see the same
+  frame's true total before this reset clears it for the next one) and is
+  what gives every other case a real number for the first time.
+  **Explicitly not attempted, and why, checked rather than assumed**: no
+  texture or audio number is shown -- neither has a cache or registry
+  anywhere in this engine to enumerate (confirmed: `Texture2D::Create`
+  has no dedup/registry the way `MeshCache` does for meshes, and
+  `AudioEngine` has no clip cache either), so counting either would mean
+  building new tracking infrastructure, not just a display change --
+  out of scope for what was asked here.
+  Verified: the Overview tab's numbers were sanity-checked against Cube3D
+  (a known, small scene) -- draw calls, triangle count and mesh count all
+  came back as plausible, small numbers, not zero or something obviously
+  wrong; the Advanced tab was confirmed (via a temporary forced-tab-
+  selection capture, since removed) to still show its full original
+  content unchanged under the new tab structure. Clean three-config build
+  and a byte-identical Cube3D `--hide-ui` capture (the whole panel is
+  ImGui-only).
+- **The embedded text editor: mouse support, a full set of standard
+  keyboard shortcuts, and a real font -- third of the four "make the
+  engine usable" sub-projects, landed in ranked order after lighting and
+  project I/O (see those entries below).**
+  **Mouse support, the single biggest gap named when this was scoped**:
+  `TextBuffer::MoveTo(row, col, extend)` is the one new entry point --
+  clamps both into range (a click past the last line or a short line's own
+  end lands at the nearest valid position rather than being rejected), then
+  reuses the exact same `BeginOrExtendSelection` path every keyboard `Move*`
+  already goes through, so there is exactly one place selection state is
+  touched no matter which input drove it. `TextEditorPanel::HandleMouse`
+  drives it: a click (gated on `IsWindowHovered`, not just focus) positions
+  the cursor and starts a drag; held-down frames after that keep extending
+  regardless of hover (`m_MouseDragging`, not a re-check of hover, is what
+  lets a fast drag keep working even if the cursor briefly slips outside
+  the window); Shift+click extends the existing selection instead of
+  starting a new one. `MouseToCell` converts screen space using the exact
+  same origin `CellGrid::Render()` independently recomputes from
+  `GetCursorScreenPos()` -- captured at the identical point in the frame
+  for that reason.
+  **Keyboard, all requested**: Ctrl+Left/Right (`MoveWordLeft/Right` --
+  skip a whitespace run, then a run of "the same character category",
+  matching Ctrl+arrow in most editors); Ctrl+Alt+Up/Down
+  (`DuplicateLines`, selection- or current-line-aware, lands the
+  cursor/selection on the *new* copy so repeated presses stack more of
+  them); Ctrl+Enter / Shift+Enter (`InsertLineBelow`/`InsertLineAbove` --
+  a blank, indent-matched line without splitting the current one, unlike a
+  plain Enter); Alt+Up/Down (`MoveLinesUp/Down`, block-aware -- a whole
+  multi-line selection travels together, not just the cursor's own line);
+  Ctrl+F / Ctrl+R (a find bar, described below); Ctrl+Home/End
+  (`MoveDocumentStart/End`). **Bells and whistles beyond the literal
+  ask, because leaving them out would have made the rest feel
+  half-finished**: Tab with a selection now indents every touched line
+  (`IndentSelection`) instead of replacing the selection with a literal
+  tab; Shift+Tab (`OutdentSelection`) removes up to 4 leading spaces (or
+  one leading tab) from the current line or every selected one, each
+  independently since a shallow line has less to give up than a deep one.
+  **A real, pre-existing collision found and fixed getting Ctrl+F
+  wired up**: `EditorMenuBar.h` already owns Ctrl+F for an unrelated
+  feature ("Find Entity", searching the scene by tag) via its own
+  event-dispatch handler, which had no idea which panel was actually
+  focused -- pressing Ctrl+F while typing in the text editor would have
+  opened *both* popups at once. Fixed with a small new global,
+  `g_TextEditorFocused` (set every frame by `TextEditorPanel::OnImGuiRender`),
+  that `EditorMenuBar`'s handler now checks before firing.
+  **Find/replace**: `TextBuffer::FindNext`/`FindPrevious` wrap around the
+  document and turn a match into the buffer's own selection (anchor at its
+  start, cursor at its end), so it renders through the selection-highlight
+  path that already existed for Shift-select -- no separate "current
+  match" drawing was needed. Repeated presses chain forward/backward
+  correctly because each search starts from the *existing* selection's own
+  edge, not the cursor. `ReplaceAll` is deliberately a separate,
+  **forward-only, non-wrapping** single pass from the document's start --
+  proven (not just commented) to terminate even when the replacement
+  itself contains the query (a temporary self-test replacing "a" with "aa"
+  in "aaa" completes in exactly 3 steps, giving "aaaaaa"), which a naive
+  wrap-around find+replace loop could not guarantee.
+  **The font, and the actual cause of the reported clipped-"g" bug,
+  confirmed rather than guessed**: no custom font was loaded anywhere in
+  this engine -- `ImGuiLayer` was rendering with ImGui's compiled-in
+  default (ProggyClean, ~13px), and it was specifically this font at this
+  specific size that clipped descenders in `CellGrid`'s fixed-height cell
+  rendering, not a cell-size mismatch in this project's own code (the cell
+  height already came from the same `GetTextLineHeight()` metric ImGui's
+  own text layout uses). Fixed by vendoring **DejaVu Sans Mono**
+  (`TestEnv/assets/fonts/DejaVuSansMono.ttf` + its license text,
+  Bitstream/DejaVu-licensed, explicitly redistributable) and loading it at
+  16px -- a real file already installed and licensed for exactly this on
+  this machine, not fetched fresh, given no network access in this
+  session. `GS::ImGuiLayer::SetFontPath(path, sizePixels)` is a new
+  **static** setter (not an instance method): `ImGuiLayer` is constructed
+  and attached inside `Application`'s own constructor, before `TestEnv`'s
+  constructor body -- the earliest an instance call could run -- ever
+  executes, so the one place early enough is `GS::CreateApplication()`
+  itself, before `new TestEnv()`. An empty path (the default) changes
+  nothing, so every other engine user of `ImGuiLayer` keeps today's font.
+  This is a global font swap, not scoped to the text editor -- the whole
+  editor UI reads more clearly now, and the terminal (`CellGrid`'s other
+  consumer) gets the same descender fix for free.
+  Verified: a temporary self-test (36/36) directly exercising every new
+  `TextBuffer` method against hand-derived expected positions/content --
+  word-skip boundaries character by character, duplicate/move/insert-line
+  row arithmetic, indent/outdent column correction on both selection
+  directions, find wraparound and the `ReplaceAll` termination case above.
+  The UI-level wiring (mouse, the find bar) was checked visually with
+  temporary hooks: a real project file opened with the find bar forced
+  open showed the query, Next/Prev/Case/Replace/Replace All controls laid
+  out correctly, and a search for a real, uniquely-occurring identifier
+  produced a highlight rectangle at exactly the right on-screen position
+  (confirmed by cropping the actual capture, not by trusting the code) --
+  the actual mouse click-through itself still needs a by-hand pass with a
+  mapped window, same disclosed gap as every other UI feature in this
+  project. The font fix was confirmed the same way: a real `.gss` file
+  with descenders in it, captured before and after, shows every "g"
+  rendering with its full loop intact. Clean three-config build and a
+  byte-identical Cube3D `--hide-ui` capture throughout (the font change is
+  ImGui-only and `--hide-ui` renders none of it; nothing here touches any
+  demo-layer code path).
+- **An in-editor file/folder browser replaces every typed-path field in
+  project I/O -- second of the four "make the engine usable" sub-projects,
+  next by the biggest-to-smallest ranking after lighting (see that entry
+  below).** `FileBrowserPopup.h` is a new, reusable ImGui modal (`PickFolder`/
+  `PickFile` modes, an optional extension filter) that reuses
+  `FileTreePanel.h`'s own recursive-`TreeNode`, directories-first-then-
+  alphabetical walk rather than inventing a second file-list convention --
+  the arrow toggles a folder open/closed, clicking its label selects it
+  (`ImGuiTreeNodeFlags_OpenOnArrow` plus `IsItemToggledOpen` to tell the two
+  apart), and a file `Selectable` picks it directly. **Deliberately not a
+  native OS dialog, and why, checked rather than assumed**: no CLI dialog
+  helper (`kdialog`/`zenity`/`yad`) is installed on this machine to shell
+  out to the way `RunSyntaxCheck` already shells out to `g++`; a real
+  `xdg-desktop-portal` integration (confirmed running here, via `busctl
+  --user list`) means either hand-rolling its async D-Bus request/response
+  exchange by shelling out to `gdbus`/`busctl` and parsing their text
+  output, or vendoring a library that already does this
+  (nativefiledialog-extended), which pulls in a new build dependency (its
+  Linux backend links GTK3) for a project that has otherwise built every
+  other editor amenity itself (the text editor, the terminal) rather than
+  reach for one. Wired into three places: `EditorMenuBar.h`'s New/Open/
+  Save-As project modals each gained a "Browse..." button beside their
+  existing "Folder" `InputText` (kept, not replaced -- typing still works)
+  through one shared `DrawFolderField()` helper and one shared
+  `m_FolderBrowser` instance, since only one modal is ever open at a time;
+  the Inspector's `ScriptComponent` path field (`EditorSceneView.h`) gained
+  the same beside its `InputText`, in `PickFile` mode filtered to `.gss`,
+  rooted at the open project's folder. This second one is almost certainly
+  the exact "saved by name, opened by typing the name" pain point named
+  when this was requested. The browser resolves an absolute path (browsing
+  needs one to walk arbitrary directories); the script field converts it
+  back to a path relative to the working directory
+  (`std::filesystem::relative`) before storing it, matching how
+  `ScriptEngine`/`PlayMode` actually open a `ScriptPath` -- a plain
+  `std::ifstream` against it, no project-folder prefix, so an absolute
+  path would have worked by accident on this machine and silently broken
+  the moment the project moved.
+  Verified visually (no GUI-automation tool exists here, same disclosed gap
+  every prior by-hand UI check in this project has recorded) via temporary
+  hooks forcing the popup open with real data: a `PickFolder` browse of
+  `assets/demos` correctly listed `BreakoutRecreation` as an expandable
+  node; a `PickFile` browse of `assets/demos/BreakoutRecreation` filtered
+  to `.gss` showed exactly `ball.gss`/`paddle.gss` and correctly excluded
+  `project.gsproj`/`scene.txt`/`paddle.cpp`, with "Choose File" correctly
+  disabled until one was clicked; the real "New Project" modal's layout
+  (`InputText` beside "Browse...") captured correctly. All temporary hooks
+  removed afterward. Clean three-config build and a byte-identical Cube3D
+  `--hide-ui` capture (this only touches `EditorMenuBar`/`EditorSceneView`
+  UI code, no demo-layer or rendering path). The actual mouse click-through
+  itself -- clicking "Browse...", clicking a folder, clicking "Choose
+  Folder" -- still needs a by-hand pass with a mapped window, same
+  disclosed gap as everything else in this editor pivot.
+- **Placed `GS::LightComponent`s now actually shade meshes in the editor's
+  Scene view and Play mode -- the first of four "make the engine usable"
+  sub-projects requested 2026-09-11 (see "What is next" for the other
+  three, all still unstarted; biggest-to-smallest was the owner's own
+  ordering and this was judged the biggest).** Confirmed before touching
+  anything: `LightComponent` could already be placed, edited, and
+  saved/loaded, but no shader anywhere read it -- `EditorSceneView`'s own
+  mesh shader used one fixed half-Lambert direction, and the only thing
+  `LightComponent` visibly did was a flat 2D gizmo ring in an unrelated demo
+  (`SceneDemo.h`). `EditorSceneView::BuildShader` now reuses Cube3D's own
+  point-light math verbatim (inverse-square-times-linear-fade attenuation,
+  Lambert diffuse, Blinn-Phong specular -- not reinvented, since Cube3D's
+  version was already correct and tested) summed over up to 8 enabled
+  lights read from the scene each frame, instead of Cube3D's one hardcoded
+  light. `u_AmbientStrength` is 0.25, deliberately higher than Cube3D's
+  0.10 default: Cube3D always has exactly one light, an editor scene can
+  have zero, and 10% brightness with nothing placed would read as
+  "broken," not "unlit." Uniform arrays (`u_LightPositions[8]` etc.) are
+  set element-by-element via `Material::Set("u_LightPositions[i]", ...)`
+  -- `GS::Shader` has no array-upload method, and indexed uniform names are
+  valid GLSL/OpenGL, so this needed no engine-level API change.
+  **A second, related gap fixed alongside it, disclosed as scope creep
+  because leaving it out would have made the primary fix hard to use**: a
+  placed Light entity had no mesh and no gizmo either -- genuinely
+  invisible in the viewport the instant it was deselected. `DrawLightGizmos`
+  (mirroring the existing `DrawCameraRays` pattern exactly) draws a small
+  axis-aligned "plus" through each light's position, tinted by its colour.
+  Verified against arithmetic the shader's own code was not copied from:
+  a temporary scene (a unit cube, `Mesh::CreateCube`'s own `+Z` face
+  normal, and a light placed collinear with the camera so the geometry
+  needs no trigonometry) gave a hand-computed expected pixel of
+  `(0.7225, 0.7225, 0.7225)`; `Framebuffer::ReadPixelRGBA` measured
+  `(0.7216, 0.7216, 0.7216)` -- within 8-bit quantization. **A real bug
+  caught during that verification, not in the shading math**: the test's
+  first attempt positioned the free-fly camera via `SetOrientation`
+  (meant for the separate Play-mode camera), which `MoveCamera()`'s own
+  unconditional per-frame `SetRotation(GetYaw(), GetPitch())` call silently
+  reverted on the very next frame -- caught by comparing the camera's
+  *measured* forward vector against what was actually asked for, not by
+  trusting the call succeeded. Confirmed a clean three-config build and a
+  byte-identical Cube3D `--hide-ui` capture (its shader is untouched, and
+  `EditorSceneView::OnUpdate` -- and therefore this whole change -- returns
+  immediately whenever a demo is active). All temporary verification code
+  (the debug camera/pixel-read accessors, the test scene, the diagnostic
+  traces that found the camera bug) was removed afterward.
+- **`paddle.gss` is the first script actually graduated to compiled C++,
+  registered in `CompiledScriptRegistry.h` as `GeneratedScripts::Paddle`.**
+  Requested and built in the same session as the compiled-script execution
+  wiring below, to prove the mechanism against a real script rather than a
+  synthetic test class. Graduating it surfaced two things the wiring's own
+  self-test (a hand-written stub) couldn't have:
+  **(1) a real transpiler bug.** `paddle.gss` originally destructured
+  `entity.getPosition()` (`let [x, y, z] = ...`) and read/wrote a shared
+  `globalThis.paddleX` for `ball.gss` to see -- both explicitly unsupported
+  by the transpiler's own design doc. Rewritten to index access
+  (`const pos = entity.getPosition(); let x = pos[0];` -- exactly the
+  spec's own prescribed fix) and explicit `: number` on every top-level
+  const (a class member, so no `auto`). That alone still failed
+  `g++ -fsyntax-only`: `x` auto-deduced as `float` (a `glm::vec3` component)
+  compared against `paddleSpeed`/`worldHalfWidth`'s `double` inside
+  `Math.min`/`Math.max`, and `std::min`/`std::max` refuse to compare
+  different types -- `no matching function for call to 'min(const double&,
+  float&)'`. A mechanical transpiler bug the syntax-check step exists
+  specifically to catch, not a guess: fixed by giving `x` an explicit
+  `: number` too instead of leaving it to deduce from `pos[0]`.
+  **(2) the `globalThis` removal broke `ball.gss`'s only channel to read
+  the paddle's position**, since a compiled entity has no shared QuickJS
+  context to write into. Fixed the way the transpiler spec itself already
+  named as the real replacement: `ball.gss` now calls
+  `scene.findByTag("Paddle").getPosition()[0]` (already-built, unchanged
+  native binding) instead of reading a global `paddle.gss` no longer
+  writes. **Real, disclosed consequence of graduating one entity's script
+  but not the other's**: `PlayMode::OnFixedUpdate` ticks interpreted
+  scripts (`ball.gss`) before compiled ones (`paddle.gss`), so `ball.gss`'s
+  read of the paddle's position is one fixed step stale relative to that
+  same tick's paddle movement -- invisible at the demo's actual frame rate,
+  but a real ordering fact, not an oversight.
+  Verified with a temporary self-test (4/4: holding the Right key for 8
+  fixed steps drives the compiled `Paddle::OnUpdate` to
+  `worldHalfWidth(1.6) - paddleHalfWidth(0.18) = 1.42` exactly, computed by
+  hand and clamped correctly rather than overshooting; a temporary
+  `console.log` readback -- same "only public channel available" technique
+  the original entity-scripting verification used -- confirmed
+  `ball.gss`'s `scene.findByTag` read that same 1.42 back from the
+  compiled entity; `Stop()` still reverts cleanly) plus a real
+  `TranspileToCpp` + `g++ -fsyntax-only` round trip generating the checked-
+  in `paddle.cpp`, a clean three-config build, a byte-identical Cube3D
+  `--hide-ui` capture, and a visual `--scene`
+  `assets/demos/BreakoutRecreation/scene.txt` capture under held Right
+  input showing the paddle actually driven to the world edge while the
+  ball's independent interpreted motion continued unaffected. All temporary
+  test/debug scaffolding (the generation driver, the console.log line, the
+  accessor it needed) was removed afterward; `paddle.cpp` and the registry
+  entry are the real, permanent artifacts.
+- **Compiled-script execution wiring: the GSS-to-C++ transpiler's own
+  deliberately-deferred "how does it run" question, resolved as static
+  linking and built.** `CompiledScript.h` defines `CompiledScriptEntry` --
+  a flat struct of plain function pointers (`Create`/`CallOnStart`/
+  `CallOnUpdate`), built per type by `MakeCompiledScriptEntry<T>(name)`
+  from three non-capturing lambdas -- so every `GeneratedScripts::<Name>`
+  class (all of which share the exact `OnStart(GS::Entity, GS::Scene&)` /
+  `OnUpdate(GS::Entity, GS::Scene&, double)` shape `TranspileToCpp` emits)
+  is describable without a virtual base touching generated code.
+  `CompiledScriptRegistry.h` is the explicit registration table --
+  `DemoRegistry.h`'s reasoning applied again verbatim: a generated `.cpp`
+  is fully inline, so `#include`-ing it is enough to link it in, but
+  forgetting the line should leave a script quietly interpreted (still
+  correct), not silently do nothing. Landed empty (see the entry above
+  this one for the first script actually registered in it).
+  `PlayMode::Play()` now checks
+  `FindCompiledScript(ScriptEngine::ClassNameFromPath(script->ScriptPath))`
+  before opening the `.gss` file at all -- a hit constructs the native
+  instance via `shared_ptr<void>` and calls its `OnStart` directly, a miss
+  falls through to the unchanged interpreted path. `OnFixedUpdate`/`Stop`
+  each got a second, parallel `s_CompiledPrepared` map beside the existing
+  `s_Prepared` one (different lifetimes -- `shared_ptr` destruction vs.
+  explicit `JSValue` release -- so they aren't folded into one). Moved
+  `ClassNameFromPath` from `TextEditorPanel.h` to a `ScriptEngine` static
+  method so both the preview pane and `PlayMode` name a graduated script
+  the same way without one including the other.
+  Verified with a temporary self-test (6/6: `Play()` routes a
+  registry-matching `ScriptComponent` to a hand-written `GeneratedScripts`
+  test class instead of touching its nonexistent `.gss` file, `OnStart`
+  and two separate `OnUpdate` ticks mutate the entity's `Transform`
+  natively, `Stop()` reverts it via the same snapshot an interpreted
+  script already uses, and a second entity with a non-matching,
+  nonexistent script path still falls through to the unchanged
+  interpreted error path rather than crashing) plus a clean three-config
+  build and a byte-identical Cube3D `--hide-ui` capture (neither touches
+  any demo-layer code path).
 - **GSS-to-C++ transpiler, all 6 of 6 tasks landed** (plan:
   `docs/superpowers/plans/2026-09-11-gss-to-cpp-transpiler.md`, spec:
   `docs/superpowers/specs/2026-09-11-gss-to-cpp-transpiler-design.md`).
@@ -607,36 +1019,41 @@ entity's Transform (`scene.findByTag`) and spawning/destroying entities
 updated to use them yet (still no bricks) -- that's now possible, but
 nobody's asked for it.
 
-**The GSS-to-C++ transpiler is fully built and paused at a deliberate
-decision point, not blocked on anything.** All 6 tasks of
-`docs/superpowers/plans/2026-09-11-gss-to-cpp-transpiler.md` landed:
-`ScriptEngine::TranspileToCpp` mechanically translates the core language
-subset (see the spec for the exact list) into real, `g++`-verified C++;
-the Editor tab shows a live split-pane preview for a `.gss` file; Ctrl+S
-transpiles + syntax-checks + writes the `.cpp`, protected by a hash-based
-optimize-lock (Cancel/Overwrite/Save-a-copy) that also fans out to every
-script that imports a saved module. **What was explicitly left
-undecided, on purpose, per the spec's own "Goal" section**: how a
-compiled script actually *runs*. Discussed after the plan shipped:
-**static linking was chosen** (the compiled `.cpp` joins `TestEnv/src/`
-for real, rebuild+restart to test it) over dynamic `.so` loading — see
-the reasoning recorded in this session's own conversation history, in
-short: this project's iteration loop only needs a rare, deliberate
-"graduate to C++" moment rather than continuous reload, a C++ plugin
-system's ABI/unsafe-unload risks are a bad trade against how cheap and
-safe restarting this editor already is, and it matches the
-already-established glob-and-relink build model. Concretely unstarted
-follow-up, whenever this resumes: an explicit registration table mapping
-a generated class's name to a constructible type (same reasoning
-`DemoRegistry.h` already uses against self-registering static
-initializers: a forgotten include should be a compile error, not a
-silent no-op), and wiring `PlayMode` to run a scripted entity's
-registered native class instead of interpreting its `.gss` when one
-exists. **Ask before starting this** — the owner asked to hold here.
+**The GSS-to-C++ transpiler, including static-link execution, is fully
+built.** All 6 tasks of `docs/superpowers/plans/2026-09-11-gss-to-cpp-
+transpiler.md` landed first (see "Last landed" above for that half); the
+"Goal" section's deliberately-deferred execution question was then
+resolved and built in this session: **static linking**, chosen over
+dynamic `.so` loading (this project's iteration loop only needs a rare,
+deliberate "graduate to C++" moment rather than continuous reload, a C++
+plugin system's ABI/unsafe-unload risks are a bad trade against how cheap
+restarting this editor already is, and it matches the already-established
+glob-and-relink build model). See "Last landed" above for what shipped —
+`CompiledScript.h`/`CompiledScriptRegistry.h` plus `PlayMode`'s dispatch,
+`paddle.gss` graduating as the first real proof of it end to end, and
+`ball.gss` graduating after it — **both of BreakoutRecreation's scripts
+now run compiled; nothing interpreted is left in that project.** Nothing
+else is currently queued against this thread — the transpiler only
+supports one language subset (see the spec), so a future script outside
+that subset would need either rewriting to fit it or a new transpiler
+feature, same as both graduations here needed.
 
 Mesh authoring (a separate, earlier-planned sub-project, before this thread
 existed) is also still queued; which comes next hasn't been decided —
 **ask before starting any of these**.
+
+The Inspector's ID field (requested alongside the static-link execution
+wiring, above) is **landed** — see "Last landed" above.
+
+**A thread requested 2026-09-11: make the editor itself feel like a complete,
+usable tool rather than "disjointed" — four sub-projects, each independent,
+worked biggest-to-smallest as ranked when scoped. All four are now landed:
+lighting, project loading/saving UX, the text editor, and the profiler --
+see "Last landed" above for each. The one gap named repeatedly across all
+four and still real: the actual mouse/keyboard click-through for any of
+them has not been exercised, since no GUI-automation tool exists in this
+environment -- what's verified is the underlying logic and, where
+possible, a rendered capture of the real UI.**
 
 Unstarted, in the order they were last discussed:
 
