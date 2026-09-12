@@ -18,6 +18,7 @@
 #include <filesystem>
 
 #include "Demo.h"
+#include "EditableMesh.h"
 #include "EditorHistory.h"
 #include "EditorProject.h"
 #include "FileBrowserPopup.h"
@@ -82,7 +83,10 @@ public:
 
 		MoveCamera(ts);
 		ResizeTarget();
+		SyncMeshEditWorldPointBeforeGizmo();
 		UpdateGizmo();
+		SyncMeshEditWorldPointAfterGizmo();
+		RebuildMeshEditPreviewIfNeeded();
 
 		m_Framebuffer->Bind();
 
@@ -98,6 +102,7 @@ public:
 		DrawSelectionBox();
 		DrawCameraRays();
 		DrawLightGizmos();
+		DrawMeshEditOverlay();
 		if (m_ShowGizmo)
 			DrawGizmo();
 		GS::Renderer2D::EndScene();
@@ -136,7 +141,7 @@ public:
 			// distinguishes the two, since m_DragAxis is not set until
 			// UpdateGizmo sees the button on the *next* poll.
 			if (e.GetMouseButton() == GS_MOUSE_BUTTON_LEFT
-				&& !ImGui::GetIO().WantCaptureMouse && m_HoverAxis < 0)
+				&& !ImGui::GetIO().WantCaptureMouse && m_HoverAxis < 0 && !m_MeshEditActive)
 				m_Selected = m_Hovered;
 			return false;
 		});
@@ -167,8 +172,10 @@ public:
 				continue;
 
 			ImGui::PushID((int)entity);
+			ImGui::BeginDisabled(m_MeshEditActive);
 			if (ImGui::Selectable(tag->Name.c_str(), entity == m_Selected))
 				m_Selected = entity;
+			ImGui::EndDisabled();
 			ImGui::PopID();
 		}
 		ImGui::EndChild();
@@ -280,6 +287,129 @@ public:
 
 			ImGui::TextDisabled("Source: %s",
 				mesh->SourcePath.empty() ? "(none)" : mesh->SourcePath.c_str());
+
+			if (ImGui::Button("Edit Mesh") && !m_MeshEditActive && !PlayMode::IsPlaying())
+			{
+				GS::MeshData data;
+				if (mesh->SourcePath.rfind("primitive:cube", 0) == 0)
+					data = GS::Mesh::CreateCubeData();
+				else if (mesh->SourcePath.rfind("primitive:plane", 0) == 0)
+					data = GS::Mesh::CreatePlaneData();
+				else if (mesh->SourcePath.rfind("primitive:sphere", 0) == 0)
+					data = GS::Mesh::CreateSphereData();
+				else if (mesh->SourcePath.rfind("primitive:cylinder", 0) == 0)
+					data = GS::Mesh::CreateCylinderData();
+				else
+				{
+					std::string error;
+					GS::Mesh::LoadData(mesh->SourcePath, data, error);
+				}
+
+				m_MeshEditSession = EditableMesh::FromMeshData(data);
+				m_MeshEditSelectedPoint = -1;
+				m_MeshEditActive = true;
+			}
+
+			if (m_MeshEditActive)
+			{
+				ImGui::SeparatorText("Mesh Edit");
+
+				bool hasSelection = m_MeshEditSelectedPoint >= 0;
+
+				if (!hasSelection) ImGui::BeginDisabled();
+				if (ImGui::Button("Delete Point") && m_MeshEditSession.CanDelete(m_MeshEditSelectedPoint))
+				{
+					m_MeshEditSession.PushUndo();
+					m_MeshEditSession.DeletePoint(m_MeshEditSelectedPoint);
+					m_MeshEditSelectedPoint = -1;
+					m_MeshEditPreviewDirty = true;
+				}
+				if (!hasSelection) ImGui::EndDisabled();
+
+				if (ImGui::Button("Undo##meshedit") && m_MeshEditSession.CanUndo())
+				{
+					m_MeshEditSession.Undo();
+					m_MeshEditPreviewDirty = true;
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Redo##meshedit") && m_MeshEditSession.CanRedo())
+				{
+					m_MeshEditSession.Redo();
+					m_MeshEditPreviewDirty = true;
+				}
+
+				if (ImGui::Button("Done"))
+				{
+					GS::MeshData finalData = m_MeshEditSession.Rebuild();
+
+					// TagComponent::Name for the export filename -- fetched
+					// independently rather than assumed in scope: the ID
+					// field's own `if (auto* tag = ...)` block (further up
+					// this same Inspector) is a separate `if`, already
+					// closed by here. A missing tag (shouldn't happen --
+					// every entity gets one at creation) falls back to a
+					// generic name rather than crashing on a null dereference.
+					auto* entityTag = g_EditorScene.GetComponent<GS::TagComponent>(m_Selected);
+					std::string exportName = entityTag ? entityTag->Name : "Mesh";
+					std::string exportPath = "assets/" + exportName + ".obj";
+
+					// Collision suffix -- default entity names are literally
+					// "Cube"/"Sphere"/etc. (PlaceEntityCommand's own
+					// defaults), so two never-renamed entities colliding on
+					// the same export path is a real, likely case, not a
+					// hypothetical one. Skipped when this entity's own
+					// SourcePath already *is* the target path -- re-editing
+					// the same entity a second time should overwrite its own
+					// previous export, not spawn Cube1.obj, Cube2.obj, ...
+					// forever.
+					if (mesh->SourcePath != exportPath && std::filesystem::exists(exportPath))
+					{
+						int suffix = 1;
+						std::string candidate;
+						do
+						{
+							candidate = "assets/" + exportName + std::to_string(suffix) + ".obj";
+							suffix++;
+						} while (std::filesystem::exists(candidate) && candidate != mesh->SourcePath);
+						exportPath = candidate;
+					}
+
+					std::string error;
+					if (GS::ObjWriter::Save(exportPath, finalData, error))
+					{
+						std::string oldPath = mesh->SourcePath;
+						mesh->SourcePath = exportPath;
+
+						// Not MeshCache::Get(exportPath) -- MeshCache caches
+						// "one mesh per path, ever, for the run" with no
+						// invalidation, so re-editing this same entity a
+						// second time (same exportPath, per the collision-
+						// suffix skip above) would hit the FIRST edit's
+						// stale cache entry and silently revert the visible
+						// geometry to it, even though the file on disk was
+						// just correctly overwritten. Building directly from
+						// finalData -- what was actually just saved --
+						// sidesteps the cache entirely for this entity.
+						mesh->Geometry = std::make_shared<GS::Mesh>(finalData, exportName);
+
+						EditorHistory::Push(std::make_unique<EditFieldCommand<GS::MeshComponent, std::string>>(
+							m_Selected, &GS::MeshComponent::SourcePath, oldPath, exportPath));
+					}
+
+					m_MeshEditActive = false;
+					m_MeshEditSelectedPoint = -1;
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Cancel"))
+				{
+					auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected);
+					if (transform)
+						mesh->Geometry = GS::MeshCache::Get(mesh->SourcePath);   // discard the live preview -- reload the entity's real, unchanged mesh
+
+					m_MeshEditActive = false;
+					m_MeshEditSelectedPoint = -1;
+				}
+			}
 		}
 
 		if (auto* camera = g_EditorScene.GetComponent<GS::CameraComponent>(m_Selected))
@@ -724,11 +854,91 @@ private:
 		}
 	}
 
+	// One small cross per control point of the in-progress edit session, in
+	// the selected entity's local-to-world space -- the session itself
+	// (m_MeshEditSession) stores points in local space, so every point is
+	// transformed here rather than baked once, keeping this correct even if
+	// the entity's transform changes while a session is open. The selected
+	// point is tinted differently so a click's result is visible immediately.
+	void DrawMeshEditOverlay()
+	{
+		if (!m_MeshEditActive)
+			return;
+
+		auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected);
+		if (!transform)
+			return;
+
+		glm::mat4 toWorld = transform->GetTransform();
+
+		for (int i = 0; i < m_MeshEditSession.PointCount(); i++)
+		{
+			glm::vec3 worldPos = glm::vec3(toWorld * glm::vec4(m_MeshEditSession.Point(i).Position, 1.0f));
+			glm::vec4 color = (i == m_MeshEditSelectedPoint)
+				? glm::vec4(1.0f, 1.0f, 0.4f, 1.0f)
+				: glm::vec4(0.4f, 0.8f, 1.0f, 1.0f);
+
+			constexpr float s = 0.03f;
+			GS::Renderer2D::DrawLine(worldPos - glm::vec3(s, 0, 0), worldPos + glm::vec3(s, 0, 0), color);
+			GS::Renderer2D::DrawLine(worldPos - glm::vec3(0, s, 0), worldPos + glm::vec3(0, s, 0), color);
+			GS::Renderer2D::DrawLine(worldPos - glm::vec3(0, 0, s), worldPos + glm::vec3(0, 0, s), color);
+		}
+	}
+
+	// Before UpdateGizmo(): make the world-space mirror agree with the real,
+	// object-space point -- unless a drag is already in progress, in which
+	// case UpdateGizmo is the one actively moving the mirror this frame and
+	// this must not stomp that with a stale value computed before the drag.
+	void SyncMeshEditWorldPointBeforeGizmo()
+	{
+		if (!m_MeshEditActive || m_MeshEditSelectedPoint < 0 || m_DragAxis >= 0)
+			return;
+
+		auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected);
+		if (!transform)
+			return;
+
+		glm::vec3 objectSpace = m_MeshEditSession.Point(m_MeshEditSelectedPoint).Position;
+		m_MeshEditSessionWorldPoint = glm::vec3(transform->GetTransform() * glm::vec4(objectSpace, 1.0f));
+	}
+
+	// After UpdateGizmo(): if it just moved the mirror (a drag was in
+	// progress when it ran), write that new world position back into
+	// EditableMesh's own object-space storage via the inverse transform.
+	void SyncMeshEditWorldPointAfterGizmo()
+	{
+		if (!m_MeshEditActive || m_MeshEditSelectedPoint < 0 || m_DragAxis < 0)
+			return;
+
+		auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected);
+		if (!transform)
+			return;
+
+		glm::vec3 newObjectSpace = glm::vec3(glm::inverse(transform->GetTransform()) * glm::vec4(m_MeshEditSessionWorldPoint, 1.0f));
+		m_MeshEditSession.MovePoint(m_MeshEditSelectedPoint, newObjectSpace);
+		m_MeshEditPreviewDirty = true;
+	}
+
+	void RebuildMeshEditPreviewIfNeeded()
+	{
+		if (!m_MeshEditActive || !m_MeshEditPreviewDirty)
+			return;
+
+		auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(m_Selected);
+		if (mesh)
+			mesh->Geometry.reset(new GS::Mesh(m_MeshEditSession.Rebuild(), "MeshEditPreview"));
+
+		m_MeshEditPreviewDirty = false;
+	}
+
 	// Returns null when nothing is selected, which is why every caller checks
 	// -- there is no light to fall back to dragging here, unlike Cube3D's own
 	// version of this function.
 	glm::vec3* GizmoPosition()
 	{
+		if (m_MeshEditActive && m_MeshEditSelectedPoint >= 0)
+			return &m_MeshEditSessionWorldPoint;   // see SyncMeshEditWorldPoint{Before,After}Gizmo -- kept in sync each frame, since EditableMesh stores object space and the gizmo drags in world space
+
 		auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected);
 		return transform ? &transform->Position : nullptr;
 	}
@@ -745,6 +955,37 @@ private:
 		outScreen = { (ndc.x * 0.5f + 0.5f) * (float)window.GetWidth(),
 			(1.0f - (ndc.y * 0.5f + 0.5f)) * (float)window.GetHeight() };
 		return true;
+	}
+
+	// Nearest edit-session point to a screen-space click, in the same
+	// on-screen-pixel-distance terms as the gizmo's own AxisScreenDistance --
+	// `const` because, like WorldToScreen, it only reads state (the mouse
+	// click itself is handled by Task 9's caller).
+	int PickMeshEditPoint(const glm::vec2& mouse) const
+	{
+		auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected);
+		if (!transform)
+			return -1;
+
+		glm::mat4 toWorld = transform->GetTransform();
+
+		int best = -1;
+		float bestDistance = 12.0f;   // pixels -- generous enough to click a small on-screen cross without needing pixel precision
+		for (int i = 0; i < m_MeshEditSession.PointCount(); i++)
+		{
+			glm::vec3 worldPos = glm::vec3(toWorld * glm::vec4(m_MeshEditSession.Point(i).Position, 1.0f));
+			glm::vec2 screen;
+			if (!WorldToScreen(worldPos, screen))
+				continue;
+
+			float distance = glm::length(mouse - screen);
+			if (distance < bestDistance)
+			{
+				bestDistance = distance;
+				best = i;
+			}
+		}
+		return best;
 	}
 
 	// Pixels -> a ray in world space: the near and far points that project to
@@ -825,13 +1066,34 @@ private:
 		bool justPressed = down && !m_MouseDownLastFrame;
 		m_MouseDownLastFrame = down;
 
+		if (m_MeshEditActive && justPressed && m_HoverAxis < 0)
+		{
+			int picked = PickMeshEditPoint(mouse);
+			if (picked >= 0)
+			{
+				m_MeshEditSession.PushUndo();
+				m_MeshEditSelectedPoint = picked;
+			}
+		}
+
 		if (!down)
 		{
 			// The drag just ended (m_DragAxis was set) -- push one command
 			// for the whole gesture here, not per-frame while dragging, so
 			// Undo puts the object back where it was grabbed in a single
 			// step rather than replaying every intermediate frame.
-			if (m_DragAxis >= 0)
+			//
+			// Excluded while a mesh-edit session is active: GizmoPosition()
+			// then returns &m_MeshEditSessionWorldPoint, not &transform->
+			// Position, so m_DragStartPosition holds the *point's* world
+			// coordinate and transform->Position (the entity's own, untouched
+			// origin) is a different value entirely -- comparing them here
+			// would push a bogus EditFieldCommand onto the global
+			// EditorHistory stack whose "old value" is not any real prior
+			// position of this entity. The mesh-edit session has its own
+			// undo stack (EditableMesh::PushUndo/Undo) for exactly this
+			// gesture; this global one must stay out of it.
+			if (m_DragAxis >= 0 && !m_MeshEditActive)
 			{
 				if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected))
 					if (transform->Position != m_DragStartPosition)
@@ -1000,6 +1262,13 @@ private:
 	bool m_EditBeforeBool = false;
 	float m_EditBeforeFloat = 0.0f;
 	std::string m_EditBeforeString;
+
+	bool m_MeshEditActive = false;
+	EditableMesh m_MeshEditSession;
+	int m_MeshEditSelectedPoint = -1;
+	glm::vec3 m_MeshEditSessionWorldPoint{ 0.0f };
+	bool m_MeshEditPreviewDirty = false;
+
 	int m_HoverAxis = -1;
 	bool m_MouseDownLastFrame = false;
 	float m_DragStartT = 0.0f;
