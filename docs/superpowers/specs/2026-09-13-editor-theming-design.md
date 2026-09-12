@@ -130,13 +130,22 @@ struct Theme
     ImU32 TerminalBackground;
     ImU32 TerminalForeground;
 
-    // EditorTheme.h's fields, minus three that fold into the roles above
-    // instead of being duplicated: its Background/Foreground become this
-    // struct's own Background/Foreground (the text editor should share the
-    // general theme's page color, not carry a second, independently
-    // authored one), and CurrentLineNumberFg -- which EverforestDark()
-    // already just sets equal to Foreground -- is derived the same way
-    // here rather than stored.
+    // EditorTheme.h's fields, renamed with a Syntax prefix. Background and
+    // Foreground stay independent values here rather than folding into the
+    // general roles above -- checked, not assumed: today, right now, the
+    // text editor already paints its own Everforest-toned background/
+    // foreground (0x2d353b/0xd3c6aa) while the rest of the UI is still
+    // ImGui's stock dark theme (~0x0f0f0f). Folding them would make
+    // basic.json (whose whole job is reproducing that real, current,
+    // two-tone state) silently repaint the text editor a different color.
+    // default.json is free to set these equal to its own general
+    // Background/Foreground -- Everforest is one coherent palette there --
+    // but the struct doesn't force that. Only CurrentLineNumberFg is
+    // dropped: today's EverforestDark() always sets it to exactly
+    // Foreground with no exception anywhere in the code, so it is derived
+    // at render time instead of stored.
+    ImU32 SyntaxBackground;
+    ImU32 SyntaxForeground;
     ImU32 SyntaxLineNumberFg;
     ImU32 SyntaxCursorColor;
     ImU32 SyntaxKeyword;
@@ -212,6 +221,8 @@ fields:
     "foreground": "#d3c6aa"
   },
   "editorSyntax": {
+    "background": "#2d353b",
+    "foreground": "#d3c6aa",
     "keyword": "#e67e80",
     "stringLiteral": "#a7c080",
     "comment": "#859289",
@@ -333,24 +344,42 @@ A `Layer`, pushed in `TestApp.cpp` alongside `ProfilerPanel`/`TerminalPanel`.
 
 ### `basic.json` / `default.json`
 
-`basic.json`: the 5 roles set to ImGui's own `StyleColorsDark()` values for
-`WindowBg`/`Text`/`FrameBg`/`Button`/`Border` (the representative entry each
-role is built from), all 3 font slots at `DejaVuSansMono.ttf`/16, terminal
-colors matching libvterm's own compiled-in default (read once, at
-implementation time, from a fresh `vterm_state_get_default_colors` call
-rather than guessed), and today's `EverforestDark()` syntax values (moving
-that struct's content, unmodified, into this file preserves current visual
-behavior exactly — only the *storage* moves, per this project's usual "the
-measurement, not the code" caution about accidentally changing behavior
-while relocating it).
+`basic.json`'s 5 roles are the real values read straight from
+`imgui_draw.cpp`'s `StyleColorsDark()` (not guessed): Background from
+`WindowBg` `(0.06,0.06,0.06,0.94)` → `#0f0f0ff0`, Foreground from `Text`
+`(1,1,1,1)` → `#ffffffff`, FrameBackground from `FrameBg`
+`(0.16,0.29,0.48,0.54)` → `#294a7a8a`, Accent from `Button`
+`(0.26,0.59,0.98,0.40)` → `#4296fa66`, Border from `Border`
+`(0.43,0.43,0.50,0.50)` → `#6e6e8080`. This is a **5-role approximation of**
+`StyleColorsDark()`, not a byte-identical copy — collapsing ~60 distinct
+`ImGuiCol_` values down to 5 necessarily loses some of them (`ChildBg`,
+notably, is transparent black `(0,0,0,0)` in the real default so nested
+child windows show through to their parent, which the Background role
+would otherwise make opaque) — so `basic.json`'s `"advanced"` block carries
+`"ImGuiCol_ChildBg": "#00000000"` to preserve that one specifically, since
+it's the one case where the collapse produces a visibly different result
+rather than just a slightly different shade of the same dark gray.
 
-`default.json`: the same syntax values (Everforest is already correct
-there), extended with a full-style Everforest role set (`Background`/
-`Foreground` from `EditorTheme.h`'s own `bg0`/`fg` — already sourced from
-`everforest.vim` — `Accent` from the same file's green, `Border`/
-`FrameBackground` picked from its `bg1`/`bg2` steps, verified against
-`everforest.vim` the same way the existing syntax colors already were, not
-guessed), same fonts, terminal colors matching `Background`/`Foreground`.
+Terminal colors are libvterm's own real compiled-in default, read from
+`GS/vendor/libvterm/src/pen.c`'s `vterm_state_newpen` (`default_fg` =
+`(240,240,240)` = `#f0f0f0`, `default_bg` = `(0,0,0)` = `#000000`), not
+probed or guessed. All 3 font slots stay `DejaVuSansMono.ttf`/16. The
+`editorSyntax` block is today's real `EverforestDark()` values, including
+its own `Background`/`Foreground` (`#2d353b`/`#d3c6aa`) — moving that
+struct's content unmodified into this file preserves current visual
+behavior exactly for the one part of the screen that's already Everforest
+today, per this project's usual "the measurement, not the code" caution
+about accidentally changing behavior while relocating it.
+
+`default.json`: `editorSyntax` unchanged from `basic.json` (Everforest is
+already correct there), extended with a full-style Everforest role set —
+`Background`/`Foreground` from `EditorTheme.h`'s own `bg0`/`fg` (already
+sourced from `everforest.vim`, matching the syntax block's own values so
+the whole editor reads as one coherent surface instead of two), `Accent`
+from the same file's green, `Border`/`FrameBackground` picked from
+`everforest.vim`'s `bg1`/`bg2` steps, verified against that file the same
+way the existing syntax colors already were, not guessed — same fonts,
+terminal colors matching `Background`/`Foreground`.
 
 ## Testing
 
