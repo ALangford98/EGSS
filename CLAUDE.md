@@ -50,11 +50,18 @@ own work between sessions and sometimes while a reply is being written. Assume
 any git state you did not just observe is stale — check `git log` and
 `git status` rather than trusting an earlier message.
 
-**Work directly in the local checkout, not an isolated worktree branch.**
-Earlier this used a `worktree-<name>` branch for handover, reviewed with
-`git log -p main..worktree-<name>` and merged in later — that's gone. The
-owner wants to run, test, and push from the same tree a session edits, with
-no merge step between. Do not call `EnterWorktree`.
+**Work directly in the local checkout when nothing forces isolation.** The
+owner runs, tests, and pushes from the same tree an interactive session
+edits, with no merge step between — that stays the default, and an
+interactive session has no reason to reach for `EnterWorktree`.
+
+**Use a worktree when something genuinely requires it** — a background
+session whose harness enforces isolation before any edit is the case that
+came up in practice. When that happens: do the work, verify it (build,
+tests), commit it, then merge the worktree branch straight into local
+`main` and remove the worktree — no PR, no long-lived `worktree-<name>`
+branch kept around for later review the way the old handover process did.
+The owner wants the ceremony gone, not relocated to a review queue.
 
 Commit in logical units and let the messages carry the reasoning, the same way
 the changelog does. Do not fabricate granular history — if a change was
