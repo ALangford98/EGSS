@@ -219,6 +219,13 @@ namespace GS {
 				WriteFloats(out, { light->Color.r, light->Color.g, light->Color.b, light->Color.a, light->Radius });
 				out << ' ' << (light->Enabled ? 1 : 0) << "\n";
 			}
+
+			if (PhysicsComponent* physics = self->GetComponent<PhysicsComponent>(entity))
+			{
+				out << "physics " << (int)physics->Type;
+				WriteFloats(out, { physics->Mass, physics->Friction, physics->Restitution });
+				out << "\n";
+			}
 		}
 
 		return true;
@@ -323,6 +330,14 @@ namespace GS {
 					>> light.Radius >> enabled;
 				light.Enabled = enabled != 0;
 				current.Add<LightComponent>(light);
+			}
+			else if (kind == "physics" && current)
+			{
+				PhysicsComponent physics;
+				int type = (int)BodyType::Dynamic;
+				fields >> type >> physics.Mass >> physics.Friction >> physics.Restitution;
+				physics.Type = (BodyType)type;
+				current.Add<PhysicsComponent>(physics);
 			}
 		}
 
