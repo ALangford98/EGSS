@@ -124,6 +124,8 @@ public:
 			m_Light = *light;
 		if (auto* physics = g_EditorScene.GetComponent<GS::PhysicsComponent>(entity))
 			m_Physics = *physics;
+		if (auto* group = g_EditorScene.GetComponent<GS::GroupComponent>(entity))
+			m_Group = *group;
 	}
 
 	void Redo() override
@@ -149,6 +151,8 @@ public:
 			entity.Add<GS::LightComponent>(*m_Light);
 		if (m_Physics)
 			entity.Add<GS::PhysicsComponent>(*m_Physics);
+		if (m_Group)
+			entity.Add<GS::GroupComponent>(*m_Group);
 		m_Entity = entity.GetId();
 
 		// Anything else on the stack that captured oldEntity (an
@@ -165,6 +169,7 @@ private:
 	std::optional<GS::ScriptComponent> m_Script;
 	std::optional<GS::LightComponent> m_Light;
 	std::optional<GS::PhysicsComponent> m_Physics;
+	std::optional<GS::GroupComponent> m_Group;
 };
 
 // The context menu's Duplicate: captures the source entity's components at
@@ -192,6 +197,8 @@ public:
 			m_Light = *light;
 		if (auto* physics = g_EditorScene.GetComponent<GS::PhysicsComponent>(source))
 			m_Physics = *physics;
+		if (auto* group = g_EditorScene.GetComponent<GS::GroupComponent>(source))
+			m_Group = *group;
 	}
 
 	void Redo() override
@@ -208,6 +215,8 @@ public:
 			entity.Add<GS::LightComponent>(*m_Light);
 		if (m_Physics)
 			entity.Add<GS::PhysicsComponent>(*m_Physics);
+		if (m_Group)
+			entity.Add<GS::GroupComponent>(*m_Group);
 		m_Entity = entity.GetId();
 	}
 
@@ -225,6 +234,36 @@ private:
 	std::optional<GS::ScriptComponent> m_Script;
 	std::optional<GS::LightComponent> m_Light;
 	std::optional<GS::PhysicsComponent> m_Physics;
+	std::optional<GS::GroupComponent> m_Group;
+};
+
+// The multi-select gizmo's equivalent of EditFieldCommand<TransformComponent,
+// glm::vec3>, generalized to N entities so one Ctrl+Z reverses a whole
+// group-drag gesture at once rather than one entity at a time. Does not
+// override SelectionAfter() -- a multi-move never changes what's selected,
+// unlike Place/Delete/Duplicate, so the base class's "no entity of my own"
+// default (returns GS::InvalidEntity) is correct as-is.
+class MultiMoveCommand : public EditorCommand
+{
+public:
+	MultiMoveCommand(std::vector<GS::EntityId> entities, std::vector<glm::vec3> before, std::vector<glm::vec3> after)
+		: m_Entities(std::move(entities)), m_Before(std::move(before)), m_After(std::move(after))
+	{
+	}
+
+	void Redo() override { Apply(m_After); }
+	void Undo() override { Apply(m_Before); }
+private:
+	void Apply(const std::vector<glm::vec3>& positions)
+	{
+		for (size_t i = 0; i < m_Entities.size(); i++)
+			if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Entities[i]))
+				transform->Position = positions[i];
+	}
+
+	std::vector<GS::EntityId> m_Entities;
+	std::vector<glm::vec3> m_Before;
+	std::vector<glm::vec3> m_After;
 };
 
 // One field of one component, changed once. `Component` and `Field` are

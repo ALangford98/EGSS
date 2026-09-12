@@ -131,6 +131,17 @@ namespace GS {
 		std::string ScriptPath;
 	};
 
+	// A named tag shared by every entity that carries the same GroupName --
+	// there is no separate group entity or registry. An entity belongs to
+	// at most one group; joining a new one overwrites the old value, it
+	// doesn't add to it. See docs/superpowers/specs/2026-09-12-entity-
+	// grouping-design.md for why this is a plain string rather than a
+	// group entity or a set.
+	struct GroupComponent
+	{
+		std::string GroupName;
+	};
+
 	// Data only, for now -- nothing reads this yet. RigidBody2DComponent
 	// links an entity to a body a PhysicsWorld2D already simulates; this has
 	// no world behind it at all. It exists so the editor's Physics tab

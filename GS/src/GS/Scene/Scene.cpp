@@ -220,6 +220,15 @@ namespace GS {
 				out << ' ' << (light->Enabled ? 1 : 0) << "\n";
 			}
 
+			// An entity with an empty GroupName was never really grouped --
+			// silently dropped, same reasoning the mesh/script blocks above
+			// already use for their own optional strings.
+			if (GroupComponent* group = self->GetComponent<GroupComponent>(entity))
+			{
+				if (!group->GroupName.empty())
+					out << "group " << group->GroupName << "\n";
+			}
+
 			if (PhysicsComponent* physics = self->GetComponent<PhysicsComponent>(entity))
 			{
 				out << "physics " << (int)physics->Type;
@@ -330,6 +339,13 @@ namespace GS {
 					>> light.Radius >> enabled;
 				light.Enabled = enabled != 0;
 				current.Add<LightComponent>(light);
+			}
+			else if (kind == "group" && current)
+			{
+				std::string name;
+				std::getline(fields, name);
+				size_t from = name.find_first_not_of(' ');
+				current.Add<GroupComponent>(GroupComponent{ from == std::string::npos ? "" : name.substr(from) });
 			}
 			else if (kind == "physics" && current)
 			{

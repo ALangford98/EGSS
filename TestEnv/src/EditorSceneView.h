@@ -14,13 +14,16 @@
 
 #include <GS.h>
 #include <imgui.h>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <unordered_set>
 
 #include "Demo.h"
 #include "EditableMesh.h"
 #include "EditorHistory.h"
 #include "EditorProject.h"
+#include "EntityGroups.h"
 #include "FileBrowserPopup.h"
 #include "PlayMode.h"
 
@@ -148,7 +151,18 @@ public:
 			// UpdateGizmo sees the button on the *next* poll.
 			if (e.GetMouseButton() == GS_MOUSE_BUTTON_LEFT
 				&& !ImGui::GetIO().WantCaptureMouse && m_HoverAxis < 0 && !m_MeshEditActive)
-				m_Selected = m_Hovered;
+			{
+				if (CtrlHeld())
+				{
+					if (g_EditorScene.IsValid(m_Hovered))
+						ToggleMultiSelect(m_Hovered);
+				}
+				else
+				{
+					m_MultiSelection.clear();
+					m_Selected = m_Hovered;
+				}
+			}
 
 			// Right-click opens the same context menu the Outliner row does
 			// (DrawEntityContextMenu) -- ImGui::OpenPopup can't be called
@@ -171,6 +185,11 @@ public:
 				return false;
 			if (e.GetKeyCode() == GS_KEY_DELETE && g_EditorScene.IsValid(m_Selected))
 				m_Selected = EditorHistory::Push(std::make_unique<DeleteEntityCommand>(m_Selected));
+			else if (e.GetKeyCode() == GS_KEY_G && CtrlHeld() && m_MultiSelection.size() >= 2)
+			{
+				m_GroupPromptRequested = true;
+				m_GroupPromptNeedsConfirm = EntityGroups::AnyAlreadyGrouped(m_MultiSelection);
+			}
 			return false;
 		});
 	}
@@ -179,6 +198,15 @@ public:
 	{
 		if (!IsActive())
 			return;
+
+		// An entity Ctrl-selected earlier can be deleted from under the
+		// multi-selection (Delete key, or another session action) --
+		// pruned once per frame, the same defensive shape
+		// ValidateMeshEditSession already applies to m_MeshEditEntity.
+		m_MultiSelection.erase(
+			std::remove_if(m_MultiSelection.begin(), m_MultiSelection.end(),
+				[](GS::EntityId e) { return !g_EditorScene.IsValid(e); }),
+			m_MultiSelection.end());
 
 		// Duplicate/Delete destroy or create entities, which would invalidate
 		// the Outliner's range-for below mid-iteration -- GetEntities()
@@ -208,30 +236,103 @@ public:
 			ImGui::EndPopup();
 		}
 
+		if (m_GroupPromptRequested)
+		{
+			ImGui::OpenPopup(m_GroupPromptNeedsConfirm ? "Confirm Regroup" : "New Group");
+			if (!m_GroupPromptNeedsConfirm)
+				m_GroupNameBuf[0] = '\0';
+			m_GroupPromptRequested = false;
+		}
+
+		if (ImGui::BeginPopupModal("Confirm Regroup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::Text("Some of these entities already belong to a group.");
+			ImGui::Text("Move them into a new group?");
+			if (ImGui::Button("Move Them"))
+			{
+				m_GroupNameBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+				ImGui::OpenPopup("New Group");
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel"))
+				ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
+
+		if (ImGui::BeginPopupModal("New Group", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::InputText("Name", m_GroupNameBuf, sizeof(m_GroupNameBuf));
+			bool canCreate = m_GroupNameBuf[0] != '\0';
+			if (!canCreate) ImGui::BeginDisabled();
+			if (ImGui::Button("Create"))
+			{
+				EntityGroups::AssignGroup(m_MultiSelection, m_GroupNameBuf);
+				ImGui::CloseCurrentPopup();
+			}
+			if (!canCreate) ImGui::EndDisabled();
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel"))
+				ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
+
+		if (m_GroupDialogRequested)
+		{
+			ImGui::OpenPopup("Manage Groups");
+			m_GroupDialogRequested = false;
+		}
+		if (ImGui::BeginPopupModal("Manage Groups", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			DrawManageGroupsDialog();
+			ImGui::Separator();
+			if (ImGui::Button("Close"))
+				ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
+
 		ImGui::Begin("Outliner");
 
 		ImGui::Text("Entities: %zu", g_EditorScene.GetEntityCount());
 		ImGui::BeginChild("hierarchy", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
-		for (GS::EntityId entity : g_EditorScene.GetEntities())
+
+		auto groups = EntityGroups::GroupEntitiesByName();
+		std::unordered_set<GS::EntityId> inAnyGroup;
+		for (auto& [name, members] : groups)
+			for (GS::EntityId member : members)
+				inAnyGroup.insert(member);
+
+		for (auto& [name, members] : groups)
 		{
-			auto* tag = g_EditorScene.GetComponent<GS::TagComponent>(entity);
-			if (!tag)
-				continue;
+			ImGui::PushID(name.c_str());
+			bool open = ImGui::TreeNode(name.c_str());
 
-			ImGui::PushID((int)entity);
-			ImGui::BeginDisabled(m_MeshEditActive);
-			if (ImGui::Selectable(tag->Name.c_str(), entity == m_Selected))
-				m_Selected = entity;
-
-			if (ImGui::BeginPopupContextItem("row_context"))
+			if (ImGui::BeginPopupContextItem("group_context"))
 			{
-				DrawEntityContextMenu(entity, pendingDuplicate, pendingDelete);
+				if (ImGui::MenuItem("Select All"))
+				{
+					m_MultiSelection = members;
+					if (!members.empty())
+						m_Selected = members.back();
+				}
+				if (ImGui::MenuItem("Ungroup"))
+					EntityGroups::DeleteGroup(name);
 				ImGui::EndPopup();
 			}
 
-			ImGui::EndDisabled();
+			if (open)
+			{
+				for (GS::EntityId entity : members)
+					DrawOutlinerRow(entity, pendingDuplicate, pendingDelete);
+				ImGui::TreePop();
+			}
 			ImGui::PopID();
 		}
+
+		for (GS::EntityId entity : g_EditorScene.GetEntities())
+			if (!inAnyGroup.count(entity))
+				DrawOutlinerRow(entity, pendingDuplicate, pendingDelete);
+
 		ImGui::EndChild();
 		ImGui::End();
 
@@ -559,6 +660,140 @@ private:
 	// per-frame locals rather than acted on immediately: both destroy/create
 	// entities, and the Outliner call site is still mid-range-for over
 	// Scene's live-entity vector when this runs.
+	static bool CtrlHeld()
+	{
+		return GS::Input::IsKeyPressed(GS_KEY_LEFT_CONTROL) || GS::Input::IsKeyPressed(GS_KEY_RIGHT_CONTROL);
+	}
+
+	// Toggling rather than always-add is what makes Ctrl+click a real
+	// multi-select (click a selected member again to drop it), not just an
+	// accumulator. m_Selected always follows the last entity touched, so
+	// the Inspector keeps showing something sensible even with several
+	// entities in m_MultiSelection.
+	void ToggleMultiSelect(GS::EntityId entity)
+	{
+		auto it = std::find(m_MultiSelection.begin(), m_MultiSelection.end(), entity);
+		if (it != m_MultiSelection.end())
+			m_MultiSelection.erase(it);
+		else
+			m_MultiSelection.push_back(entity);
+		m_Selected = entity;
+	}
+
+	// One Outliner row -- extracted so both the grouped and ungrouped render
+	// passes call the same code.
+	void DrawOutlinerRow(GS::EntityId entity, GS::EntityId& pendingDuplicate, GS::EntityId& pendingDelete)
+	{
+		auto* tag = g_EditorScene.GetComponent<GS::TagComponent>(entity);
+		if (!tag)
+			return;
+
+		ImGui::PushID((int)entity);
+		ImGui::BeginDisabled(m_MeshEditActive);
+
+		bool isSelected = m_MultiSelection.empty()
+			? (entity == m_Selected)
+			: (std::find(m_MultiSelection.begin(), m_MultiSelection.end(), entity) != m_MultiSelection.end());
+
+		if (ImGui::Selectable(tag->Name.c_str(), isSelected))
+		{
+			if (CtrlHeld())
+				ToggleMultiSelect(entity);
+			else
+			{
+				m_MultiSelection.clear();
+				m_Selected = entity;
+			}
+		}
+
+		if (ImGui::BeginPopupContextItem("row_context"))
+		{
+			DrawEntityContextMenu(entity, pendingDuplicate, pendingDelete);
+			ImGui::EndPopup();
+		}
+
+		ImGui::EndDisabled();
+		ImGui::PopID();
+	}
+
+	// Opened via "Add to Group" (DrawEntityContextMenu) -- lists and acts on
+	// every group in the scene, not just the entity that opened it, per the
+	// "full management" scope from the design spec. Every action here runs
+	// immediately with no confirmation: this dialog is already an explicit,
+	// deliberate action a user opened on purpose, unlike Ctrl+G's fast
+	// shortcut, which is why that one gets a confirm step and this doesn't.
+	void DrawManageGroupsDialog()
+	{
+		auto groups = EntityGroups::GroupEntitiesByName();
+
+		for (auto& [name, members] : groups)
+		{
+			ImGui::PushID(name.c_str());
+			if (ImGui::CollapsingHeader(name.c_str()))
+			{
+				if (m_RenamingGroup == name)
+				{
+					ImGui::SetNextItemWidth(150.0f);
+					if (ImGui::InputText("##rename_group", m_GroupRenameBuf, sizeof(m_GroupRenameBuf), ImGuiInputTextFlags_EnterReturnsTrue))
+					{
+						EntityGroups::RenameGroup(name, m_GroupRenameBuf);
+						m_RenamingGroup.clear();
+					}
+				}
+				else if (ImGui::Button("Rename"))
+				{
+					m_RenamingGroup = name;
+					strncpy(m_GroupRenameBuf, name.c_str(), sizeof(m_GroupRenameBuf) - 1);
+					m_GroupRenameBuf[sizeof(m_GroupRenameBuf) - 1] = '\0';
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Delete Group"))
+					EntityGroups::DeleteGroup(name);
+
+				for (GS::EntityId member : members)
+				{
+					auto* tag = g_EditorScene.GetComponent<GS::TagComponent>(member);
+					ImGui::PushID((int)member);
+					ImGui::BulletText("%s", tag ? tag->Name.c_str() : "?");
+					ImGui::SameLine();
+					if (ImGui::SmallButton("Remove"))
+						g_EditorScene.RemoveComponent<GS::GroupComponent>(member);
+					ImGui::PopID();
+				}
+
+				ImGui::SetNextItemWidth(200.0f);
+				if (ImGui::BeginCombo("##add_to_group", "Add entity..."))
+				{
+					for (GS::EntityId candidate : g_EditorScene.GetEntities())
+					{
+						if (std::find(members.begin(), members.end(), candidate) != members.end())
+							continue;
+						auto* tag = g_EditorScene.GetComponent<GS::TagComponent>(candidate);
+						if (!tag)
+							continue;
+						if (ImGui::Selectable(tag->Name.c_str()))
+							g_EditorScene.AddComponent<GS::GroupComponent>(candidate, GS::GroupComponent{ name });
+					}
+					ImGui::EndCombo();
+				}
+			}
+			ImGui::PopID();
+		}
+
+		ImGui::Separator();
+		ImGui::SetNextItemWidth(200.0f);
+		ImGui::InputText("##new_group_name", m_NewGroupBuf, sizeof(m_NewGroupBuf));
+		ImGui::SameLine();
+		bool canCreate = m_NewGroupBuf[0] != '\0' && g_EditorScene.IsValid(m_GroupDialogEntity);
+		if (!canCreate) ImGui::BeginDisabled();
+		if (ImGui::Button("Create New Group"))
+		{
+			g_EditorScene.AddComponent<GS::GroupComponent>(m_GroupDialogEntity, GS::GroupComponent{ m_NewGroupBuf });
+			m_NewGroupBuf[0] = '\0';
+		}
+		if (!canCreate) ImGui::EndDisabled();
+	}
+
 	void DrawEntityContextMenu(GS::EntityId entity, GS::EntityId& pendingDuplicate, GS::EntityId& pendingDelete)
 	{
 		auto* tag = g_EditorScene.GetComponent<GS::TagComponent>(entity);
@@ -601,6 +836,11 @@ private:
 			pendingDuplicate = entity;
 		if (ImGui::MenuItem("Delete"))
 			pendingDelete = entity;
+		if (ImGui::MenuItem("Add to Group"))
+		{
+			m_GroupDialogEntity = entity;
+			m_GroupDialogRequested = true;
+		}
 
 		ImGui::Separator();
 		// Deliberately just Physics for now -- a reserved home for later,
@@ -968,20 +1208,12 @@ private:
 
 	void DrawSelectionBox()
 	{
-		for (int pass = 0; pass < 2; pass++)
+		auto drawBoxFor = [this](GS::EntityId entity, const glm::vec4& color)
 		{
-			GS::EntityId entity = (pass == 0) ? m_Hovered : m_Selected;
-			if (!g_EditorScene.IsValid(entity) || (pass == 0 && entity == m_Selected))
-				continue;
-
 			auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(entity);
 			auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(entity);
 			if (!transform || !mesh || !mesh->Geometry)
-				continue;
-
-			glm::vec4 color = (pass == 0)
-				? glm::vec4(0.45f, 0.85f, 1.0f, 1.0f)
-				: glm::vec4(1.00f, 0.85f, 0.3f, 1.0f);
+				return;
 
 			glm::vec3 lo = mesh->Geometry->GetBoundsMin();
 			glm::vec3 hi = mesh->Geometry->GetBoundsMax();
@@ -997,7 +1229,21 @@ private:
 			};
 			for (auto& edge : edges)
 				GS::Renderer2D::DrawLine(corner[edge[0]], corner[edge[1]], color);
+		};
+
+		const glm::vec4 hoverColor(0.45f, 0.85f, 1.0f, 1.0f);
+		const glm::vec4 selectedColor(1.00f, 0.85f, 0.3f, 1.0f);
+
+		if (g_EditorScene.IsValid(m_Hovered) && m_Hovered != m_Selected)
+			drawBoxFor(m_Hovered, hoverColor);
+
+		if (m_MultiSelection.size() > 1)
+		{
+			for (GS::EntityId entity : m_MultiSelection)
+				drawBoxFor(entity, selectedColor);
 		}
+		else if (g_EditorScene.IsValid(m_Selected))
+			drawBoxFor(m_Selected, selectedColor);
 	}
 
 	// A CameraComponent has no mesh, so it renders as nothing at all --
@@ -1183,6 +1429,16 @@ private:
 		if (m_MeshEditActive && m_MeshEditSelectedPoint >= 0)
 			return &m_MeshEditSessionWorldPoint;   // see SyncMeshEditWorldPoint{Before,After}Gizmo -- kept in sync each frame, since EditableMesh stores object space and the gizmo drags in world space
 
+		if (m_MultiSelection.size() > 1)
+		{
+			std::vector<glm::vec3> positions;
+			for (GS::EntityId entity : m_MultiSelection)
+				if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(entity))
+					positions.push_back(transform->Position);
+			m_MultiSelectionPivot = EntityGroups::ComputeCentroid(positions);
+			return &m_MultiSelectionPivot;
+		}
+
 		auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected);
 		return transform ? &transform->Position : nullptr;
 	}
@@ -1339,7 +1595,24 @@ private:
 			// gesture; this global one must stay out of it.
 			if (m_DragAxis >= 0 && !m_MeshEditActive)
 			{
-				if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected))
+				if (m_MultiSelection.size() > 1)
+				{
+					std::vector<GS::EntityId> entities;
+					std::vector<glm::vec3> before, after;
+					bool anyMoved = false;
+					for (auto& [entity, startPos] : m_MultiSelectionStartPositions)
+						if (auto* memberTransform = g_EditorScene.GetComponent<GS::TransformComponent>(entity))
+						{
+							entities.push_back(entity);
+							before.push_back(startPos);
+							after.push_back(memberTransform->Position);
+							if (memberTransform->Position != startPos)
+								anyMoved = true;
+						}
+					if (anyMoved)
+						EditorHistory::Push(std::make_unique<MultiMoveCommand>(entities, before, after));
+				}
+				else if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected))
 					if (transform->Position != m_DragStartPosition)
 						EditorHistory::Push(std::make_unique<EditFieldCommand<GS::TransformComponent, glm::vec3>>(
 							m_Selected, &GS::TransformComponent::Position, m_DragStartPosition, transform->Position));
@@ -1379,6 +1652,14 @@ private:
 			m_DragAxis = m_HoverAxis;
 			m_DragStartT = t;
 			m_DragStartPosition = *target;
+
+			if (m_MultiSelection.size() > 1)
+			{
+				m_MultiSelectionStartPositions.clear();
+				for (GS::EntityId entity : m_MultiSelection)
+					if (auto* memberTransform = g_EditorScene.GetComponent<GS::TransformComponent>(entity))
+						m_MultiSelectionStartPositions.push_back({ entity, memberTransform->Position });
+			}
 			return;
 		}
 
@@ -1395,7 +1676,16 @@ private:
 
 		// Relative to where it was grabbed, so the object does not snap its
 		// origin to the cursor.
-		*target = m_DragStartPosition + axisDirection * (t - m_DragStartT);
+		glm::vec3 newPivot = m_DragStartPosition + axisDirection * (t - m_DragStartT);
+		*target = newPivot;
+
+		if (m_MultiSelection.size() > 1)
+		{
+			glm::vec3 delta = newPivot - m_DragStartPosition;
+			for (auto& [entity, startPos] : m_MultiSelectionStartPositions)
+				if (auto* memberTransform = g_EditorScene.GetComponent<GS::TransformComponent>(entity))
+					memberTransform->Position = startPos + delta;
+		}
 	}
 
 	void DrawGizmo()
@@ -1492,6 +1782,14 @@ private:
 	GS::EntityId m_Selected = GS::InvalidEntity;
 	GS::EntityId m_Hovered = GS::InvalidEntity;
 
+	// Transient, session-only, and deliberately separate from GroupComponent
+	// -- Ctrl+click builds a working set to act on right now (drag, or
+	// Ctrl+G), nothing about it touches the scene file. See the design
+	// spec's "Why this shape" section.
+	std::vector<GS::EntityId> m_MultiSelection;
+	glm::vec3 m_MultiSelectionPivot{ 0.0f };
+	std::vector<std::pair<GS::EntityId, glm::vec3>> m_MultiSelectionStartPositions;
+
 	// Backing buffer for the Outliner row context menu's inline rename
 	// field -- seeded from the row's tag on popup-open (IsWindowAppearing),
 	// same reasoning as m_EditBeforeString above but for a raw InputText
@@ -1503,6 +1801,16 @@ private:
 	// event isn't guaranteed to be within.
 	bool m_ViewportContextRequested = false;
 	GS::EntityId m_ViewportContextEntity = GS::InvalidEntity;
+
+	bool m_GroupPromptRequested = false;
+	bool m_GroupPromptNeedsConfirm = false;
+	char m_GroupNameBuf[256] = {};
+
+	bool m_GroupDialogRequested = false;
+	GS::EntityId m_GroupDialogEntity = GS::InvalidEntity;
+	std::string m_RenamingGroup;   // empty = nothing being renamed right now
+	char m_GroupRenameBuf[256] = {};
+	char m_NewGroupBuf[256] = {};
 
 	bool m_ShowGizmo = true;
 	int m_DragAxis = -1;
