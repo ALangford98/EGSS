@@ -169,6 +169,15 @@ public:
 
 		ImGui::Begin("Outliner");
 
+		// Duplicate/Delete destroy or create entities, which would invalidate
+		// the range-for below mid-iteration -- GetEntities() returns a
+		// reference to Scene's own live-entity vector, not a copy. Both are
+		// deferred to after the loop for exactly that reason, the same way
+		// the Inspector's own Delete button already runs in a separate
+		// ImGui::Begin block that only starts once this loop has finished.
+		GS::EntityId pendingDuplicate = GS::InvalidEntity;
+		GS::EntityId pendingDelete = GS::InvalidEntity;
+
 		ImGui::Text("Entities: %zu", g_EditorScene.GetEntityCount());
 		ImGui::BeginChild("hierarchy", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
 		for (GS::EntityId entity : g_EditorScene.GetEntities())
@@ -181,11 +190,121 @@ public:
 			ImGui::BeginDisabled(m_MeshEditActive);
 			if (ImGui::Selectable(tag->Name.c_str(), entity == m_Selected))
 				m_Selected = entity;
+
+			if (ImGui::BeginPopupContextItem("row_context"))
+			{
+				// A right click selects too, so Rename/Edit Mesh below (and
+				// the Inspector, drawn after this window) all agree on which
+				// entity the menu is acting on.
+				if (ImGui::IsWindowAppearing())
+				{
+					m_Selected = entity;
+					strncpy(m_RenameBuf, tag->Name.c_str(), sizeof(m_RenameBuf) - 1);
+					m_RenameBuf[sizeof(m_RenameBuf) - 1] = '\0';
+				}
+
+				auto* script = g_EditorScene.GetComponent<GS::ScriptComponent>(entity);
+				if (!script)
+				{
+					if (ImGui::MenuItem("Add Script"))
+						g_EditorScene.AddComponent<GS::ScriptComponent>(entity, GS::ScriptComponent{});
+				}
+				else if (ImGui::MenuItem("Remove Script"))
+					g_EditorScene.RemoveComponent<GS::ScriptComponent>(entity);
+
+				ImGui::Separator();
+				ImGui::SetNextItemWidth(150.0f);
+				if (ImGui::InputText("##rename_ctx", m_RenameBuf, sizeof(m_RenameBuf), ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					EditorHistory::Push(std::make_unique<EditFieldCommand<GS::TagComponent, std::string>>(
+						entity, &GS::TagComponent::Name, tag->Name, std::string(m_RenameBuf)));
+					ImGui::CloseCurrentPopup();
+				}
+
+				ImGui::Separator();
+				auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(entity);
+				if (ImGui::MenuItem("Edit Mesh", nullptr, false, mesh && !m_MeshEditActive && !PlayMode::IsPlaying()))
+					StartMeshEdit(entity, mesh);
+				if (ImGui::MenuItem("Duplicate"))
+					pendingDuplicate = entity;
+				if (ImGui::MenuItem("Delete"))
+					pendingDelete = entity;
+
+				ImGui::Separator();
+				// Deliberately just Physics for now -- a reserved home for
+				// later, more technical per-entity data (see
+				// editor_roadmap.md item 1) rather than a real settled set of
+				// categories, hence a tab bar with one tab instead of a flat
+				// list.
+				if (ImGui::BeginMenu("Advanced"))
+				{
+					if (ImGui::BeginTabBar("AdvancedTabs"))
+					{
+						if (ImGui::BeginTabItem("Physics"))
+						{
+							auto* physics = g_EditorScene.GetComponent<GS::PhysicsComponent>(entity);
+							if (!physics)
+							{
+								if (ImGui::MenuItem("Add Physics"))
+									g_EditorScene.AddComponent<GS::PhysicsComponent>(entity, GS::PhysicsComponent{});
+							}
+							else
+							{
+								const char* bodyTypes[] = { "Static", "Dynamic", "Kinematic" };
+								int typeIdx = (int)physics->Type;
+								ImGui::SetNextItemWidth(120.0f);
+								if (ImGui::Combo("Body Type", &typeIdx, bodyTypes, 3))
+									EditorHistory::Push(std::make_unique<EditFieldCommand<GS::PhysicsComponent, GS::BodyType>>(
+										entity, &GS::PhysicsComponent::Type, physics->Type, (GS::BodyType)typeIdx));
+
+								ImGui::SetNextItemWidth(120.0f);
+								ImGui::DragFloat("Mass", &physics->Mass, 0.1f, 0.0f, 1000.0f);
+								if (ImGui::IsItemActivated())
+									m_EditBeforeFloat = physics->Mass;
+								if (ImGui::IsItemDeactivatedAfterEdit())
+									EditorHistory::Push(std::make_unique<EditFieldCommand<GS::PhysicsComponent, float>>(
+										entity, &GS::PhysicsComponent::Mass, m_EditBeforeFloat, physics->Mass));
+
+								ImGui::SetNextItemWidth(120.0f);
+								ImGui::DragFloat("Friction", &physics->Friction, 0.01f, 0.0f, 1.0f);
+								if (ImGui::IsItemActivated())
+									m_EditBeforeFloat = physics->Friction;
+								if (ImGui::IsItemDeactivatedAfterEdit())
+									EditorHistory::Push(std::make_unique<EditFieldCommand<GS::PhysicsComponent, float>>(
+										entity, &GS::PhysicsComponent::Friction, m_EditBeforeFloat, physics->Friction));
+
+								ImGui::SetNextItemWidth(120.0f);
+								ImGui::DragFloat("Restitution", &physics->Restitution, 0.01f, 0.0f, 1.0f);
+								if (ImGui::IsItemActivated())
+									m_EditBeforeFloat = physics->Restitution;
+								if (ImGui::IsItemDeactivatedAfterEdit())
+									EditorHistory::Push(std::make_unique<EditFieldCommand<GS::PhysicsComponent, float>>(
+										entity, &GS::PhysicsComponent::Restitution, m_EditBeforeFloat, physics->Restitution));
+
+								ImGui::Separator();
+								if (ImGui::MenuItem("Remove Physics"))
+									g_EditorScene.RemoveComponent<GS::PhysicsComponent>(entity);
+							}
+							ImGui::EndTabItem();
+						}
+						ImGui::EndTabBar();
+					}
+					ImGui::EndMenu();
+				}
+
+				ImGui::EndPopup();
+			}
+
 			ImGui::EndDisabled();
 			ImGui::PopID();
 		}
 		ImGui::EndChild();
 		ImGui::End();
+
+		if (g_EditorScene.IsValid(pendingDuplicate))
+			m_Selected = EditorHistory::Push(std::make_unique<DuplicateEntityCommand>(pendingDuplicate));
+		if (g_EditorScene.IsValid(pendingDelete))
+			m_Selected = EditorHistory::Push(std::make_unique<DeleteEntityCommand>(pendingDelete));
 
 		ImGui::Begin("Inspector");
 
@@ -295,37 +414,7 @@ public:
 				mesh->SourcePath.empty() ? "(none)" : mesh->SourcePath.c_str());
 
 			if (ImGui::Button("Edit Mesh") && !m_MeshEditActive && !PlayMode::IsPlaying())
-			{
-				GS::MeshData data;
-				bool loaded = true;
-				if (mesh->SourcePath.rfind("primitive:cube", 0) == 0)
-					data = GS::Mesh::CreateCubeData();
-				else if (mesh->SourcePath.rfind("primitive:plane", 0) == 0)
-					data = GS::Mesh::CreatePlaneData();
-				else if (mesh->SourcePath.rfind("primitive:sphere", 0) == 0)
-					data = GS::Mesh::CreateSphereData();
-				else if (mesh->SourcePath.rfind("primitive:cylinder", 0) == 0)
-					data = GS::Mesh::CreateCylinderData();
-				else
-				{
-					std::string error;
-					loaded = GS::Mesh::LoadData(mesh->SourcePath, data, error);
-					if (!loaded)
-						GS_ERROR("Edit Mesh: could not load '{0}': {1}", mesh->SourcePath, error);
-				}
-
-				// A session with nothing in it has nothing to pick, drag, or
-				// delete -- the only way out would be Done, which would then
-				// write an empty .obj and replace this entity's real Geometry
-				// with it. Better to leave the entity untouched and log why.
-				if (loaded && !data.Vertices.empty())
-				{
-					m_MeshEditEntity = m_Selected;
-					m_MeshEditSession = EditableMesh::FromMeshData(data);
-					m_MeshEditSelectedPoint = -1;
-					m_MeshEditActive = true;
-				}
-			}
+				StartMeshEdit(m_Selected, mesh);
 
 			if (m_MeshEditActive)
 			{
@@ -529,6 +618,44 @@ public:
 	}
 
 private:
+	// Shared by the Inspector's "Edit Mesh" button and the Outliner's
+	// context-menu equivalent -- both need the same load-and-open logic on
+	// whatever entity/mesh they were given, not necessarily m_Selected in
+	// the context-menu case (right-clicking a row selects it first, but the
+	// order that happens in relative to this call shouldn't matter).
+	void StartMeshEdit(GS::EntityId entity, GS::MeshComponent* mesh)
+	{
+		GS::MeshData data;
+		bool loaded = true;
+		if (mesh->SourcePath.rfind("primitive:cube", 0) == 0)
+			data = GS::Mesh::CreateCubeData();
+		else if (mesh->SourcePath.rfind("primitive:plane", 0) == 0)
+			data = GS::Mesh::CreatePlaneData();
+		else if (mesh->SourcePath.rfind("primitive:sphere", 0) == 0)
+			data = GS::Mesh::CreateSphereData();
+		else if (mesh->SourcePath.rfind("primitive:cylinder", 0) == 0)
+			data = GS::Mesh::CreateCylinderData();
+		else
+		{
+			std::string error;
+			loaded = GS::Mesh::LoadData(mesh->SourcePath, data, error);
+			if (!loaded)
+				GS_ERROR("Edit Mesh: could not load '{0}': {1}", mesh->SourcePath, error);
+		}
+
+		// A session with nothing in it has nothing to pick, drag, or
+		// delete -- the only way out would be Done, which would then
+		// write an empty .obj and replace this entity's real Geometry
+		// with it. Better to leave the entity untouched and log why.
+		if (loaded && !data.Vertices.empty())
+		{
+			m_MeshEditEntity = entity;
+			m_MeshEditSession = EditableMesh::FromMeshData(data);
+			m_MeshEditSelectedPoint = -1;
+			m_MeshEditActive = true;
+		}
+	}
+
 	void BuildTarget()
 	{
 		GS::Window& window = GS::Application::Get().GetWindow();
@@ -1318,6 +1445,12 @@ private:
 
 	GS::EntityId m_Selected = GS::InvalidEntity;
 	GS::EntityId m_Hovered = GS::InvalidEntity;
+
+	// Backing buffer for the Outliner row context menu's inline rename
+	// field -- seeded from the row's tag on popup-open (IsWindowAppearing),
+	// same reasoning as m_EditBeforeString above but for a raw InputText
+	// buffer rather than a captured "before" value.
+	char m_RenameBuf[256] = {};
 
 	bool m_ShowGizmo = true;
 	int m_DragAxis = -1;

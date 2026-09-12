@@ -5,6 +5,7 @@
 #include "GS/Renderer/Texture.h"
 #include "GS/Renderer/Mesh.h"
 #include "GS/Renderer/Material.h"
+#include "GS/Physics/RigidBody2D.h"   // BodyType -- dimension-agnostic, reused as-is
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -128,6 +129,21 @@ namespace GS {
 	struct ScriptComponent
 	{
 		std::string ScriptPath;
+	};
+
+	// Data only, for now -- nothing reads this yet. RigidBody2DComponent
+	// links an entity to a body a PhysicsWorld2D already simulates; this has
+	// no world behind it at all. It exists so the editor's Physics tab
+	// (right-click an entity -> Advanced -> Physics) has real fields to hold
+	// and a scene file to survive a Save/Load round trip in, ahead of the
+	// editor scene actually running a physics world. Deliberately placed
+	// scaffolding, not an oversight -- see editor_roadmap.md.
+	struct PhysicsComponent
+	{
+		BodyType Type = BodyType::Dynamic;
+		float Mass = 1.0f;
+		float Friction = 0.5f;
+		float Restitution = 0.0f;
 	};
 
 }

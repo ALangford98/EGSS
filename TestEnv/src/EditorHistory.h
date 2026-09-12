@@ -122,6 +122,8 @@ public:
 			m_Script = *script;
 		if (auto* light = g_EditorScene.GetComponent<GS::LightComponent>(entity))
 			m_Light = *light;
+		if (auto* physics = g_EditorScene.GetComponent<GS::PhysicsComponent>(entity))
+			m_Physics = *physics;
 	}
 
 	void Redo() override
@@ -145,6 +147,8 @@ public:
 			entity.Add<GS::ScriptComponent>(*m_Script);
 		if (m_Light)
 			entity.Add<GS::LightComponent>(*m_Light);
+		if (m_Physics)
+			entity.Add<GS::PhysicsComponent>(*m_Physics);
 		m_Entity = entity.GetId();
 
 		// Anything else on the stack that captured oldEntity (an
@@ -160,6 +164,67 @@ private:
 	std::optional<GS::CameraComponent> m_Camera;
 	std::optional<GS::ScriptComponent> m_Script;
 	std::optional<GS::LightComponent> m_Light;
+	std::optional<GS::PhysicsComponent> m_Physics;
+};
+
+// The context menu's Duplicate: captures the source entity's components at
+// construction (the same set DeleteEntityCommand captures) and creates a new
+// entity from that snapshot. Shaped like PlaceEntityCommand rather than
+// DeleteEntityCommand's Undo -- this command *adds*, so Redo creates and
+// Undo destroys, with no s_Remap bookkeeping needed (nothing can reference
+// this entity before it has ever been created).
+class DuplicateEntityCommand : public EditorCommand
+{
+public:
+	explicit DuplicateEntityCommand(GS::EntityId source)
+	{
+		if (auto* tag = g_EditorScene.GetComponent<GS::TagComponent>(source))
+			m_Name = tag->Name + " Copy";
+		if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(source))
+			m_Transform = *transform;
+		if (auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(source))
+			m_Mesh = *mesh;
+		if (auto* camera = g_EditorScene.GetComponent<GS::CameraComponent>(source))
+			m_Camera = *camera;
+		if (auto* script = g_EditorScene.GetComponent<GS::ScriptComponent>(source))
+			m_Script = *script;
+		if (auto* light = g_EditorScene.GetComponent<GS::LightComponent>(source))
+			m_Light = *light;
+		if (auto* physics = g_EditorScene.GetComponent<GS::PhysicsComponent>(source))
+			m_Physics = *physics;
+	}
+
+	void Redo() override
+	{
+		GS::Entity entity = g_EditorScene.CreateEntity(m_Name);
+		*entity.Get<GS::TransformComponent>() = m_Transform;
+		if (m_Mesh)
+			entity.Add<GS::MeshComponent>(*m_Mesh);
+		if (m_Camera)
+			entity.Add<GS::CameraComponent>(*m_Camera);
+		if (m_Script)
+			entity.Add<GS::ScriptComponent>(*m_Script);
+		if (m_Light)
+			entity.Add<GS::LightComponent>(*m_Light);
+		if (m_Physics)
+			entity.Add<GS::PhysicsComponent>(*m_Physics);
+		m_Entity = entity.GetId();
+	}
+
+	void Undo() override
+	{
+		GS::EntityId current = EditorHistory::Resolve(m_Entity);
+		if (g_EditorScene.IsValid(current))
+			g_EditorScene.DestroyEntity(current);
+	}
+private:
+	std::string m_Name;
+	GS::TransformComponent m_Transform;
+	std::optional<GS::MeshComponent> m_Mesh;
+	std::optional<GS::CameraComponent> m_Camera;
+	std::optional<GS::ScriptComponent> m_Script;
+	std::optional<GS::LightComponent> m_Light;
+	std::optional<GS::PhysicsComponent> m_Physics;
 };
 
 // One field of one component, changed once. `Component` and `Field` are
