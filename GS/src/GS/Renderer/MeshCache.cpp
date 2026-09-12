@@ -46,4 +46,13 @@ namespace GS {
 		Store().clear();
 	}
 
+	std::vector<std::shared_ptr<Mesh>> MeshCache::All()
+	{
+		std::vector<std::shared_ptr<Mesh>> meshes;
+		meshes.reserve(Store().size());
+		for (auto& [path, mesh] : Store())
+			meshes.push_back(mesh);
+		return meshes;
+	}
+
 }

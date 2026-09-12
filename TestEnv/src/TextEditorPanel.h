@@ -12,6 +12,7 @@
 #include "TextBuffer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -179,33 +180,20 @@ inline bool IsGssFile(const std::string& path)
 	return endsWith(".gss") || endsWith(".ts") || endsWith(".gs");
 }
 
-// "paddle.gss" -> "Paddle", "my_cool-script.gss" -> "MyCoolScript" -- the
-// generated class's name, matching TranspileToCpp's own className
-// parameter.
-inline std::string ClassNameFromPath(const std::string& path)
-{
-	std::string stem = std::filesystem::path(path).stem().string();
-	std::string result;
-	bool capitalizeNext = true;
-	for (char c : stem)
-	{
-		if (c == '_' || c == '-')
-		{
-			capitalizeNext = true;
-			continue;
-		}
-		result += capitalizeNext ? (char)std::toupper((unsigned char)c) : c;
-		capitalizeNext = false;
-	}
-	return result.empty() ? "Script" : result;
-}
-
 inline std::string CppPathFor(const std::string& gssPath)
 {
 	std::filesystem::path p(gssPath);
 	p.replace_extension(".cpp");
 	return p.string();
 }
+
+// Set every frame by TextEditorPanel::OnImGuiRender, read by
+// EditorMenuBar's own Ctrl+F handler (a completely different feature --
+// "Find Entity" in the scene) so the two don't both fire off the same
+// keypress: EditorMenuBar's is an event-dispatch shortcut with no idea
+// which panel is actually focused, and text-editor's own Ctrl+F is
+// gated on ImGui::IsWindowFocused() the ordinary way.
+inline bool g_TextEditorFocused = false;
 
 class TextEditorPanel
 {
@@ -214,7 +202,8 @@ public:
 	{
 		bool visible = ImGui::Begin("Editor", nullptr, ImGuiWindowFlags_NoTitleBar);
 
-		if (ImGui::IsWindowFocused())
+		g_TextEditorFocused = ImGui::IsWindowFocused();
+		if (g_TextEditorFocused)
 			ImGui::GetIO().WantCaptureKeyboard = true;
 
 		if (!visible)
@@ -224,6 +213,7 @@ public:
 		}
 
 		DrawFileBar();
+		DrawFindBar();
 
 		bool showPreview = IsGssFile(m_PathBuffer);
 		if (showPreview)
@@ -247,7 +237,14 @@ public:
 			int textCols = totalCols - gutterCols;
 			int rows = std::max(2, (int)(paneAvail.y / cellHeight));
 
-			HandleInput(rows);
+			// Captured here, before anything else is laid out in this
+			// block, so it is the exact same screen position CellGrid::
+			// Render() will independently recompute from GetCursorScreenPos()
+			// a few lines down -- needed to turn a mouse click into a
+			// (row, col) buffer position.
+			ImVec2 gridOrigin = ImGui::GetCursorScreenPos();
+
+			HandleInput(rows, gridOrigin, cellWidth, cellHeight, gutterCols);
 			ScrollToCursor(rows);
 
 			m_Grid.Resize(totalCols, rows);
@@ -354,7 +351,7 @@ private:
 		}
 
 		std::string error, cpp;
-		if (m_ScriptEngine->TranspileToCpp(currentText, ClassNameFromPath(m_PathBuffer), error, cpp))
+		if (m_ScriptEngine->TranspileToCpp(currentText, ScriptEngine::ClassNameFromPath(m_PathBuffer), error, cpp))
 		{
 			m_PreviewCpp = cpp;
 			m_PreviewError.clear();
@@ -414,7 +411,7 @@ private:
 		}
 
 		std::string error, cpp;
-		if (!m_ScriptEngine->TranspileToCpp(source, ClassNameFromPath(gssPath), error, cpp))
+		if (!m_ScriptEngine->TranspileToCpp(source, ScriptEngine::ClassNameFromPath(gssPath), error, cpp))
 		{
 			m_LastRunOutput.clear();
 			m_LastRunError = error;
@@ -539,18 +536,58 @@ private:
 			return;
 
 		std::string error, cpp;
-		if (!m_ScriptEngine->TranspileToCpp(temp.FullText(), ClassNameFromPath(gssPath), error, cpp))
+		if (!m_ScriptEngine->TranspileToCpp(temp.FullText(), ScriptEngine::ClassNameFromPath(gssPath), error, cpp))
 			return;
 
 		std::string cppPath = asCopy ? GeneratedCopyPath(CppPathFor(gssPath)) : CppPathFor(gssPath);
 		WriteAndSyntaxCheck(cppPath, cpp);
 	}
 
+	// Turns a screen-space mouse position into a buffer (row, col) --
+	// TextBuffer::MoveTo clamps both into range, so this doesn't need to
+	// itself; a click below the last visible row or right of the last
+	// visible column lands at the nearest valid position instead of
+	// being rejected.
+	void MouseToCell(const ImVec2& origin, float cellWidth, float cellHeight, int gutterCols, int& outRow, int& outCol) const
+	{
+		ImVec2 mouse = ImGui::GetIO().MousePos;
+		int gridRow = (int)std::floor((mouse.y - origin.y) / cellHeight);
+		int gridCol = (int)std::floor((mouse.x - origin.x) / cellWidth);
+		outRow = m_ScrollRow + std::max(0, gridRow);
+		outCol = std::max(0, gridCol - gutterCols);
+	}
+
+	// Click-to-position, drag-to-select, Shift+click-to-extend -- all
+	// through the same MoveTo entry point Move* already uses for
+	// keyboard nav, so there's exactly one place selection state is
+	// touched. m_MouseDragging (not just "is the mouse still down") is
+	// what lets a fast drag keep extending even if the cursor briefly
+	// slips outside the window's own hovered rect.
+	void HandleMouse(const ImVec2& gridOrigin, float cellWidth, float cellHeight, int gutterCols)
+	{
+		if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered())
+		{
+			int row, col;
+			MouseToCell(gridOrigin, cellWidth, cellHeight, gutterCols, row, col);
+			m_Buffer.MoveTo(row, col, ImGui::GetIO().KeyShift);
+			m_MouseDragging = true;
+		}
+		else if (m_MouseDragging && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+		{
+			int row, col;
+			MouseToCell(gridOrigin, cellWidth, cellHeight, gutterCols, row, col);
+			m_Buffer.MoveTo(row, col, true);
+		}
+
+		if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+			m_MouseDragging = false;
+	}
+
 	// Skips buffer-editing keys entirely while the path field (or any other
 	// text widget) is the one capturing keyboard text this frame -- both it
 	// and this function would otherwise read the same io.InputQueueCharacters
 	// this frame, double-handling every typed character.
-	void HandleInput(int visibleRows)
+	void HandleInput(int visibleRows, const ImVec2& gridOrigin, float cellWidth, float cellHeight, int gutterCols)
 	{
 		// "Editor" and "Terminal" are different dock nodes and can both be
 		// visible/rendering at once (unlike "Scene"/"Editor", which share a
@@ -562,12 +599,15 @@ private:
 		if (!ImGui::IsWindowFocused())
 			return;
 
+		HandleMouse(gridOrigin, cellWidth, cellHeight, gutterCols);
+
 		ImGuiIO& io = ImGui::GetIO();
 		if (io.WantTextInput)
 			return;
 
 		bool shift = io.KeyShift;
 		bool ctrl = io.KeyCtrl;
+		bool alt = io.KeyAlt;
 
 		// Clipboard/undo shortcuts first: Ctrl held changes what a letter
 		// key does entirely, so these must not also fall through to
@@ -599,6 +639,22 @@ private:
 		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_S, true) && IsGssFile(m_PathBuffer))
 			SaveAndBuild();
 
+		// Find/Replace: opens (or re-opens, widening it to add the Replace
+		// field) the bar drawn in DrawFindBar -- g_TextEditorFocused is what
+		// keeps EditorMenuBar's own, unrelated "Find Entity" from also
+		// firing off this same Ctrl+F.
+		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_F, true))
+		{
+			m_ShowFindBar = true;
+			m_FocusFindField = true;
+		}
+		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_R, true))
+		{
+			m_ShowFindBar = true;
+			m_ShowReplaceField = true;
+			m_FocusFindField = true;
+		}
+
 		for (int i = 0; i < io.InputQueueCharacters.Size; i++)
 		{
 			ImWchar c = io.InputQueueCharacters[i];
@@ -606,18 +662,125 @@ private:
 				m_Buffer.InsertCharWithPairing((char)c);
 		}
 
-		if (ImGui::IsKeyPressed(ImGuiKey_Enter, true)) m_Buffer.InsertNewline();
+		if (ImGui::IsKeyPressed(ImGuiKey_Enter, true))
+		{
+			if (ctrl) m_Buffer.InsertLineBelow();
+			else if (shift) m_Buffer.InsertLineAbove();
+			else m_Buffer.InsertNewline();
+		}
 		if (ImGui::IsKeyPressed(ImGuiKey_Backspace, true)) m_Buffer.Backspace();
 		if (ImGui::IsKeyPressed(ImGuiKey_Delete, true)) m_Buffer.Delete();
-		if (ImGui::IsKeyPressed(ImGuiKey_Tab, true)) m_Buffer.InsertTab();
-		if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) m_Buffer.MoveLeft(shift);
-		if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) m_Buffer.MoveRight(shift);
-		if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) m_Buffer.MoveUp(shift);
-		if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) m_Buffer.MoveDown(shift);
-		if (ImGui::IsKeyPressed(ImGuiKey_Home, true)) m_Buffer.MoveHome(shift);
-		if (ImGui::IsKeyPressed(ImGuiKey_End, true)) m_Buffer.MoveEnd(shift);
+		if (ImGui::IsKeyPressed(ImGuiKey_Tab, true))
+		{
+			if (shift) m_Buffer.OutdentSelection();
+			else if (m_Buffer.HasSelection()) m_Buffer.IndentSelection();
+			else m_Buffer.InsertTab();
+		}
+		// Left/Right: Ctrl skips by word instead of by character.
+		if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
+		{
+			if (ctrl) m_Buffer.MoveWordLeft(shift);
+			else m_Buffer.MoveLeft(shift);
+		}
+		if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
+		{
+			if (ctrl) m_Buffer.MoveWordRight(shift);
+			else m_Buffer.MoveRight(shift);
+		}
+		// Up/Down: Ctrl+Alt duplicates the line/selection, Alt alone moves
+		// it, checked in that order since Ctrl+Alt would otherwise also
+		// satisfy the plain "alt" branch.
+		if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))
+		{
+			if (ctrl && alt) m_Buffer.DuplicateLines(false);
+			else if (alt) m_Buffer.MoveLinesUp();
+			else m_Buffer.MoveUp(shift);
+		}
+		if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))
+		{
+			if (ctrl && alt) m_Buffer.DuplicateLines(true);
+			else if (alt) m_Buffer.MoveLinesDown();
+			else m_Buffer.MoveDown(shift);
+		}
+		// Home/End: Ctrl jumps to the whole document's start/end instead of
+		// just the current line's.
+		if (ImGui::IsKeyPressed(ImGuiKey_Home, true))
+		{
+			if (ctrl) m_Buffer.MoveDocumentStart(shift);
+			else m_Buffer.MoveHome(shift);
+		}
+		if (ImGui::IsKeyPressed(ImGuiKey_End, true))
+		{
+			if (ctrl) m_Buffer.MoveDocumentEnd(shift);
+			else m_Buffer.MoveEnd(shift);
+		}
 		if (ImGui::IsKeyPressed(ImGuiKey_PageUp, true)) m_Buffer.MovePageUp(visibleRows, shift);
 		if (ImGui::IsKeyPressed(ImGuiKey_PageDown, true)) m_Buffer.MovePageDown(visibleRows, shift);
+	}
+
+	// Ctrl+F (find-only) / Ctrl+R (adds the Replace row) opens this; Escape
+	// or the Close button hides it again. A found match becomes the
+	// buffer's own selection (TextBuffer::FindNext/Previous), so it's
+	// already visible via the ordinary selection-highlight rendering path
+	// -- no separate "current match" drawing needed here.
+	void DrawFindBar()
+	{
+		if (!m_ShowFindBar)
+			return;
+
+		if (m_FocusFindField)
+		{
+			ImGui::SetKeyboardFocusHere();
+			m_FocusFindField = false;
+		}
+
+		ImGui::PushItemWidth(220.0f);
+		bool enterPressed = ImGui::InputText("Find##findquery", m_FindBuffer, sizeof(m_FindBuffer), ImGuiInputTextFlags_EnterReturnsTrue);
+		ImGui::PopItemWidth();
+		if (enterPressed)
+		{
+			if (ImGui::GetIO().KeyShift) m_Buffer.FindPrevious(m_FindBuffer, m_FindCaseSensitive);
+			else m_Buffer.FindNext(m_FindBuffer, m_FindCaseSensitive);
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Next")) m_Buffer.FindNext(m_FindBuffer, m_FindCaseSensitive);
+		ImGui::SameLine();
+		if (ImGui::Button("Prev")) m_Buffer.FindPrevious(m_FindBuffer, m_FindCaseSensitive);
+		ImGui::SameLine();
+		ImGui::Checkbox("Case##findcase", &m_FindCaseSensitive);
+
+		if (m_ShowReplaceField)
+		{
+			ImGui::PushItemWidth(220.0f);
+			ImGui::InputText("Replace##replacequery", m_ReplaceBuffer, sizeof(m_ReplaceBuffer));
+			ImGui::PopItemWidth();
+			ImGui::SameLine();
+			if (ImGui::Button("Replace"))
+			{
+				// A match is always the current selection (FindNext/
+				// FindPrevious put it there) -- with none, there's nothing
+				// to replace yet, so this only advances to the next match
+				// instead of inserting text at a bare cursor.
+				if (m_Buffer.HasSelection())
+					m_Buffer.InsertText(m_ReplaceBuffer);
+				m_Buffer.FindNext(m_FindBuffer, m_FindCaseSensitive);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Replace All"))
+			{
+				int count = m_Buffer.ReplaceAll(m_FindBuffer, m_ReplaceBuffer, m_FindCaseSensitive);
+				m_StatusMessage = "Replaced " + std::to_string(count) + " occurrence(s).";
+			}
+		}
+
+		ImGui::SameLine();
+		if (ImGui::Button("Close##findclose") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+		{
+			m_ShowFindBar = false;
+			m_ShowReplaceField = false;
+		}
+
+		ImGui::Separator();
 	}
 
 	void ScrollToCursor(int visibleRows)
@@ -636,9 +799,18 @@ private:
 	char m_PathBuffer[512] = "";
 	std::string m_StatusMessage;
 	int m_ScrollRow = 0;
+	bool m_MouseDragging = false;
 	ScriptEngine* m_ScriptEngine = nullptr; // not owned -- set by EditorShell
 	std::string m_LastRunOutput;
 	std::string m_LastRunError;
+
+	// --- Find/replace bar ---------------------------------------------
+	bool m_ShowFindBar = false;
+	bool m_ShowReplaceField = false;
+	bool m_FocusFindField = false;
+	bool m_FindCaseSensitive = false;
+	char m_FindBuffer[256] = "";
+	char m_ReplaceBuffer[256] = "";
 
 	// --- GSS-to-C++ transpiler UI (Tasks 5-6) -------------------------
 	std::string m_LastSeenText;      // what the buffer held as of the last UpdatePreviewIfNeeded call

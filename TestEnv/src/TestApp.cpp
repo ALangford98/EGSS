@@ -31,12 +31,15 @@
 #include "ProfilerPanel.h"
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
+#include "EditableMeshUndoTest.h"
 
 class TestEnv : public GS::Application
 {
 public:
 	TestEnv()
 	{
+		EditableMeshUndoTest::Run();
+
 		// Before the demos, so that on the step it hands over, the demo it
 		// hands over *to* is already the active one when the demos are walked.
 		// Pushed unconditionally; without --warmup it does nothing at all.
@@ -109,5 +112,14 @@ public:
 // The one function the engine requires of you.
 GS::Application* GS::CreateApplication()
 {
+	// Before constructing TestEnv (and therefore its GS::Application base,
+	// which constructs and attaches ImGuiLayer before TestEnv's own
+	// constructor body ever runs) -- this is the only point early enough
+	// for ImGuiLayer::OnAttach to see it. "assets/fonts/..." is a plain
+	// cwd-relative path, same convention every other TestEnv asset load
+	// already uses (e.g. "assets/models/figure.gltf") -- the executable's
+	// working directory is bin/<Config>-linux-x86_64/TestEnv, where
+	// premake's postbuild step already copies TestEnv/assets.
+	GS::ImGuiLayer::SetFontPath("assets/fonts/DejaVuSansMono.ttf");
 	return new TestEnv();
 }

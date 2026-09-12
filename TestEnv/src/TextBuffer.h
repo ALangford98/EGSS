@@ -7,6 +7,7 @@
 // blank cells, same disclosed cut the embedded terminal already made).
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -32,10 +33,10 @@ public:
 	int CursorCol() const { return m_CursorCol; }
 
 	// --- Selection ------------------------------------------------------
-	// Keyboard-driven only (Shift+move extends it) -- mouse-drag selection
-	// was never wired to a cursor position in the first place (clicking in
-	// the text area doesn't move the cursor today either), so it stays out
-	// of scope here rather than being half-built.
+	// Shift+move (keyboard) and MoveTo with extend=true (a mouse click or
+	// an in-progress drag, see TextEditorPanel::HandleInput) both extend
+	// it through the same BeginOrExtendSelection path below -- one
+	// mechanism, two ways of driving it.
 	bool HasSelection() const { return m_SelectionAnchorRow >= 0; }
 	void ClearSelection() { m_SelectionAnchorRow = -1; m_SelectionAnchorCol = -1; }
 
@@ -357,6 +358,321 @@ public:
 	void MovePageUp(int rows, bool extend = false) { BeginOrExtendSelection(extend); MoveVertical(-rows); }
 	void MovePageDown(int rows, bool extend = false) { BeginOrExtendSelection(extend); MoveVertical(rows); }
 
+	void MoveDocumentStart(bool extend = false)
+	{
+		BeginOrExtendSelection(extend);
+		m_CursorRow = 0;
+		m_CursorCol = 0;
+		m_DesiredCol = 0;
+	}
+
+	void MoveDocumentEnd(bool extend = false)
+	{
+		BeginOrExtendSelection(extend);
+		m_CursorRow = LineCount() - 1;
+		m_CursorCol = (int)m_Lines.back().size();
+		m_DesiredCol = m_CursorCol;
+	}
+
+	// A mouse click's entry point: clamps into range rather than assuming
+	// the caller already did (a click can land past the last line, or past
+	// a short line's own end), then behaves exactly like every keyboard
+	// Move* above -- `extend` shared-click (or an in-progress drag)
+	// extends the selection through the same BeginOrExtendSelection path,
+	// a plain click drops it and moves the cursor there instead.
+	void MoveTo(int row, int col, bool extend = false)
+	{
+		row = std::clamp(row, 0, LineCount() - 1);
+		col = std::clamp(col, 0, (int)m_Lines[(size_t)row].size());
+		BeginOrExtendSelection(extend);
+		m_CursorRow = row;
+		m_CursorCol = col;
+		m_DesiredCol = col;
+	}
+
+	// Skips a run of whitespace, then a run of "the same category" of
+	// character (word chars vs. everything else) -- the usual Ctrl+Left/
+	// Right model. At a line's start/end, steps to the previous/next
+	// line's end/start instead, so it never gets stuck.
+	void MoveWordLeft(bool extend = false)
+	{
+		BeginOrExtendSelection(extend);
+		if (m_CursorCol == 0)
+		{
+			if (m_CursorRow > 0)
+			{
+				m_CursorRow--;
+				m_CursorCol = (int)m_Lines[(size_t)m_CursorRow].size();
+			}
+		}
+		else
+		{
+			const std::string& line = m_Lines[(size_t)m_CursorRow];
+			int col = m_CursorCol;
+			while (col > 0 && std::isspace((unsigned char)line[(size_t)col - 1]))
+				col--;
+			if (col > 0)
+			{
+				bool wordChar = IsWordChar(line[(size_t)col - 1]);
+				while (col > 0 && IsWordChar(line[(size_t)col - 1]) == wordChar)
+					col--;
+			}
+			m_CursorCol = col;
+		}
+		m_DesiredCol = m_CursorCol;
+	}
+
+	void MoveWordRight(bool extend = false)
+	{
+		BeginOrExtendSelection(extend);
+		const std::string& line = m_Lines[(size_t)m_CursorRow];
+		int len = (int)line.size();
+		if (m_CursorCol >= len)
+		{
+			if (m_CursorRow + 1 < LineCount())
+			{
+				m_CursorRow++;
+				m_CursorCol = 0;
+			}
+		}
+		else
+		{
+			int col = m_CursorCol;
+			bool wordChar = IsWordChar(line[(size_t)col]);
+			while (col < len && IsWordChar(line[(size_t)col]) == wordChar)
+				col++;
+			while (col < len && std::isspace((unsigned char)line[(size_t)col]))
+				col++;
+			m_CursorCol = col;
+		}
+		m_DesiredCol = m_CursorCol;
+	}
+
+	// Ctrl+Alt+Up/Down: duplicates the selection (or, with none, just the
+	// current line) in the given direction. The cursor/selection ends up
+	// on the *new* copy either way, so pressing the shortcut again stacks
+	// another one in the same direction -- matching the editors these
+	// bindings are borrowed from.
+	void DuplicateLines(bool below)
+	{
+		bool hadSelection = HasSelection();
+		int startRow = m_CursorRow, startCol = 0, endRow = m_CursorRow, endCol = 0;
+		if (hadSelection)
+			GetSelectionRange(startRow, startCol, endRow, endCol);
+
+		PushUndoIfNeeded(EditKind::Other);
+
+		std::vector<std::string> block(m_Lines.begin() + startRow, m_Lines.begin() + endRow + 1);
+		int insertAt = below ? endRow + 1 : startRow;
+		m_Lines.insert(m_Lines.begin() + insertAt, block.begin(), block.end());
+
+		int shiftAmount = below ? (int)block.size() : 0;
+		if (hadSelection)
+		{
+			m_SelectionAnchorRow = startRow + shiftAmount;
+			m_SelectionAnchorCol = startCol;
+			m_CursorRow = endRow + shiftAmount;
+			m_CursorCol = endCol;
+		}
+		else
+		{
+			m_CursorRow = startRow + shiftAmount;
+		}
+		m_DesiredCol = m_CursorCol;
+	}
+
+	// Ctrl+Enter / Shift+Enter: a blank line below or above the current
+	// one, indented to match it -- unlike a plain Enter, the current
+	// line's own text is never split, and any selection is dropped
+	// (not deleted) rather than being treated as something to type over.
+	void InsertLineBelow()
+	{
+		PushUndoIfNeeded(EditKind::Other);
+		std::string indent = LeadingWhitespace(m_Lines[(size_t)m_CursorRow]);
+		m_Lines.insert(m_Lines.begin() + m_CursorRow + 1, indent);
+		m_CursorRow++;
+		m_CursorCol = (int)indent.size();
+		m_DesiredCol = m_CursorCol;
+		ClearSelection();
+	}
+
+	void InsertLineAbove()
+	{
+		PushUndoIfNeeded(EditKind::Other);
+		std::string indent = LeadingWhitespace(m_Lines[(size_t)m_CursorRow]);
+		// Inserting AT the cursor's row pushes the old line down to
+		// row+1, so the new blank line lands at the row the cursor
+		// already names -- no row adjustment needed.
+		m_Lines.insert(m_Lines.begin() + m_CursorRow, indent);
+		m_CursorCol = (int)indent.size();
+		m_DesiredCol = m_CursorCol;
+		ClearSelection();
+	}
+
+	// Alt+Up/Down: moves the current line, or every line the selection
+	// touches, one row in the given direction -- a block move, not a
+	// per-line one, so a multi-line selection travels together.
+	void MoveLinesUp()
+	{
+		int startRow, startCol, endRow, endCol;
+		bool hadSelection = HasSelection();
+		if (hadSelection)
+			GetSelectionRange(startRow, startCol, endRow, endCol);
+		else
+			startRow = endRow = m_CursorRow;
+
+		if (startRow == 0)
+			return;
+
+		PushUndoIfNeeded(EditKind::Other);
+		std::string above = m_Lines[(size_t)(startRow - 1)];
+		m_Lines.erase(m_Lines.begin() + (startRow - 1));
+		m_Lines.insert(m_Lines.begin() + endRow, above);
+
+		m_CursorRow--;
+		if (hadSelection)
+			m_SelectionAnchorRow--;
+		m_DesiredCol = m_CursorCol;
+	}
+
+	void MoveLinesDown()
+	{
+		int startRow, startCol, endRow, endCol;
+		bool hadSelection = HasSelection();
+		if (hadSelection)
+			GetSelectionRange(startRow, startCol, endRow, endCol);
+		else
+			startRow = endRow = m_CursorRow;
+
+		if (endRow + 1 >= LineCount())
+			return;
+
+		PushUndoIfNeeded(EditKind::Other);
+		std::string below = m_Lines[(size_t)(endRow + 1)];
+		m_Lines.erase(m_Lines.begin() + (endRow + 1));
+		m_Lines.insert(m_Lines.begin() + startRow, below);
+
+		m_CursorRow++;
+		if (hadSelection)
+			m_SelectionAnchorRow++;
+		m_DesiredCol = m_CursorCol;
+	}
+
+	// Tab with no selection still just inserts a literal tab (InsertTab);
+	// with one, every touched line gets indented instead of the selection
+	// being replaced by a tab character -- the usual "select a block,
+	// press Tab" editor behaviour. Both ends of the selection shift by
+	// the same fixed 4 columns since every affected line grows by exactly
+	// that much at its start.
+	void IndentSelection()
+	{
+		int startRow, startCol, endRow, endCol;
+		GetSelectionRange(startRow, startCol, endRow, endCol);
+
+		PushUndoIfNeeded(EditKind::Other);
+		for (int row = startRow; row <= endRow; row++)
+			m_Lines[(size_t)row].insert(0, "    ");
+
+		m_SelectionAnchorCol += 4;
+		m_CursorCol += 4;
+		m_DesiredCol = m_CursorCol;
+	}
+
+	// Shift+Tab: removes up to 4 leading spaces (or one leading tab) from
+	// the current line (no selection) or every line the selection
+	// touches. Each affected line can lose a different amount (a
+	// shallowly-indented line has less to remove than a deep one), so
+	// the two selection endpoints are corrected independently rather than
+	// by one shared amount the way IndentSelection's uniform +4 can be.
+	void OutdentSelection()
+	{
+		if (!HasSelection())
+		{
+			int removed = OutdentLine(m_CursorRow);
+			m_CursorCol = std::max(0, m_CursorCol - removed);
+			m_DesiredCol = m_CursorCol;
+			return;
+		}
+
+		int startRow, startCol, endRow, endCol;
+		GetSelectionRange(startRow, startCol, endRow, endCol);
+
+		PushUndoIfNeeded(EditKind::Other);
+		int removedAtStart = 0, removedAtEnd = 0;
+		for (int row = startRow; row <= endRow; row++)
+		{
+			int removed = OutdentLine(row);
+			if (row == startRow) removedAtStart = removed;
+			if (row == endRow) removedAtEnd = removed;
+		}
+
+		// GetSelectionRange normalizes by document order, not by which of
+		// anchor/cursor the user actually dragged from -- correct each
+		// against whichever one it really is rather than assuming anchor
+		// is always "start".
+		if (m_SelectionAnchorRow == startRow)
+		{
+			m_SelectionAnchorCol = std::max(0, m_SelectionAnchorCol - removedAtStart);
+			m_CursorCol = std::max(0, m_CursorCol - removedAtEnd);
+		}
+		else
+		{
+			m_SelectionAnchorCol = std::max(0, m_SelectionAnchorCol - removedAtEnd);
+			m_CursorCol = std::max(0, m_CursorCol - removedAtStart);
+		}
+		m_DesiredCol = m_CursorCol;
+	}
+
+	// --- Find/replace ----------------------------------------------------
+	// Wrap-around, case-insensitive by default. A match becomes the
+	// selection (anchor at its start, cursor at its end) so repeated
+	// FindNext/FindPrevious presses step through the document instead of
+	// re-finding the same spot, and so a Replace right afterward is just
+	// "the current selection is the text to replace".
+	bool FindNext(const std::string& query, bool caseSensitive = false) { return FindImpl(query, caseSensitive, true); }
+	bool FindPrevious(const std::string& query, bool caseSensitive = false) { return FindImpl(query, caseSensitive, false); }
+
+	// One forward-only pass from the document's start -- deliberately
+	// never wraps, unlike FindNext/FindPrevious, so it terminates cleanly
+	// even when `replacement` itself contains `query` (each replacement is
+	// skipped past, never re-scanned, so it can't regrow forever). Returns
+	// how many replacements were made.
+	int ReplaceAll(const std::string& query, const std::string& replacement, bool caseSensitive = false)
+	{
+		if (query.empty())
+			return 0;
+
+		PushUndoIfNeeded(EditKind::Other);
+		m_LastEditKind = EditKind::None; // its own undo step, not coalesced with whatever ran before or after
+
+		std::string needle = caseSensitive ? query : Lowercase(query);
+		int count = 0;
+		int row = 0;
+		size_t col = 0;
+
+		while (row < LineCount())
+		{
+			std::string line = caseSensitive ? m_Lines[(size_t)row] : Lowercase(m_Lines[(size_t)row]);
+			size_t pos = line.find(needle, col);
+			if (pos == std::string::npos)
+			{
+				row++;
+				col = 0;
+				continue;
+			}
+
+			m_Lines[(size_t)row].erase(pos, needle.size());
+			m_Lines[(size_t)row].insert(pos, replacement);
+			col = pos + replacement.size();
+			count++;
+		}
+
+		ClearSelection();
+		m_CursorCol = std::min(m_CursorCol, (int)m_Lines[(size_t)m_CursorRow].size());
+		m_DesiredCol = m_CursorCol;
+		return count;
+	}
+
 	// --- Undo/redo --------------------------------------------------------
 	// Snapshot-based, not operation-based: a full copy of every line is a
 	// lot more memory per step than a diff, but this editor's own files are
@@ -458,6 +774,93 @@ private:
 		while (i < line.size() && (line[i] == ' ' || line[i] == '\t'))
 			i++;
 		return line.substr(0, i);
+	}
+
+	static bool IsWordChar(char c) { return std::isalnum((unsigned char)c) || c == '_'; }
+
+	static std::string Lowercase(const std::string& s)
+	{
+		std::string result = s;
+		for (char& c : result)
+			c = (char)std::tolower((unsigned char)c);
+		return result;
+	}
+
+	// Removes up to 4 leading spaces, or one leading tab, from `row`.
+	// Returns how many characters were actually removed, since a
+	// shallowly-indented line has less to give up than a deeply-indented
+	// one -- callers need that to keep the cursor/selection's column
+	// correct afterward.
+	int OutdentLine(int row)
+	{
+		std::string& line = m_Lines[(size_t)row];
+		int remove = 0;
+		while (remove < 4 && remove < (int)line.size() && line[(size_t)remove] == ' ')
+			remove++;
+		if (remove == 0 && !line.empty() && line[0] == '\t')
+			remove = 1;
+		line.erase(0, (size_t)remove);
+		return remove;
+	}
+
+	void SelectRange(int startRow, int startCol, int endRow, int endCol)
+	{
+		m_SelectionAnchorRow = startRow;
+		m_SelectionAnchorCol = startCol;
+		m_CursorRow = endRow;
+		m_CursorCol = endCol;
+		m_DesiredCol = endCol;
+	}
+
+	bool FindImpl(const std::string& query, bool caseSensitive, bool forward)
+	{
+		if (query.empty())
+			return false;
+
+		std::string needle = caseSensitive ? query : Lowercase(query);
+		int lineCount = LineCount();
+
+		int row, col;
+		if (HasSelection())
+		{
+			int sr, sc, er, ec;
+			GetSelectionRange(sr, sc, er, ec);
+			row = forward ? er : sr;
+			col = forward ? ec : sc;
+		}
+		else
+		{
+			row = m_CursorRow;
+			col = m_CursorCol;
+		}
+
+		// lineCount+1 passes: the extra one lets a single-line document (or
+		// any search that starts past every match on its own line) wrap
+		// all the way back around to find a match earlier on the very row
+		// it started from.
+		for (int steps = 0; steps <= lineCount; steps++)
+		{
+			bool constrained = (steps == 0);
+			std::string line = caseSensitive ? m_Lines[(size_t)row] : Lowercase(m_Lines[(size_t)row]);
+
+			size_t pos;
+			if (forward)
+				pos = line.find(needle, constrained ? (size_t)col : 0);
+			else if (constrained && col == 0)
+				pos = std::string::npos;
+			else
+				pos = line.rfind(needle, constrained ? (size_t)(col - 1) : std::string::npos);
+
+			if (pos != std::string::npos)
+			{
+				SelectRange(row, (int)pos, row, (int)(pos + needle.size()));
+				return true;
+			}
+
+			row = forward ? (row + 1) % lineCount : (row - 1 + lineCount) % lineCount;
+		}
+
+		return false;
 	}
 
 	void MoveVertical(int delta)

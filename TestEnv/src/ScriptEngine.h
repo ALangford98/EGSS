@@ -330,6 +330,29 @@ public:
 		return std::string(hex);
 	}
 
+	// "paddle.gss" -> "Paddle", "my_cool-script.gss" -> "MyCoolScript" -- the
+	// generated class's name, matching TranspileToCpp's own className
+	// parameter. Shared between TextEditorPanel (to pick the preview's
+	// class name) and PlayMode (to look a script up in the compiled-script
+	// registry by the same name), so it lives here rather than in either.
+	static std::string ClassNameFromPath(const std::string& path)
+	{
+		std::string stem = std::filesystem::path(path).stem().string();
+		std::string result;
+		bool capitalizeNext = true;
+		for (char c : stem)
+		{
+			if (c == '_' || c == '-')
+			{
+				capitalizeNext = true;
+				continue;
+			}
+			result += capitalizeNext ? (char)std::toupper((unsigned char)c) : c;
+			capitalizeNext = false;
+		}
+		return result.empty() ? "Script" : result;
+	}
+
 	// The optimize-lock (Task 6 of the transpiler plan): true if a
 	// generated file's current content no longer matches the hash
 	// TranspileToCpp stamped it with -- i.e. it's been hand-edited
@@ -1627,6 +1650,31 @@ private:
 						var cppFn = mathFns[member];
 						if (!cppFn) fail(node, "unsupported Math." + member);
 						return cppFn + "(" + emitArgs(args) + ")";
+					}
+
+					// Any other identifier holding a native GS::Entity value
+					// -- the one concrete case today is a local bound from
+					// scene.findByTag(...), e.g. `const paddle =
+					// scene.findByTag("Paddle"); paddle.getPosition()`.
+					// GS::Entity::Get<T>() works identically no matter which
+					// variable holds the handle, so the same
+					// get/setPosition/Rotation/Scale the "entity" parameter
+					// itself supports apply here too, mechanically. Nothing
+					// here proves `obj` really is a GS::Entity -- same
+					// mechanical-not-semantic trust the identifier-call
+					// branch below already places in a plausible name, and
+					// a wrong guess still just fails at the g++ syntax-check
+					// step instead of silently compiling into nonsense.
+					if (obj.kind === ts.SyntaxKind.Identifier) {
+						if (transformGetter[member]) {
+							if (args.length !== 0) fail(node, member + " takes no arguments");
+							return emitExpr(obj) + ".Get<GS::TransformComponent>()->" + transformGetter[member];
+						}
+						if (transformSetter[member]) {
+							if (args.length !== 3) fail(node, member + " needs exactly 3 arguments");
+							return emitExpr(obj) + ".Get<GS::TransformComponent>()->" + transformSetter[member] +
+								" = glm::vec3(" + emitArgs(args) + ")";
+						}
 					}
 
 					fail(node, "unsupported method call '" + member + "'");

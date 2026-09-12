@@ -8,14 +8,23 @@
 // discarding anything the scripts did. A namespace with inline state,
 // matching EditorHistory.h's own established pattern for exactly this
 // kind of scene-wide, singleton concern.
+//
+// A ScriptComponent'd entity whose script has graduated (see
+// CompiledScriptRegistry.h) skips ScriptEngine/QuickJS entirely: its native
+// GeneratedScripts::<Name> class is constructed and driven directly,
+// s_CompiledPrepared alongside s_Prepared rather than folded into it, since
+// the two need different lifetimes (shared_ptr vs. JSValue) and Stop() frees
+// each its own way.
 
 #include <GS.h>
 
+#include "CompiledScriptRegistry.h"
 #include "EditorProject.h"
 #include "ScriptEngine.h"
 
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -26,6 +35,13 @@ namespace PlayMode {
 	inline bool s_Playing = false;
 	inline ScriptEngine s_ScriptEngine;
 	inline std::unordered_map<GS::EntityId, ScriptEngine::PreparedScript> s_Prepared;
+
+	struct CompiledInstance
+	{
+		const CompiledScriptEntry* Entry = nullptr;
+		std::shared_ptr<void> Instance;
+	};
+	inline std::unordered_map<GS::EntityId, CompiledInstance> s_CompiledPrepared;
 
 	// Outside g_EditorProjectPath on purpose -- a scratch file, not a
 	// project asset, so it never shows up in the file tree.
@@ -131,6 +147,20 @@ namespace PlayMode {
 			if (script->ScriptPath.empty())
 				continue;
 
+			// Graduated scripts never touch the .gss file at all -- that's
+			// the point of graduating: the native class is the real
+			// behavior from here on, and a stale or deleted .gss no longer
+			// matters for this entity.
+			if (const CompiledScriptEntry* entry = FindCompiledScript(ScriptEngine::ClassNameFromPath(script->ScriptPath)))
+			{
+				CompiledInstance compiled;
+				compiled.Entry = entry;
+				compiled.Instance = entry->Create();
+				entry->CallOnStart(compiled.Instance.get(), GS::Entity(&g_EditorScene, id), g_EditorScene);
+				s_CompiledPrepared[id] = compiled;
+				continue;
+			}
+
 			std::ifstream file(script->ScriptPath, std::ios::in | std::ios::binary);
 			if (!file.is_open())
 			{
@@ -169,6 +199,11 @@ namespace PlayMode {
 			s_ScriptEngine.ReleasePreparedScript(pair.second);
 		s_Prepared.clear();
 
+		// No JSValues to release here -- a shared_ptr<void>'s deleter (set
+		// up inside MakeCompiledScriptEntry's Create) already knows how to
+		// destroy the real T, so clear() alone is enough.
+		s_CompiledPrepared.clear();
+
 		if (!g_EditorScene.Load(SnapshotPath()))
 			GS_ERROR("PlayMode::Stop: failed to revert scene from '{0}' -- scene may be in an unexpected state", SnapshotPath());
 
@@ -203,6 +238,23 @@ namespace PlayMode {
 			s_ScriptEngine.ReleasePreparedScript(s_Prepared[id]);
 			s_Prepared.erase(id);
 		}
+
+		// Same staleness dance as the interpreted loop above, and for the
+		// same reason: a compiled OnUpdate can call scene.destroy() (real
+		// C++ codegen supports it, see emitCall's "scene" branch) on itself
+		// or on another entity just as easily as an interpreted script can.
+		std::vector<GS::EntityId> staleCompiled;
+		for (auto& pair : s_CompiledPrepared)
+		{
+			if (!g_EditorScene.IsValid(pair.first))
+			{
+				staleCompiled.push_back(pair.first);
+				continue;
+			}
+			pair.second.Entry->CallOnUpdate(pair.second.Instance.get(), GS::Entity(&g_EditorScene, pair.first), g_EditorScene, (double)dt);
+		}
+		for (GS::EntityId id : staleCompiled)
+			s_CompiledPrepared.erase(id);
 	}
 
 }
