@@ -33,6 +33,7 @@
 #include "ScenesPanel.h"
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
+#include "NetTests/ByteStreamTest.h"
 
 class TestEnv : public GS::Application
 {
@@ -75,6 +76,8 @@ public:
 		// `./gs.py sanitize --thread` can turn it on from the command line --
 		// see the note in AudioRaceStress.h for why a race sweep needs it.
 		PushLayer(new AudioRaceStress());
+
+		ByteStreamTest::Run(); // TEMPORARY -- see NetTests/ByteStreamTest.h
 	}
 
 	// g_EditorScene is a global with static storage duration, so without this
