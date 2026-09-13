@@ -45,6 +45,25 @@ namespace GS::Net {
 		scene.DestroyEntity(entity.GetId());
 	}
 
+	void CatchUpNewClient(NetServer& server, Scene& scene, ClientId newClient)
+	{
+		auto& identities = scene.View<NetworkIdentity>();
+		for (size_t i = 0; i < identities.Size(); i++)
+		{
+			EntityId owner = identities.Owner(i);
+			const NetworkIdentity& identity = identities.Components()[i];
+			auto* transform = scene.GetComponent<TransformComponent>(owner);
+			if (!transform)
+				continue;
+
+			ByteStream spawn;
+			spawn.WriteU32(identity.NetworkId);
+			spawn.WriteU16(identity.Owner);
+			spawn.WriteVec3(transform->Position);
+			server.SendTo(newClient, kMsgSpawnEntity, spawn.Data(), spawn.Size(), Reliability::Reliable);
+		}
+	}
+
 	void ServerBroadcastSnapshots(NetServer& server, Scene& scene, float deltaSeconds)
 	{
 		auto& identities = scene.View<NetworkIdentity>();

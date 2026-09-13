@@ -12,7 +12,44 @@ namespace NetReplicationTest {
 		GS_TRACE("  [{0}] {1}", ok ? "ok " : "FAIL", what);
 	}
 
+	// The order that actually broke in the real two-process demo: an entity
+	// spawned *before* any client exists gets Broadcast to zero connections
+	// and is silently dropped -- a client that joins afterward never learns
+	// it exists unless something explicitly catches it up on connect.
+	inline void RunLateJoinCatchUp()
+	{
+		GS::NetServer server;
+		server.Host(0);
+		GS::Scene serverScene;
+
+		GS::Entity spawned = GS::Net::SpawnNetworkedEntity(server, serverScene, GS::ServerOwned, { 5.0f, 6.0f, 7.0f });
+		uint32_t networkId = spawned.Get<GS::NetworkIdentity>()->NetworkId;
+
+		server.OnClientConnected([&](GS::ClientId client) { GS::Net::CatchUpNewClient(server, serverScene, client); });
+
+		GS::NetClient client;
+		GS::Scene clientScene;
+		GS::Net::ClientBindScene(client, clientScene);
+		client.Connect({ 0x7F000001u, server.GetLocalPort() });
+
+		for (int i = 0; i < 200; i++) { server.Update(1.0f / 60.0f); client.Update(1.0f / 60.0f); }
+
+		bool found = false;
+		for (GS::EntityId id : clientScene.GetEntities())
+		{
+			auto* identity = clientScene.GetComponent<GS::NetworkIdentity>(id);
+			if (identity && identity->NetworkId == networkId)
+				found = true;
+		}
+		Check(found, "a client joining after an entity was spawned still learns about it via CatchUpNewClient");
+
+		client.Disconnect();
+		server.Shutdown();
+	}
+
 	inline void Run() {
+		RunLateJoinCatchUp();
+
 		GS::NetServer server;
 		server.Host(0);
 		GS::Scene serverScene;

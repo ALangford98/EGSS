@@ -31,6 +31,7 @@
 #include "SolarSystem.h"
 #include "PumpDiagnostics.h"
 #include "TerrainLab.h"
+#include "NetworkDemo.h"
 
 struct DemoEntry
 {
@@ -79,7 +80,8 @@ inline const DemoEntry s_Demos[] =
 	// Appended, not inserted: a recording stores the demo's *index*, so moving
 	// any line above this one silently repoints every recording made before
 	// the move at a different scene.
-	{ "Engine",   "Terrain lab (9^3 chunks, every knob)", "TerrainLab", []() -> DemoLayer* { return new TerrainLab(); } }
+	{ "Engine",   "Terrain lab (9^3 chunks, every knob)", "TerrainLab", []() -> DemoLayer* { return new TerrainLab(); } },
+	{ "Engine",   "NetworkDemo (2-process replication + RPC)", "NetworkDemo", []() -> DemoLayer* { return new NetworkDemo(); } }
 };
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));
