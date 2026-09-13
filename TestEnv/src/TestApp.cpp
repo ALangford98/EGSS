@@ -34,13 +34,6 @@
 #include "NetworkPanel.h"
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
-#include "NetTests/ByteStreamTest.h"
-#include "NetTests/SocketTest.h"
-#include "NetTests/ProtocolTest.h"
-#include "NetTests/NetConnectionTest.h"
-#include "NetTests/NetServerClientTest.h"
-#include "NetTests/NetMessageTest.h"
-#include "NetTests/NetReplicationTest.h"
 
 class TestEnv : public GS::Application
 {
@@ -84,14 +77,6 @@ public:
 		// `./gs.py sanitize --thread` can turn it on from the command line --
 		// see the note in AudioRaceStress.h for why a race sweep needs it.
 		PushLayer(new AudioRaceStress());
-
-		ByteStreamTest::Run(); // TEMPORARY -- see NetTests/ByteStreamTest.h
-		SocketTest::Run(); // TEMPORARY -- see NetTests/SocketTest.h
-		ProtocolTest::Run(); // TEMPORARY -- see NetTests/ProtocolTest.h
-		NetConnectionTest::Run(); // TEMPORARY -- see NetTests/NetConnectionTest.h
-		NetServerClientTest::Run(); // TEMPORARY -- see NetTests/NetServerClientTest.h
-		NetMessageTest::Run(); // TEMPORARY -- see NetTests/NetMessageTest.h
-		NetReplicationTest::Run(); // TEMPORARY -- see NetTests/NetReplicationTest.h
 	}
 
 	// g_EditorScene is a global with static storage duration, so without this
