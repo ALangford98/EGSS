@@ -605,6 +605,45 @@ public:
 					m_Selected, &GS::LightComponent::Enabled, m_EditBeforeBool, light->Enabled));
 		}
 
+		ImGui::SeparatorText("Network");
+		if (auto* identity = g_EditorScene.GetComponent<GS::NetworkIdentity>(m_Selected))
+		{
+			ImGui::Text("NetworkId: %u%s", identity->NetworkId,
+				identity->NetworkId == 0 ? " (not yet assigned by a live server)" : "");
+			ImGui::Text("Owner: %s", identity->Owner == GS::ServerOwned ? "Server" : std::to_string(identity->Owner).c_str());
+
+			if (auto* networkTransform = g_EditorScene.GetComponent<GS::NetworkTransform>(m_Selected))
+			{
+				ImGui::DragFloat("Send Rate (Hz)", &networkTransform->SendRate, 1.0f, 1.0f, 60.0f);
+				if (ImGui::IsItemActivated())
+					m_EditBeforeFloat = networkTransform->SendRate;
+				if (ImGui::IsItemDeactivatedAfterEdit())
+					EditorHistory::Push(std::make_unique<EditFieldCommand<GS::NetworkTransform, float>>(
+						m_Selected, &GS::NetworkTransform::SendRate, m_EditBeforeFloat, networkTransform->SendRate));
+
+				ImGui::Checkbox("Interpolate", &networkTransform->Interpolate);
+				if (ImGui::IsItemActivated())
+					m_EditBeforeBool = networkTransform->Interpolate;
+				if (ImGui::IsItemDeactivatedAfterEdit())
+					EditorHistory::Push(std::make_unique<EditFieldCommand<GS::NetworkTransform, bool>>(
+						m_Selected, &GS::NetworkTransform::Interpolate, m_EditBeforeBool, networkTransform->Interpolate));
+			}
+
+			if (ImGui::Button("Remove Network"))
+			{
+				g_EditorScene.RemoveComponent<GS::NetworkTransform>(m_Selected);
+				g_EditorScene.RemoveComponent<GS::NetworkIdentity>(m_Selected);
+			}
+		}
+		else
+		{
+			if (ImGui::Button("Add Network"))
+			{
+				g_EditorScene.AddComponent<GS::NetworkIdentity>(m_Selected, GS::NetworkIdentity{});
+				g_EditorScene.AddComponent<GS::NetworkTransform>(m_Selected, GS::NetworkTransform{});
+			}
+		}
+
 		ImGui::SeparatorText("Script");
 		if (auto* script = g_EditorScene.GetComponent<GS::ScriptComponent>(m_Selected))
 		{
