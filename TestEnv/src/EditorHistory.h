@@ -306,6 +306,15 @@ namespace EditorHistory {
 	inline std::vector<std::unique_ptr<EditorCommand>> s_Commands;
 	inline size_t s_Cursor = 0;
 
+	// The cursor value at the last successful save. Dirty is "the cursor
+	// has moved since then" -- exact, not a coarse boolean: undoing back
+	// to precisely the point a save happened reads as clean again, because
+	// position (not just "has anything happened") is what's compared.
+	inline size_t s_CleanCursor = 0;
+
+	inline bool IsDirty() { return s_Cursor != s_CleanCursor; }
+	inline void MarkClean() { s_CleanCursor = s_Cursor; }
+
 	inline bool CanUndo() { return s_Cursor > 0; }
 	inline bool CanRedo() { return s_Cursor < s_Commands.size(); }
 
@@ -355,6 +364,7 @@ namespace EditorHistory {
 	{
 		s_Commands.clear();
 		s_Cursor = 0;
+		s_CleanCursor = 0;
 		s_Remap.clear();
 	}
 

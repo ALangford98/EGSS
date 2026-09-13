@@ -30,6 +30,7 @@
 #include "EditorProject.h"
 #include "ProfilerPanel.h"
 #include "AppearancePanel.h"
+#include "ScenesPanel.h"
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
 
@@ -69,6 +70,7 @@ public:
 		PushLayer(new DemoSelector());
 		PushLayer(new ProfilerPanel());
 		PushLayer(new AppearancePanel());
+		PushLayer(new ScenesPanel());
 		// Inert without --audio-stress. Pushed unconditionally so
 		// `./gs.py sanitize --thread` can turn it on from the command line --
 		// see the note in AudioRaceStress.h for why a race sweep needs it.

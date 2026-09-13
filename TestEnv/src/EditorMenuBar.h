@@ -27,6 +27,7 @@
 #include "EditorShell.h"
 #include "FileBrowserPopup.h"
 #include "PlayMode.h"
+#include "SceneSwapGuard.h"
 
 class EditorMenuBar : public GS::Layer
 {
@@ -84,6 +85,7 @@ public:
 		DrawFileDialogs();
 		DrawViewDialogs();
 		DrawFindPopup();
+		SceneSwapGuard::DrawUnsavedChangesModal();
 	}
 
 	void OnFixedUpdate(GS::Timestep step) override
@@ -105,24 +107,6 @@ private:
 		GS::EntityId selection = EditorHistory::Redo();
 		if (g_EditorSceneView)
 			g_EditorSceneView->Select(selection);
-	}
-
-	// Every action that swaps the scene out from under the editor (New,
-	// Open, Open Demo) needs undo history and selection cleared -- that
-	// part is centralised here so no call site can forget it (Task 2's own
-	// comment about a stale selection aliasing an unrelated entity is
-	// exactly the bug this prevents recurring). Resetting the project
-	// globals (g_EditorProjectPath/g_EditorProjectName) is each call site's
-	// own responsibility instead: New/Open Project already get the correct
-	// values from CreateEditorProject/OpenEditorProject themselves, so
-	// clearing them here would immediately wipe out what those functions
-	// just set. Open Demo has no project of its own, so it clears them
-	// directly at its own call site.
-	void ResetForNewScene()
-	{
-		EditorHistory::Clear();
-		if (g_EditorSceneView)
-			g_EditorSceneView->Select(GS::InvalidEntity);
 	}
 
 	void DrawFileMenu()
@@ -147,6 +131,7 @@ private:
 				SaveEditorProject();
 			else
 				SaveEditorScene(g_EditorScenePath);
+			EditorHistory::MarkClean();
 		}
 		if (ImGui::MenuItem("Save As..."))
 			m_PendingPopup = "Save Project As";
@@ -164,17 +149,20 @@ private:
 
 				if (ImGui::MenuItem(s_Demos[i].Name))
 				{
-					g_EditorScene.Clear();
-					g_EditorScenePath.clear();
-					// A demo's exported content isn't a Project (no folder, no
-					// manifest) -- leaving the previous project's path/name
-					// behind would keep Save/Rename Project enabled while
-					// pointing at a manifest that no longer matches what's
-					// on screen.
-					g_EditorProjectPath.clear();
-					g_EditorProjectName.clear();
-					ResetForNewScene();
-					s_DemoInstances[i]->OnExportToScene(g_EditorScene);
+					SceneSwapGuard::RequestSceneSwap([this, i]
+					{
+						g_EditorScene.Clear();
+						g_EditorScenePath.clear();
+						// A demo's exported content isn't a Project (no folder, no
+						// manifest) -- leaving the previous project's path/name
+						// behind would keep Save/Rename Project enabled while
+						// pointing at a manifest that no longer matches what's
+						// on screen.
+						g_EditorProjectPath.clear();
+						g_EditorProjectName.clear();
+						SceneSwapGuard::ResetForNewScene();
+						s_DemoInstances[i]->OnExportToScene(g_EditorScene);
+					});
 				}
 			}
 			ImGui::EndMenu();
@@ -209,10 +197,20 @@ private:
 		{
 			DrawFolderField();
 			ImGui::InputText("Name", m_DialogName, sizeof(m_DialogName));
-			if (ImGui::Button("Create") && CreateEditorProject(m_DialogPath, m_DialogName))
+			if (ImGui::Button("Create"))
 			{
-				ResetForNewScene();
-				ImGui::CloseCurrentPopup();
+				bool succeeded = false;
+				bool ranNow = SceneSwapGuard::RequestSceneSwap([this, &succeeded]
+				{
+					succeeded = CreateEditorProject(m_DialogPath, m_DialogName);
+					if (succeeded)
+						SceneSwapGuard::ResetForNewScene();
+				});
+				// Either it ran now and we know whether it succeeded, or
+				// it was handed to the Unsaved Changes modal -- either
+				// way, this dialog's own job is done.
+				if (!ranNow || succeeded)
+					ImGui::CloseCurrentPopup();
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("Cancel"))
@@ -225,15 +223,18 @@ private:
 			DrawFolderField();
 			if (ImGui::Button("Open"))
 			{
-				bool opened = OpenEditorProject(m_DialogPath);
-				// GS::Scene::Load clears the scene before returning false
-				// on a wrong tag/version, so a failed open can still have
-				// wiped g_EditorScene -- history/selection must be reset
-				// regardless of whether the open itself succeeded, or
-				// Undo/Redo and the current selection end up referencing
-				// entities from a scene that no longer exists.
-				ResetForNewScene();
-				if (opened)
+				bool succeeded = false;
+				bool ranNow = SceneSwapGuard::RequestSceneSwap([this, &succeeded]
+				{
+					// GS::Scene::Load clears the scene before returning
+					// false on a wrong tag/version, so a failed open can
+					// still have wiped g_EditorScene -- history/selection
+					// must be reset regardless of whether the open itself
+					// succeeded.
+					succeeded = OpenEditorProject(m_DialogPath);
+					SceneSwapGuard::ResetForNewScene();
+				});
+				if (!ranNow || succeeded)
 					ImGui::CloseCurrentPopup();
 			}
 			ImGui::SameLine();
@@ -247,7 +248,10 @@ private:
 			DrawFolderField();
 			ImGui::InputText("Name", m_DialogName, sizeof(m_DialogName));
 			if (ImGui::Button("Save") && SaveEditorProjectAs(m_DialogPath, m_DialogName))
+			{
+				EditorHistory::MarkClean();
 				ImGui::CloseCurrentPopup();
+			}
 			ImGui::SameLine();
 			if (ImGui::Button("Cancel"))
 				ImGui::CloseCurrentPopup();
@@ -523,7 +527,7 @@ private:
 			if (ImGui::Button("Stop"))
 			{
 				PlayMode::Stop();
-				ResetForNewScene(); // Stop()'s Scene::Load is a scene swap like any other -- same stale-id-aliasing risk New/Open/Open Demo already guard against
+				SceneSwapGuard::ResetForNewScene(); // Stop()'s Scene::Load is a scene swap like any other -- same stale-id-aliasing risk New/Open/Open Demo already guard against
 			}
 		}
 	}

@@ -449,6 +449,7 @@ private:
 
 		ImGui::DockBuilderDockWindow("Files", left);
 		ImGui::DockBuilderDockWindow("Outliner", left);
+		ImGui::DockBuilderDockWindow("Scenes", left);
 		ImGui::DockBuilderDockWindow("Inspector", rightLower);
 
 		ImGui::DockBuilderDockWindow("Scene", centre);

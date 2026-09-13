@@ -18,6 +18,9 @@
 
 #include <GS.h>
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/euler_angles.hpp>
+
 #include "CompiledScriptRegistry.h"
 #include "EditorProject.h"
 #include "ScriptEngine.h"
@@ -33,6 +36,8 @@
 namespace PlayMode {
 
 	inline bool s_Playing = false;
+	inline GS::PhysicsWorld3D s_PhysicsWorld;
+	inline std::unordered_map<GS::EntityId, GS::PhysicsWorld3D::BodyHandle> s_PhysicsBodies;
 	inline ScriptEngine s_ScriptEngine;
 	inline std::unordered_map<GS::EntityId, ScriptEngine::PreparedScript> s_Prepared;
 
@@ -131,6 +136,9 @@ namespace PlayMode {
 			return;
 		}
 
+		s_PhysicsWorld = GS::PhysicsWorld3D();
+		s_PhysicsBodies.clear();
+
 		// Scoped to this one session, not s_ScriptEngine's lifetime (which
 		// spans every Play/Stop cycle for the whole app run) -- otherwise
 		// editing a module file and pressing Play again would keep running
@@ -140,6 +148,39 @@ namespace PlayMode {
 
 		for (GS::EntityId id : g_EditorScene.GetEntities())
 		{
+			// Independent of the script check below -- an entity can have
+			// both a script and a PhysicsComponent, and one with only a
+			// PhysicsComponent must not be skipped by the script loop's own
+			// `continue`, so this runs before it, not after.
+			if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(id))
+				if (auto* physics = g_EditorScene.GetComponent<GS::PhysicsComponent>(id))
+				{
+					glm::vec3 halfExtents;
+					if (auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(id); mesh && mesh->Geometry)
+						halfExtents = (mesh->Geometry->GetBoundsMax() - mesh->Geometry->GetBoundsMin()) * 0.5f * transform->Scale;
+					else
+						halfExtents = transform->Scale * 0.5f;
+
+					GS::RigidBody3D body = (physics->Type == GS::BodyType::Dynamic)
+						? GS::RigidBody3D::MakeBox(transform->Position, halfExtents, physics->Mass)
+						: GS::RigidBody3D::MakeStaticBox(transform->Position, halfExtents);
+					if (physics->Type == GS::BodyType::Kinematic)
+						body.Type = GS::BodyType::Kinematic;
+
+					// Matches TransformComponent::GetTransform()'s own
+					// rotation composition (Rx * Ry * Rz, degrees) exactly,
+					// so a physics body starts at the same orientation the
+					// object was already rendering at.
+					body.Orientation = glm::quat_cast(glm::mat3(
+						glm::rotate(glm::mat4(1.0f), glm::radians(transform->Rotation.x), glm::vec3(1, 0, 0)) *
+						glm::rotate(glm::mat4(1.0f), glm::radians(transform->Rotation.y), glm::vec3(0, 1, 0)) *
+						glm::rotate(glm::mat4(1.0f), glm::radians(transform->Rotation.z), glm::vec3(0, 0, 1))));
+					body.Friction = physics->Friction;
+					body.Restitution = physics->Restitution;
+
+					s_PhysicsBodies[id] = s_PhysicsWorld.AddBody(body);
+				}
+
 			if (!g_EditorScene.HasComponent<GS::ScriptComponent>(id))
 				continue;
 
@@ -214,6 +255,25 @@ namespace PlayMode {
 	{
 		if (!s_Playing)
 			return;
+
+		s_PhysicsWorld.Step(dt);
+
+		for (auto& [id, handle] : s_PhysicsBodies)
+		{
+			if (!g_EditorScene.IsValid(id))
+				continue;   // a script could destroy a physics entity mid-Play, same staleness possibility s_Prepared's own loop already guards against
+
+			auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(id);
+			if (!transform)
+				continue;
+
+			const GS::RigidBody3D& body = s_PhysicsWorld.GetBody(handle);
+			transform->Position = body.Position;
+
+			float x, y, z;
+			glm::extractEulerAngleXYZ(glm::mat4_cast(body.Orientation), x, y, z);
+			transform->Rotation = glm::degrees(glm::vec3(x, y, z));
+		}
 
 		// scene.destroy() (ScriptEngine.h) can remove any entity, including
 		// one with its own running script -- self-destruction, or another
