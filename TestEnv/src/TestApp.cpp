@@ -35,6 +35,7 @@
 #include "PlayMode.h"
 #include "NetTests/ByteStreamTest.h"
 #include "NetTests/SocketTest.h"
+#include "NetTests/ProtocolTest.h"
 
 class TestEnv : public GS::Application
 {
@@ -80,6 +81,7 @@ public:
 
 		ByteStreamTest::Run(); // TEMPORARY -- see NetTests/ByteStreamTest.h
 		SocketTest::Run(); // TEMPORARY -- see NetTests/SocketTest.h
+		ProtocolTest::Run(); // TEMPORARY -- see NetTests/ProtocolTest.h
 	}
 
 	// g_EditorScene is a global with static storage duration, so without this
