@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <sstream>
 #include <vector>
+#include <cctype>
 
 #include "ThemeManager.h"
 
@@ -216,6 +217,7 @@ inline bool CreateEditorProject(const std::string& folderPath, const std::string
 	ProjectManifest manifest;
 	manifest.Name = name;
 	manifest.SceneRelativePath = "scene.txt";
+	manifest.Scenes = { { "Main", "scene.txt" } };
 
 	std::string scenePath = (std::filesystem::path(folderPath) / manifest.SceneRelativePath).string();
 
@@ -239,6 +241,7 @@ inline bool CreateEditorProject(const std::string& folderPath, const std::string
 	g_EditorProjectPath = folderPath;
 	g_EditorProjectName = name;
 	g_EditorScenePath = scenePath;
+	g_ProjectScenes = manifest.Scenes;
 	return true;
 }
 
@@ -258,6 +261,7 @@ inline bool SaveEditorProjectAs(const std::string& folderPath, const std::string
 	ProjectManifest manifest;
 	manifest.Name = name;
 	manifest.SceneRelativePath = "scene.txt";
+	manifest.Scenes = { { "Main", "scene.txt" } };
 
 	std::string scenePath = (std::filesystem::path(folderPath) / manifest.SceneRelativePath).string();
 	if (!g_EditorScene.Save(scenePath))
@@ -275,6 +279,7 @@ inline bool SaveEditorProjectAs(const std::string& folderPath, const std::string
 	g_EditorProjectPath = folderPath;
 	g_EditorProjectName = name;
 	g_EditorScenePath = scenePath;
+	g_ProjectScenes = manifest.Scenes;
 	return true;
 }
 
@@ -296,6 +301,7 @@ inline bool OpenEditorProject(const std::string& folderPath)
 
 	g_EditorProjectPath = folderPath;
 	g_EditorProjectName = manifest.Name;
+	g_ProjectScenes = manifest.Scenes;
 	return true;
 }
 
@@ -327,4 +333,145 @@ inline bool RenameEditorProject(const std::string& newName)
 
 	g_EditorProjectName = newName;
 	return true;
+}
+
+// Non-empty, no spaces, and not already used by another scene in this
+// project (matching against `ignoreExisting` lets a no-op rename -- to the
+// name it already has -- succeed instead of colliding with itself).
+inline bool IsValidSceneName(const std::string& name, const std::string& ignoreExisting = "")
+{
+	if (name.empty())
+		return false;
+	for (char c : name)
+		if (std::isspace((unsigned char)c))
+			return false;
+	for (const SceneEntry& entry : g_ProjectScenes)
+		if (entry.Name == name && entry.Name != ignoreExisting)
+			return false;
+	return true;
+}
+
+// Rewrites project.gsproj from g_ProjectScenes plus whichever entry's path
+// matches the currently-active g_EditorScenePath -- the manifest's `scene`
+// line is derived here rather than stored separately, so the two can never
+// drift apart.
+inline void PersistProjectScenes()
+{
+	ProjectManifest manifest;
+	manifest.Name = g_EditorProjectName;
+	manifest.Scenes = g_ProjectScenes;
+
+	for (const SceneEntry& entry : g_ProjectScenes)
+	{
+		std::string joined = (std::filesystem::path(g_EditorProjectPath) / entry.RelativePath).string();
+		if (joined == g_EditorScenePath)
+		{
+			manifest.SceneRelativePath = entry.RelativePath;
+			break;
+		}
+	}
+
+	WriteProjectManifest(g_EditorProjectPath, manifest);
+}
+
+inline bool CreateSceneInProject(const std::string& name)
+{
+	if (g_EditorProjectPath.empty() || !IsValidSceneName(name))
+		return false;
+
+	std::filesystem::path scenesDir = std::filesystem::path(g_EditorProjectPath) / "scenes";
+	std::error_code ec;
+	std::filesystem::create_directories(scenesDir, ec);
+	if (ec)
+	{
+		GS_WARN("Could not create '{0}': {1}", scenesDir.string(), ec.message());
+		return false;
+	}
+
+	std::string relativePath = "scenes/" + name + ".txt";
+	std::string fullPath = (std::filesystem::path(g_EditorProjectPath) / relativePath).string();
+
+	// Truly blank -- no entities -- the same "nothing speculative" shape
+	// CreateEditorProject's own initial scene already uses.
+	GS::Scene blank;
+	if (!blank.Save(fullPath))
+	{
+		GS_WARN("Could not create the new scene's file at '{0}'", fullPath);
+		return false;
+	}
+
+	g_ProjectScenes.push_back({ name, relativePath });
+	PersistProjectScenes();
+	return true;
+}
+
+inline bool DuplicateSceneInProject(const std::string& sourceName, const std::string& newName)
+{
+	if (g_EditorProjectPath.empty() || !IsValidSceneName(newName))
+		return false;
+
+	const SceneEntry* source = nullptr;
+	for (const SceneEntry& entry : g_ProjectScenes)
+		if (entry.Name == sourceName)
+			source = &entry;
+	if (!source)
+		return false;
+
+	std::string relativePath = "scenes/" + newName + ".txt";
+	std::filesystem::path sourcePath = std::filesystem::path(g_EditorProjectPath) / source->RelativePath;
+	std::filesystem::path destPath = std::filesystem::path(g_EditorProjectPath) / relativePath;
+
+	std::error_code ec;
+	std::filesystem::create_directories(destPath.parent_path(), ec);
+	std::filesystem::copy_file(sourcePath, destPath, ec);
+	if (ec)
+	{
+		GS_WARN("Could not duplicate '{0}' to '{1}': {2}", sourcePath.string(), destPath.string(), ec.message());
+		return false;
+	}
+
+	g_ProjectScenes.push_back({ newName, relativePath });
+	PersistProjectScenes();
+	return true;
+}
+
+inline bool RenameSceneInProject(const std::string& oldName, const std::string& newName)
+{
+	if (g_EditorProjectPath.empty() || !IsValidSceneName(newName, oldName))
+		return false;
+
+	for (SceneEntry& entry : g_ProjectScenes)
+	{
+		if (entry.Name != oldName)
+			continue;
+		entry.Name = newName;
+		PersistProjectScenes();
+		return true;
+	}
+	return false;
+}
+
+// Refuses the active scene (switch away first) and the project's last
+// remaining scene (a project with zero scenes has nothing to open).
+inline bool DeleteSceneFromProject(const std::string& name)
+{
+	if (g_EditorProjectPath.empty() || g_ProjectScenes.size() <= 1)
+		return false;
+
+	for (size_t i = 0; i < g_ProjectScenes.size(); i++)
+	{
+		if (g_ProjectScenes[i].Name != name)
+			continue;
+
+		std::string fullPath = (std::filesystem::path(g_EditorProjectPath) / g_ProjectScenes[i].RelativePath).string();
+		if (fullPath == g_EditorScenePath)
+			return false;
+
+		std::error_code ec;
+		std::filesystem::remove(fullPath, ec);
+		g_ProjectScenes.erase(g_ProjectScenes.begin() + i);
+		PersistProjectScenes();
+		return true;
+	}
+	return false;
 }
