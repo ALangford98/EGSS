@@ -10,6 +10,7 @@
 #include <fstream>
 #include <filesystem>
 #include <sstream>
+#include <vector>
 
 #include "ThemeManager.h"
 
@@ -99,10 +100,17 @@ inline void LoadEditorProjectFromCommandLine()
 // wrapping today's single g_EditorScene. Deliberately one scene per
 // project for now -- a project that can hold several is a real feature for
 // when something actually needs it, not built speculatively here.
+struct SceneEntry
+{
+	std::string Name;
+	std::string RelativePath;
+};
+
 struct ProjectManifest
 {
 	std::string Name;
 	std::string SceneRelativePath;
+	std::vector<SceneEntry> Scenes;
 };
 
 inline const char* ProjectManifestFilename() { return "project.gsproj"; }
@@ -144,6 +152,22 @@ inline bool ReadProjectManifest(const std::string& folderPath, ProjectManifest& 
 		{
 			fields >> out.SceneRelativePath;
 		}
+		else if (key == "sceneentry")
+		{
+			SceneEntry entry;
+			fields >> entry.Name >> entry.RelativePath;
+			out.Scenes.push_back(entry);
+		}
+	}
+
+	// Old-format manifest (no sceneentry lines): synthesize the one scene
+	// it already names, so every caller of ReadProjectManifest can rely on
+	// Scenes being non-empty for any manifest with a valid `scene` line,
+	// without needing to know the format's history.
+	if (out.Scenes.empty() && !out.SceneRelativePath.empty())
+	{
+		std::string stem = std::filesystem::path(out.SceneRelativePath).stem().string();
+		out.Scenes.push_back({ stem, out.SceneRelativePath });
 	}
 
 	return !out.SceneRelativePath.empty();
@@ -160,6 +184,8 @@ inline bool WriteProjectManifest(const std::string& folderPath, const ProjectMan
 	out << "gs-project 1\n";
 	out << "name " << manifest.Name << "\n";
 	out << "scene " << manifest.SceneRelativePath << "\n";
+	for (const SceneEntry& entry : manifest.Scenes)
+		out << "sceneentry " << entry.Name << " " << entry.RelativePath << "\n";
 	return true;
 }
 
@@ -167,6 +193,12 @@ inline bool WriteProjectManifest(const std::string& folderPath, const ProjectMan
 // project is open (a bare --scene session, exactly today's behaviour).
 inline std::string g_EditorProjectPath;
 inline std::string g_EditorProjectName;
+
+// Every scene the open project knows about (mirrors the manifest's
+// sceneentry lines). Empty when no project is open. Create/Duplicate/
+// Rename/DeleteSceneFromProject keep this in sync with disk; nothing here
+// re-reads the manifest mid-session.
+inline std::vector<SceneEntry> g_ProjectScenes;
 
 // Creates a new, blank project: the folder, a fresh empty scene inside it,
 // and a manifest naming both. Clears g_EditorScene first -- "new" means
