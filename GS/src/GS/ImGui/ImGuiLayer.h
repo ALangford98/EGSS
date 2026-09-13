@@ -8,6 +8,8 @@
 
 #include <string>
 
+struct ImFont;
+
 namespace GS {
 
 	// Pushed as an overlay by Application, so it sits above every game layer
@@ -59,6 +61,25 @@ namespace GS {
 			s_FontPath = path;
 			s_FontSizePixels = sizePixels;
 		}
+
+		// Runtime font switching, unlike the static SetFontPath above (which
+		// only works pre-OnAttach) -- called any time after the ImGui
+		// context exists. Queues the request; Begin() applies it at the
+		// start of the next frame, since rebuilding io.Fonts mid-frame
+		// would leave already-drawn widgets pointing at freed glyphs.
+		void RequestFontReload(const std::string& controlsPath, float controlsSize,
+			const std::string& editorPath, float editorSize,
+			const std::string& terminalPath, float terminalSize)
+		{
+			m_PendingControlsPath = controlsPath; m_PendingControlsSize = controlsSize;
+			m_PendingEditorPath = editorPath; m_PendingEditorSize = editorSize;
+			m_PendingTerminalPath = terminalPath; m_PendingTerminalSize = terminalSize;
+			m_FontReloadPending = true;
+		}
+
+		ImFont* GetControlsFont() const { return m_ControlsFont; }
+		ImFont* GetEditorFont() const { return m_EditorFont; }
+		ImFont* GetTerminalFont() const { return m_TerminalFont; }
 	private:
 		bool m_BlockEvents = true;
 		bool m_DockspaceEnabled = true;
@@ -66,6 +87,15 @@ namespace GS {
 
 		static std::string s_FontPath;
 		static float s_FontSizePixels;
+
+		bool m_FontReloadPending = false;
+		std::string m_PendingControlsPath, m_PendingEditorPath, m_PendingTerminalPath;
+		float m_PendingControlsSize = 16.0f, m_PendingEditorSize = 16.0f, m_PendingTerminalSize = 16.0f;
+		ImFont* m_ControlsFont = nullptr;
+		ImFont* m_EditorFont = nullptr;
+		ImFont* m_TerminalFont = nullptr;
+
+		void ApplyPendingFontReload();
 	};
 
 }

@@ -10,6 +10,7 @@
 #include "PlayMode.h"
 #include "ScriptEngine.h"
 #include "TextBuffer.h"
+#include "ThemeManager.h"
 
 #include <algorithm>
 #include <cmath>
@@ -248,8 +249,22 @@ public:
 			ScrollToCursor(rows);
 
 			m_Grid.Resize(totalCols, rows);
-			RenderBufferToGrid(m_Buffer, m_Grid, m_Theme, m_ScrollRow, gutterDigits, gutterCols, textCols, rows);
+			const Theme& theme = ThemeManager::Current();
+			EditorTheme syntaxTheme{};
+			syntaxTheme.Background = theme.SyntaxBackground;
+			syntaxTheme.Foreground = theme.SyntaxForeground;
+			syntaxTheme.LineNumberFg = theme.SyntaxLineNumberFg;
+			syntaxTheme.CurrentLineNumberFg = theme.SyntaxForeground;
+			syntaxTheme.CursorColor = theme.SyntaxCursorColor;
+			syntaxTheme.Keyword = theme.SyntaxKeyword;
+			syntaxTheme.StringLiteral = theme.SyntaxStringLiteral;
+			syntaxTheme.Comment = theme.SyntaxComment;
+			syntaxTheme.SelectionBg = theme.SyntaxSelectionBg;
+			RenderBufferToGrid(m_Buffer, m_Grid, syntaxTheme, m_ScrollRow, gutterDigits, gutterCols, textCols, rows);
+
+			ImGui::PushFont(GS::Application::Get().GetImGuiLayer()->GetEditorFont());
 			m_Grid.Render();
+			ImGui::PopFont();
 		}
 
 		if (showPreview)
@@ -795,7 +810,6 @@ private:
 
 	TextBuffer m_Buffer;
 	CellGrid m_Grid;
-	EditorTheme m_Theme = EverforestDark();
 	char m_PathBuffer[512] = "";
 	std::string m_StatusMessage;
 	int m_ScrollRow = 0;

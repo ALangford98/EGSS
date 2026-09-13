@@ -57,8 +57,9 @@ namespace GS {
 			if (!font)
 			{
 				GS_CORE_WARN("ImGuiLayer: could not load font '{0}', falling back to the default", s_FontPath);
-				io.Fonts->AddFontDefault();
+				font = io.Fonts->AddFontDefault();
 			}
+			m_ControlsFont = m_EditorFont = m_TerminalFont = font;
 		}
 
 		// A panel that has left the main window is an OS window, and an OS
@@ -101,8 +102,51 @@ namespace GS {
 		}
 	}
 
+	void ImGuiLayer::ApplyPendingFontReload()
+	{
+		if (!m_FontReloadPending)
+			return;
+		m_FontReloadPending = false;
+
+		ImGuiIO& io = ImGui::GetIO();
+		io.Fonts->Clear();
+
+		auto loadOrDefault = [&io](const std::string& path, float size) -> ImFont*
+		{
+			if (path.empty())
+				return io.Fonts->AddFontDefault();
+			ImFont* font = io.Fonts->AddFontFromFileTTF(path.c_str(), size);
+			if (!font)
+			{
+				GS_CORE_WARN("ImGuiLayer: could not load font '{0}', falling back to the default", path);
+				font = io.Fonts->AddFontDefault();
+			}
+			return font;
+		};
+
+		m_ControlsFont = loadOrDefault(m_PendingControlsPath, m_PendingControlsSize);
+		m_EditorFont = loadOrDefault(m_PendingEditorPath, m_PendingEditorSize);
+		m_TerminalFont = loadOrDefault(m_PendingTerminalPath, m_PendingTerminalSize);
+
+		io.FontDefault = m_ControlsFont;
+		io.Fonts->Build();
+
+		// Nothing else needed: this ImGui version (1.92.x) manages font
+		// textures itself through ImTextureData/ImTextureStatus -- a fresh
+		// ImFontAtlas::Clear()+Build() leaves the new atlas's texture
+		// marked ImTextureStatus_WantCreate (its status on construction),
+		// which ImGui_ImplOpenGL3_RenderDrawData already checks for and
+		// uploads every frame (see imgui_impl_opengl3.cpp). The older
+		// CreateFontsTexture/DestroyFontsTexture pair this project's design
+		// doc assumed doesn't exist in this backend version -- checked
+		// against the vendored header, not guessed, after the build caught
+		// the mismatch.
+	}
+
 	void ImGuiLayer::Begin()
 	{
+		ApplyPendingFontReload();
+
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
