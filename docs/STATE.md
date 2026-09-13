@@ -38,6 +38,41 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
+- **Multiplayer/networking foundation** — the sub-project this file has
+  named as unstarted since before the editor pivot, scoped and built once
+  the scene model existed to replicate. See
+  `docs/superpowers/specs/2026-09-13-multiplayer-foundation-design.md` and
+  `docs/superpowers/plans/2026-09-13-multiplayer-foundation.md` (13 tasks).
+  Host-as-server over raw UDP with a custom reliable-ordered channel
+  (`GS/src/GS/Network/`: `Socket`, `ByteStream`, `Protocol`,
+  `NetConnection`, `NetServer`/`NetClient`, `NetMessage` for hashed-name
+  RPCs, `NetReplication` for `NetworkIdentity`/`NetworkTransform`
+  auto-replication) — no vendored networking library, no dedicated-server
+  binary. Editor gets a "Network" panel (host/join, connected-client
+  RTT) and Inspector support for the two new components.
+  **Three real bugs found and fixed, all by testing against real sockets
+  rather than trusting the algorithm on paper:** (1) a side with nothing
+  queued didn't ack for up to 1s (the keepalive interval), during which
+  the peer's 250ms resend timer kept re-sending everything unacked,
+  producing duplicates; (2) multiple reliable messages queued in the same
+  `Flush` serialized in `unordered_map` iteration order instead of queue
+  order, breaking "reliable-ordered"; (3) found only by running two real
+  `TestEnv` processes, not the same-process unit tests — an entity
+  spawned before a client connects was never sent to that client, since
+  `Broadcast` only reaches connections that exist at the moment it's
+  called. Fixed with `NetReplication::CatchUpNewClient` on
+  `OnClientConnected`. `NetworkDemo` (`--demo NetworkDemo --host <port>` /
+  `--join <addr:port>`) proves the whole stack with two real OS
+  processes; verifying it needed a `--net-capture <path>` flag that
+  captures on the real event (connection completes) rather than a fixed
+  frame count, since two independently-timed processes share no clock.
+  **Deliberately out of scope, a named follow-up:** client-side
+  prediction/reconciliation (inputs are already sent every fixed step so
+  it can be added without a protocol change), a headless dedicated
+  server, matchmaking/NAT traversal, and generic reflected component
+  replication (only `TransformComponent` auto-replicates; everything
+  else is a manual RPC). Temporary `NetTests/` self-tests deleted after
+  verifying, per the self-test pattern. README changelog entry added.
 - **Mesh authoring — a vertex/face editor for meshes already placed in the
   scene, landed via `docs/superpowers/plans/2026-09-12-mesh-authoring.md`
   (9 tasks) plus its spec.** `EditableMesh` (welded points + coplanar-
@@ -1103,10 +1138,6 @@ possible, a rendered capture of the real UI.**
 
 Unstarted, in the order they were last discussed:
 
-- **Multiplayer/networking foundation.** Nothing exists yet — no transport, no
-  replication, no session model. Explicitly out of scope for the editor pivot
-  above; scope it out as its own sub-project once the editor's scene model
-  exists to replicate.
 - **Character attributes.** `s_Strength` in `TerrainLab.h` is deliberately a
   constant with a hook where a stat should be — carry capacity trained by use.
   The owner deferred this ("further down the line"), so **ask before starting

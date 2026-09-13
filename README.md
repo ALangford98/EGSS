@@ -1268,6 +1268,90 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-09-14 (multiplayer foundation: UDP transport, replication, RPCs, editor integration)
+
+**The networking foundation `docs/STATE.md` had carried as "unstarted" since
+before the editor pivot.** Host-as-server over raw UDP: one process's
+`NetServer` is the authority, everyone else's `NetClient` connects to it —
+no dedicated-server binary, no vendored networking library. `GS/src/GS/
+Network/` is the whole engine module: `Socket` (non-blocking POSIX UDP),
+`ByteStream` (the binary reader/writer everything is built from), `Protocol`
+(packet header, uint16 sequence wraparound comparison), `NetConnection` (one
+small reliable-ordered channel — sequence numbers, a 32-bit ack bitfield,
+resend-on-timeout), `NetServer`/`NetClient` (the connect handshake and
+session model), `NetMessage` (hashed-name RPCs), and `NetReplication` (the
+only code that knows about both the network layer and `Scene` — keeps
+`NetServer`/`NetClient` scene-agnostic). Two new opt-in components,
+`NetworkIdentity` + `NetworkTransform`, auto-replicate `TransformComponent`
+at a configurable send rate; everything else (score, "ball bounced") is a
+manual `Net::SendRPC`. Client-side prediction/reconciliation is deliberately
+out of scope here — inputs are already sent every fixed step so it can be
+added later without a protocol change, but for now a client's own entity
+only moves when a server snapshot says so.
+
+**Two real bugs, both found by testing against a real socket pair rather
+than trusting the algorithm on paper — and both more interesting than the
+fix.** (1) `NetConnection::Flush` only sent when it had its own content
+queued or the 1s keepalive timer elapsed, so a side with nothing to send
+(a receiver with no queued reply) didn't ack for up to a full second —
+meanwhile the sender's 250ms resend timer kept re-sending everything
+unacked in the meantime, producing duplicates that broke both an
+exactly-once count and delivery order. Fixed by tracking "a packet arrived
+worth acking" as its own reason to send, independent of the keepalive.
+(2) Multiple reliable messages queued in the same `Flush` were serialized in
+`std::unordered_map` iteration order rather than the order they were
+queued, breaking "reliable-ordered" the moment more than one message shared
+a packet — fixed by sorting by message id, assigned in queue order. Both
+were caught by a loopback test with an injected packet-loss simulator
+before any of it touched a real cross-process run.
+
+**A third, later bug came from running two real, independent `TestEnv`
+processes rather than trusting the same-process unit tests**:
+`SpawnNetworkedEntity` broadcasts once, at the moment an entity is created —
+which is fine until a client connects *after* that moment and never learns
+the entity exists, because `NetServer::Broadcast` only reaches connections
+that exist when it's called. The existing replication test happened to
+spawn after connecting, which is exactly the ordering that hid the gap.
+Fixed with `NetReplication::CatchUpNewClient`, wired to the server's
+`OnClientConnected`, sending a targeted `SpawnEntity` for every existing
+networked entity to the client that just joined.
+
+**Editor integration:** a new "Network" panel (docked alongside Appearance)
+with a port field and Host, or an address:port field and Join, showing role/
+connection state and, hosting, each client's id and RTT read straight off
+its `NetConnection`. `NetworkIdentity`/`NetworkTransform` are drawn in the
+Inspector exactly like any other component — "Add Network" adds both,
+Send Rate and Interpolate are editable through the same `EditFieldCommand`
+undo path everything else uses.
+
+**`NetworkDemo`** (`TestEnv --demo NetworkDemo --host <port>` /
+`--join <addr:port>`) proves the whole stack with two real OS processes: a
+coloured square each moves with WASD, replicated via `NetworkIdentity`/
+`NetworkTransform`, Space broadcasting a `"Flash"` RPC both processes
+render. Verifying it needed a different capture strategy than usual —
+`--lockstep --capture-step N` fast-forwards through N steps and exits
+immediately after, which works for one deterministic process but not two
+independently-timed ones with no shared clock (the host was captured and
+exited a full 9 seconds before the client had even finished loading its
+own demo roster, so the client's window closed before either socket sent a
+byte). Fixed by giving the demo a `--net-capture <path>` flag that calls
+`Application::CaptureFrame` on the real event of interest — half a second
+after the connection actually completes — rather than at a fixed frame
+count with no relationship to when that event happens. The resulting
+client-side capture shows a square at the exact screen position the host
+spawned it at, entirely through two real UDP sockets and the ack/replication
+path above.
+
+Verified: `NetConnection`'s reliable channel delivers every message exactly
+once, in order, under both 0% and 30% simulated packet loss; measured RTT
+against a responder with a known, injected delay lands within the expected
+range; `NetServer`/`NetClient` connect, accept, reject on version mismatch,
+and time out at 5s with no traffic; RPC dispatch and hashed message-name
+collision-avoidance against the reserved built-in ID range; replication
+converges a moved entity's position on the client within one send interval,
+and both spawn orderings (before and after a client connects) now replicate
+correctly. All three build configs (Debug, Release, Dist) build clean.
+
 ### 2026-09-07 (the planet's chunks merge into groups too, 1,459 draws down to 167)
 
 **The other half of the chunk-merge roadmap item.** `VoxelPlanet.h`'s chunks
