@@ -445,6 +445,7 @@ private:
 		ImGui::DockBuilderDockWindow("Terminal", bottom);
 		ImGui::DockBuilderDockWindow("Build Output", bottom);
 		ImGui::DockBuilderDockWindow("Textures", bottom);
+		ImGui::DockBuilderDockWindow("Appearance", bottom);
 
 		ImGui::DockBuilderDockWindow("Files", left);
 		ImGui::DockBuilderDockWindow("Outliner", left);

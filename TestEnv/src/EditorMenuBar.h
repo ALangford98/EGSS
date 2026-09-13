@@ -453,6 +453,15 @@ private:
 
 		ImGui::Separator();
 
+		// Brings the tab to the front wherever it's currently docked (or
+		// floating) -- for a panel a user has dragged off somewhere and lost
+		// track of, not a show/hide toggle (every panel here is always drawn
+		// regardless; there is nothing to hide).
+		if (ImGui::MenuItem("Appearance"))
+			ImGui::SetWindowFocus("Appearance");
+
+		ImGui::Separator();
+
 		if (ImGui::MenuItem("Save current layout as..."))
 			m_PendingPopup = "Save Layout";
 		if (ImGui::MenuItem("Reset to default") && g_EditorShellInstance)
