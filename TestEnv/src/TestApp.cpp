@@ -31,6 +31,7 @@
 #include "ProfilerPanel.h"
 #include "AppearancePanel.h"
 #include "ScenesPanel.h"
+#include "NetworkPanel.h"
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
 #include "NetTests/ByteStreamTest.h"
@@ -78,6 +79,7 @@ public:
 		PushLayer(new ProfilerPanel());
 		PushLayer(new AppearancePanel());
 		PushLayer(new ScenesPanel());
+		PushLayer(new NetworkPanel());
 		// Inert without --audio-stress. Pushed unconditionally so
 		// `./gs.py sanitize --thread` can turn it on from the command line --
 		// see the note in AudioRaceStress.h for why a race sweep needs it.
