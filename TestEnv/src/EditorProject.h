@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <sstream>
 
+#include "ThemeManager.h"
+
 inline GS::Scene g_EditorScene;
 inline std::string g_EditorScenePath;
 
@@ -18,6 +20,24 @@ inline std::string g_EditorScenePath;
 // and profile.json are. Remembers the last scene across runs so relaunching
 // the editor picks up where you left off rather than opening blank.
 inline const char* EditorLastScenePath() { return "editor_last_scene.txt"; }
+
+// Mirrors the last-scene pattern above: read editor_last_theme.txt (also
+// not checked in), and fall back to default.json when it's missing or
+// names a file that's gone -- not a warning, since the very first run has
+// neither.
+inline void LoadEditorThemeFromLastRun()
+{
+	std::ifstream last(ThemeManager::LastThemePath());
+	std::string filename;
+	if (last && std::getline(last, filename) && !filename.empty()
+		&& std::filesystem::exists(std::filesystem::path(ThemeManager::ThemesFolder()) / filename))
+	{
+		ThemeManager::ApplyByFilename(filename);
+		return;
+	}
+
+	ThemeManager::ApplyByFilename("default.json");
+}
 
 inline bool OpenEditorScene(const std::string& path)
 {

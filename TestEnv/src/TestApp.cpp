@@ -29,6 +29,7 @@
 #include "DemoWarmup.h"
 #include "EditorProject.h"
 #include "ProfilerPanel.h"
+#include "AppearancePanel.h"
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
 
@@ -52,6 +53,8 @@ public:
 		PushLayer(new EditorShell());
 		PushLayer(new EditorSceneView());
 
+		LoadEditorThemeFromLastRun();
+
 		// Load the editor's project state before demos, so if a demo's warmup
 		// or attach logic wants to know the editor's state, it is already set.
 		LoadEditorProjectFromCommandLine();
@@ -65,6 +68,7 @@ public:
 		// above the demos and consumes F1 before any of them.
 		PushLayer(new DemoSelector());
 		PushLayer(new ProfilerPanel());
+		PushLayer(new AppearancePanel());
 		// Inert without --audio-stress. Pushed unconditionally so
 		// `./gs.py sanitize --thread` can turn it on from the command line --
 		// see the note in AudioRaceStress.h for why a race sweep needs it.

@@ -24,13 +24,16 @@ that already exists), with `default.json` loading on first run.
   panel's own `m_Grid.Render()` call, and a way to load more than one font
   into the atlas.
 - **Runtime font switching is a known, supported ImGui pattern, not new
-  engine risk.** `ImGuiLayer::Begin()` calls `ImGui_ImplOpenGL3_NewFrame()`
-  every frame, which recreates the font texture automatically whenever the
-  backend's texture handle is 0. So live font switching is: clear/refill
-  `io.Fonts`, `Build()`, call `ImGui_ImplOpenGL3_DestroyFontsTexture()` (this
-  is what zeroes the handle) — all *before* that frame's
-  `ImGui_ImplOpenGL3_NewFrame()` call, which then rebuilds it. No manual
-  texture upload code needed.
+  engine risk** — though which mechanism depends on the vendored version,
+  and this project's is the newer one. This vendored ImGui (1.92.x)
+  manages font textures itself through `ImTextureData`/`ImTextureStatus`,
+  not the older `CreateFontsTexture`/`DestroyFontsTexture` pair some ImGui
+  versions expose (checked against `imgui_impl_opengl3.h` directly, not
+  assumed): a fresh `ImFontAtlas::Clear()` + re-add fonts + `Build()`
+  leaves the new atlas's texture at its constructor-default status,
+  `ImTextureStatus_WantCreate`, which
+  `ImGui_ImplOpenGL3_RenderDrawData` already checks for and uploads every
+  frame on its own. No manual texture-destroy call needed at all.
 - **The terminal already has a real hook for this.** Nothing today ever
   calls `vterm_screen_set_default_colors` — libvterm just uses its own
   built-in default, and `TerminalPanel::CopyVTermScreenToGrid` reads
@@ -316,10 +319,10 @@ very top of `ImGuiLayer::Begin()`, **before** `ImGui_ImplOpenGL3_NewFrame()`
 (line 106 today): if the flag is set, `io.Fonts->Clear()`, add the three
 fonts (each falling back to `AddFontDefault()` on a load failure, same
 guard `OnAttach` already has), `io.FontDefault = <controls font>`,
-`io.Fonts->Build()`, `ImGui_ImplOpenGL3_DestroyFontsTexture()`, clear the
-flag. The very next line's `ImGui_ImplOpenGL3_NewFrame()` then recreates
-the texture from the rebuilt atlas — no manual GL calls needed on this
-file's side.
+`io.Fonts->Build()`, clear the flag — nothing else. The next
+`ImGui_ImplOpenGL3_RenderDrawData` call picks up the new atlas's texture
+(freshly constructed at `ImTextureStatus_WantCreate`) on its own; no manual
+destroy/recreate call exists to make in this backend version.
 
 ### The "Appearance" panel (new, `TestEnv/src/AppearancePanel.h`)
 
@@ -376,10 +379,10 @@ already correct there), extended with a full-style Everforest role set —
 `Background`/`Foreground` from `EditorTheme.h`'s own `bg0`/`fg` (already
 sourced from `everforest.vim`, matching the syntax block's own values so
 the whole editor reads as one coherent surface instead of two), `Accent`
-from the same file's green, `Border`/`FrameBackground` picked from
-`everforest.vim`'s `bg1`/`bg2` steps, verified against that file the same
-way the existing syntax colors already were, not guessed — same fonts,
-terminal colors matching `Background`/`Foreground`.
+from the same file's green, `FrameBackground`/`Border` from Everforest's
+published `bg2`/`bg4` steps (`#3d484d`/`#4f585e`), the same
+dark/medium-contrast palette family `bg0`/`fg` already come from — same
+fonts, terminal colors matching `Background`/`Foreground`.
 
 ## Testing
 

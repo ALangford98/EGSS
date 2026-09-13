@@ -14,6 +14,7 @@
 
 #include "CellGrid.h"
 #include "Pty.h"
+#include "ThemeManager.h"
 
 #include <vterm.h>
 
@@ -69,9 +70,44 @@ public:
 	void OnImGuiRender()
 	{
 		bool visible = ImGui::Begin("Terminal");
+		ImGui::PushFont(GS::Application::Get().GetImGuiLayer()->GetTerminalFont());
+
+		// ImGui 1.92's error-recovery checks require the font stack to be
+		// back at its Begin-time depth *before* End() runs for this same
+		// window, not just eventually balanced -- a plain RAII guard here
+		// would still be holding the font open at each early `return`
+		// below, since its destructor only fires after the ImGui::End()
+		// call already inside that branch (checked the hard way: this
+		// tripped ErrorRecoveryTryToRecoverWindowState's "Missing
+		// PopFont()" assert on the first run). One helper keeps every exit
+		// path popping before ending, in one place.
+		auto endTerminal = [] { ImGui::PopFont(); ImGui::End(); };
 
 		if (ImGui::IsWindowFocused())
 			ImGui::GetIO().WantCaptureKeyboard = true;
+
+		const Theme& theme = ThemeManager::Current();
+		// Only counts as "applied" once a real screen exists to apply it
+		// to -- on the very first frame (before Spawn() below has run)
+		// m_Screen is still null, and marking m_TerminalColorsInitialised
+		// true anyway would cache theme values that were never actually
+		// sent to libvterm, so the real apply would never be retried once
+		// the screen exists a frame later. Caught by the capture: the
+		// terminal stayed black instead of the theme's color until this
+		// was gated on m_Screen instead.
+		if (m_Screen && (!m_TerminalColorsInitialised || theme.TerminalBackground != m_LastTerminalBg || theme.TerminalForeground != m_LastTerminalFg))
+		{
+			VTermColor fg, bg;
+			ImVec4 fgFloat = ImGui::ColorConvertU32ToFloat4(theme.TerminalForeground);
+			ImVec4 bgFloat = ImGui::ColorConvertU32ToFloat4(theme.TerminalBackground);
+			vterm_color_rgb(&fg, (uint8_t)(fgFloat.x * 255.0f), (uint8_t)(fgFloat.y * 255.0f), (uint8_t)(fgFloat.z * 255.0f));
+			vterm_color_rgb(&bg, (uint8_t)(bgFloat.x * 255.0f), (uint8_t)(bgFloat.y * 255.0f), (uint8_t)(bgFloat.z * 255.0f));
+			vterm_screen_set_default_colors(m_Screen, &fg, &bg);
+
+			m_LastTerminalBg = theme.TerminalBackground;
+			m_LastTerminalFg = theme.TerminalForeground;
+			m_TerminalColorsInitialised = true;
+		}
 
 		ImVec2 avail = ImGui::GetContentRegionAvail();
 		float cellWidth = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, 0.0f, "M").x;
@@ -83,7 +119,7 @@ public:
 		{
 			if (!visible)
 			{
-				ImGui::End();
+				endTerminal();
 				return; // nobody has opened this tab yet -- don't fork a shell
 			}
 
@@ -97,7 +133,7 @@ public:
 				ImGui::TextDisabled("Terminal unavailable: could not start a shell.");
 				if (ImGui::Button("Retry"))
 					m_SpawnFailed = false;
-				ImGui::End();
+				endTerminal();
 				return;
 			}
 		}
@@ -113,7 +149,7 @@ public:
 				m_Screen = nullptr;
 				m_SpawnFailed = false;
 			}
-			ImGui::End();
+			endTerminal();
 			return;
 		}
 		else if (visible && (cols != m_Cols || rows != m_Rows))
@@ -129,7 +165,7 @@ public:
 			m_Grid.Render();
 		}
 
-		ImGui::End();
+		endTerminal();
 	}
 
 private:
@@ -227,6 +263,9 @@ private:
 	Pty m_Pty;
 	VTerm* m_Vt = nullptr;
 	VTermScreen* m_Screen = nullptr;
+	ImU32 m_LastTerminalBg = 0;
+	ImU32 m_LastTerminalFg = 0;
+	bool m_TerminalColorsInitialised = false;
 	CellGrid m_Grid;
 	int m_Cols = 0;
 	int m_Rows = 0;

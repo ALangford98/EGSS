@@ -114,12 +114,16 @@ namespace ThemeColorTest {
 		Check(FormatHexColor(IM_COL32(0x2d, 0x35, 0x3b, 0x80)) == "#2d353b80",
 			"FormatHexColor always writes 8 digits (rrggbbaa), lowercase");
 
-		Check(Lighten(IM_COL32(0, 0, 0, 255), 0.5f) == IM_COL32(127, 127, 127, 255),
-			"Lighten(black, 0.5) is exactly mid-grey (0 + (255-0)*0.5 = 127.5 -> 127)");
+		// ImGui's float->byte conversion (IM_F32_TO_INT8_SAT) rounds to
+		// nearest -- (int)(0.5*255.0f+0.5f) = (int)128.0 = 128, not a plain
+		// truncation of 127.5. Verified against imgui_internal.h's own
+		// macro definition, not assumed.
+		Check(Lighten(IM_COL32(0, 0, 0, 255), 0.5f) == IM_COL32(128, 128, 128, 255),
+			"Lighten(black, 0.5) is exactly mid-grey (0.5*255+0.5 rounds to 128, ImGui's own float->byte rule)");
 		Check(Lighten(IM_COL32(255, 255, 255, 255), 0.5f) == IM_COL32(255, 255, 255, 255),
 			"Lighten(white, ...) stays white -- already at the ceiling");
-		Check(Darken(IM_COL32(255, 255, 255, 255), 0.5f) == IM_COL32(127, 127, 127, 255),
-			"Darken(white, 0.5) is exactly mid-grey");
+		Check(Darken(IM_COL32(255, 255, 255, 255), 0.5f) == IM_COL32(128, 128, 128, 255),
+			"Darken(white, 0.5) is exactly mid-grey (same rounding rule)");
 		Check(Darken(IM_COL32(0, 0, 0, 255), 0.5f) == IM_COL32(0, 0, 0, 255),
 			"Darken(black, ...) stays black -- already at the floor");
 
@@ -690,12 +694,16 @@ Add to `ImGuiLayer.cpp`:
 		io.FontDefault = m_ControlsFont;
 		io.Fonts->Build();
 
-		// Zeroes the backend's font-texture handle; the ImGui_ImplOpenGL3_
-		// NewFrame() call right after this function returns (see Begin(),
-		// below) recreates it from the freshly-built atlas automatically --
-		// that's the documented Dear ImGui pattern for runtime font
-		// switching with this backend, not a workaround.
-		ImGui_ImplOpenGL3_DestroyFontsTexture();
+		// Nothing else needed: this ImGui version (1.92.x) manages font
+		// textures itself through ImTextureData/ImTextureStatus -- a fresh
+		// ImFontAtlas::Clear()+Build() leaves the new atlas's texture
+		// marked ImTextureStatus_WantCreate (its status on construction),
+		// which ImGui_ImplOpenGL3_RenderDrawData already checks for and
+		// uploads every frame (see imgui_impl_opengl3.cpp). The older
+		// CreateFontsTexture/DestroyFontsTexture pair an earlier draft of
+		// this plan assumed doesn't exist in this backend version --
+		// checked against the vendored header when the build caught the
+		// mismatch, not guessed.
 	}
 ```
 
@@ -794,20 +802,27 @@ namespace ThemeApplyTest {
 
 		ThemeManager::Apply(theme);
 
+		// ImVec4 has no operator== in this build (no
+		// IMGUI_DEFINE_MATH_OPERATORS) -- compare by converting each style
+		// color back to ImU32 instead, which is exact: Apply always writes
+		// via ColorConvertU32ToFloat4, and converting back through
+		// ColorConvertFloat4ToU32 reproduces the same bytes deterministically.
 		ImGuiStyle& style = ImGui::GetStyle();
-		Check(style.Colors[ImGuiCol_WindowBg] == ImGui::ColorConvertU32ToFloat4(theme.Background),
+		auto AsU32 = [](const ImVec4& c) { return ImGui::ColorConvertFloat4ToU32(c); };
+
+		Check(AsU32(style.Colors[ImGuiCol_WindowBg]) == theme.Background,
 			"Apply writes Background into WindowBg");
-		Check(style.Colors[ImGuiCol_Text] == ImGui::ColorConvertU32ToFloat4(theme.Foreground),
+		Check(AsU32(style.Colors[ImGuiCol_Text]) == theme.Foreground,
 			"Apply writes Foreground into Text");
-		Check(style.Colors[ImGuiCol_FrameBg] == ImGui::ColorConvertU32ToFloat4(theme.FrameBackground),
+		Check(AsU32(style.Colors[ImGuiCol_FrameBg]) == theme.FrameBackground,
 			"Apply writes FrameBackground into FrameBg");
-		Check(style.Colors[ImGuiCol_Button] == ImGui::ColorConvertU32ToFloat4(theme.Accent),
+		Check(AsU32(style.Colors[ImGuiCol_Button]) == theme.Accent,
 			"Apply writes Accent into Button");
-		Check(style.Colors[ImGuiCol_Border] == ImGui::ColorConvertU32ToFloat4(theme.Border),
+		Check(AsU32(style.Colors[ImGuiCol_Border]) == theme.Border,
 			"Apply writes Border into Border");
-		Check(style.Colors[ImGuiCol_ButtonHovered] == ImGui::ColorConvertU32ToFloat4(Lighten(theme.Accent, 0.15f)),
+		Check(AsU32(style.Colors[ImGuiCol_ButtonHovered]) == Lighten(theme.Accent, 0.15f),
 			"ButtonHovered is Accent lightened by the same formula Lighten() itself uses");
-		Check(style.Colors[ImGuiCol_ChildBg] == ImGui::ColorConvertU32ToFloat4(IM_COL32(0, 0, 0, 0)),
+		Check(AsU32(style.Colors[ImGuiCol_ChildBg]) == IM_COL32(0, 0, 0, 0),
 			"the advanced override for ChildBg wins over the role mapping");
 
 		Check(&ThemeManager::Current() != nullptr, "Current() returns a real reference");
@@ -918,11 +933,16 @@ don't exist yet)
 		SetColor(style, ImGuiCol_ModalWindowDimBg, dimOverlay);
 		SetColor(style, ImGuiCol_DragDropTargetBg, dimOverlay);
 
-		// Advanced overrides win last.
+		// Advanced overrides win last. GetStyleColorName returns the bare
+		// suffix ("ChildBg"), not the fully-qualified enum identifier --
+		// verified against imgui.cpp's own implementation, not assumed --
+		// so the JSON's more explicit "ImGuiCol_ChildBg" keys have their
+		// prefix stripped before comparing.
 		for (auto& [name, color] : theme.AdvancedOverrides)
 		{
+			std::string bareName = name.rfind("ImGuiCol_", 0) == 0 ? name.substr(9) : name;
 			for (int i = 0; i < ImGuiCol_COUNT; i++)
-				if (name == ImGui::GetStyleColorName(i))
+				if (bareName == ImGui::GetStyleColorName(i))
 				{
 					style.Colors[i] = ImGui::ColorConvertU32ToFloat4(color);
 					break;
@@ -967,10 +987,13 @@ don't exist yet)
 	}
 ```
 
-(`ImGui::GetStyleColorName` is a real, existing ImGui function -- returns
-the literal `"ImGuiCol_Text"`-style name for an index, which is exactly
-what makes matching `AdvancedOverrides`' string keys against the enum
-possible without a second, hand-maintained name table.)
+(`ImGui::GetStyleColorName` is a real, existing ImGui function, but returns
+the *bare* name for an index -- `"Text"`, not `"ImGuiCol_Text"` (checked
+against `imgui.cpp`'s own implementation). `AdvancedOverrides`' JSON keys
+keep the fully-qualified form since that's what a human hand-editing the
+file would actually grep for in `imgui.h`; the prefix is stripped before
+comparing, which is exactly what avoids needing a second, hand-maintained
+name table.)
 
 - [ ] **Step 4: Build and run the test**
 
@@ -1101,7 +1124,7 @@ returns false)
   "colors": {
     "background": "#2d353bff",
     "foreground": "#d3c6aaff",
-    "frameBackground": "#3a4147ff",
+    "frameBackground": "#3d484dff",
     "accent": "#a7c080ff",
     "border": "#4f585eff"
   },
@@ -1128,11 +1151,10 @@ returns false)
 }
 ```
 
-(`frameBackground`/`border` are `everforest.vim`'s `bg2`/`bg3` steps one
-and two lighter than `bg0` -- verify the exact two hex values against that
-file at implementation time the same way `EditorTheme.h`'s existing
-comments already point to it, rather than re-typing them here as if this
-plan were the source of truth for the palette.)
+(`frameBackground`/`border` are Everforest's published `bg2`/`bg4` steps
+(`#3d484d`/`#4f585e`) from the same dark/medium-contrast palette
+`EditorTheme.h`'s own `bg0`/`fg` values already come from — one and two
+steps lighter than `bg0`, the same family its own comments already cite.)
 
 - [ ] **Step 5: Build and run the test**
 
@@ -1258,47 +1280,65 @@ ImGui::Begin("Terminal");` (line 71):
 
 ```cpp
 const Theme& theme = ThemeManager::Current();
-if (!m_TerminalColorsInitialised || theme.TerminalBackground != m_LastTerminalBg || theme.TerminalForeground != m_LastTerminalFg)
+// Only counts as "applied" once a real screen exists to apply it to -- on
+// the very first frame (before Spawn() below has run) m_Screen is still
+// null. Marking m_TerminalColorsInitialised true anyway (e.g. by testing
+// m_Screen only *inside* this condition, after already deciding to update
+// the cache) would cache theme values that were never actually sent to
+// libvterm, so the real apply would never be retried once the screen
+// exists a frame later -- gate the whole condition on m_Screen instead,
+// not just the body.
+if (m_Screen && (!m_TerminalColorsInitialised || theme.TerminalBackground != m_LastTerminalBg || theme.TerminalForeground != m_LastTerminalFg))
 {
-	if (m_Screen)
-	{
-		VTermColor fg, bg;
-		ImVec4 fgFloat = ImGui::ColorConvertU32ToFloat4(theme.TerminalForeground);
-		ImVec4 bgFloat = ImGui::ColorConvertU32ToFloat4(theme.TerminalBackground);
-		vterm_color_rgb(&fg, (uint8_t)(fgFloat.x * 255.0f), (uint8_t)(fgFloat.y * 255.0f), (uint8_t)(fgFloat.z * 255.0f));
-		vterm_color_rgb(&bg, (uint8_t)(bgFloat.x * 255.0f), (uint8_t)(bgFloat.y * 255.0f), (uint8_t)(bgFloat.z * 255.0f));
-		vterm_screen_set_default_colors(m_Screen, &fg, &bg);
-	}
+	VTermColor fg, bg;
+	ImVec4 fgFloat = ImGui::ColorConvertU32ToFloat4(theme.TerminalForeground);
+	ImVec4 bgFloat = ImGui::ColorConvertU32ToFloat4(theme.TerminalBackground);
+	vterm_color_rgb(&fg, (uint8_t)(fgFloat.x * 255.0f), (uint8_t)(fgFloat.y * 255.0f), (uint8_t)(fgFloat.z * 255.0f));
+	vterm_color_rgb(&bg, (uint8_t)(bgFloat.x * 255.0f), (uint8_t)(bgFloat.y * 255.0f), (uint8_t)(bgFloat.z * 255.0f));
+	vterm_screen_set_default_colors(m_Screen, &fg, &bg);
+
 	m_LastTerminalBg = theme.TerminalBackground;
 	m_LastTerminalFg = theme.TerminalForeground;
 	m_TerminalColorsInitialised = true;
 }
 ```
 
-(Guarded on `m_Screen` being non-null: a fresh panel with no shell spawned
-yet has no screen to color, and the same check runs again next frame once
-one exists — cheap, and consistent with how this same function already
-checks `m_Vt`/`m_Pty.IsAlive()` before doing anything screen-related.)
+(A fresh panel with no shell spawned yet has no screen to color, and the
+same check runs again next frame once one exists.)
 
-- [ ] **Step 3: Wrap the grid render in the terminal font**
+- [ ] **Step 3: Wrap the whole function body in the terminal font**
 
-Replace the `m_Grid.Render();` call (line 129) with:
+The `avail`/`cellWidth`/`cellHeight` measurement (lines 76-80) already reads
+`ImGui::GetFont()`, and it runs *before* `m_Grid.Render()` — so sizing and
+rendering both need the same font active, not just the render call.
+`OnImGuiRender` also has three early `ImGui::End(); return;` paths between
+that measurement and the final `m_Grid.Render()`.
+
+**A plain RAII guard does not work here** — verified the hard way, not
+assumed: ImGui 1.92's error-recovery checks require the font stack back at
+its Begin-time depth *before* `End()` runs for this same window, not just
+eventually balanced. A guard constructed after `Begin()` is still holding
+the font open at each early `return`, because its destructor only fires
+*after* the `ImGui::End()` call already inside that branch — this trips
+`ErrorRecoveryTryToRecoverWindowState`'s `"Missing PopFont()"` assert (a
+hard crash, SIGABRT) on the very first run. Use one small helper instead,
+so every exit path pops before it ends, added just above `OnImGuiRender`:
 
 ```cpp
-ImGui::PushFont(GS::Application::Get().GetImGuiLayer()->GetTerminalFont());
-m_Grid.Render();
-ImGui::PopFont();
+	void OnImGuiRender()
+	{
+		bool visible = ImGui::Begin("Terminal");
+		ImGui::PushFont(GS::Application::Get().GetImGuiLayer()->GetTerminalFont());
+
+		// One helper, not a RAII guard: see the "Missing PopFont()" note
+		// above -- every exit path must pop before it ends, not just
+		// eventually.
+		auto endTerminal = [] { ImGui::PopFont(); ImGui::End(); };
 ```
 
-(The `avail`/`cellWidth`/`cellHeight` measurement above it, lines 76-80,
-already reads `ImGui::GetFont()` — since that measurement happens *before*
-this push in the function's current order, either move the `PushFont` up
-to wrap the measurement too, or accept that the terminal's column/row count
-is computed from whatever font was active before this push. Move the
-`PushFont` up to right after line 75 (before `avail` is read) and the
-matching `PopFont` to just after the `m_Grid.Render()` call, so both the
-sizing and the rendering agree on which font is active — sizing off one
-font and rendering with another would make columns miscount.)
+Then replace **all four** `ImGui::End();` calls in this function (the three
+early-return branches, plus the final one at the bottom) with
+`endTerminal();`.
 
 Add `#include "ThemeManager.h"` to this file's includes.
 
@@ -1497,6 +1537,10 @@ private:
 			ThemeManager::Apply(m_Working);
 	}
 
+	// Each row's FileBrowserPopup gets a title unique to that row --
+	// ImGui::BeginPopupModal keys its window by that exact string, so
+	// three rows sharing one title ("Choose Font") would all drive the
+	// same popup state instead of three independent ones.
 	void FontRow(const char* label, ThemeFontSlot& slot, FileBrowserPopup& browser)
 	{
 		ImGui::PushID(label);
@@ -1508,11 +1552,10 @@ private:
 		slot.Path = pathBuf;
 		ImGui::SameLine();
 		if (ImGui::Button("Browse..."))
-			browser.Open("Choose Font", FileBrowserPopup::Mode::PickFile, "assets/fonts", ".ttf");
+			browser.Open((std::string("Choose ") + label + " Font").c_str(), FileBrowserPopup::Mode::PickFile, "assets/fonts", ".ttf");
 		ImGui::SameLine();
 		ImGui::SetNextItemWidth(80.0f);
-		if (ImGui::DragFloat("Size", &slot.Size, 0.5f, 6.0f, 72.0f))
-			{}
+		ImGui::DragFloat("Size", &slot.Size, 0.5f, 6.0f, 72.0f);
 		if (ImGui::IsItemDeactivatedAfterEdit())
 			ThemeManager::Apply(m_Working);
 

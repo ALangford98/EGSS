@@ -1,0 +1,30 @@
+{
+  "name": "Everforest",
+  "colors": {
+    "background": "#2d353bff",
+    "foreground": "#d3c6aaff",
+    "frameBackground": "#3d484dff",
+    "accent": "#a7c080ff",
+    "border": "#4f585eff"
+  },
+  "fonts": {
+    "controls": { "path": "assets/fonts/DejaVuSansMono.ttf", "size": 16 },
+    "editor": { "path": "assets/fonts/DejaVuSansMono.ttf", "size": 16 },
+    "terminal": { "path": "assets/fonts/DejaVuSansMono.ttf", "size": 16 }
+  },
+  "terminal": {
+    "background": "#2d353bff",
+    "foreground": "#d3c6aaff"
+  },
+  "editorSyntax": {
+    "background": "#2d353bff",
+    "foreground": "#d3c6aaff",
+    "keyword": "#e67e80ff",
+    "stringLiteral": "#a7c080ff",
+    "comment": "#859289ff",
+    "lineNumber": "#7a8478ff",
+    "cursor": "#d3c6aab4",
+    "selectionBg": "#424a50ff"
+  },
+  "advanced": {}
+}

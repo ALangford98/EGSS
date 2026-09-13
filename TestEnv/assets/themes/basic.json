@@ -1,0 +1,32 @@
+{
+  "name": "Basic",
+  "colors": {
+    "background": "#0f0f0ff0",
+    "foreground": "#ffffffff",
+    "frameBackground": "#294a7a8a",
+    "accent": "#4296fa66",
+    "border": "#6e6e8080"
+  },
+  "fonts": {
+    "controls": { "path": "assets/fonts/DejaVuSansMono.ttf", "size": 16 },
+    "editor": { "path": "assets/fonts/DejaVuSansMono.ttf", "size": 16 },
+    "terminal": { "path": "assets/fonts/DejaVuSansMono.ttf", "size": 16 }
+  },
+  "terminal": {
+    "background": "#000000ff",
+    "foreground": "#f0f0f0ff"
+  },
+  "editorSyntax": {
+    "background": "#2d353bff",
+    "foreground": "#d3c6aaff",
+    "keyword": "#e67e80ff",
+    "stringLiteral": "#a7c080ff",
+    "comment": "#859289ff",
+    "lineNumber": "#7a8478ff",
+    "cursor": "#d3c6aab4",
+    "selectionBg": "#424a50ff"
+  },
+  "advanced": {
+    "ImGuiCol_ChildBg": "#00000000"
+  }
+}
