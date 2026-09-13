@@ -200,8 +200,9 @@ inline std::unordered_map<GS::EntityId, GS::PhysicsWorld3D::BodyHandle> s_Physic
 
 - [ ] **Step 4: Build the bodies in `Play()`**
 
-At the very top of `Play()`'s body (right after the existing `if
-(s_Playing) return;` guard, before the scene snapshot):
+Right after the existing snapshot-save block (`if (!g_EditorScene.Save(...))
+{ ...; return; }`) -- once `Play()` knows it's actually proceeding, not
+before it:
 
 ```cpp
 	s_PhysicsWorld = GS::PhysicsWorld3D();
@@ -209,10 +210,10 @@ At the very top of `Play()`'s body (right after the existing `if
 ```
 
 Inside the existing `for (GS::EntityId id : g_EditorScene.GetEntities())`
-loop in `Play()` (the one that currently only checks
-`HasComponent<GS::ScriptComponent>`), add this as an independent `if`
-block -- an entity can have both a script and a `PhysicsComponent`, so this
-must not be an `else` off the script check:
+loop in `Play()`, add this **before** the existing `if
+(!g_EditorScene.HasComponent<GS::ScriptComponent>(id)) continue;` line, not
+after it -- that `continue` would otherwise skip every entity that has a
+`PhysicsComponent` but no script, which is the common case:
 
 ```cpp
 		if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(id))
