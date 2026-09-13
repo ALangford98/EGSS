@@ -6,6 +6,7 @@
 #include "GS/Renderer/Mesh.h"
 #include "GS/Renderer/Material.h"
 #include "GS/Physics/RigidBody2D.h"   // BodyType -- dimension-agnostic, reused as-is
+#include "GS/Network/NetServer.h"     // ClientId/ServerOwned, for NetworkIdentity
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -155,6 +156,22 @@ namespace GS {
 		float Mass = 1.0f;
 		float Friction = 0.5f;
 		float Restitution = 0.0f;
+	};
+
+	// Opt-in networking. An entity with both of these has its
+	// TransformComponent auto-replicated by the server to every client;
+	// anything else about it (score, health, "this ball bounced") travels
+	// as a manual RPC instead -- see GS::Net::SendRPC.
+	struct NetworkIdentity
+	{
+		uint32_t NetworkId = 0;   // assigned by the server when spawned
+		ClientId Owner = ServerOwned;
+	};
+
+	struct NetworkTransform
+	{
+		float SendRate = 20.0f;   // Hz -- independent of the fixed-step rate
+		bool Interpolate = true;
 	};
 
 }

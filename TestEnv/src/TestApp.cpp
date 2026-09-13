@@ -39,6 +39,7 @@
 #include "NetTests/NetConnectionTest.h"
 #include "NetTests/NetServerClientTest.h"
 #include "NetTests/NetMessageTest.h"
+#include "NetTests/NetReplicationTest.h"
 
 class TestEnv : public GS::Application
 {
@@ -88,6 +89,7 @@ public:
 		NetConnectionTest::Run(); // TEMPORARY -- see NetTests/NetConnectionTest.h
 		NetServerClientTest::Run(); // TEMPORARY -- see NetTests/NetServerClientTest.h
 		NetMessageTest::Run(); // TEMPORARY -- see NetTests/NetMessageTest.h
+		NetReplicationTest::Run(); // TEMPORARY -- see NetTests/NetReplicationTest.h
 	}
 
 	// g_EditorScene is a global with static storage duration, so without this
