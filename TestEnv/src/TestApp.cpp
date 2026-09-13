@@ -34,6 +34,7 @@
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
 #include "NetTests/ByteStreamTest.h"
+#include "NetTests/SocketTest.h"
 
 class TestEnv : public GS::Application
 {
@@ -78,6 +79,7 @@ public:
 		PushLayer(new AudioRaceStress());
 
 		ByteStreamTest::Run(); // TEMPORARY -- see NetTests/ByteStreamTest.h
+		SocketTest::Run(); // TEMPORARY -- see NetTests/SocketTest.h
 	}
 
 	// g_EditorScene is a global with static storage duration, so without this
