@@ -67,6 +67,45 @@ public:
 
 		BuildTarget();
 		BuildShader();
+
+		// TEMPORARY -- verifies ExportUvTemplate's end-to-end wiring
+		// (both the "usable UVs, no rewrite" and "unusable UVs, fresh
+		// unwrap + re-save" branches) against a real scene. Delete this
+		// block, UvUnwrapTest.h, and UvTemplateWriterTest.h together once
+		// verified.
+		{
+			// Case 1: CreateCubeData()'s own per-face UVs are usable ->
+			// FindIslandsFromUVs path, no .obj rewrite.
+			GS::Entity usableEntity = g_EditorScene.CreateEntity("UvExportTestCube");
+			g_EditorScene.AddComponent<GS::TransformComponent>(usableEntity.GetId());
+			auto& usableMesh = g_EditorScene.AddComponent<GS::MeshComponent>(usableEntity.GetId());
+			usableMesh.SourcePath = "primitive:cube";
+			usableMesh.Geometry = std::shared_ptr<GS::Mesh>(GS::Mesh::CreateCube());
+			std::string usableError;
+			bool usableOk = ExportUvTemplate(usableEntity.GetId(), &usableMesh, 512, usableError);
+			GS_TRACE("UvExportTest (usable UVs): {0} ({1}), SourcePath still '{2}'",
+				usableOk ? "ok" : "FAIL", usableError, usableMesh.SourcePath);
+			g_EditorScene.DestroyEntity(usableEntity.GetId());
+
+			// Case 2: all-(0,0) UVs (matching EditableMesh::Rebuild()'s
+			// known gap) -> Unwrap + ObjWriter re-save path.
+			GS::MeshData zeroed = GS::Mesh::CreateCubeData();
+			for (auto& v : zeroed.Vertices)
+				v.TexCoord = { 0.0f, 0.0f };
+			std::string saveError;
+			GS::ObjWriter::Save("assets/uv_export_test_zeroed.obj", zeroed, saveError);
+
+			GS::Entity unusableEntity = g_EditorScene.CreateEntity("UvExportTestZeroed");
+			g_EditorScene.AddComponent<GS::TransformComponent>(unusableEntity.GetId());
+			auto& unusableMesh = g_EditorScene.AddComponent<GS::MeshComponent>(unusableEntity.GetId());
+			unusableMesh.SourcePath = "assets/uv_export_test_zeroed.obj";
+			unusableMesh.Geometry = std::make_shared<GS::Mesh>(zeroed, "ZeroedCube");
+			std::string unusableError;
+			bool unusableOk = ExportUvTemplate(unusableEntity.GetId(), &unusableMesh, 512, unusableError);
+			GS_TRACE("UvExportTest (unusable UVs -> unwrap): {0} ({1}), SourcePath now '{2}'",
+				unusableOk ? "ok" : "FAIL", unusableError, unusableMesh.SourcePath);
+			g_EditorScene.DestroyEntity(unusableEntity.GetId());
+		}
 	}
 
 	bool IsActive() const { return g_ActiveDemo == InvalidDemo; }
@@ -450,6 +489,17 @@ public:
 
 			if (ImGui::Button("Edit Mesh") && !m_MeshEditActive && !PlayMode::IsPlaying())
 				StartMeshEdit(m_Selected, mesh);
+
+			ImGui::SetNextItemWidth(80.0f);
+			ImGui::InputInt("##UvExportResolution", &m_UvExportResolution);
+			m_UvExportResolution = glm::clamp(m_UvExportResolution, 16, 8192);
+			ImGui::SameLine();
+			if (ImGui::Button("Export UV Template") && !m_MeshEditActive && !PlayMode::IsPlaying())
+			{
+				std::string error;
+				if (!ExportUvTemplate(m_Selected, mesh, m_UvExportResolution, error))
+					GS_ERROR("Export UV Template: failed for '{0}': {1}", mesh->SourcePath, error);
+			}
 
 			if (m_MeshEditActive)
 			{
@@ -943,6 +993,24 @@ private:
 		}
 	}
 
+	// Shared by StartMeshEdit and ExportUvTemplate -- both need the same
+	// primitive-vs-file loading branch for a MeshComponent's current
+	// geometry.
+	bool LoadMeshDataForExport(GS::MeshComponent* mesh, GS::MeshData& outData, std::string& error)
+	{
+		if (mesh->SourcePath.rfind("primitive:cube", 0) == 0)
+			outData = GS::Mesh::CreateCubeData();
+		else if (mesh->SourcePath.rfind("primitive:plane", 0) == 0)
+			outData = GS::Mesh::CreatePlaneData();
+		else if (mesh->SourcePath.rfind("primitive:sphere", 0) == 0)
+			outData = GS::Mesh::CreateSphereData();
+		else if (mesh->SourcePath.rfind("primitive:cylinder", 0) == 0)
+			outData = GS::Mesh::CreateCylinderData();
+		else
+			return GS::Mesh::LoadData(mesh->SourcePath, outData, error);
+		return true;
+	}
+
 	// Shared by the Inspector's "Edit Mesh" button and the Outliner's
 	// context-menu equivalent -- both need the same load-and-open logic on
 	// whatever entity/mesh they were given, not necessarily m_Selected in
@@ -951,22 +1019,10 @@ private:
 	void StartMeshEdit(GS::EntityId entity, GS::MeshComponent* mesh)
 	{
 		GS::MeshData data;
-		bool loaded = true;
-		if (mesh->SourcePath.rfind("primitive:cube", 0) == 0)
-			data = GS::Mesh::CreateCubeData();
-		else if (mesh->SourcePath.rfind("primitive:plane", 0) == 0)
-			data = GS::Mesh::CreatePlaneData();
-		else if (mesh->SourcePath.rfind("primitive:sphere", 0) == 0)
-			data = GS::Mesh::CreateSphereData();
-		else if (mesh->SourcePath.rfind("primitive:cylinder", 0) == 0)
-			data = GS::Mesh::CreateCylinderData();
-		else
-		{
-			std::string error;
-			loaded = GS::Mesh::LoadData(mesh->SourcePath, data, error);
-			if (!loaded)
-				GS_ERROR("Edit Mesh: could not load '{0}': {1}", mesh->SourcePath, error);
-		}
+		std::string error;
+		bool loaded = LoadMeshDataForExport(mesh, data, error);
+		if (!loaded)
+			GS_ERROR("Edit Mesh: could not load '{0}': {1}", mesh->SourcePath, error);
 
 		// A session with nothing in it has nothing to pick, drag, or
 		// delete -- the only way out would be Done, which would then
@@ -979,6 +1035,66 @@ private:
 			m_MeshEditSelectedPoint = -1;
 			m_MeshEditActive = true;
 		}
+	}
+
+	// Shared by the Inspector's "Export UV Template" button and the
+	// self-test below -- factored out so its branch/save/write logic can
+	// be exercised without a live ImGui frame, the same reason
+	// LoadMeshDataForExport itself was factored out above.
+	bool ExportUvTemplate(GS::EntityId entity, GS::MeshComponent* mesh, int resolution, std::string& error)
+	{
+		GS::MeshData data;
+		if (!LoadMeshDataForExport(mesh, data, error))
+			return false;
+		if (data.Vertices.empty())
+		{
+			error = "mesh has no vertices";
+			return false;
+		}
+
+		auto* tag = g_EditorScene.GetComponent<GS::TagComponent>(entity);
+		std::string exportName = tag ? tag->Name : "Mesh";
+
+		GS::UvUnwrap::ChartAssignment chartIds;
+		if (!GS::UvUnwrap::HasUsableUVs(data))
+		{
+			chartIds = GS::UvUnwrap::Unwrap(data);
+
+			// Same collision-suffixed path Done (Edit Mesh) already
+			// computes -- deliberately identical, not re-derived.
+			std::string exportPath = "assets/" + exportName + ".obj";
+			if (mesh->SourcePath != exportPath && std::filesystem::exists(exportPath))
+			{
+				int suffix = 1;
+				std::string candidate;
+				do
+				{
+					candidate = "assets/" + exportName + std::to_string(suffix) + ".obj";
+					suffix++;
+				} while (std::filesystem::exists(candidate) && candidate != mesh->SourcePath);
+				exportPath = candidate;
+			}
+
+			if (!GS::ObjWriter::Save(exportPath, data, error))
+				return false;
+
+			std::string oldPath = mesh->SourcePath;
+			mesh->SourcePath = exportPath;
+			// Bypasses MeshCache -- same reason Edit Mesh's own Done does
+			// (see its comment at this file's Done handler): MeshCache
+			// caches one mesh per path forever, so re-exporting the same
+			// path twice would otherwise show the first export's stale
+			// geometry.
+			mesh->Geometry = std::make_shared<GS::Mesh>(data, exportName);
+			EditorHistory::Push(std::make_unique<EditFieldCommand<GS::MeshComponent, std::string>>(
+				entity, &GS::MeshComponent::SourcePath, oldPath, exportPath));
+		}
+		else
+		{
+			chartIds = GS::UvUnwrap::FindIslandsFromUVs(data);
+		}
+
+		return GS::UvTemplateWriter::Write("assets/" + exportName + "_uv.png", resolution, data, chartIds, error);
 	}
 
 	void BuildTarget()
@@ -1876,6 +1992,8 @@ private:
 	// Select() call sites elsewhere have no reason to know one is open), and
 	// this is what ValidateMeshEditSession checks against to catch that.
 	GS::EntityId m_MeshEditEntity = GS::InvalidEntity;
+
+	int m_UvExportResolution = 1024;
 
 	int m_HoverAxis = -1;
 	bool m_MouseDownLastFrame = false;
