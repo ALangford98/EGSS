@@ -265,4 +265,103 @@ namespace GS {
 		return chartIdPerTriangle;
 	}
 
+	UvUnwrap::ChartAssignment UvUnwrap::FindIslandsFromUVs(const MeshData& data)
+	{
+		size_t triCount = data.TriangleCount();
+		std::vector<std::vector<int>> adjacency = BuildTriangleAdjacency(data);
+
+		// Union-Find over triangles, joined across a shared mesh edge only
+		// when both triangles agree on UV at both of that edge's
+		// endpoints -- that is exactly what "no seam here" means for an
+		// existing UV layout.
+		std::vector<int> parent(triCount);
+		for (size_t i = 0; i < triCount; i++)
+			parent[i] = (int)i;
+
+		auto find = [&](int x) {
+			while (parent[x] != x)
+			{
+				parent[x] = parent[parent[x]];
+				x = parent[x];
+			}
+			return x;
+		};
+		auto unite = [&](int a, int b) {
+			a = find(a); b = find(b);
+			if (a != b)
+				parent[a] = b;
+		};
+
+		constexpr float kUvEpsilon = 1e-4f;
+		for (size_t t = 0; t < triCount; t++)
+		{
+			glm::vec3 positions[3] = {
+				data.Vertices[data.Indices[t * 3 + 0]].Position,
+				data.Vertices[data.Indices[t * 3 + 1]].Position,
+				data.Vertices[data.Indices[t * 3 + 2]].Position,
+			};
+			glm::vec2 uvs[3] = {
+				data.Vertices[data.Indices[t * 3 + 0]].TexCoord,
+				data.Vertices[data.Indices[t * 3 + 1]].TexCoord,
+				data.Vertices[data.Indices[t * 3 + 2]].TexCoord,
+			};
+
+			for (int neighbor : adjacency[t])
+			{
+				if ((size_t)neighbor <= t)
+					continue;   // each pair once
+
+				glm::vec3 shared[2];
+				int sharedCount = 0;
+				for (int k = 0; k < 3 && sharedCount < 2; k++)
+				{
+					for (int m = 0; m < 3; m++)
+					{
+						unsigned int nIdx = data.Indices[neighbor * 3 + m];
+						if (data.Vertices[nIdx].Position == positions[k])
+						{
+							shared[sharedCount++] = positions[k];
+							break;
+						}
+					}
+				}
+				if (sharedCount < 2)
+					continue;   // adjacency came from a shared edge, but guard rather than assume
+
+				bool uvMatches = true;
+				for (int s = 0; s < 2 && uvMatches; s++)
+				{
+					glm::vec2 uvHere{};
+					for (int k = 0; k < 3; k++)
+						if (positions[k] == shared[s]) { uvHere = uvs[k]; break; }
+
+					glm::vec2 uvThere{};
+					for (int m = 0; m < 3; m++)
+					{
+						unsigned int nIdx = data.Indices[neighbor * 3 + m];
+						if (data.Vertices[nIdx].Position == shared[s]) { uvThere = data.Vertices[nIdx].TexCoord; break; }
+					}
+
+					if (glm::length(uvHere - uvThere) > kUvEpsilon)
+						uvMatches = false;
+				}
+
+				if (uvMatches)
+					unite((int)t, neighbor);
+			}
+		}
+
+		std::unordered_map<int, int> rootToChartId;
+		ChartAssignment result(triCount);
+		for (size_t t = 0; t < triCount; t++)
+		{
+			int root = find((int)t);
+			auto it = rootToChartId.find(root);
+			if (it == rootToChartId.end())
+				it = rootToChartId.emplace(root, (int)rootToChartId.size()).first;
+			result[t] = it->second;
+		}
+		return result;
+	}
+
 }

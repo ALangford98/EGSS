@@ -107,6 +107,40 @@ namespace UvUnwrapTest {
 				"cylinder charts into more than 1 and noticeably fewer than one-per-triangle");
 		}
 
+		// Two UV-disjoint triangle pairs sharing no continuous UV edge
+		// (each pair is its own quad, both quads placed far apart in UV
+		// space) must report 2 islands; a mesh whose UVs are actually one
+		// continuous chart (CreateCubeData()'s own single face, made of 2
+		// triangles sharing an edge with matching UVs on both sides)
+		// must report 1.
+		{
+			GS::MeshData twoIslands;
+			twoIslands.Vertices = {
+				{ {0,0,0}, {0,0,1}, {0.0f, 0.0f} },
+				{ {1,0,0}, {0,0,1}, {0.1f, 0.0f} },
+				{ {1,1,0}, {0,0,1}, {0.1f, 0.1f} },
+				{ {0,1,0}, {0,0,1}, {0.0f, 0.1f} },
+				{ {5,0,0}, {0,0,1}, {0.5f, 0.5f} },
+				{ {6,0,0}, {0,0,1}, {0.6f, 0.5f} },
+				{ {6,1,0}, {0,0,1}, {0.6f, 0.6f} },
+				{ {5,1,0}, {0,0,1}, {0.5f, 0.6f} },
+			};
+			twoIslands.Indices = { 0,1,2, 2,3,0, 4,5,6, 6,7,4 };
+			auto islands = GS::UvUnwrap::FindIslandsFromUVs(twoIslands);
+			std::unordered_set<int> distinct(islands.begin(), islands.end());
+			Check(distinct.size() == 2, "two UV-disjoint quads report 2 islands");
+
+			GS::MeshData oneFace = GS::Mesh::CreateCubeData();
+			// Keep only the first face's 2 triangles (indices 0..5), whose
+			// 4 shared vertices already carry one continuous [0,1]^2 UV
+			// square from CreateCubeData() itself.
+			oneFace.Vertices.assign(oneFace.Vertices.begin(), oneFace.Vertices.begin() + 4);
+			oneFace.Indices.assign(oneFace.Indices.begin(), oneFace.Indices.begin() + 6);
+			auto oneIsland = GS::UvUnwrap::FindIslandsFromUVs(oneFace);
+			std::unordered_set<int> distinctOne(oneIsland.begin(), oneIsland.end());
+			Check(distinctOne.size() == 1, "one coplanar face's own 2 triangles report 1 island");
+		}
+
 		GS_TRACE("UvUnwrapTest: {0} passed, {1} failed", g_Pass, g_Fail);
 	}
 }
