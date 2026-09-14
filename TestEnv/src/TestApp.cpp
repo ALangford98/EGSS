@@ -34,6 +34,7 @@
 #include "NetworkPanel.h"
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
+#include "UvUnwrapTest.h"
 
 class TestEnv : public GS::Application
 {
@@ -77,6 +78,8 @@ public:
 		// `./gs.py sanitize --thread` can turn it on from the command line --
 		// see the note in AudioRaceStress.h for why a race sweep needs it.
 		PushLayer(new AudioRaceStress());
+
+		UvUnwrapTest::Run(); // TEMPORARY -- see UvUnwrapTest.h
 	}
 
 	// g_EditorScene is a global with static storage duration, so without this
