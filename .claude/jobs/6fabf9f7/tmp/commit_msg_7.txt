@@ -1,0 +1,24 @@
+Add editor-theming design spec
+
+Covers the request for a Theme JSON format + themes folder, a small in-
+editor Appearance panel with curated colour pickers, font selectors, and
+terminal colour options, saving today's look as basic.json and a full
+Everforest palette as default.json.
+
+Key findings that shaped it: CellGrid (shared by the text editor and the
+terminal) already sizes itself off whatever font is currently active via
+ImGui::GetFont(), so per-panel fonts need no CellGrid changes -- just
+PushFont/PopFont plus a live font-atlas rebuild, which the OpenGL3 backend
+already supports at runtime (clear+rebuild io.Fonts, destroy the old
+texture, let the next NewFrame recreate it). GS::Json already has a real
+parser (built for glTF); only a small hand-rolled writer is new, styled
+after Instrumentor.cpp's existing profile.json writer. The panel exposes 5
+semantic colour roles (not all ~60 ImGuiCol_ entries); a JSON "advanced"
+block covers anything the roles don't reach, which is the actual "complex
+theming lives in a json file" half of the request.
+
+Design only -- no implementation yet. Next: writing-plans for the task
+breakdown, pending review.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MhaEd7J8fHjcNU2xuzew89

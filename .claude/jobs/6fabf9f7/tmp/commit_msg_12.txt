@@ -1,0 +1,20 @@
+Add physics-simulation implementation plan
+
+2 tasks implementing docs/superpowers/specs/2026-09-13-physics-simulation-
+design.md: build a RigidBody3D per PhysicsComponent'd entity in PlayMode::
+Play() (box collider from mesh bounds or Scale*0.5, Static/Kinematic both
+zero-mass, orientation matching TransformComponent::GetTransform()'s own
+Rx*Ry*Rz composition exactly), then step the world and sync transforms
+back in OnFixedUpdate (position direct, rotation via glm::
+extractEulerAngleXYZ -- the precise inverse of that same composition).
+
+Free-fall and orientation-round-trip test expectations are computed from
+PhysicsWorld3D's actual semi-implicit-Euler-plus-damping integrator
+(read directly from PhysicsWorld3D.cpp), not idealized continuous
+kinematics -- the two give visibly different numbers over 30 steps, and
+only one of them is what this engine actually computes.
+
+Not yet implemented -- planning only.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MhaEd7J8fHjcNU2xuzew89

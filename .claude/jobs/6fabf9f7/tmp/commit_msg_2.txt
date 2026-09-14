@@ -1,0 +1,28 @@
+Add an Outliner right-click context menu, plus a data-only PhysicsComponent
+
+Editor roadmap item 1: right-click an Outliner row for Add/Remove Script,
+Rename (inline), Edit Mesh, Duplicate, and Delete -- all deferred past the
+end of the row loop since Duplicate/Delete create or destroy entities and
+GetEntities() returns Scene's own live-entity vector, not a copy; mutating
+it mid-range-for would be undefined behaviour. Edit Mesh's load-and-open
+logic is pulled out of the Inspector button into StartMeshEdit(entity, mesh)
+so both call sites share it.
+
+DuplicateEntityCommand mirrors PlaceEntityCommand's Redo/Undo shape, just
+capturing its snapshot from an existing entity instead of being handed one.
+
+An Advanced submenu holds a Physics tab: a new PhysicsComponent (Body Type,
+Mass, Friction, Restitution), serialized with the scene. Deliberately
+data-only -- the editor scene has no physics world wired in anywhere, so
+nothing simulates these fields yet. Requested explicitly as scaffolding
+ahead of that; see editor_roadmap.md item 1 for the open follow-up.
+
+Verified: a temporary self-test (deleted after) exercised
+DuplicateEntityCommand's Redo/Undo/Redo and a PhysicsComponent Save/Load
+round trip directly against the ECS, 15/15 checks passing. All three
+configs build. Right-click click-through itself is unverified, the same
+standing gap already noted for every other editor UI feature (no
+GUI-automation tool in this environment).
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MhaEd7J8fHjcNU2xuzew89

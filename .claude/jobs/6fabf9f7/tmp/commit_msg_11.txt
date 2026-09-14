@@ -1,0 +1,27 @@
+Add physics-simulation design spec
+
+Wires PhysicsComponent (Body Type/Mass/Friction/Restitution, added earlier
+this session as data-only scaffolding) into a real simulation during Play
+mode, using GS::PhysicsWorld3D/RigidBody3D -- a real rigid-body engine
+that already exists but was only ever driven directly by specific demos
+(Physics3D.h, Ragdoll.h), never the generic editor scene.
+
+Turned out smaller than expected once grounded in the real APIs:
+PlayMode already snapshots the scene before Play and reverts it on Stop,
+so physics-driven transform changes need zero extra undo logic; its
+OnFixedUpdate hook already exists at the right granularity; and
+RigidBody3D::MakeBox/MakeStaticBox already handle mass and inertia setup
+correctly, so nothing here reimplements physics math. No PhysicsComponent
+field changes needed at all.
+
+Box collider only (sized from MeshComponent bounds, falling back to
+Scale*0.5 for a meshless entity), strictly opt-in (no PhysicsComponent
+means invisible to physics, including as a floor), per two scoping
+answers given before writing this. Orientation round-trips through the
+exact same rotation composition TransformComponent::GetTransform() uses
+(Rx*Ry*Rz), not a second implementation that could disagree.
+
+Design only -- no implementation yet.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MhaEd7J8fHjcNU2xuzew89

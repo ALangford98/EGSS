@@ -1,0 +1,26 @@
+Add editor-theming implementation plan
+
+9 tasks implementing docs/superpowers/specs/2026-09-13-editor-theming-
+design.md: a Theme struct + hex-color helpers, hand-rolled JSON load/save
+(GS::Json already parses, only a writer was missing), a live font-atlas
+reload on ImGuiLayer (the OpenGL3 backend already supports this at
+runtime -- clear+rebuild io.Fonts, destroy the old texture, the next
+NewFrame recreates it), the 5-role-to-ImGuiCol_ mapping plus
+ThemeManager::Apply/Current/ListThemes, real basic.json/default.json
+content (every color traced to StyleColorsDark(), libvterm's real
+compiled-in default, or the existing EverforestDark() -- nothing
+guessed), TextEditorPanel/TerminalPanel reading the live theme instead of
+a hardcoded copy, startup last-theme persistence mirroring the existing
+last-scene pattern, and the Appearance panel itself.
+
+Caught and fixed one real spec bug while grounding this in exact values:
+the original spec folded the text editor's background/foreground into
+the general theme roles, which would have made basic.json silently
+repaint the editor a different color than it actually is today (checked
+against the real, currently-running code, not assumed) -- fixed in the
+spec commit right before this one.
+
+Not yet implemented -- planning only.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MhaEd7J8fHjcNU2xuzew89

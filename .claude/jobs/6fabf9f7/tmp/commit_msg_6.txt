@@ -1,0 +1,35 @@
+Implement entity grouping: grouped Outliner, multi-select, Ctrl+G, dialog
+
+All 8 tasks from docs/superpowers/plans/2026-09-12-entity-grouping.md,
+implementing docs/superpowers/specs/2026-09-12-entity-grouping-design.md:
+
+- GroupComponent{ GroupName }, serialized with the scene like ScriptPath;
+  carried through Duplicate/Delete alongside every other optional component.
+- EntityGroups.h: pure, ImGui-free helpers (GroupEntitiesByName,
+  AnyAlreadyGrouped, AssignGroup, RenameGroup, DeleteGroup, ComputeCentroid)
+  so the actual logic is self-testable without a live ImGui frame.
+- Outliner renders grouped entities under a collapsible TreeNode per group
+  (Select All / Ungroup on right-click), ungrouped entities unchanged below.
+- Ctrl+click (viewport or Outliner) builds a transient m_MultiSelection,
+  separate from persisted GroupComponent membership on purpose -- selecting
+  several entities never touches the scene file by itself.
+- The translate gizmo grows a centroid case: GizmoPosition() returns a
+  stand-in pivot when 2+ entities are selected (mirroring the mesh-edit
+  session's existing world-point indirection), and a new MultiMoveCommand
+  undoes a whole group-drag gesture in one step.
+- Ctrl+G promotes the current multi-selection to a named group, confirming
+  first if any member already belongs to one (single-membership rule).
+- "Add to Group" opens a full management dialog: create/rename/delete
+  groups and add/remove any entity's membership, no confirmation needed
+  since opening the dialog is already a deliberate action.
+
+Verified per task with temporary self-tests (deleted after each, per this
+repo's convention) and visual captures for the ImGui-only pieces -- see the
+plan's own step-by-step verification log for exact pass counts. All three
+configs (Debug/Release/Dist) build clean. Live click-through (Ctrl+click,
+Ctrl+G, the dialog's buttons) is the same disclosed, unautomatable gap
+already noted for every other editor UI feature -- no GUI-automation tool
+exists in this environment.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MhaEd7J8fHjcNU2xuzew89

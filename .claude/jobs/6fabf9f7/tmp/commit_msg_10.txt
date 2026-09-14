@@ -1,0 +1,17 @@
+Dock the Appearance panel by default and add a View menu entry for it
+
+Every other panel (Files, Outliner, Profiler, Terminal, ...) has an
+explicit slot in EditorShell.h's default dock builder; Appearance never
+got one when it was added, so on a fresh layout it floats undocked with
+no assigned home -- reported as "can't put this theme tab anywhere."
+Docked it into the bottom well alongside Terminal/Build Output/Textures.
+
+Also added a View menu entry that calls SetWindowFocus("Appearance") --
+brings the tab forward wherever it's currently docked or floating, for
+whenever a user drags it somewhere and loses track of it again.
+
+Verified: all three configs build; a capture confirms Appearance renders
+as a proper tab in the bottom well by default, focused.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MhaEd7J8fHjcNU2xuzew89

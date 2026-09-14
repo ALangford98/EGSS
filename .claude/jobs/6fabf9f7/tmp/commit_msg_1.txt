@@ -1,0 +1,12 @@
+Allow worktrees when a session's harness forces isolation, merged back directly
+
+Background sessions can have file edits blocked in the shared checkout by
+their own harness before EnterWorktree runs. The prior never-use-a-worktree
+rule had no escape hatch for that, so update it: interactive sessions still
+default to the shared checkout, but a session that genuinely needs isolation
+may use one, provided it merges straight into local main and deletes the
+branch once done -- no PR, no long-lived worktree branch kept around for
+review like the old handover flow.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MhaEd7J8fHjcNU2xuzew89

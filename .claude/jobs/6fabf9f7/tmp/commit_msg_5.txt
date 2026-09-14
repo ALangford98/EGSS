@@ -1,0 +1,20 @@
+Add entity-grouping implementation plan
+
+8 tasks implementing docs/superpowers/specs/2026-09-12-entity-grouping-
+design.md: GroupComponent + serialization, Duplicate/Delete carrying it,
+a pure EntityGroups.h (group lookup, membership edits, centroid math,
+independently self-tested with no ImGui dependency), grouped Outliner
+display with a group-header context menu, Ctrl+click multi-selection with
+viewport highlighting, a centroid-based multi-select gizmo backed by a new
+MultiMoveCommand, Ctrl+G with a confirm step when members are already
+grouped, and a full group-management dialog off a new context-menu entry.
+
+Each task follows this repo's temporary-self-test convention where the
+logic is ImGui-free (Tasks 1-3, 6); UI-only tasks (4, 5, 7, 8) are checked
+by building and a visual capture instead, with the same disclosed click-
+through gap every other editor UI feature here already carries.
+
+Not yet implemented -- planning only.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MhaEd7J8fHjcNU2xuzew89

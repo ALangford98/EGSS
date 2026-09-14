@@ -1,0 +1,22 @@
+Add entity-grouping design spec
+
+Covers the request to right-click-group entities: GroupComponent (a single
+string tag per member, no separate group entity/registry -- a group with
+zero members is unrepresentable under that model, so every creation path
+always pairs a name with at least one member), a grouped Outliner display,
+transient Ctrl+click multi-selection distinct from persisted groups, a
+translate-only multi-select gizmo built on the same stand-in-position
+pattern mesh authoring's GizmoPosition() already uses, Ctrl+G to promote a
+multi-selection into a group (confirming first if members already belong
+to one), and a full group-management dialog off a new context-menu entry.
+
+Data model, gizmo mechanics, and dialog scope were settled via clarifying
+questions before writing this; see the design doc's own "Why this shape"
+section for the reasoning and what's explicitly deferred (nested groups,
+rigid rotate/scale, multi-entity Inspector editing, tree drag-and-drop).
+
+Design only -- no implementation yet. Next: writing-plans for the task
+breakdown.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MhaEd7J8fHjcNU2xuzew89

@@ -1,0 +1,22 @@
+Extend the entity context menu to the viewport, not just the Outliner row
+
+The Outliner row's right-click menu (Add/Remove Script, Rename, Edit Mesh,
+Duplicate, Delete, Advanced/Physics) only fired on the tree row -- the user
+wanted it on the actual object in the 3D view too. ReadHoveredEntity()
+already tracks which entity is under the cursor every frame via the
+entity-index framebuffer attachment, so this needed no new picking logic,
+just a second entry point.
+
+The popup body is extracted into DrawEntityContextMenu(entity, &pendingDup,
+&pendingDelete), called from both the Outliner's BeginPopupContextItem and
+a new plain BeginPopup in the viewport (there's no ImGui item to hang
+BeginPopupContextItem off of -- the 3D scene is a full-screen quad blit,
+not an ImGui::Image). The viewport's right-click sets a request flag in
+OnEvent and opens the popup next frame in OnImGuiRender, since
+ImGui::OpenPopup needs to run inside the ImGui frame and an input event
+isn't guaranteed to arrive within one.
+
+Verified: all three configs build.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MhaEd7J8fHjcNU2xuzew89

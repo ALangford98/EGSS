@@ -1,0 +1,53 @@
+Implement editor theming: JSON themes, live colors/fonts, Appearance panel
+
+All 9 tasks from docs/superpowers/plans/2026-09-13-editor-theming.md,
+implementing docs/superpowers/specs/2026-09-13-editor-theming-design.md:
+
+- Theme{} struct (5 UI color roles, 3 font slots, 2 terminal colors, 8
+  syntax colors, a raw ImGuiCol_ override map) with hex-color helpers.
+- ThemeManager: JSON load via the existing GS::JsonValue parser, save via
+  a hand-rolled ofstream writer (styled after Instrumentor.cpp's
+  profile.json writer -- no serializer existed for writing before this).
+- ImGuiLayer gains a runtime font-reload path (3 independent font slots,
+  live-swappable) -- this ImGui version (1.92.x) manages font textures
+  itself via ImTextureData/ImTextureStatus, not the older Create/
+  DestroyFontsTexture pair; a clear+rebuild of io.Fonts is picked up by
+  the backend automatically on the next RenderDrawData.
+- ThemeManager::Apply maps the 5 roles onto ~50 ImGuiCol_ entries (hover/
+  active variants derived via Lighten/Darken, not stored), with advanced
+  overrides layered on top by literal (bare-suffix) ImGuiCol_ name.
+- basic.json (today's real look: StyleColorsDark's actual values, mapped
+  back through the 5-role model with a ChildBg override for the one case
+  the collapse changes visibly; libvterm's real compiled-in terminal
+  colors; today's EverforestDark() syntax colors, unmodified) and
+  default.json (a full Everforest palette, extending the syntax-only one
+  that already existed) -- every value traced to source, nothing guessed.
+- TextEditorPanel and TerminalPanel read ThemeManager::Current() live
+  instead of a hardcoded copy, each with their own pushed font.
+- Startup remembers the last-applied theme (mirrors EditorProject.h's
+  existing last-scene pattern exactly), falling back to default.json.
+- A new Appearance panel: theme list, 5 color pickers, 3 font browse rows
+  (reusing FileBrowserPopup), 2 terminal pickers, Save As.
+
+Two real bugs found and fixed via the actual capture/build cycle, not
+just compiling: (1) TerminalPanel's font PushFont, if wrapped in a plain
+RAII guard spanning multiple early-return branches, left the font stack
+unbalanced relative to each branch's own ImGui::End() -- ImGui 1.92's
+error-recovery assert caught this as a hard crash on the very first run;
+fixed with a single pop-then-end helper used at every exit instead. (2)
+the terminal-color-apply gate marked itself "initialised" (and cached
+the theme's values) even on a frame where m_Screen was still null, so
+the real vterm_screen_set_default_colors call never actually ran once
+the screen existed a frame later -- caught by the terminal visibly
+staying black in a capture; fixed by gating the whole condition on
+m_Screen instead of just its body. Both fixes carried back into the plan
+and spec docs, not just the code.
+
+Verified per task with temporary self-tests (deleted after each) and
+visual captures for the ImGui-only pieces, including a pixel-level check
+(ImageMagick identify) confirming the terminal's rendered background
+matched the theme's exact RGB rather than trusting a screenshot by eye.
+All three configs (Debug/Release/Dist) build clean.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MhaEd7J8fHjcNU2xuzew89
