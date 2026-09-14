@@ -67,45 +67,6 @@ public:
 
 		BuildTarget();
 		BuildShader();
-
-		// TEMPORARY -- verifies ExportUvTemplate's end-to-end wiring
-		// (both the "usable UVs, no rewrite" and "unusable UVs, fresh
-		// unwrap + re-save" branches) against a real scene. Delete this
-		// block, UvUnwrapTest.h, and UvTemplateWriterTest.h together once
-		// verified.
-		{
-			// Case 1: CreateCubeData()'s own per-face UVs are usable ->
-			// FindIslandsFromUVs path, no .obj rewrite.
-			GS::Entity usableEntity = g_EditorScene.CreateEntity("UvExportTestCube");
-			g_EditorScene.AddComponent<GS::TransformComponent>(usableEntity.GetId());
-			auto& usableMesh = g_EditorScene.AddComponent<GS::MeshComponent>(usableEntity.GetId());
-			usableMesh.SourcePath = "primitive:cube";
-			usableMesh.Geometry = std::shared_ptr<GS::Mesh>(GS::Mesh::CreateCube());
-			std::string usableError;
-			bool usableOk = ExportUvTemplate(usableEntity.GetId(), &usableMesh, 512, usableError);
-			GS_TRACE("UvExportTest (usable UVs): {0} ({1}), SourcePath still '{2}'",
-				usableOk ? "ok" : "FAIL", usableError, usableMesh.SourcePath);
-			g_EditorScene.DestroyEntity(usableEntity.GetId());
-
-			// Case 2: all-(0,0) UVs (matching EditableMesh::Rebuild()'s
-			// known gap) -> Unwrap + ObjWriter re-save path.
-			GS::MeshData zeroed = GS::Mesh::CreateCubeData();
-			for (auto& v : zeroed.Vertices)
-				v.TexCoord = { 0.0f, 0.0f };
-			std::string saveError;
-			GS::ObjWriter::Save("assets/uv_export_test_zeroed.obj", zeroed, saveError);
-
-			GS::Entity unusableEntity = g_EditorScene.CreateEntity("UvExportTestZeroed");
-			g_EditorScene.AddComponent<GS::TransformComponent>(unusableEntity.GetId());
-			auto& unusableMesh = g_EditorScene.AddComponent<GS::MeshComponent>(unusableEntity.GetId());
-			unusableMesh.SourcePath = "assets/uv_export_test_zeroed.obj";
-			unusableMesh.Geometry = std::make_shared<GS::Mesh>(zeroed, "ZeroedCube");
-			std::string unusableError;
-			bool unusableOk = ExportUvTemplate(unusableEntity.GetId(), &unusableMesh, 512, unusableError);
-			GS_TRACE("UvExportTest (unusable UVs -> unwrap): {0} ({1}), SourcePath now '{2}'",
-				unusableOk ? "ok" : "FAIL", unusableError, unusableMesh.SourcePath);
-			g_EditorScene.DestroyEntity(unusableEntity.GetId());
-		}
 	}
 
 	bool IsActive() const { return g_ActiveDemo == InvalidDemo; }

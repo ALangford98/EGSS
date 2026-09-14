@@ -38,6 +38,57 @@ kit of boards, logs and stone.
 
 Last landed, newest first:
 
+- **Mesh UV template export** — roadmap item #9 (`editor_roadmap.md`),
+  scoped in brainstorming to arbitrary meshes (the harder of the two forks
+  the roadmap entry itself flagged), not primitives-only. See
+  `docs/superpowers/specs/2026-09-14-mesh-uv-template-export-design.md` and
+  `docs/superpowers/plans/2026-09-14-mesh-uv-template-export.md` (6 tasks).
+  `GS::UvUnwrap`: `HasUsableUVs` (an all-zero/near-zero-bounding-box UV
+  layout is unusable — exactly mesh authoring's own disclosed
+  `EditableMesh::Rebuild()` `(0,0)`-everywhere gap, so a mesh edited there
+  now gets a real unwrap for free); `Unwrap` charts by growing regions
+  while a neighbor triangle's normal stays within a 45°-tuned threshold of
+  the chart's running average, planar-projects each chart, and shelf-packs
+  into `[0,1]²`, rewriting the mesh with one fresh, non-shared vertex per
+  triangle corner; `FindIslandsFromUVs` reports an *existing* layout's own
+  seams via union-find, read-only. `GS::UvTemplateWriter` rasterizes a
+  wireframe + per-chart-tint PNG through the already-vendored
+  `stb_image_write` (no new dependency). Editor: an "Export UV Template"
+  Inspector button beside "Edit Mesh", with a resolution field (default
+  1024); a fresh unwrap re-saves the entity's `.obj` and reloads it
+  bypassing `MeshCache`, the same stale-cache hazard Edit Mesh's own Done
+  handler already had to avoid.
+  **Threshold tuned empirically, not assumed:** `CreateCubeData()` (6
+  faces, 90° apart) always separates into exactly 6 charts;
+  `CreateSphereData()` (960 triangles) charts into 16, `CreateCylinderData()`
+  (48 triangles) into 5 — a handful in both cases.
+  **Two real bugs found by the tests' own arithmetic:** (1) the shelf
+  pack's centering offset (for letterboxing a non-square pack into the
+  unit square) was computed in raw pack-space units but added to an
+  already-scaled coordinate, spilling the shorter axis past 1.0 — caught
+  by the packed-UVs-in-bounds self-test, fixed by scaling the offset too.
+  (2) the template-writer self-test's own `stbi_load` read-back came back
+  vertically mirrored — not a writer bug: `OpenGLTexture.cpp` sets the
+  process-global `stbi_set_flip_vertically_on_load(1)` the first time any
+  layer loads a texture during `TestEnv`'s constructor, still set by the
+  time the self-test's own read ran at the end of that same constructor;
+  fixed in the test, not the writer, which itself writes unflipped,
+  self-consistent pixels.
+  **Deliberately out of scope, disclosed rather than silently dropped:**
+  no manual seam editing, no chart relaxation/distortion minimization, no
+  interactive preview/undo loop for this feature, no texture re-import.
+  `Unwrap()` always clears `MeshData::Submeshes`/`MaterialLibraries` on a
+  fresh unwrap (chart-order reordering invalidates old per-submesh index
+  ranges; `GS::Mesh`'s constructor auto-fills one default full-range
+  submesh from an empty list) — a multi-material mesh loses its
+  per-material assignment on a fresh unwrap, a real, scoped-down
+  limitation, not a crash risk. Verified: temporary self-tests
+  (`UvUnwrapTest` 11/11, `UvTemplateWriterTest` 5/5, deleted after
+  verifying), end-to-end wiring confirmed against a real scene via a
+  temporary hook (both branches succeeded, the rewritten `.obj` carried
+  real UVs, the exported PNGs visually confirmed as 6 distinctly-tinted,
+  correctly-wireframed cube faces), a clean three-config build, and a
+  byte-identical Cube3D `--hide-ui` capture throughout.
 - **Multiplayer/networking foundation** — the sub-project this file has
   named as unstarted since before the editor pivot, scoped and built once
   the scene model existed to replicate. See

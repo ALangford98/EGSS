@@ -1268,6 +1268,75 @@ exported classes, and the system libraries GLFW needs are named explicitly.
 
 # Changelog
 
+### 2026-09-14 (mesh UV template export: heuristic unwrapping, chart packing, editor integration)
+
+**Roadmap item #9, scoped to arbitrary meshes rather than primitives-only.**
+`GS::UvUnwrap` charts a mesh by growing regions from a seed triangle while a
+neighbor's normal stays within 45 degrees of the chart's running average (a
+position-keyed edge-adjacency table, not vertex indices -- flat-shaded
+meshes duplicate a vertex per face, so two geometrically adjacent triangles
+almost never share a vertex index, only a position), planar-projects each
+chart via an orthonormal basis fit to its average normal, then shelf-packs
+every chart's local bounding box into `[0,1]^2`. `HasUsableUVs` treats an
+all-zero (or near-zero-bounding-box) UV layout as unusable -- which is
+exactly `EditableMesh::Rebuild()`'s own disclosed `(0,0)`-everywhere gap
+from the mesh authoring feature, so a mesh edited there now gets a real
+unwrap for free. A mesh whose UVs are already usable keeps them, and
+`FindIslandsFromUVs` (a union-find over the same triangle adjacency, joining
+two triangles only when they agree on UV at both endpoints of their shared
+edge) reports its existing seams instead of computing new ones.
+`GS::UvTemplateWriter` rasterizes the packed UVs into a wireframe +
+per-chart-pastel-tint PNG via the already-vendored `stb_image_write` (same
+call shape `ScreenCapture.cpp` already used -- no new dependency). The
+editor's Inspector gained an "Export UV Template" button beside "Edit Mesh",
+with a resolution field (default 1024); a fresh unwrap re-saves the
+entity's `.obj` via the existing `ObjWriter` and reloads it bypassing
+`MeshCache` (the same stale-cache hazard Edit Mesh's own Done handler
+already had to avoid).
+
+**Measured, not assumed:** the 45-degree chart-angle threshold was picked
+empirically against known primitives -- `CreateCubeData()` (6 faces, 90
+degrees apart) always separates into exactly 6 charts; `CreateSphereData()`
+(960 triangles) charts into 16, `CreateCylinderData()` (48 triangles) into
+5 -- a handful in both cases, not 1 and not one-per-triangle. Temporary
+self-tests (`UvUnwrapTest`: 11/11, `UvTemplateWriterTest`: 5/5) covered
+`HasUsableUVs`'s true/false cases, chart count and in-bounds/non-overlap
+packing on the cube, single-chart behaviour on a flat quad, both sphere/
+cylinder counts above, `FindIslandsFromUVs`'s island detection, and the
+template writer's output resolution and pixel placement against a
+hand-placed triangle -- all deleted after verifying, per this project's
+self-test pattern.
+
+**Two real bugs found by the tests' own arithmetic, not assumed correct:**
+(1) the pack's centering offset (for letterboxing a non-square pack inside
+the unit square) was computed in raw pack-space units but added to an
+already-*scaled* coordinate, so the shorter axis's content spilled past
+1.0 -- caught by the packed-UVs-in-bounds check, fixed by applying the
+same scale factor to the offset. (2) the template-writer self-test's own
+`stbi_load` read-back came back vertically mirrored -- not a writer bug:
+`OpenGLTexture.cpp` sets the process-global `stbi_set_flip_vertically_on_load(1)`
+the first time any layer loads a texture during `TestEnv`'s constructor,
+and that flag was still set by the time the self-test's own read ran at
+the end of that same constructor. `UvTemplateWriter` itself writes
+unflipped, self-consistent pixels; fixed by having the test explicitly
+reset the flag before its own read.
+
+**Disclosed, not silently dropped:** no manual seam editing, no chart
+relaxation/distortion-minimization pass, no interactive preview/undo loop
+for this feature, no texture re-import. `Unwrap()` always clears
+`MeshData::Submeshes`/`MaterialLibraries` on a fresh unwrap -- chart-order
+reordering invalidates old per-submesh index ranges, and `GS::Mesh`'s
+constructor already auto-fills one default full-range submesh from an
+empty list, so a multi-material mesh loses its per-material assignment on
+a fresh unwrap (a real, scoped-down limitation, not a crash risk).
+End-to-end wiring (both the "usable UVs" and "fresh unwrap" branches)
+verified against a real scene via a temporary `OnAttach` hook: both
+branches reported success, the rewritten `.obj` carried real non-degenerate
+UVs, and the exported PNGs were visually confirmed as 512x512 images with
+6 distinctly-tinted, correctly-wireframed cube faces. Clean three-config
+build and a byte-identical Cube3D `--hide-ui` capture throughout (this
+feature touches no demo-layer or rendering-path code).
+
 ### 2026-09-14 (multiplayer foundation: UDP transport, replication, RPCs, editor integration)
 
 **The networking foundation `docs/STATE.md` had carried as "unstarted" since
