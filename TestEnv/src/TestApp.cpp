@@ -35,6 +35,7 @@
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
 #include "UvUnwrapTest.h"
+#include "UvTemplateWriterTest.h"
 
 class TestEnv : public GS::Application
 {
@@ -80,6 +81,7 @@ public:
 		PushLayer(new AudioRaceStress());
 
 		UvUnwrapTest::Run(); // TEMPORARY -- see UvUnwrapTest.h
+		UvTemplateWriterTest::Run(); // TEMPORARY -- see UvTemplateWriterTest.h
 	}
 
 	// g_EditorScene is a global with static storage duration, so without this

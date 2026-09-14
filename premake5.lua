@@ -240,7 +240,8 @@ project "TestEnv"
         "%{IncludeDir.glm}",
         "%{IncludeDir.ImGui}",
         "%{IncludeDir.libvterm}",
-        "%{IncludeDir.quickjs}"
+        "%{IncludeDir.quickjs}",
+        "%{IncludeDir.stb_image}"
     }
 
     links
