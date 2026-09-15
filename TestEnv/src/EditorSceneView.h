@@ -1838,12 +1838,14 @@ private:
 		}
 	}
 
-	// Adapted from Cube3D's fly camera, not identical to it: arrow-key look
-	// is dropped as redundant with middle-drag look, and the
+	// Adapted from Cube3D's fly camera, not identical to it: the
 	// WantCaptureKeyboard guard below is new -- this view sits beside the
 	// Inspector's and Assets panel's text/numeric fields, and Cube3D never
 	// had that problem because a demo doesn't share the window with editable
-	// text.
+	// text. Arrow-key look was originally dropped here as redundant with
+	// middle-drag look, then re-added on request -- PerspectiveCamera::
+	// SetRotation already clamps pitch, so holding Up/Down can't flip the
+	// view over.
 	void MoveCamera(GS::Timestep ts)
 	{
 		if (ImGui::GetIO().WantCaptureKeyboard)
@@ -1854,6 +1856,7 @@ private:
 		float pitch = m_Camera.GetPitch();
 
 		float move = m_MoveSpeed * ts;
+		float look = m_LookSpeed * ts;
 
 		if (GS::Input::IsKeyPressed(GS_KEY_W)) position += m_Camera.GetForward() * move;
 		if (GS::Input::IsKeyPressed(GS_KEY_S)) position -= m_Camera.GetForward() * move;
@@ -1861,6 +1864,11 @@ private:
 		if (GS::Input::IsKeyPressed(GS_KEY_D)) position += m_Camera.GetRight() * move;
 		if (GS::Input::IsKeyPressed(GS_KEY_E)) position.y += move;
 		if (GS::Input::IsKeyPressed(GS_KEY_Q)) position.y -= move;
+
+		if (GS::Input::IsKeyPressed(GS_KEY_LEFT))  yaw -= look;
+		if (GS::Input::IsKeyPressed(GS_KEY_RIGHT)) yaw += look;
+		if (GS::Input::IsKeyPressed(GS_KEY_UP))    pitch += look;
+		if (GS::Input::IsKeyPressed(GS_KEY_DOWN))  pitch -= look;
 
 		glm::vec2 mouse = { GS::Input::GetMousePosition().first, GS::Input::GetMousePosition().second };
 		glm::vec2 delta = mouse - m_PreviousMouse;
@@ -1965,5 +1973,6 @@ private:
 
 	glm::vec2 m_PreviousMouse{ 0.0f, 0.0f };
 	float m_MoveSpeed = 3.0f;
+	float m_LookSpeed = 70.0f;
 	float m_MouseLookSensitivity = 0.18f;
 };
