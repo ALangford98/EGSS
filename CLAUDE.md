@@ -3,7 +3,8 @@
 A game engine written from scratch in C++17, following the shape of TheCherno's
 Hazel series but diverging where it made sense. `GS/` is the engine, built as
 a shared library; `TestEnv/` is a sandbox app that links against it and holds
-seventeen demos.
+eighteen demos (`TestEnv/src/DemoRegistry.h` is the source of truth for the
+count — check there rather than trust this number if it looks stale again).
 
 This is built to be **understood**, not to ship a game. A working black box is
 worth less here than a mechanism that can be followed. Explain the load-bearing
@@ -31,12 +32,13 @@ question. Where `docs/STATE.md` and git disagree, **git wins**.
 | --- | --- | --- |
 | About to edit a file | `grep -n` its symbols against the traps body | ~1k |
 | First time in an area | The trap index in `docs/HANDOVER.md`, then that area's `docs/ENGINE.md` section | ~4k + ~2k |
-| "Why is it like this?" | `grep -n '^### ' README.md \| head -30`, then `sed` out the one entry | ~1.5k |
-| Picking the next task | `README.md` "Still outstanding" only | ~9k |
+| "Why is it like this?" | `grep -n '^### ' docs/CHANGELOG.md \| head -30`, then `sed` out the one entry | ~1.5k |
+| Picking the next task | `README.md` "Still outstanding", and `editor_roadmap.md` for editor-level work | ~9k |
 | A measurement disagrees with arithmetic | The traps body in full | 31k |
 
-**Tier 3 — never read whole.** The README changelog is ~170k tokens; the traps
-body is ~31k over 254 entries. Both are newest-first and both are
+**Tier 3 — never read whole.** `docs/CHANGELOG.md` (moved out of `README.md`
+2026-09-15, so it stays a reasonably-sized front door) is ~170k tokens; the
+traps body is ~31k over 254 entries. Both are newest-first and both are
 meant to be **grepped**. Reading either end to end is the failure this ladder
 exists to prevent.
 
@@ -171,10 +173,12 @@ person:
 ```
 
 Input is sampled per *fixed step*, so the frame rate it was recorded at does not
-matter, and the file names its own scene. All six demos are step-deterministic;
-keep them that way — **anything that moves belongs in `OnFixedUpdate`, not
-`OnUpdate`**. Three demos violated that and could not reproduce themselves run
-to run, let alone under replay.
+matter, and the file names its own scene. Every demo checked this way has been
+step-deterministic; keep it that way — **anything that moves belongs in
+`OnFixedUpdate`, not `OnUpdate`**. Three early demos violated that and could
+not reproduce themselves run to run, let alone under replay — this was never
+re-swept against the full, now-larger demo list, so don't assume a demo added
+since is clean until it's actually been checked.
 
 **Panel state is recorded too, for parameters a demo registers.** One line per
 slider that reaches the simulation:
@@ -234,8 +238,9 @@ the wrong turn, not a narration of the code. `// Bumping the generation is what
 makes every outstanding handle stale` earns its line; `// increment generation`
 does not. Match the surrounding density.
 
-**The README changelog is part of the work**, not an afterthought. Entries
-record what was built, what broke, and what the measurement said.
+**The changelog (`docs/CHANGELOG.md`) is part of the work**, not an
+afterthought. Entries record what was built, what broke, and what the
+measurement said.
 
 **Adding a demo** is one line in `TestEnv/src/DemoRegistry.h`. Demos are
 header-only; `DemoLayer` holds the is-this-demo-active guard in `final` `Layer`

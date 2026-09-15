@@ -5,6 +5,47 @@ pending items already tracked in `docs/STATE.md`. Where an entry needs a
 decision only the owner can make before it can be scoped further, that's
 called out explicitly rather than guessed at.
 
+## Foundational gaps (assessed 2026-09-15)
+
+Found by surveying this file, `docs/STATE.md`, and the README's "Still
+outstanding" section together and asking: what still blocks using this as a
+viable engine to make something in, not just extend the editor's polish.
+Bigger and more structural than the wishlist below — each is closer to a
+sub-project than a feature.
+
+- **The editor scene has no physics simulation wired in at all.**
+  `PhysicsComponent` (Body Type, Mass, Friction, Restitution, added under
+  item #1's "Advanced" tab) is explicitly data-only scaffolding — nothing
+  runs a `PhysicsWorld2D`/`PhysicsWorld3D` against placed entities, so
+  hitting Play does nothing physical no matter what's set in the Inspector.
+  This is the one every other gap below implicitly assumes exists once a
+  level is actually being built, and it's already flagged as "the note to
+  come back to" in item #1. **Highest-priority gap.**
+- **No first-class 2D workflow in the editor.** `SpriteComponent` and
+  `RigidBody2DComponent` exist in the ECS and back the old hand-coded 2D
+  demos (`Breakout`, `Physics2D`), but neither has any Inspector/Outliner
+  wiring — confirmed by grep, nothing in `EditorSceneView.h` references
+  either. A 2D game can only be built today by writing a new `DemoLayer`
+  by hand, the way `BreakoutRecreation` faked 2D with flattened 3D meshes
+  on an orthographic camera rather than using the real sprite pipeline.
+- **No animation system anywhere in the codebase** — no bones, no
+  skeleton, no animation component (also called out under wishlist #12).
+  Any game with an animated character is blocked on this before anything
+  else in this list.
+- **No in-game UI/HUD system.** ImGui is the only UI layer, and it's a
+  dev-facing debug overlay wired through `Layer::OnImGuiRender` — nothing
+  produces a title screen, HUD, or menu meant for a player to see.
+- **The GSS entity-scripting stdlib is too thin for real gameplay code.**
+  `console.log`/`.length`/`.map`/`.filter`/`.find` don't exist for
+  entity scripts yet (wishlist #3 covers this precisely). Scripts also
+  only reach `Transform`/`Input`/`scene.findByTag`/`spawn`/`destroy` — no
+  way to trigger a sound or touch physics from a script, since neither
+  has a binding yet.
+
+**Not on this list, and why:** normal maps, shadow mapping, a particle
+system, and post-processing are real, but they're visual-quality gaps a
+game can ship without at small scale — genuinely blocking gaps come first.
+
 ## Wishlist, easiest to hardest
 
 ### 1. Right-click context menu (Add Script / Edit Mesh / Rename / advanced options)
@@ -156,12 +197,16 @@ plan sub-project, not a small addition.
 - Minor UX rough edges: a bare click pushes a no-op undo snapshot; global
   Ctrl+Z isn't redirected to a session's own undo stack while one is
   open; the export path doesn't compose with the project's own path.
-- No README changelog entry yet for the mesh-authoring feature.
+- No `docs/CHANGELOG.md` entry yet for the mesh-authoring feature.
 
-### Multiplayer/networking foundation
-Nothing exists yet — no transport, no replication, no session model.
-**Additional scoping required:** its own sub-project, once there's a
-settled scene model to replicate against.
+### Multiplayer/networking foundation — done (2026-09-14)
+Landed: UDP transport, a custom reliable-ordered channel, host-as-server
+session model, opt-in `NetworkIdentity`/`NetworkTransform` replication,
+manual RPCs, and an editor Network panel. See `docs/CHANGELOG.md`'s
+2026-09-14 entry and `docs/STATE.md` for what's still deliberately out of
+scope (client prediction, a dedicated server, matchmaking/NAT traversal,
+generic component replication). Left here only long enough to record that
+this item closed — remove on the next pass through this file.
 
 ### Character attributes
 `s_Strength` in `TerrainLab.h` is deliberately a constant with a hook

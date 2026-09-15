@@ -12,7 +12,8 @@ time more than once.
 **GS** — a game engine written from scratch in C++17, following the shape of
 TheCherno's Hazel series but diverging where it made sense. `GS/` is the
 engine, built as a shared library; `TestEnv/` is a sandbox app that links
-against it and holds seven demos.
+against it and holds eighteen demos (`TestEnv/src/DemoRegistry.h` is the
+source of truth for the count).
 
 The owner is building this to **understand** it, not to ship a game. That
 matters for how you work: a working black box is worth less here than a
@@ -23,8 +24,10 @@ Reading order for a newcomer:
 1. `docs/ENGINE.md` — the frame's call path, the decisions that explain the
    rest, and the API you'd use day to day
 2. `TestEnv/src/Breakout.h` — a commented worked example
-3. `README.md` — layout, build, roadmap, and a changelog that records *why*
-   things are the way they are, including the wrong turns
+3. `README.md` — layout and build, plus a pointer to `docs/CHANGELOG.md`,
+   which records *why* things are the way they are, including the wrong
+   turns (moved out of `README.md` 2026-09-15 to keep it a reasonably-sized
+   front door)
 
 ---
 
@@ -2434,9 +2437,9 @@ produce no demo and no compile error.
 
 `TestEnv/src/Demo.h` holds `g_ActiveDemo`, the demo shown at startup.
 
-**The README changelog is part of the work**, not an afterthought. Entries
-record what was built, what broke, and what the measurement said. Keep writing
-them.
+**The changelog (`docs/CHANGELOG.md`, moved out of `README.md` 2026-09-15) is
+part of the work**, not an afterthought. Entries record what was built, what
+broke, and what the measurement said. Keep writing them.
 
 **Don't build speculative scaffolding.** `MeshComponent` was deliberately left
 unwritten until something read it — the owner has pushed back on scaffolding

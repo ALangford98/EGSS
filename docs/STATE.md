@@ -168,7 +168,7 @@ Last landed, newest first:
   would need); several Minor UX rough edges (bare clicks push a no-op
   undo snapshot; global Ctrl+Z isn't redirected to a session's own undo
   stack; the export path doesn't compose with the project's own path);
-  no README changelog entry for this feature yet.
+  no `docs/CHANGELOG.md` entry for this feature yet.
 - **`ball.gss` graduated to compiled C++ -- the second and, for now, last
   script to (BreakoutRecreation's only other one).** Requested as "graduate
   the rest of the demos in order"; asked which of two readings that meant
