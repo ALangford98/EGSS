@@ -13,14 +13,18 @@ viable engine to make something in, not just extend the editor's polish.
 Bigger and more structural than the wishlist below — each is closer to a
 sub-project than a feature.
 
-- **The editor scene has no physics simulation wired in at all.**
-  `PhysicsComponent` (Body Type, Mass, Friction, Restitution, added under
-  item #1's "Advanced" tab) is explicitly data-only scaffolding — nothing
-  runs a `PhysicsWorld2D`/`PhysicsWorld3D` against placed entities, so
-  hitting Play does nothing physical no matter what's set in the Inspector.
-  This is the one every other gap below implicitly assumes exists once a
-  level is actually being built, and it's already flagged as "the note to
-  come back to" in item #1. **Highest-priority gap.**
+- ~~**The editor scene has no physics simulation wired in at all.**~~
+  **Wrong when this was written (2026-09-15) — already done.** This
+  assessment was based on reading `PhysicsComponent`'s data-only fields and
+  never actually opening `PlayMode.h`, where `PlayMode::Play()` already
+  built a `RigidBody3D` per `PhysicsComponent`'d entity as of
+  2026-09-13's `044600d`, two days before this list was written. `git log`
+  would have caught this; the doc-only survey that produced this section
+  didn't check it. See `docs/superpowers/specs/2026-09-13-physics-
+  simulation-design.md` for the real design and its own, still-open scope
+  cuts: box colliders only (no sphere/capsule shape choice), no static
+  obstacle without an explicit `PhysicsComponent`, and Kinematic bodies are
+  built immovable but nothing yet drives their velocity.
 - **No first-class 2D workflow in the editor.** `SpriteComponent` and
   `RigidBody2DComponent` exist in the ECS and back the old hand-coded 2D
   demos (`Breakout`, `Physics2D`), but neither has any Inspector/Outliner

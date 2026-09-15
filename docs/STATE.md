@@ -124,6 +124,43 @@ Last landed, newest first:
   replication (only `TransformComponent` auto-replicates; everything
   else is a manual RPC). Temporary `NetTests/` self-tests deleted after
   verifying, per the self-test pattern. README changelog entry added.
+- **Physics simulation for `PhysicsComponent`'d entities during Play**
+  (2026-09-13, `044600d`) — landed but never recorded here until now
+  (caught 2026-09-15 while brainstorming a project to build this exact
+  thing, before realizing it already existed). See
+  `docs/superpowers/specs/2026-09-13-physics-simulation-design.md` and
+  `docs/superpowers/plans/2026-09-13-physics-simulation.md`.
+  `PlayMode::Play()` builds one `GS::RigidBody3D` per entity carrying both
+  `TransformComponent` and `PhysicsComponent` — a box collider sized from
+  `MeshComponent`'s bounds × the entity's `Scale` (or `Scale * 0.5` with no
+  mesh), Friction/Restitution copied directly, initial `Orientation` built
+  by composing rotations in the exact `Rx * Ry * Rz` order
+  `TransformComponent::GetTransform()` itself uses so physics starts at the
+  same pose the object was already rendering at. `PlayMode::OnFixedUpdate`
+  steps the world and writes `Position`/`Orientation` back via
+  `glm::extractEulerAngleXYZ` — the specific glm function that inverts that
+  exact composition order, not a generically-assumed one.
+  `PlayMode::Stop()` needed no changes at all: the existing full-scene
+  snapshot/revert already discards every physics body along with
+  everything else Play touched.
+  **Deliberately out of scope, disclosed rather than silently dropped:**
+  sphere/capsule colliders (box only); a static obstacle with no explicit
+  `PhysicsComponent` (strictly opt-in, nothing is a floor by accident);
+  Kinematic bodies are built immovable but nothing yet drives their
+  velocity; joints, compound/heightfield/SDF colliders, and runtime-spawned
+  physics entities (a script-spawned entity gets no body — only what
+  exists at `Play()` time does); 2D physics (`PhysicsWorld2D`) entirely —
+  the editor's `TransformComponent` is 3D-only, so there's nothing
+  2D-shaped about a generic editor entity the way `Breakout.h`'s own
+  `RigidBody2DComponent` usage is.
+  Verified with a temporary self-test (20 checks: body construction,
+  collider sizing including the meshless fallback, a hand-computed
+  free-fall check against the engine's actual semi-implicit-Euler
+  integrator rather than idealized kinematics, a box settling to rest on a
+  static box, `Stop()`'s revert, and an orientation round-trip away from
+  gimbal lock) plus a clean three-config build and a `--lockstep`
+  `--capture-step` run showing a falling box actually coming to rest on a
+  floor, not sinking through or floating above it.
 - **Mesh authoring — a vertex/face editor for meshes already placed in the
   scene, landed via `docs/superpowers/plans/2026-09-12-mesh-authoring.md`
   (9 tasks) plus its spec.** `EditableMesh` (welded points + coplanar-
