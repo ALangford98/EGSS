@@ -86,6 +86,43 @@ namespace GssArrayStdlibTest {
 		Check(outCpp.find("std::vector<double> counters;") != std::string::npos, "number[] maps to std::vector<double>, not std::vector<float>");
 	}
 
+	inline void RunVec3LengthAndToArrayTests()
+	{
+		std::string outCpp;
+		bool ok = TranspileAndSyntaxCheck(
+			"function OnUpdate(dt: number) {\n"
+			"    const pos = entity.getPosition();\n"
+			"    const n = pos.length;\n"
+			"    const arr = pos.toArray();\n"
+			"}\n",
+			"Vec3LengthToArrayTest", outCpp);
+		Check(ok, "vec3.length and vec3.toArray() transpile and pass a real g++ -fsyntax-only check");
+		Check(outCpp.find("const auto n = 3;") != std::string::npos, "vec3.length emits the compile-time literal 3");
+		Check(outCpp.find("const auto arr = std::vector<double>{ pos.x, pos.y, pos.z };") != std::string::npos,
+			"vec3.toArray() emits a std::vector<double> built from .x/.y/.z");
+
+		// The exact shape emitCall's new .toArray() branch emits for a real
+		// vec3 -- run for real, not just syntax-checked, to prove the values
+		// (not just the C++ syntax) are right. glm::vec3 stores float, so
+		// each component narrows to double on the way in, same as the spec
+		// (decision 5) says .toArray() does.
+		glm::vec3 testVec(1.0f, -2.5f, 3.0f);
+		std::vector<double> arr = std::vector<double>{ testVec.x, testVec.y, testVec.z };
+		Check(arr.size() == 3 && arr[0] == 1.0 && arr[1] == -2.5 && arr[2] == 3.0,
+			"the .toArray() shape produces the right 3 values when actually run");
+
+		std::string badOutCpp;
+		bool badOk = TranspileAndSyntaxCheck(
+			"let notAVec3: number = 1;\n"
+			"\n"
+			"function OnUpdate(dt: number) {\n"
+			"    const bad = notAVec3.toArray();\n"
+			"}\n",
+			"ToArrayOnNonVec3Test", badOutCpp);
+		Check(!badOk && badOutCpp.find("unsupported method call 'toArray'") != std::string::npos,
+			".toArray() on an expression that isn't provably a vec3 fails with the existing named error, not a crash or silent bad codegen");
+	}
+
 	inline void Run()
 	{
 		g_Pass = 0;
@@ -93,6 +130,7 @@ namespace GssArrayStdlibTest {
 		GS_TRACE("GssArrayStdlibTest: starting");
 		RunConsoleTests();
 		RunNumberArrayTypeTest();
+		RunVec3LengthAndToArrayTests();
 		GS_TRACE("GssArrayStdlibTest: {0} passed, {1} failed", g_Pass, g_Fail);
 	}
 }

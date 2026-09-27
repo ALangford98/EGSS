@@ -1591,6 +1591,25 @@ private:
 			var transformGetter = { getPosition: "Position", getRotation: "Rotation", getScale: "Scale" };
 			var transformSetter = { setPosition: "Position", setRotation: "Rotation", setScale: "Scale" };
 
+			// Mechanical, not general inference: recognizes exactly the two
+			// shapes the spec names -- an identifier this same pass already
+			// tracked as "vec3" (see emitVarDecl below), or a direct,
+			// zero-arg entity.getPosition()/.getRotation()/.getScale() call
+			// (on `entity` itself, or on any identifier -- the same
+			// mechanical trust emitCall's own getter/setter fallback already
+			// places in a plausible name, not proof of a real GS::Entity).
+			function isVec3Expr(node) {
+				if (node.kind === ts.SyntaxKind.Identifier)
+					return currentVarTypes[node.text] === "vec3";
+				if (node.kind === ts.SyntaxKind.CallExpression && node.arguments.length === 0
+						&& node.expression.kind === ts.SyntaxKind.PropertyAccessExpression) {
+					var callee = node.expression;
+					if (!transformGetter[callee.name.text]) return false;
+					return isNamed(callee.expression, "entity") || callee.expression.kind === ts.SyntaxKind.Identifier;
+				}
+				return false;
+			}
+
 			function emitArgs(args) { return args.map(emitExpr).join(", "); }
 
 			function emitCall(node) {
@@ -1660,6 +1679,11 @@ private:
 						var cppFn = mathFns[member];
 						if (!cppFn) fail(node, "unsupported Math." + member);
 						return cppFn + "(" + emitArgs(args) + ")";
+					}
+
+					if (member === "toArray" && args.length === 0 && isVec3Expr(obj)) {
+						var vecExpr = emitExpr(obj);
+						return "std::vector<double>{ " + vecExpr + ".x, " + vecExpr + ".y, " + vecExpr + ".z }";
 					}
 
 					// Any other identifier holding a native GS::Entity value
@@ -1753,6 +1777,8 @@ private:
 						// callee looks like.
 						if (node.expression.kind === ts.SyntaxKind.ThisKeyword)
 							return "this->" + node.name.text;
+						if (node.name.text === "length" && isVec3Expr(node.expression))
+							return "3";
 						fail(node, "unsupported property access '" + node.name.text + "' outside of a recognized call");
 						break;
 					}
@@ -1787,7 +1813,18 @@ private:
 				var cppType = decl.type
 					? typeToCpp(decl.type, decl, "'" + decl.name.text + "'")
 					: (decl.initializer ? "auto" : fail(decl, "missing type annotation on '" + decl.name.text + "' (no initializer to deduce it from)"));
-				currentVarTypes[decl.name.text] = cppType;
+				// currentVarTypes tracks a richer internal type than what's
+				// actually emitted for an unannotated local -- the emitted
+				// C++ keyword stays "auto" either way (byte-identical output
+				// for every script that predates this feature), but
+				// .length/.toArray()/.map()/.filter() need to know *which*
+				// auto this is, since C++'s own `auto` erases that
+				// distinction. An explicit annotation's typeToCpp() output
+				// already carries enough information as-is.
+				var trackedType = cppType;
+				if (!decl.type && decl.initializer && isVec3Expr(decl.initializer))
+					trackedType = "vec3";
+				currentVarTypes[decl.name.text] = trackedType;
 				var init = decl.initializer ? (" = " + emitExpr(decl.initializer)) : "";
 				return (isConst ? "const " : "") + cppType + " " + decl.name.text + init;
 			}
