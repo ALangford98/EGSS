@@ -73,12 +73,26 @@ namespace GssArrayStdlibTest {
 			"an unrecognized console.* member fails with a specific, named error");
 	}
 
+	inline void RunNumberArrayTypeTest()
+	{
+		std::string outCpp;
+		bool ok = TranspileAndSyntaxCheck(
+			"let counters: number[];\n"
+			"\n"
+			"function OnUpdate(dt: number) {\n"
+			"}\n",
+			"NumberArrayTypeTest", outCpp);
+		Check(ok, "a number[] class member transpiles and passes a real g++ -fsyntax-only check");
+		Check(outCpp.find("std::vector<double> counters;") != std::string::npos, "number[] maps to std::vector<double>, not std::vector<float>");
+	}
+
 	inline void Run()
 	{
 		g_Pass = 0;
 		g_Fail = 0;
 		GS_TRACE("GssArrayStdlibTest: starting");
 		RunConsoleTests();
+		RunNumberArrayTypeTest();
 		GS_TRACE("GssArrayStdlibTest: {0} passed, {1} failed", g_Pass, g_Fail);
 	}
 }

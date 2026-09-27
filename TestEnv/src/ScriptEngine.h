@@ -1514,6 +1514,7 @@ private:
 				if (!typeNode) fail(ctxNode, "missing type annotation on " + ctxWhat);
 				var t = typeNode.getText(sourceFile);
 				if (t === "number") return "double";
+				if (t === "number[]") return "std::vector<double>";
 				if (t === "boolean") return "bool";
 				if (t === "string") return "std::string";
 				if (t === "void") return "void";
