@@ -123,6 +123,61 @@ namespace GssArrayStdlibTest {
 			".toArray() on an expression that isn't provably a vec3 fails with the existing named error, not a crash or silent bad codegen");
 	}
 
+	inline void RunArrayMethodsTests()
+	{
+		std::string outCpp;
+		bool ok = TranspileAndSyntaxCheck(
+			"function OnUpdate(dt: number) {\n"
+			"    const pos = entity.getPosition();\n"
+			"    const arr = pos.toArray();\n"
+			"    const n = arr.length;\n"
+			"    const doubled = arr.map((x: number) => x * 2);\n"
+			"    const positive = arr.filter((x: number) => x > 0);\n"
+			"}\n",
+			"ArrayMethodsTest", outCpp);
+		Check(ok, "number[].length/.map/.filter transpile and pass a real g++ -fsyntax-only check");
+		Check(outCpp.find("const auto n = (arr).size();") != std::string::npos, "number[].length emits a runtime .size() call, not a literal");
+		Check(outCpp.find("__r.push_back((") != std::string::npos && outCpp.find("__src.size()") != std::string::npos,
+			".map emits the reserve+push_back IIFE shape");
+		Check(outCpp.find("if ((") != std::string::npos && outCpp.find("__r.push_back(__e)") != std::string::npos,
+			".filter emits the conditional-push IIFE shape");
+
+		// Run the exact IIFE shape .map/.filter emit against real data --
+		// hand-computed expected values, not re-deriving the transpiler's
+		// own arithmetic.
+		std::vector<double> src = { 1.0, -2.0, 3.0 };
+		std::vector<double> doubled = ([&]{ std::vector<double> __src = (src); std::vector<double> __r; __r.reserve(__src.size());
+			for (auto __e : __src) __r.push_back(([&](double x) { return x * 2; })(__e)); return __r; }());
+		Check(doubled.size() == 3 && doubled[0] == 2.0 && doubled[1] == -4.0 && doubled[2] == 6.0,
+			".map's shape doubles every element correctly when actually run");
+
+		std::vector<double> positive = ([&]{ std::vector<double> __src = (src); std::vector<double> __r;
+			for (auto __e : __src) if (([&](double x) { return x > 0; })(__e)) __r.push_back(__e); return __r; }());
+		Check(positive.size() == 2 && positive[0] == 1.0 && positive[1] == 3.0,
+			".filter's shape keeps only the matching elements correctly when actually run");
+
+		std::string findOutCpp;
+		bool findOk = TranspileAndSyntaxCheck(
+			"function OnUpdate(dt: number) {\n"
+			"    const arr = entity.getPosition().toArray();\n"
+			"    const first = arr.find((x: number) => x > 0);\n"
+			"}\n",
+			"FindNotImplementedTest", findOutCpp);
+		Check(!findOk && findOutCpp.find("Array.find isn't implemented") != std::string::npos,
+			".find fails with its own specific message, not a generic 'unsupported method call'");
+
+		std::string badOutCpp;
+		bool badOk = TranspileAndSyntaxCheck(
+			"let notTracked: number = 1;\n"
+			"\n"
+			"function OnUpdate(dt: number) {\n"
+			"    const bad = notTracked.map((x: number) => x);\n"
+			"}\n",
+			"MapOnNonArrayTest", badOutCpp);
+		Check(!badOk && badOutCpp.find("unsupported method call 'map'") != std::string::npos,
+			".map on an expression that isn't provably an array fails with the existing named error");
+	}
+
 	inline void Run()
 	{
 		g_Pass = 0;
@@ -131,6 +186,7 @@ namespace GssArrayStdlibTest {
 		RunConsoleTests();
 		RunNumberArrayTypeTest();
 		RunVec3LengthAndToArrayTests();
+		RunArrayMethodsTests();
 		GS_TRACE("GssArrayStdlibTest: {0} passed, {1} failed", g_Pass, g_Fail);
 	}
 }

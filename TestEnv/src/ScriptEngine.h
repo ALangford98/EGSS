@@ -1610,6 +1610,20 @@ private:
 				return false;
 			}
 
+			// Recursive by design: a .map()/.filter() result is itself
+			// array-typed, so chaining (.toArray().filter(...).map(...))
+			// falls out of this for free, with no separate chaining logic.
+			function isArrayExpr(node) {
+				if (node.kind === ts.SyntaxKind.Identifier)
+					return currentVarTypes[node.text] === "std::vector<double>";
+				if (node.kind === ts.SyntaxKind.CallExpression && node.expression.kind === ts.SyntaxKind.PropertyAccessExpression) {
+					var callee = node.expression;
+					if (callee.name.text === "toArray") return isVec3Expr(callee.expression);
+					if (callee.name.text === "map" || callee.name.text === "filter") return isArrayExpr(callee.expression);
+				}
+				return false;
+			}
+
 			function emitArgs(args) { return args.map(emitExpr).join(", "); }
 
 			function emitCall(node) {
@@ -1685,6 +1699,22 @@ private:
 						var vecExpr = emitExpr(obj);
 						return "std::vector<double>{ " + vecExpr + ".x, " + vecExpr + ".y, " + vecExpr + ".z }";
 					}
+
+					if ((member === "map" || member === "filter") && args.length === 1 && isArrayExpr(obj)) {
+						if (args[0].kind !== ts.SyntaxKind.ArrowFunction)
+							fail(node, "Array." + member + " needs an arrow-function callback, e.g. arr." + member + "(x => ...)");
+						var lambda = emitArrowFunction(args[0]);
+						var srcExpr = emitExpr(obj);
+						if (member === "map") {
+							return "([&]{ std::vector<double> __src = (" + srcExpr + "); std::vector<double> __r; __r.reserve(__src.size()); "
+								+ "for (auto __e : __src) __r.push_back((" + lambda + ")(__e)); return __r; }())";
+						}
+						return "([&]{ std::vector<double> __src = (" + srcExpr + "); std::vector<double> __r; "
+							+ "for (auto __e : __src) if ((" + lambda + ")(__e)) __r.push_back(__e); return __r; }())";
+					}
+
+					if (member === "find" && isArrayExpr(obj))
+						fail(node, "Array.find isn't implemented in the transpiler yet -- use .filter(...)[0] with an explicit .length check instead");
 
 					// Any other identifier holding a native GS::Entity value
 					// -- the one concrete case today is a local bound from
@@ -1779,6 +1809,8 @@ private:
 							return "this->" + node.name.text;
 						if (node.name.text === "length" && isVec3Expr(node.expression))
 							return "3";
+						if (node.name.text === "length" && isArrayExpr(node.expression))
+							return "(" + emitExpr(node.expression) + ").size()";
 						fail(node, "unsupported property access '" + node.name.text + "' outside of a recognized call");
 						break;
 					}
@@ -1822,8 +1854,10 @@ private:
 				// distinction. An explicit annotation's typeToCpp() output
 				// already carries enough information as-is.
 				var trackedType = cppType;
-				if (!decl.type && decl.initializer && isVec3Expr(decl.initializer))
-					trackedType = "vec3";
+				if (!decl.type && decl.initializer) {
+					if (isVec3Expr(decl.initializer)) trackedType = "vec3";
+					else if (isArrayExpr(decl.initializer)) trackedType = "std::vector<double>";
+				}
 				currentVarTypes[decl.name.text] = trackedType;
 				var init = decl.initializer ? (" = " + emitExpr(decl.initializer)) : "";
 				return (isConst ? "const " : "") + cppType + " " + decl.name.text + init;
