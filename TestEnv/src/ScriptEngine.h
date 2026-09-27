@@ -1526,6 +1526,8 @@ private:
 				sin: "std::sin", cos: "std::cos", tan: "std::tan"
 			};
 
+			var consoleFns = { log: "GS_TRACE", error: "GS_ERROR", warn: "GS_WARN" };
+
 			function keyNameToMacro(name) {
 				if (name.length === 1) {
 					if (name >= "A" && name <= "Z") return "GS_KEY_" + name;
@@ -1644,6 +1646,13 @@ private:
 							return "scene.DestroyEntity((" + emitExpr(args[0]) + ").GetId())";
 						}
 						fail(node, "unsupported scene.* call '" + member + "' (scene.spawn isn't implemented in the transpiler yet)");
+					}
+
+					if (isNamed(obj, "console")) {
+						var logFn = consoleFns[member];
+						if (!logFn) fail(node, "unsupported console.* call '" + member + "'");
+						var fmt = args.map(function(_, idx) { return "{" + idx + "}"; }).join(" ");
+						return logFn + "(\"" + fmt + "\"" + (args.length ? ", " + emitArgs(args) : "") + ")";
 					}
 
 					if (isNamed(obj, "Math")) {
