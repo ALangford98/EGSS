@@ -7,6 +7,72 @@ record behind it. ~170k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-09-28 (GSS array stdlib: console.log, number[], .length/.map/.filter/.toArray() in the compiled transpiler)
+
+**Wishlist #3, scoped down from the full ask during brainstorming.** See
+`docs/superpowers/specs/2026-09-23-gss-array-stdlib-design.md` and
+`docs/superpowers/plans/2026-09-27-gss-array-stdlib.md` (5 tasks). All five
+additions live inside `TestEnv/src/ScriptEngine.h`'s embedded codegen JS
+(`emitCall`/`emitExpr`/`typeToCpp`/`emitVarDecl`), following the exact
+patterns those functions already used -- the `mathFns` lookup table, the
+`scene.findByTag` IIFE-in-expression-position trick. The interpreted
+(QuickJS) path already had all of this via real JS semantics and needed no
+changes; every addition here is specifically about the **compiled** path,
+the same one `paddle.gss`/`ball.gss` were graduated through.
+
+`console.log`/`.error`/`.warn` map to `GS_TRACE`/`GS_ERROR`/`GS_WARN`
+through a flat table, the same shape as `mathFns`. `number[]` is a new
+codegen type, mapping to `std::vector<double>` -- matching the existing
+`number` -> `double` mapping, not `float`, so `.toArray()` narrowing a
+vec3's `float` components stays consistent with every other numeric value
+in a compiled script. `glm::vec3.length`/`.toArray()` and
+`std::vector<double>.length`/`.map`/`.filter` are recognized only when the
+transpiler can mechanically prove the callee expression is vec3- or
+array-typed (a tracked identifier, or a direct chain off
+`entity.getPosition()`/`.getRotation()`/`.getScale()` for vec3, or a
+`.toArray()`/`.map()`/`.filter()` chain for arrays -- recursive, so
+chaining needs no separate logic). `.map`/`.filter` splice the callback
+through the existing, unmodified `emitArrowFunction` into a
+reserve+push_back or conditional-push IIFE.
+
+**Deliberately out of scope, disclosed rather than silently dropped:**
+`.find` (no `undefined`/optional type exists anywhere in this transpiler to
+hold its no-match case -- introducing one was the same complexity category
+that justified `std::vector<double>` in the first place, so it stayed
+unresolved rather than faked with a sentinel); a new array-*producing*
+native call such as `scene.findAllByTag` (`.map`/`.filter` only ever start
+from the vec3-via-`.toArray()` case this pass adds, not a new collection
+source); array literals (`[1, 2, 3]` stays rejected -- a `number[]` value
+can only be produced by `.toArray()`, `.map()`, or `.filter()`); `.map`/
+`.filter` running directly on a `vec3` (always goes through `.toArray()`
+first -- one consistent dispatch target instead of two).
+
+**One real design gap found and fixed before it shipped, not assumed away:**
+`currentVarTypes` (the transpiler's existing per-local type tracker) only
+ever recorded the literal string `"auto"` for an unannotated local --
+meaning `const pos = entity.getPosition();` (the exact pattern
+`paddle.gss` already uses) would have been indistinguishable from any other
+`auto` local, so `.length`/`.toArray()` could never have recognized the
+single most common real-world case. Fixed by tracking a richer internal
+sentinel (`"vec3"` or `"std::vector<double>"`) alongside the *emitted* C++
+keyword, which stays `auto` either way -- byte-identical generated code for
+every script that predates this feature.
+
+Verified with a temporary self-test (23 checks, deleted after verifying,
+per this project's self-test pattern): every snippet round-tripped through
+a real `TranspileToCpp` + `g++ -fsyntax-only` (`ScriptEngine::
+RunSyntaxCheck`), not just text-inspected; `.toArray()`/`.map()`/`.filter()`'s
+exact emitted IIFE shape additionally hand-run against real data (not
+re-deriving the transpiler's own arithmetic) to confirm actual values, not
+just valid syntax; each documented failure case (`.toArray()`/`.map()` on
+an expression that isn't provably vec3/array-typed, an unrecognized
+`console.*` member, `.find` itself) confirmed to fail with its own specific,
+named error; two independent `TranspileToCpp` calls run back to back to
+confirm `currentVarTypes` doesn't leak between them. Clean three-config
+build and a byte-identical Cube3D `--hide-ui` capture throughout (every
+change here is confined to a codegen-JS string constant, never touched by
+any rendering or demo-layer path).
+
 ### 2026-09-14 (mesh UV template export: heuristic unwrapping, chart packing, editor integration)
 
 **Roadmap item #9, scoped to arbitrary meshes rather than primitives-only.**
