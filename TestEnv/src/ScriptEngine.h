@@ -1552,6 +1552,16 @@ private:
 			// template literal being rejected (or, rarely, stringified
 			// using a stale type) in an edge case, not a wrong program.
 			var currentVarTypes = {};
+			// A top-level `let`/`const` becomes a private field of the
+			// entity's own generated class (paddleSpeed-style), reachable
+			// only via `this.` inside OnStart/OnUpdate -- but unlike a local
+			// or a parameter, its type was never recorded anywhere
+			// (pre-existing: even template-literal interpolation of a bare
+			// top-level member has always hit the same "type isn't known"
+			// wall). Populated alongside `members.push` below so
+			// this.counters.length/.map/.filter -- the natural way to read
+			// back a persisted number[] field -- aren't left unusable.
+			var topLevelMemberTypes = {};
 
 			function isNamed(node, name) {
 				return node.kind === ts.SyntaxKind.Identifier && node.text === name;
@@ -1598,6 +1608,10 @@ private:
 			// (on `entity` itself, or on any identifier -- the same
 			// mechanical trust emitCall's own getter/setter fallback already
 			// places in a plausible name, not proof of a real GS::Entity).
+			// No `this.field` case, unlike isArrayExpr below: typeToCpp has
+			// no "vec3" annotation mapping, so a `vec3`-typed class member
+			// has no valid way to be declared in the first place -- adding
+			// the case would be unreachable dead code, not a parallel gap.
 			function isVec3Expr(node) {
 				if (node.kind === ts.SyntaxKind.Identifier)
 					return currentVarTypes[node.text] === "vec3";
@@ -1616,6 +1630,8 @@ private:
 			function isArrayExpr(node) {
 				if (node.kind === ts.SyntaxKind.Identifier)
 					return currentVarTypes[node.text] === "std::vector<double>";
+				if (node.kind === ts.SyntaxKind.PropertyAccessExpression && node.expression.kind === ts.SyntaxKind.ThisKeyword)
+					return topLevelMemberTypes[node.name.text] === "std::vector<double>";
 				if (node.kind === ts.SyntaxKind.CallExpression && node.expression.kind === ts.SyntaxKind.PropertyAccessExpression) {
 					var callee = node.expression;
 					if (callee.name.text === "toArray") return isVec3Expr(callee.expression);
@@ -2159,8 +2175,10 @@ private:
 								continue;
 							}
 
+							var memberType = typeToCpp(decl.type, decl, "'" + decl.name.text + "'");
+							topLevelMemberTypes[decl.name.text] = memberType;
 							members.push({
-								type: typeToCpp(decl.type, decl, "'" + decl.name.text + "'"),
+								type: memberType,
 								name: decl.name.text,
 								init: decl.initializer ? emitExpr(decl.initializer) : null
 							});
