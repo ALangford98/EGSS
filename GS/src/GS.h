@@ -70,6 +70,8 @@
 #include "GS/Renderer/UvUnwrap.h"
 #include "GS/Procedural/Noise.h"
 #include "GS/Procedural/MaterialGraph.h"
+#include "GS/Procedural/MaterialGraphSerializer.h"
+#include "GS/Procedural/MaterialExport.h"
 #include "GS/Renderer/UvTemplateWriter.h"
 #include "GS/Renderer/MtlLoader.h"
 #include "GS/Renderer/GltfLoader.h"
