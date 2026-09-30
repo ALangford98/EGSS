@@ -37,7 +37,7 @@ question. Where `docs/STATE.md` and git disagree, **git wins**.
 | A measurement disagrees with arithmetic | The traps body in full | 31k |
 
 **Tier 3 — never read whole.** `docs/CHANGELOG.md` (moved out of `README.md`
-2026-09-15, so it stays a reasonably-sized front door) is ~170k tokens; the
+2026-09-15, so it stays a reasonably-sized front door) is ~195k tokens; the
 traps body is ~31k over 254 entries. Both are newest-first and both are
 meant to be **grepped**. Reading either end to end is the failure this ladder
 exists to prevent.

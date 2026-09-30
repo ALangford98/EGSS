@@ -100,6 +100,14 @@ namespace GS {
 		// for it would mean building one before anything could be seen at all.
 		glm::vec4 Color = { 1.0f, 1.0f, 1.0f, 1.0f };
 		bool Visible = true;
+
+		// A procedural material (.gsmat) whose albedo textures this mesh,
+		// multiplied by Color. Empty means none -- flat Color, as before this
+		// existed. Only a path: the engine does not evaluate graphs per
+		// entity; the editor resolves it through one shared texture per file
+		// (TestEnv/src/MaterialLibrary.h), the same relationship SourcePath
+		// has with MeshCache.
+		std::string MaterialPath;
 	};
 
 	struct LightComponent

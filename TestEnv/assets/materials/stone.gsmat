@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "resolution": 512,
+  "nodes": [
+    {"id": 1, "type": "Voronoi", "pos": [20, 20], "params": {"scale": 5, "jitter": 0.9, "mode": 1, "seed": 3}},
+    {"id": 2, "type": "Levels", "pos": [240, 20], "params": {"in min": 0, "in max": 0.05, "gamma": 1, "out min": 0, "out max": 1}},
+    {"id": 3, "type": "Voronoi", "pos": [20, 220], "params": {"scale": 5, "jitter": 0.9, "mode": 2, "seed": 3}},
+    {"id": 4, "type": "Noise", "pos": [20, 420], "params": {"scale": 8, "octaves": 6, "lacunarity": 2, "gain": 0.5, "seed": 1}},
+    {"id": 5, "type": "Levels", "pos": [240, 420], "params": {"in min": 0.3, "in max": 0.7, "gamma": 1, "out min": 0, "out max": 1}},
+    {"id": 6, "type": "Blend", "pos": [460, 300], "params": {"mode": 0, "opacity": 0.35}},
+    {"id": 7, "type": "Blend", "pos": [680, 120], "params": {"mode": 3, "opacity": 1}},
+    {"id": 8, "type": "Gradient Map", "pos": [900, 40], "ramp": [[0, 0.12, 0.11, 0.1, 1], [0.35, 0.36, 0.33, 0.3, 1], [1, 0.72, 0.68, 0.62, 1]]},
+    {"id": 9, "type": "Albedo Output", "pos": [1120, 40]},
+    {"id": 10, "type": "Height Output", "pos": [1120, 220]},
+    {"id": 11, "type": "Invert", "pos": [900, 380]},
+    {"id": 12, "type": "Levels", "pos": [1120, 380], "params": {"in min": 0, "in max": 1, "gamma": 1, "out min": 0.45, "out max": 0.95}},
+    {"id": 13, "type": "Roughness Output", "pos": [1340, 380]}
+  ],
+  "links": [[1, 0, 2, 0], [4, 0, 5, 0], [5, 0, 6, 0], [3, 0, 6, 1], [6, 0, 7, 0], [2, 0, 7, 1], [7, 0, 8, 0], [8, 0, 9, 0], [7, 0, 10, 0], [7, 0, 11, 0], [11, 0, 12, 0], [12, 0, 13, 0]]
+}

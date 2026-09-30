@@ -40,11 +40,12 @@ sub-project than a feature.
   dev-facing debug overlay wired through `Layer::OnImGuiRender` — nothing
   produces a title screen, HUD, or menu meant for a player to see.
 - **The GSS entity-scripting stdlib is too thin for real gameplay code.**
-  `console.log`/`.length`/`.map`/`.filter`/`.find` don't exist for
-  entity scripts yet (wishlist #3 covers this precisely). Scripts also
-  only reach `Transform`/`Input`/`scene.findByTag`/`spawn`/`destroy` — no
-  way to trigger a sound or touch physics from a script, since neither
-  has a binding yet.
+  Wishlist #3 (landed 2026-09-28) added `console.*`, `number[]` and
+  `.length`/`.map`/`.filter`/`.toArray()` to compiled scripts, but `.find`
+  and any way to get a *collection* of entities are still missing, and
+  scripts only reach `Transform`/`Input`/`scene.findByTag`/`spawn`/
+  `destroy` — no way to trigger a sound or touch physics from a script,
+  since neither has a binding yet.
 
 **Not on this list, and why:** normal maps, shadow mapping, a particle
 system, and post-processing are real, but they're visual-quality gaps a
@@ -52,7 +53,7 @@ game can ship without at small scale — genuinely blocking gaps come first.
 
 ## Wishlist, easiest to hardest
 
-### 1. Right-click context menu (Add Script / Edit Mesh / Rename / advanced options)
+### 1. ~~Right-click context menu~~ — done (2026-09-12)
 `ImGui::BeginPopupContextItem()` on each Outliner row, opening a popup
 that calls the same functions the Inspector buttons already call —
 "Add Script" exists at `EditorSceneView.h:509`, "Edit Mesh" is the
@@ -66,16 +67,16 @@ tier -- built. "Advanced options" turned out to mean something more
 technical: an `Advanced` submenu, structured as a tab bar so it can grow
 more categories later, currently holding one tab, **Physics**
 (`PhysicsComponent`: Body Type, Mass, Friction, Restitution -- data-only,
-saved/loaded with the scene, nothing simulates it yet since the editor
-scene has no physics world wired in at all). Deliberate scaffolding ahead
-of a real physics-in-editor system, done because it was asked for
-explicitly rather than discovered as a gap -- the note to come back to
-is: decide whether/how the editor scene should actually run a
-`PhysicsWorld2D`/`PhysicsWorld3D` and simulate these fields, and what
+saved/loaded with the scene). Play has simulated these fields since
+2026-09-13 (`044600d`, see "Foundational gaps" above). Still open: what
 other technical categories (rendering overrides? collision debug?)
 belong in the same `Advanced` tab bar alongside Physics.
 
-### 2. Theme config.json + ImGui restyle
+### 2. ~~Theme config.json + ImGui restyle~~ — done (2026-09-13)
+Landed as JSON themes with live colours/fonts and an Appearance panel
+(`302071d`, spec `docs/superpowers/specs/2026-09-13-editor-theming-
+design.md`). The original scoping notes follow.
+
 `EditorTheme.h` already has this exact pattern (a struct of `ImU32`
 colors) but scoped only to text-editor syntax colors. Extend it to the
 full `ImGuiStyle::Colors[]` array, plus a small hand-rolled JSON loader
@@ -85,7 +86,14 @@ at startup.
 **Additional scoping required:** whether the theme needs to hot-reload
 while the editor runs, or just load once at startup.
 
-### 3. GSS stdlib functions (console.log, filter, find, map, .length, .toArray())
+### 3. ~~GSS stdlib functions~~ — done except `.find` (2026-09-28)
+Landed for the compiled path: `console.*`, `number[]` (a
+`std::vector<double>`), `vec3.length`/`.toArray()`, `number[].length`/
+`.map`/`.filter`. `.find`, array literals and a collection-returning
+native call were cut during brainstorming — see
+`docs/superpowers/specs/2026-09-23-gss-array-stdlib-design.md`, "Explicitly
+out of scope". The original scoping notes follow.
+
 The transpiler already has this shape of mapping (`Math.min` →
 `std::min`, a flat lookup table in `ScriptEngine.h:1523`). `console.log`
 and `.length` are one-line additions on the same pattern. `map`/
@@ -106,6 +114,8 @@ Cube3D regression capture depends on being byte-identical — needs to
 preserve that capture exactly when the toggle is off.
 
 ### 5. Normal maps
+Now also piece 2 of #11: the material graph already exports tangent-space
+normals (OpenGL convention, +Y up) that nothing renders yet.
 `GS::Material` already supports diffuse textures with named-uniform
 mapping via `.mtl` (`Material.h`) — not from scratch. But `MeshVertex`
 has no tangent yet (`Mesh.h`'s own comment already flags this as
@@ -143,7 +153,10 @@ server` process and an LSP client. The hard part is the UI:
 so the completion popup, trigger-character detection, filtering-as-you-
 type, and insertion all need building with no existing precedent.
 
-### 9. Mesh texture map exports (UV unwrapping to a Photoshop-editable template)
+### 9. ~~Mesh texture map exports~~ — done (2026-09-14)
+Scoped to arbitrary meshes, not primitives-only; see the changelog's
+2026-09-14 entry. The original scoping notes follow.
+
 Real UV unwrapping (seam-finding, chart packing) is a genuinely hard
 geometry problem in general. Could be scoped down to just the primitives
 (`CreateCubeData` etc. already have simple, known UV layouts — exporting
@@ -161,7 +174,16 @@ beyond the vertex-level editing built this session, which edits topology
 directly and one point at a time; this needs smooth influence over many
 vertices from one control.
 
-### 11. Texture editor (color pickers, noise generation, transparency, etc.)
+### 11. Texture editor — piece 1 of 3 done (2026-09-30), as procedural materials
+Redirected in brainstorming from a paint application to a node-graph
+procedural material generator (the owner wanted generated, tileable
+materials, not brushwork). Landed: the graph, a Material panel, `.gsmat`,
+albedo/height/normal/roughness export, and a live link to scene meshes; see
+the changelog's 2026-09-30 entry. Still open: **piece 2**, normal-map
+rendering (this is #5 below), and **piece 3**, roughness in shading (needs the
+owner's call on the shading model). The paint half (canvas, brushes, layers)
+is not planned. The original scoping notes follow.
+
 A small paint application in its own right: a canvas widget, brush/fill
 tools, a procedural noise generator (no Perlin/Simplex noise library is
 vendored anywhere in this engine), layer/blend handling, and a path to
@@ -201,16 +223,6 @@ plan sub-project, not a small addition.
 - Minor UX rough edges: a bare click pushes a no-op undo snapshot; global
   Ctrl+Z isn't redirected to a session's own undo stack while one is
   open; the export path doesn't compose with the project's own path.
-- No `docs/CHANGELOG.md` entry yet for the mesh-authoring feature.
-
-### Multiplayer/networking foundation — done (2026-09-14)
-Landed: UDP transport, a custom reliable-ordered channel, host-as-server
-session model, opt-in `NetworkIdentity`/`NetworkTransform` replication,
-manual RPCs, and an editor Network panel. See `docs/CHANGELOG.md`'s
-2026-09-14 entry and `docs/STATE.md` for what's still deliberately out of
-scope (client prediction, a dedicated server, matchmaking/NAT traversal,
-generic component replication). Left here only long enough to record that
-this item closed — remove on the next pass through this file.
 
 ### Character attributes
 `s_Strength` in `TerrainLab.h` is deliberately a constant with a hook

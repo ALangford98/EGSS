@@ -25,6 +25,8 @@
 #include "EditorProject.h"
 #include "EntityGroups.h"
 #include "FileBrowserPopup.h"
+#include "MaterialEditorPanel.h"
+#include "MaterialLibrary.h"
 #include "PlayMode.h"
 
 // Forward-declared so it can be set from OnAttach() below: a member function
@@ -448,6 +450,31 @@ public:
 			ImGui::TextDisabled("Source: %s",
 				mesh->SourcePath.empty() ? "(none)" : mesh->SourcePath.c_str());
 
+			// Red when linked but unavailable, so a flat-coloured mesh that
+			// should be textured says why rather than looking merely wrong.
+			bool broken = !mesh->MaterialPath.empty() && !MaterialLibrary::Albedo(mesh->MaterialPath);
+			if (broken)
+				ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Material: %s (missing or invalid)", mesh->MaterialPath.c_str());
+			else
+				ImGui::TextDisabled("Material: %s", mesh->MaterialPath.empty() ? "(none)" : mesh->MaterialPath.c_str());
+			if (ImGui::Button("Browse...##material"))
+				m_MaterialBrowser.Open("Choose Material", FileBrowserPopup::Mode::PickFile,
+					g_EditorProjectPath.empty() ? "." : g_EditorProjectPath, ".gsmat");
+			if (!mesh->MaterialPath.empty())
+			{
+				ImGui::SameLine();
+				if (ImGui::Button("Edit##material") && g_MaterialEditor)
+					g_MaterialEditor->Open(mesh->MaterialPath);
+				ImGui::SameLine();
+				if (ImGui::Button("Clear##material"))
+				{
+					std::string old = mesh->MaterialPath;
+					mesh->MaterialPath.clear();
+					EditorHistory::Push(std::make_unique<EditFieldCommand<GS::MeshComponent, std::string>>(
+						m_Selected, &GS::MeshComponent::MaterialPath, old, std::string()));
+				}
+			}
+
 			if (ImGui::Button("Edit Mesh") && !m_MeshEditActive && !PlayMode::IsPlaying())
 				StartMeshEdit(m_Selected, mesh);
 
@@ -695,6 +722,23 @@ public:
 			}
 		}
 		m_ScriptBrowser.Draw();
+
+		// Relative to the working directory when it can be, for the same
+		// reason the script path is: that is how the scene is reloaded.
+		if (m_MaterialBrowser.HasResult())
+		{
+			std::string picked = m_MaterialBrowser.TakeResult();
+			if (auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(m_Selected))
+			{
+				std::error_code ec;
+				std::filesystem::path relative = std::filesystem::relative(picked, std::filesystem::current_path(ec), ec);
+				std::string old = mesh->MaterialPath;
+				mesh->MaterialPath = (ec || relative.empty()) ? picked : relative.generic_string();
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::MeshComponent, std::string>>(
+					m_Selected, &GS::MeshComponent::MaterialPath, old, mesh->MaterialPath));
+			}
+		}
+		m_MaterialBrowser.Draw();
 
 		if (ImGui::Button("Delete"))
 			m_Selected = EditorHistory::Push(std::make_unique<DeleteEntityCommand>(m_Selected));
@@ -1097,11 +1141,13 @@ private:
 			uniform mat4 u_Transform;
 			out vec3 v_WorldPosition;
 			out vec3 v_Normal;
+			out vec2 v_TexCoord;
 			void main()
 			{
 				vec4 world = u_Transform * vec4(a_Position, 1.0);
 				v_WorldPosition = world.xyz;
 				v_Normal = mat3(u_Transform) * a_Normal;
+				v_TexCoord = a_TexCoord;
 				gl_Position = u_ViewProjection * world;
 			}
 		)";
@@ -1112,8 +1158,16 @@ private:
 			layout(location = 1) out int entityID;
 			in vec3 v_WorldPosition;
 			in vec3 v_Normal;
+			in vec2 v_TexCoord;
 			uniform vec4 u_Color;
 			uniform int u_EntityID;
+
+			// A linked procedural material's albedo (MeshComponent::
+			// MaterialPath). With u_HasAlbedoMap 0 the shader takes exactly
+			// the arithmetic it had before this existed -- checked by a
+			// byte-identical capture, not assumed.
+			uniform sampler2D u_AlbedoMap;
+			uniform int u_HasAlbedoMap;
 
 			const int MAX_LIGHTS = 8;
 			uniform int u_LightCount;
@@ -1128,6 +1182,8 @@ private:
 				vec3 normal = normalize(v_Normal);
 				vec3 toEye  = normalize(u_CameraPosition - v_WorldPosition);
 				vec3 base   = u_Color.rgb;
+				if (u_HasAlbedoMap != 0)
+					base *= texture(u_AlbedoMap, v_TexCoord).rgb;
 
 				vec3 lit = base * u_AmbientStrength;
 				for (int i = 0; i < u_LightCount; i++)
@@ -1155,6 +1211,7 @@ private:
 
 		m_Shader.reset(GS::Shader::Create("EditorSceneView", vertexSrc, fragmentSrc));
 		m_SceneMaterial = GS::Material::Create(m_Shader);
+		m_SceneMaterial->Set("u_HasAlbedoMap", 0);
 	}
 
 	// Scene-wide (base-material) uniforms every submesh inherits: which
@@ -1251,6 +1308,10 @@ private:
 			if (mesh.Materials.size() < submeshes.size())
 				mesh.Materials.resize(submeshes.size());
 
+			// Null for no link or a broken one -- either way, flat colour.
+			std::shared_ptr<GS::Texture2D> albedo = mesh.MaterialPath.empty()
+				? nullptr : MaterialLibrary::Albedo(mesh.MaterialPath);
+
 			for (size_t s = 0; s < submeshes.size(); s++)
 			{
 				if (!mesh.Materials[s])
@@ -1260,6 +1321,12 @@ private:
 					mesh.Materials[s]->Set("u_Color", mesh.Color);
 
 				mesh.Materials[s]->Set("u_EntityID", (int)GS::EntityIds::Index(entity));
+
+				// Set every frame, both ways: an instance keeps whatever it
+				// was last given, so a mesh unlinked since must be told 0.
+				mesh.Materials[s]->Set("u_HasAlbedoMap", albedo ? 1 : 0);
+				if (albedo)
+					mesh.Materials[s]->SetTexture("u_AlbedoMap", albedo, 0);
 
 				GS::Renderer::SubmitSubmesh(mesh.Materials[s], mesh.Geometry,
 					(unsigned int)s, transform->GetTransform());
@@ -1902,6 +1969,7 @@ private:
 	float m_AmbientStrength = 0.25f;
 
 	FileBrowserPopup m_ScriptBrowser;
+	FileBrowserPopup m_MaterialBrowser;
 
 	GS::EntityId m_Selected = GS::InvalidEntity;
 	GS::EntityId m_Hovered = GS::InvalidEntity;

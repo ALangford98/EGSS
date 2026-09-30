@@ -18,3 +18,6 @@
 [submodule "GS/vendor/quickjs"]
 	path = GS/vendor/quickjs
 	url = https://github.com/quickjs-ng/quickjs.git
+[submodule "GS/vendor/imnodes"]
+	path = GS/vendor/imnodes
+	url = https://github.com/Nelarius/imnodes.git

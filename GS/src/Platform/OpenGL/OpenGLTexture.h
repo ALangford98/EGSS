@@ -18,6 +18,7 @@ namespace GS {
 
 		unsigned int GetWidth() const override { return m_Width; }
 		unsigned int GetHeight() const override { return m_Height; }
+		unsigned int GetRendererID() const override { return m_RendererID; }
 
 		void SetData(void* data, unsigned int size) override;
 		void SetSmooth(bool smooth) override;

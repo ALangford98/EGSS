@@ -194,6 +194,12 @@ namespace GS {
 					out << "mesh " << mesh->SourcePath;
 					WriteFloats(out, { mesh->Color.r, mesh->Color.g, mesh->Color.b, mesh->Color.a });
 					out << ' ' << (mesh->Visible ? 1 : 0) << "\n";
+					// Its own line rather than a field on `mesh`, so a scene
+					// with no materials is written exactly as before and an
+					// older build reading a newer file skips a kind it does
+					// not know instead of misreading the mesh line.
+					if (!mesh->MaterialPath.empty())
+						out << "material " << mesh->MaterialPath << "\n";
 				}
 			}
 
@@ -316,6 +322,14 @@ namespace GS {
 				mesh.Geometry = MeshCache::Get(sourcePath);
 
 				current.Add<MeshComponent>(mesh);
+			}
+			else if (kind == "material" && current)
+			{
+				// The rest of the line, so a path may hold spaces.
+				std::string path;
+				std::getline(fields >> std::ws, path);
+				if (MeshComponent* mesh = current.Get<MeshComponent>())
+					mesh->MaterialPath = path;
 			}
 			else if (kind == "camera" && current)
 			{
