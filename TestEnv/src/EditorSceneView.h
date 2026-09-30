@@ -1169,6 +1169,33 @@ private:
 			uniform sampler2D u_AlbedoMap;
 			uniform int u_HasAlbedoMap;
 
+			// The same material's tangent-space normal map (+Y along +v).
+			// No vertex carries a tangent, so the frame is rebuilt per pixel
+			// from how position and UV change across the screen -- Schueler's
+			// cotangent frame. T and B come out along increasing u and v, so
+			// mirrored UVs need nothing special; the cost is that they are
+			// constant across a triangle, which a low-poly curved mesh can
+			// show as a slight shift in bump direction at its edges.
+			uniform sampler2D u_NormalMap;
+			uniform int u_HasNormalMap;
+
+			vec3 PerturbNormal(vec3 N)
+			{
+				vec3 dp1 = dFdx(v_WorldPosition);
+				vec3 dp2 = dFdy(v_WorldPosition);
+				vec2 duv1 = dFdx(v_TexCoord);
+				vec2 duv2 = dFdy(v_TexCoord);
+				vec3 dp2perp = cross(dp2, N);
+				vec3 dp1perp = cross(N, dp1);
+				vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+				vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+				// One scale for both, so the frame is independent of how
+				// many times the texture tiles, without skewing T against B.
+				float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+				vec3 m = texture(u_NormalMap, v_TexCoord).xyz * 2.0 - 1.0;
+				return normalize(mat3(T * invmax, B * invmax, N) * m);
+			}
+
 			const int MAX_LIGHTS = 8;
 			uniform int u_LightCount;
 			uniform vec3 u_LightPositions[MAX_LIGHTS];
@@ -1180,6 +1207,8 @@ private:
 			void main()
 			{
 				vec3 normal = normalize(v_Normal);
+				if (u_HasNormalMap != 0)
+					normal = PerturbNormal(normal);
 				vec3 toEye  = normalize(u_CameraPosition - v_WorldPosition);
 				vec3 base   = u_Color.rgb;
 				if (u_HasAlbedoMap != 0)
@@ -1212,6 +1241,7 @@ private:
 		m_Shader.reset(GS::Shader::Create("EditorSceneView", vertexSrc, fragmentSrc));
 		m_SceneMaterial = GS::Material::Create(m_Shader);
 		m_SceneMaterial->Set("u_HasAlbedoMap", 0);
+		m_SceneMaterial->Set("u_HasNormalMap", 0);
 	}
 
 	// Scene-wide (base-material) uniforms every submesh inherits: which
@@ -1311,6 +1341,8 @@ private:
 			// Null for no link or a broken one -- either way, flat colour.
 			std::shared_ptr<GS::Texture2D> albedo = mesh.MaterialPath.empty()
 				? nullptr : MaterialLibrary::Albedo(mesh.MaterialPath);
+			std::shared_ptr<GS::Texture2D> normalMap = mesh.MaterialPath.empty()
+				? nullptr : MaterialLibrary::Normal(mesh.MaterialPath);
 
 			for (size_t s = 0; s < submeshes.size(); s++)
 			{
@@ -1327,6 +1359,9 @@ private:
 				mesh.Materials[s]->Set("u_HasAlbedoMap", albedo ? 1 : 0);
 				if (albedo)
 					mesh.Materials[s]->SetTexture("u_AlbedoMap", albedo, 0);
+				mesh.Materials[s]->Set("u_HasNormalMap", normalMap ? 1 : 0);
+				if (normalMap)
+					mesh.Materials[s]->SetTexture("u_NormalMap", normalMap, 1);
 
 				GS::Renderer::SubmitSubmesh(mesh.Materials[s], mesh.Geometry,
 					(unsigned int)s, transform->GetTransform());
