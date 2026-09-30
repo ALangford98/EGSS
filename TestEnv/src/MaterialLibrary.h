@@ -1,5 +1,5 @@
 #pragma once
-// One albedo texture per .gsmat, shared by every entity whose
+// One albedo and one normal texture per .gsmat, shared by every entity whose
 // MeshComponent::MaterialPath names it -- MeshCache's arrangement, for
 // materials. A graph is evaluated once per file, not once per entity.
 //
@@ -21,6 +21,9 @@ namespace MaterialLibrary {
 	struct Entry
 	{
 		std::shared_ptr<GS::Texture2D> Albedo;
+		// Tangent-space, +Y along +v -- read by the editor shader with a
+		// frame rebuilt from screen-space derivatives (no vertex tangents).
+		std::shared_ptr<GS::Texture2D> Normal;
 		bool Live = false;       // fed by the panel; the file is not consulted
 		bool Warned = false;     // one warning per failure, not one per frame
 		std::filesystem::file_time_type Stamp{};
@@ -43,22 +46,29 @@ namespace MaterialLibrary {
 		return ec ? path : canonical.string();
 	}
 
-	inline void Upload(Entry& entry, const GS::Image& image)
+	inline void Upload(std::shared_ptr<GS::Texture2D>& texture, const GS::Image& image)
 	{
-		if (!entry.Albedo || (int)entry.Albedo->GetWidth() != image.Width)
+		if (!texture || (int)texture->GetWidth() != image.Width)
 		{
 			// A new texture on a size change: SetData asserts the size
 			// matches, and a resolution change is an ordinary edit.
-			entry.Albedo.reset(GS::Texture2D::Create(image.Width, image.Height));
-			entry.Albedo->SetSmooth(true);
+			texture.reset(GS::Texture2D::Create(image.Width, image.Height));
+			texture->SetSmooth(true);
 		}
 		std::vector<uint8_t> pixels = GS::ToRGBA8(image);
-		entry.Albedo->SetData(pixels.data(), (unsigned int)pixels.size());
+		texture->SetData(pixels.data(), (unsigned int)pixels.size());
+	}
+
+	inline void UploadAll(Entry& entry, GS::MaterialGraph& graph)
+	{
+		Upload(entry.Albedo, graph.EvaluateOutput(GS::MaterialGraph::Output::Albedo));
+		Upload(entry.Normal, graph.EvaluateOutput(GS::MaterialGraph::Output::Normal));
 	}
 
 	inline void Fail(Entry& entry, const std::string& why)
 	{
 		entry.Albedo.reset();
+		entry.Normal.reset();
 		if (!entry.Warned)
 		{
 			GS_WARN("Material '{0}' unavailable ({1}); linked meshes use their flat colour", why.substr(0, why.find(':')), why);
@@ -83,12 +93,13 @@ namespace MaterialLibrary {
 			Fail(entry, error);
 			return;
 		}
-		Upload(entry, graph.EvaluateOutput(GS::MaterialGraph::Output::Albedo));
+		UploadAll(entry, graph);
 		entry.Warned = false;
 	}
 
-	// Null when the material cannot be had; the caller draws flat colour.
-	inline std::shared_ptr<GS::Texture2D> Albedo(const std::string& path)
+	// The entry for `path`, loaded on first use and re-checked against its
+	// file at most once per s_RecheckSeconds.
+	inline Entry& Resolve(const std::string& path)
 	{
 		std::string key = Key(path);
 		auto found = s_Entries.find(key);
@@ -98,7 +109,7 @@ namespace MaterialLibrary {
 			Entry& entry = s_Entries[key];
 			entry.Checked = now;
 			LoadFromDisk(key, entry);
-			return entry.Albedo;
+			return entry;
 		}
 
 		Entry& entry = found->second;
@@ -112,8 +123,15 @@ namespace MaterialLibrary {
 			else if (stamp != entry.Stamp || !entry.Albedo)
 				LoadFromDisk(key, entry);
 		}
-		return entry.Albedo;
+		return entry;
 	}
+
+	// Null when the material cannot be had; the caller draws flat colour.
+	inline std::shared_ptr<GS::Texture2D> Albedo(const std::string& path) { return Resolve(path).Albedo; }
+
+	// Null exactly when Albedo is. A graph with no Normal and no Height
+	// output still has one -- flat -- so a linked mesh always has both.
+	inline std::shared_ptr<GS::Texture2D> Normal(const std::string& path) { return Resolve(path).Normal; }
 
 	// The Material panel calls this after every change it evaluates -- at
 	// the drag-preview resolution while a slider moves, so linked meshes
@@ -123,7 +141,7 @@ namespace MaterialLibrary {
 		Entry& entry = s_Entries[Key(path)];
 		entry.Live = true;
 		entry.Warned = false;
-		Upload(entry, graph.EvaluateOutput(GS::MaterialGraph::Output::Albedo));
+		UploadAll(entry, graph);
 	}
 
 }
