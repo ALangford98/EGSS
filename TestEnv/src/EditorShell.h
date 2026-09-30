@@ -39,6 +39,7 @@
 #include "EditorSceneView.h"
 #include "FileTreePanel.h"
 #include "MaterialEditorPanel.h"
+#include "MaterialLibrary.h"
 #include "ScriptEngine.h"
 #include "TerminalPanel.h"
 #include "TextEditorPanel.h"
@@ -61,6 +62,7 @@ public:
 
 		g_EditorShellInstance = this;
 		g_MaterialEditor = &m_MaterialEditor;
+		g_OnMaterialEdited = &MaterialLibrary::NotifyEdited;
 
 		const std::vector<std::string>& arguments =
 			GS::Application::GetCommandLine();
