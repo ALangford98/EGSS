@@ -113,9 +113,13 @@ existing render path, but touches the same shader/framebuffer code the
 Cube3D regression capture depends on being byte-identical — needs to
 preserve that capture exactly when the toggle is off.
 
-### 5. Normal maps
-Now also piece 2 of #11: the material graph already exports tangent-space
-normals (OpenGL convention, +Y up) that nothing renders yet.
+### 5. Normal maps — done for the editor shader (2026-09-30)
+Linked procedural materials render their normal maps, with the tangent frame
+rebuilt per pixel from screen-space derivatives rather than per-vertex
+tangents (owner's choice: no vertex-format change). Not done: per-vertex
+tangents, normal maps from imported `.mtl`/glTF, and any shader other than the
+editor's. The original scoping notes, which assumed per-vertex tangents,
+follow.
 `GS::Material` already supports diffuse textures with named-uniform
 mapping via `.mtl` (`Material.h`) — not from scratch. But `MeshVertex`
 has no tangent yet (`Mesh.h`'s own comment already flags this as
@@ -174,13 +178,13 @@ beyond the vertex-level editing built this session, which edits topology
 directly and one point at a time; this needs smooth influence over many
 vertices from one control.
 
-### 11. Texture editor — piece 1 of 3 done (2026-09-30), as procedural materials
+### 11. Texture editor — pieces 1 and 2 of 3 done (2026-09-30), as procedural materials
 Redirected in brainstorming from a paint application to a node-graph
 procedural material generator (the owner wanted generated, tileable
 materials, not brushwork). Landed: the graph, a Material panel, `.gsmat`,
 albedo/height/normal/roughness export, and a live link to scene meshes; see
-the changelog's 2026-09-30 entry. Still open: **piece 2**, normal-map
-rendering (this is #5 below), and **piece 3**, roughness in shading (needs the
+the changelog's 2026-09-30 entries. Piece 2, normal-map rendering, landed the
+same day (see #5). Still open: **piece 3**, roughness in shading (needs the
 owner's call on the shading model). The paint half (canvas, brushes, layers)
 is not planned. The original scoping notes follow.
 

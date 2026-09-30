@@ -7,6 +7,45 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-09-30 (normal maps for linked materials, with no vertex tangents)
+
+**Piece 2 of 3 of the procedural materials** (and the editor's half of
+wishlist #5). The material graph already exported tangent-space normals; now
+the editor shader uses them. See
+`docs/superpowers/specs/2026-09-30-material-normal-mapping-design.md`.
+
+**The tangent frame is rebuilt per pixel from screen-space derivatives**
+(Schueler's cotangent frame: `dFdx`/`dFdy` of world position and UV). The
+owner chose this over adding a tangent to `MeshVertex`. That would have changed
+the vertex format for the ~30 places that build meshes, the terrain and planet
+chunks among them, for a feature only the editor shader uses. T and B follow
+increasing u and v, so mirrored UVs are free. The cost is that they're constant
+per triangle, so a low-poly curved mesh can show the bump direction shift at
+triangle edges. Per-vertex tangents remain the upgrade if normal maps spread to
+imported models or the planet. `MaterialLibrary` holds a normal texture beside
+each albedo, fed live by the panel.
+
+**Measured against the lighting formula and the scene's geometry.** A wall with
+one light 45 degrees off to +x, centre pixel. The camera pose puts the hit point
+at (0, 0.431, 0.5), 4.2426 from the light, attenuation 0.23596. The normal-map
+bytes are quantised as the exporter writes them (0.9 packs to 230), and the
+specular term is included (4.6/255 on the tilt toward the light, not negligible):
+
+| wall                                   | expected | measured |
+| -------------------------------------- | -------- | -------- |
+| unlinked                               | 107      | 107      |
+| flat normal map                        | 107      | 107      |
+| tilted (0.6, 0, 0.8) toward the light  | 127      | 127      |
+| tilted (-0.6, 0, 0.8) away             | 72       | 72       |
+
+The brighten/darken pair is the handedness check: +u runs along +x on the
+cube's +Z face, so a +x tilt must face the light. With `u_HasNormalMap` 0,
+captures of an unlinked editor scene and of Cube3D are byte-identical to
+baselines taken before the change. The stone material under a raking light
+reads as grooved, bevelled stone. Temporary self-test 5/5 (normal texture
+resolves, missing file gives none, a graph with no Normal or Height gets a flat
+one, a live edit at 512 recreates it at 512), then deleted.
+
 ### 2026-09-30 (procedural materials: a node graph in the editor, exported as four maps, linked live to scene meshes)
 
 **Wishlist #11 ("Texture editor"), redirected in brainstorming** from a paint
