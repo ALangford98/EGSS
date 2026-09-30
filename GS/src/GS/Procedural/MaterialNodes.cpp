@@ -2,6 +2,8 @@
 #include "GS/Procedural/MaterialGraph.h"
 #include "GS/Procedural/Noise.h"
 
+#include <thread>
+
 // The node catalogue and what each node computes. Kept apart from
 // MaterialGraph.cpp, which only decides *when* a node runs and *what* it
 // reads: adding a node type touches this file and nothing else.
@@ -77,7 +79,7 @@ namespace GS {
 
 			t[(int)NodeType::HeightToNormal] = { "Height to Normal", "Derived", { { "Height", PinType::Grey, 0.5f } },
 				{ { "Out", PinType::Colour, 0.0f } },
-				{ P("strength", ParamKind::Float, 0, 10, 1) } };
+				{ P("strength", ParamKind::Float, 0, 0.5f, kDefaultNormalStrength) } };
 
 			t[(int)NodeType::OutAlbedo] = { "Albedo Output", "Outputs", { { "Albedo", PinType::Colour, 0.5f } }, {}, {} };
 			t[(int)NodeType::OutHeight] = { "Height Output", "Outputs", { { "Height", PinType::Grey, 0.5f } }, {}, {} };
@@ -99,6 +101,33 @@ namespace GS {
 			return node.Params[FindParam(node.Type, name)];
 		}
 
+		// Every node body writes each row from its inputs alone, so rows can
+		// run on any thread in any order and the image comes out the same --
+		// determinism survives, which a shared accumulator would not.
+		template<typename Fn>
+		void ParallelRows(int rows, Fn fn)
+		{
+			static const int workers = std::max(1, (int)std::thread::hardware_concurrency());
+			int count = std::min(workers, rows);
+			if (count <= 1)
+			{
+				for (int y = 0; y < rows; y++)
+					fn(y);
+				return;
+			}
+			std::vector<std::thread> threads;
+			threads.reserve(count - 1);
+			// Interleaved rows, not blocks: the cost of a row barely varies
+			// here, but interleaving keeps a slow band from landing on one
+			// thread when it does.
+			for (int t = 1; t < count; t++)
+				threads.emplace_back([&, t] { for (int y = t; y < rows; y += count) fn(y); });
+			for (int y = 0; y < rows; y += count)
+				fn(y);
+			for (std::thread& thread : threads)
+				thread.join();
+		}
+
 		Image Blank(int n, int channels)
 		{
 			Image image;
@@ -113,7 +142,7 @@ namespace GS {
 		{
 			Image out = Blank(in.Width, in.Channels);
 			int half = (int)kernel.size() / 2;
-			for (int y = 0; y < in.Height; y++)
+			ParallelRows(in.Height, [&](int y) {
 				for (int x = 0; x < in.Width; x++)
 					for (int c = 0; c < in.Channels; c++)
 					{
@@ -122,6 +151,7 @@ namespace GS {
 							sum += kernel[k + half] * (horizontal ? in.Wrap(x + k, y, c) : in.Wrap(x, y + k, c));
 						out.At(x, y, c) = sum;
 					}
+			});
 			return out;
 		}
 
@@ -188,7 +218,7 @@ namespace GS {
 	{
 		const int n = height.Width;
 		Image out = Blank(n, 4);
-		for (int y = 0; y < height.Height; y++)
+		ParallelRows(height.Height, [&](int y) {
 			for (int x = 0; x < n; x++)
 			{
 				auto h = [&](int dx, int dy) { return height.Wrap(x + dx, y + dy, 0); };
@@ -206,6 +236,7 @@ namespace GS {
 				out.At(x, y, 2) = normal.z * 0.5f + 0.5f;
 				out.At(x, y, 3) = 1.0f;
 			}
+		});
 		return out;
 	}
 
@@ -236,10 +267,11 @@ namespace GS {
 				// spread is well inside that; Levels is how contrast is added.
 				float norm = 0.5f / (kRootHalf * amplitude);
 				Image& out = outputs[0] = Blank(n, 1);
-				for (int y = 0; y < n; y++)
+				ParallelRows(n, [&](int y) {
 					for (int x = 0; x < n; x++)
 						out.At(x, y, 0) = 0.5f + norm * Noise::Fbm(uv(x, y) * (float)scale,
 							glm::ivec2(scale), octaves, lacunarity, gain, seed);
+				});
 				break;
 			}
 			case NodeType::Voronoi:
@@ -249,7 +281,7 @@ namespace GS {
 				int mode = (int)ParamOf(node, "mode");
 				uint32_t seed = (uint32_t)ParamOf(node, "seed");
 				Image& out = outputs[0] = Blank(n, 1);
-				for (int y = 0; y < n; y++)
+				ParallelRows(n, [&](int y) {
 					for (int x = 0; x < n; x++)
 					{
 						Noise::VoronoiResult r = Noise::Voronoi(uv(x, y) * (float)scale, glm::ivec2(scale), jitter, seed);
@@ -258,6 +290,7 @@ namespace GS {
 							: Noise::HashToUnit(r.CellId);
 						out.At(x, y, 0) = std::min(v, 1.0f);
 					}
+				});
 				break;
 			}
 			case NodeType::Pattern:
@@ -274,7 +307,7 @@ namespace GS {
 				float halfU = mortar * (float)columns / (float)rows * 0.5f;
 				Image& mask = outputs[0] = Blank(n, 1);
 				Image& random = outputs[1] = Blank(n, 1);
-				for (int y = 0; y < n; y++)
+				ParallelRows(n, [&](int y) {
 					for (int x = 0; x < n; x++)
 					{
 						glm::vec2 p = uv(x, y);
@@ -289,6 +322,7 @@ namespace GS {
 						int wrapped = ((column % columns) + columns) % columns;
 						random.At(x, y, 0) = Noise::HashToUnit(Noise::Hash(wrapped, row, seed));
 					}
+				});
 				break;
 			}
 			case NodeType::Constant:
@@ -364,13 +398,14 @@ namespace GS {
 				const Image& in = *inputs[0];
 				const Image& offset = *inputs[1];
 				Image& out = outputs[0] = Blank(n, 1);
-				for (int y = 0; y < n; y++)
+				ParallelRows(n, [&](int y) {
 					for (int x = 0; x < n; x++)
 					{
 						glm::vec2 p = uv(x, y);
 						float d = (offset.At(x, y, 0) - 0.5f) * strength;
 						out.At(x, y, 0) = in.Bilinear(p.x + d, p.y + d, 0);
 					}
+				});
 				break;
 			}
 			case NodeType::Transform:
@@ -380,7 +415,7 @@ namespace GS {
 				int rotation = (int)ParamOf(node, "rotation");
 				const Image& in = *inputs[0];
 				Image& out = outputs[0] = Blank(n, in.Channels);
-				for (int y = 0; y < n; y++)
+				ParallelRows(n, [&](int y) {
 					for (int x = 0; x < n; x++)
 					{
 						// Rotation in quarter turns about the centre maps pixel
@@ -392,6 +427,7 @@ namespace GS {
 						for (int c = 0; c < in.Channels; c++)
 							out.At(x, y, c) = in.Bilinear(s.x, s.y, c);
 					}
+				});
 				break;
 			}
 			case NodeType::Blend:
@@ -402,7 +438,7 @@ namespace GS {
 				const Image& b = *inputs[1];
 				const Image& mask = *inputs[2];
 				Image& out = outputs[0] = Blank(n, outChannels);
-				for (int y = 0; y < n; y++)
+				ParallelRows(n, [&](int y) {
 					for (int x = 0; x < n; x++)
 					{
 						float weight = mask.At(x, y, 0) * opacity;
@@ -413,19 +449,21 @@ namespace GS {
 							out.At(x, y, c) = av + (f - av) * weight;
 						}
 					}
+				});
 				break;
 			}
 			case NodeType::GradientMap:
 			{
 				const Image& in = *inputs[0];
 				Image& out = outputs[0] = Blank(n, 4);
-				for (int y = 0; y < n; y++)
+				ParallelRows(n, [&](int y) {
 					for (int x = 0; x < n; x++)
 					{
 						glm::vec4 colour = SampleRamp(node.Ramp, in.At(x, y, 0));
 						for (int c = 0; c < 4; c++)
 							out.At(x, y, c) = colour[c];
 					}
+				});
 				break;
 			}
 			case NodeType::HeightToNormal:

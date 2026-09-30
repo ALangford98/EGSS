@@ -18,14 +18,27 @@ namespace GS::Noise {
 			return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
 		}
 
-		// A unit gradient at a (wrapped) lattice corner. An angle from the hash
-		// rather than a pick from a small fixed set: a fixed set of 4 or 8
-		// directions shows up as a visible axis bias once the noise is run
-		// through a gradient map.
-		inline glm::vec2 Gradient(int x, int y, uint32_t seed)
+		// 256 unit vectors evenly round the circle. Enough directions that no
+		// axis bias shows through a gradient map (a set of 4 or 8 does), and
+		// a table rather than cos/sin of a hashed angle: that was 24 trig
+		// calls per 6-octave sample and most of the Noise node's 94 ms.
+		struct GradientTable
 		{
-			float angle = HashToUnit(Hash(x, y, seed)) * 6.28318530718f;
-			return glm::vec2(std::cos(angle), std::sin(angle));
+			glm::vec2 Entries[256];
+			GradientTable()
+			{
+				for (int i = 0; i < 256; i++)
+				{
+					float angle = (float)i * (6.28318530718f / 256.0f);
+					Entries[i] = glm::vec2(std::cos(angle), std::sin(angle));
+				}
+			}
+		};
+
+		inline const glm::vec2& Gradient(int x, int y, uint32_t seed)
+		{
+			static const GradientTable table;
+			return table.Entries[Hash(x, y, seed) >> 24];
 		}
 	}
 
@@ -88,8 +101,10 @@ namespace GS::Noise {
 		glm::vec2 cell = glm::floor(p);
 		int cx = (int)cell.x, cy = (int)cell.y;
 
+		// Squared distances in the search, one sqrt each for F1 and F2 at
+		// the end -- not 25.
 		VoronoiResult result;
-		result.F1 = result.F2 = 1e30f;
+		float f1 = 1e30f, f2 = 1e30f;
 
 		// 5x5, not 3x3. With jitter up to 1 the nearest point is always within
 		// the 3x3 block, but the *second* nearest can sit one ring further out
@@ -105,18 +120,21 @@ namespace GS::Noise {
 				// The point is placed relative to the *unwrapped* cell, so its
 				// distance to p is real; only its hash comes from the wrapped one.
 				glm::vec2 point = glm::vec2((float)x, (float)y) + 0.5f + offset * jitter;
-				float d = glm::length(point - p);
-				if (d < result.F1)
+				glm::vec2 delta = point - p;
+				float d = glm::dot(delta, delta);
+				if (d < f1)
 				{
-					result.F2 = result.F1;
-					result.F1 = d;
+					f2 = f1;
+					f1 = d;
 					result.CellId = h;
 				}
-				else if (d < result.F2)
+				else if (d < f2)
 				{
-					result.F2 = d;
+					f2 = d;
 				}
 			}
+		result.F1 = std::sqrt(f1);
+		result.F2 = std::sqrt(f2);
 		return result;
 	}
 

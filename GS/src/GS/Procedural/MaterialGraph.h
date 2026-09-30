@@ -69,6 +69,12 @@ namespace GS {
 	// same function on the same input.
 	GS_API Image HeightToNormal(const Image& height, float strength);
 
+	// What an unwired Normal output derives with. A height of 1 spans this
+	// fraction of the tile's width -- bumps a few percent of the tile tall.
+	// At 1 (a height as tall as the tile is wide) nearly every normal lay
+	// close to flat on its side and the map read as noise.
+	constexpr float kDefaultNormalStrength = 0.02f;
+
 	struct GradientStop
 	{
 		float Position;

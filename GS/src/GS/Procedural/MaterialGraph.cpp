@@ -354,7 +354,7 @@ namespace GS {
 			if (const MaterialLink* h = height >= 0 ? FindInputLink(height, 0) : nullptr)
 			{
 				int from = h->FromNode, fromPin = h->FromPin;
-				return HeightToNormal(Evaluate(from, fromPin), 1.0f);
+				return HeightToNormal(Evaluate(from, fromPin), kDefaultNormalStrength);
 			}
 		}
 		return FlatDefault(which, n);
