@@ -37,6 +37,9 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-09-30 — procedural material graph** (wishlist #11, piece 1 of 3):
+  node-graph editor panel, `.gsmat`, four-map export, live scene link.
+  Only albedo renders; normal mapping (#5) and roughness shading follow.
 - **2026-09-28 — GSS array stdlib** (wishlist #3): `console.*`, `number[]`,
   `.length`/`.map`/`.filter`/`.toArray()` in the compiled path. `.find`,
   array literals and a collection-returning native call are deferred —
@@ -68,6 +71,12 @@ Nothing is in progress. Open threads, none started:
   literals, vec3-typed class members, and script bindings for sound and
   physics (the roadmap's "foundational gaps" names the last as the real
   blocker for gameplay code).
+- **Procedural materials, pieces 2 and 3** — normal-map rendering (wishlist
+  #5: tangents in `MeshVertex`, TBN in the lit shader) so the exported normal
+  shows, then roughness in shading, which needs an owner decision
+  (Cook-Torrance/GGX, or roughness-to-shininess in the existing Blinn-Phong).
+- **Text editor Ctrl+Z also undoes the scene** — `EditorMenuBar::DoUndo`
+  has no focus guard; a one-line fix, found during the material work.
 - **Mesh authoring follow-ups** — face/edge-picking UI (its own sub-project),
   and the deferred fixes listed in `editor_roadmap.md`.
 - **Breakout's recreation still has no bricks** — possible since

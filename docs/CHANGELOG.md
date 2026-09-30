@@ -7,6 +7,78 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-09-30 (procedural materials: a node graph in the editor, exported as four maps, linked live to scene meshes)
+
+**Wishlist #11 ("Texture editor"), redirected in brainstorming** from a paint
+application to a **procedural, node-graph material generator** -- the owner
+wanted tileable stone/wood/rust built from generators, not brushwork. Piece 1
+of 3: it exports a full PBR set (albedo, height, normal, roughness), but the
+renderer only uses albedo so far. Normal mapping (wishlist #5, tangents) and
+roughness shading (an owner decision: Cook-Torrance, or roughness-to-shininess
+in the existing Blinn-Phong) are pieces 2 and 3. See
+`docs/superpowers/specs/2026-09-30-procedural-material-graph-design.md` and
+the plan beside it.
+
+`GS/src/GS/Procedural/` holds everything that computes, with no UI and no GL:
+tileable Perlin/fBm/Voronoi (`Noise`), the graph and evaluator
+(`MaterialGraph`, node bodies in `MaterialNodes.cpp`), `.gsmat` JSON, and
+export. 17 node types; Grey/Colour pins checked at connect time, with Blend and
+Transform polymorphic; memoised depth-first evaluation (which is the
+topological sort) with downstream-only dirtying. Tiling is structural: noise
+wraps integer lattice coordinates before hashing, and every neighbour read goes
+through `Image::Wrap`/`Bilinear`. `imnodes` is vendored for the graph UI
+(`TestEnv/src/MaterialEditorPanel.h`). Upstream imnodes predates ImGui 1.92, so
+it was compile-spiked against the vendored 1.92.9b before anything depended on
+it. It compiled clean. `MeshComponent::MaterialPath` links a mesh to a `.gsmat`;
+`TestEnv/src/MaterialLibrary.h` keeps one albedo texture per file, fed live by
+the panel, so linked meshes follow a slider.
+
+**What the measurements said:**
+
+- The first Perlin mean check sampled pixel centres and printed **0.000000**.
+  Those centres sit symmetrically about every lattice point, and each corner's
+  term is odd in the offset, so the sum cancels exactly whatever the gradients
+  are. The check could never have failed. Hashed points give -0.000163.
+- Pattern's mortar fraction measured 0.13623 against a geometric 0.145.
+  That's pixel quantisation, not a bug: 6 of 64 rows and 6 of 128 columns,
+  1 - (58/64)(122/128) = 0.1362, computed before the run.
+- Height to normal on a sine was checked against the analytic derivative, not a
+  finite difference (worst error 4.5e-5). The wrap checks were mutation-tested:
+  making `Image::Wrap` clamp fails blur, warp and height to normal, and leaves
+  pointwise Levels passing. A wrong PNG flip fails the export orientation check.
+- **280 ms per full evaluation in Release** on the sample stone. Per node:
+  Noise 94 ms, Voronoi 72 ms each, everything else under 3. A 256-entry
+  gradient table replaced cos/sin of a hashed angle (24 trig calls per 6-octave
+  sample), Voronoi compares squared distances, and rows run on threads. Every
+  pixel reads only its inputs, so the output is identical at any thread count;
+  TSan is clean. Now Noise 9 ms, Voronoi 13 ms, about 70 ms for a full panel
+  pass including uploads, and about 5 ms at the quarter-resolution drag preview.
+- The derived normal's default strength of 1 (a height as tall as the tile is
+  wide) turned the preview into saturated noise: 2.5% of the stone's normals
+  had n.z > 0.7. At 0.02 it is 94%.
+- The shader change is behind `u_HasAlbedoMap`. An editor scene with no links
+  and Cube3D both capture **byte-identical** to baselines taken before it. A wall
+  linked to colour (100,160,200)/255 with no lights reads (25,40,50) = b/4 from
+  ambient 0.25, worked by hand, and the unlinked wall with that `Color` reads
+  the same.
+
+Self-test: 79 checks, deleted after verifying. Clean under ASan+UBSan and TSan.
+LSan's two reports are both inside NVIDIA's GL driver.
+
+**Not verified, as with every editor panel:** real mouse and keyboard use of
+the graph. There's no GUI-automation tool here. Graph editing is verified
+through the model, and the panel through a rendered capture
+(`--open-material <path>`).
+
+**Found in passing, not fixed:**
+
+- `ScreenCapture` leaves `stbi_flip_vertically_on_write` set process-wide, so
+  export sets it explicitly on every write.
+- Ctrl+Z in the **text editor** undoes the text *and* the scene. `EditorMenuBar`'s
+  `DoUndo` has no focus guard, and `g_TextEditorFocused` guards only Ctrl+F. The
+  material editor got its own guard (`g_MaterialEditorFocused`); the text
+  editor's is a one-line follow-up.
+
 ### 2026-09-28 (GSS array stdlib: console.log, number[], .length/.map/.filter/.toArray() in the compiled transpiler)
 
 **Wishlist #3, scoped down from the full ask during brainstorming.** See

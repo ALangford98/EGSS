@@ -114,6 +114,8 @@ Cube3D regression capture depends on being byte-identical — needs to
 preserve that capture exactly when the toggle is off.
 
 ### 5. Normal maps
+Now also piece 2 of #11: the material graph already exports tangent-space
+normals (OpenGL convention, +Y up) that nothing renders yet.
 `GS::Material` already supports diffuse textures with named-uniform
 mapping via `.mtl` (`Material.h`) — not from scratch. But `MeshVertex`
 has no tangent yet (`Mesh.h`'s own comment already flags this as
@@ -172,7 +174,16 @@ beyond the vertex-level editing built this session, which edits topology
 directly and one point at a time; this needs smooth influence over many
 vertices from one control.
 
-### 11. Texture editor (color pickers, noise generation, transparency, etc.)
+### 11. Texture editor — piece 1 of 3 done (2026-09-30), as procedural materials
+Redirected in brainstorming from a paint application to a node-graph
+procedural material generator (the owner wanted generated, tileable
+materials, not brushwork). Landed: the graph, a Material panel, `.gsmat`,
+albedo/height/normal/roughness export, and a live link to scene meshes; see
+the changelog's 2026-09-30 entry. Still open: **piece 2**, normal-map
+rendering (this is #5 below), and **piece 3**, roughness in shading (needs the
+owner's call on the shading model). The paint half (canvas, brushes, layers)
+is not planned. The original scoping notes follow.
+
 A small paint application in its own right: a canvas widget, brush/fill
 tools, a procedural noise generator (no Perlin/Simplex noise library is
 vendored anywhere in this engine), layer/blend handling, and a path to
