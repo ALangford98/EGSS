@@ -16,6 +16,11 @@ namespace GS {
 		// Binds to a texture unit; the shader's sampler uniform holds the
 		// same slot number.
 		virtual void Bind(unsigned int slot = 0) const = 0;
+
+		// The GL name, for handing to ImGui::Image -- the material editor's
+		// node thumbnails are the first texture drawn into a panel that is
+		// not a framebuffer attachment.
+		virtual unsigned int GetRendererID() const = 0;
 	};
 
 	class GS_API Texture2D : public Texture

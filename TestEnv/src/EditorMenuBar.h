@@ -26,6 +26,7 @@
 #include "EditorSceneView.h"
 #include "EditorShell.h"
 #include "FileBrowserPopup.h"
+#include "MaterialEditorPanel.h"
 #include "PlayMode.h"
 #include "SceneSwapGuard.h"
 
@@ -55,8 +56,13 @@ public:
 			if (!ctrl)
 				return false;
 
-			if (e.GetKeyCode() == GS_KEY_Z) { DoUndo(); return true; }
-			if (e.GetKeyCode() == GS_KEY_Y) { DoRedo(); return true; }
+			// The material editor keeps its own history (a graph is not the
+			// scene), so while it has focus these are its keys, not ours.
+			if (!g_MaterialEditorFocused)
+			{
+				if (e.GetKeyCode() == GS_KEY_Z) { DoUndo(); return true; }
+				if (e.GetKeyCode() == GS_KEY_Y) { DoRedo(); return true; }
+			}
 			// Not while the text editor itself is focused -- it has its own
 			// Ctrl+F (find text, not find entity), checked by polling
 			// rather than this event dispatch, and g_TextEditorFocused is
@@ -139,6 +145,18 @@ private:
 			m_PendingPopup = "Rename Project";
 
 		ImGui::Separator();
+
+		if (ImGui::MenuItem("New Material...", nullptr, false, g_MaterialEditor != nullptr))
+		{
+			// Starts in the project, which is where a material the scene
+			// links to belongs; the Browse button can go anywhere else.
+			if (m_DialogPath[0] == '\0' && !g_EditorProjectPath.empty())
+			{
+				strncpy(m_DialogPath, g_EditorProjectPath.c_str(), sizeof(m_DialogPath) - 1);
+				m_DialogPath[sizeof(m_DialogPath) - 1] = '\0';
+			}
+			m_PendingPopup = "New Material";
+		}
 
 		if (ImGui::BeginMenu("Open Demo"))
 		{
@@ -252,6 +270,20 @@ private:
 				EditorHistory::MarkClean();
 				ImGui::CloseCurrentPopup();
 			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel"))
+				ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
+
+		if (ImGui::BeginPopupModal("New Material", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			DrawFolderField();
+			ImGui::InputText("Name", m_DialogName, sizeof(m_DialogName));
+			ImGui::TextDisabled("Creates <folder>/<name>.gsmat and opens it in the Material panel.");
+			if (ImGui::Button("Create") && m_DialogName[0] != '\0' && g_MaterialEditor
+				&& g_MaterialEditor->NewMaterial((std::filesystem::path(m_DialogPath) / (std::string(m_DialogName) + ".gsmat")).string()))
+				ImGui::CloseCurrentPopup();
 			ImGui::SameLine();
 			if (ImGui::Button("Cancel"))
 				ImGui::CloseCurrentPopup();
@@ -463,6 +495,8 @@ private:
 		// regardless; there is nothing to hide).
 		if (ImGui::MenuItem("Appearance"))
 			ImGui::SetWindowFocus("Appearance");
+		if (ImGui::MenuItem("Material"))
+			ImGui::SetWindowFocus("Material");
 
 		ImGui::Separator();
 

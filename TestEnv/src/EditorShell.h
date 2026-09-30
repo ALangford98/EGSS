@@ -38,6 +38,7 @@
 #include "EditorProject.h"
 #include "EditorSceneView.h"
 #include "FileTreePanel.h"
+#include "MaterialEditorPanel.h"
 #include "ScriptEngine.h"
 #include "TerminalPanel.h"
 #include "TextEditorPanel.h"
@@ -59,13 +60,20 @@ public:
 		m_TextEditor.SetScriptEngine(&m_ScriptEngine);
 
 		g_EditorShellInstance = this;
+		g_MaterialEditor = &m_MaterialEditor;
 
 		const std::vector<std::string>& arguments =
 			GS::Application::GetCommandLine();
 
-		for (const std::string& argument : arguments)
-			if (argument == "--no-editor")
+		for (size_t i = 0; i < arguments.size(); i++)
+		{
+			if (arguments[i] == "--no-editor")
 				g_EditorShell = false;
+			// Opens a material at startup -- how a capture shows the panel
+			// with something in it, since no GUI automation exists here.
+			if (arguments[i] == "--open-material" && i + 1 < arguments.size())
+				m_MaterialEditor.Open(arguments[i + 1]);
+		}
 	}
 
 	// "Reset to default" (EditorMenuBar.h) needs a way back to the original
@@ -303,7 +311,12 @@ public:
 
 		std::string clickedFile = m_FileTree.OnImGuiRender();
 		if (!clickedFile.empty())
-			m_TextEditor.OpenFile(clickedFile);
+		{
+			if (std::filesystem::path(clickedFile).extension() == ".gsmat")
+				m_MaterialEditor.Open(clickedFile);
+			else
+				m_TextEditor.OpenFile(clickedFile);
+		}
 
 		m_Terminal.OnImGuiRender();
 
@@ -322,9 +335,13 @@ public:
 		}
 		ImGui::End();
 
-		ImGui::Begin("Textures");
-		ImGui::TextDisabled("Not built yet.");
-		ImGui::End();
+		// A layout saved before this panel existed never reaches BuildLayout
+		// again, so the panel would open floating. First use only: dock it
+		// wherever "Scene" lives, which is the centre in any layout this
+		// editor built.
+		if (ImGuiWindow* scene = ImGui::FindWindowByName("Scene"); scene && scene->DockId)
+			ImGui::SetNextWindowDockID(scene->DockId, ImGuiCond_FirstUseEver);
+		m_MaterialEditor.OnImGuiRender();
 	}
 
 private:
@@ -444,7 +461,6 @@ private:
 		ImGui::DockBuilderDockWindow("Profiler", right);
 		ImGui::DockBuilderDockWindow("Terminal", bottom);
 		ImGui::DockBuilderDockWindow("Build Output", bottom);
-		ImGui::DockBuilderDockWindow("Textures", bottom);
 		ImGui::DockBuilderDockWindow("Appearance", bottom);
 		ImGui::DockBuilderDockWindow("Network", bottom);
 
@@ -455,6 +471,9 @@ private:
 
 		ImGui::DockBuilderDockWindow("Scene", centre);
 		ImGui::DockBuilderDockWindow("Editor", centre);
+		// Centre, not the bottom strip the "Textures" stub it replaced sat
+		// in: a node graph needs the room.
+		ImGui::DockBuilderDockWindow("Material", centre);
 
 		ImGui::DockBuilderFinish(dock);
 	}
@@ -465,4 +484,5 @@ private:
 	ScriptEngine m_ScriptEngine;
 	TextEditorPanel m_TextEditor;
 	FileTreePanel m_FileTree;
+	MaterialEditorPanel m_MaterialEditor;
 };
