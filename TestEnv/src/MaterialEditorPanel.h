@@ -41,9 +41,72 @@ public:
 	}
 
 	const std::string& Path() const { return m_Path; }
+
+	// Compared against the file as last saved, not against the undo
+	// stack's settled text -- an edit made this frame counts too.
+	bool HasUnsavedChanges() const
+	{
+		return !m_Path.empty() && GS::SerializeMaterialGraph(m_Graph) != m_Saved;
+	}
+
+	// Opening another material over unsaved edits waits for an answer
+	// (a modal in the panel) rather than replacing the graph: a click in
+	// Files, the Inspector's Edit, or New Material would otherwise throw the
+	// edits away with no trace.
+	enum class Pending { Save, Discard, Cancel };
+	const std::string& PendingOpen() const { return m_PendingOpen; }
+
+	void ResolvePendingOpen(Pending choice)
+	{
+		std::string path = std::move(m_PendingOpen);
+		m_PendingOpen.clear();
+		if (choice == Pending::Cancel || path.empty())
+			return;
+		if (choice == Pending::Save)
+		{
+			Save();
+			if (HasUnsavedChanges())
+				return;   // the save failed and said so; stay on what would be lost
+		}
+		else if (g_OnMaterialEdited)
+		{
+			// Linked meshes were following the edits being dropped; give
+			// them the saved state back, or the scene keeps showing a
+			// material no file holds.
+			GS::MaterialGraph saved;
+			std::string error;
+			if (GS::DeserializeMaterialGraph(m_Saved, saved, error))
+				g_OnMaterialEdited(m_Path, saved);
+		}
+		OpenNow(path);
+	}
+
+	// What an output node's thumbnail was last uploaded from: the node and
+	// pin feeding it as well as that node's evaluation count. The count
+	// alone collided -- relinking an output to another node that had run
+	// as many times left the old picture up.
+	static uint64_t OutputThumbStamp(GS::MaterialGraph& graph, int outputNode)
+	{
+		const GS::MaterialLink* link = graph.FindInputLink(outputNode, 0);
+		if (!link)
+			return 0;
+		return ((uint64_t)(uint32_t)link->FromNode << 40) | ((uint64_t)(link->FromPin & 0xff) << 32)
+			| (uint32_t)graph.EvalCount(link->FromNode);
+	}
 	GS::MaterialGraph& Graph() { return m_Graph; }
 
 	bool Open(const std::string& path)
+	{
+		if (HasUnsavedChanges())
+		{
+			m_PendingOpen = path;
+			m_FocusFrames = 10;
+			return false;
+		}
+		return OpenNow(path);
+	}
+
+	bool OpenNow(const std::string& path)
 	{
 		GS::MaterialGraph graph;
 		std::string error;
@@ -109,6 +172,7 @@ public:
 		}
 		ImGui::Begin("Material");
 		g_MaterialEditorFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+		DrawUnsavedPrompt();
 
 		if (m_Path.empty())
 		{
@@ -190,6 +254,29 @@ private:
 		DrawStatus();
 	}
 
+	void DrawUnsavedPrompt()
+	{
+		if (!m_PendingOpen.empty() && !ImGui::IsPopupOpen("Unsaved material"))
+			ImGui::OpenPopup("Unsaved material");
+		if (!ImGui::BeginPopupModal("Unsaved material", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+			return;
+		ImGui::Text("%s has unsaved changes.", std::filesystem::path(m_Path).filename().string().c_str());
+		ImGui::TextDisabled("Opening %s", std::filesystem::path(m_PendingOpen).filename().string().c_str());
+		Pending choice = Pending::Cancel;
+		bool answered = false;
+		if (ImGui::Button("Save and open")) { choice = Pending::Save; answered = true; }
+		ImGui::SameLine();
+		if (ImGui::Button("Discard and open")) { choice = Pending::Discard; answered = true; }
+		ImGui::SameLine();
+		if (ImGui::Button("Cancel")) { choice = Pending::Cancel; answered = true; }
+		if (answered)
+		{
+			ResolvePendingOpen(choice);
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndPopup();
+	}
+
 	void DrawStatus()
 	{
 		if (m_Status.empty())
@@ -240,6 +327,7 @@ private:
 	{
 		std::shared_ptr<GS::Texture2D> Texture;
 		int EvalCount = -1;
+		uint64_t Stamp = ~0ull;   // output nodes: see OutputThumbStamp
 		int Size = 0;
 	};
 
@@ -278,11 +366,11 @@ private:
 				// An output node's picture is what arrives at it.
 				int from = link->FromNode, pin = link->FromPin;
 				m_Graph.Evaluate(from, pin);
-				int count = m_Graph.EvalCount(from) * 16 + pin;
-				if (count != thumb.EvalCount || !thumb.Texture)
+				uint64_t stamp = OutputThumbStamp(m_Graph, node.Id);
+				if (stamp != thumb.Stamp || !thumb.Texture)
 				{
 					Upload(thumb.Texture, m_Graph.Evaluate(from, pin));
-					thumb.EvalCount = count;
+					thumb.Stamp = stamp;
 					ranAnything = true;
 				}
 				continue;
@@ -698,6 +786,7 @@ private:
 	bool m_StatusIsError = false;
 	bool m_Dragging = false;
 	int m_FocusFrames = 0;
+	std::string m_PendingOpen;
 	int m_SelectedNode = -1;
 	ImVec2 m_AddAt, m_CanvasOrigin;
 	float m_LastEvalMs = 0.0f;
