@@ -50,6 +50,7 @@ IncludeDir["stb_image"] = "GS/vendor/stb_image"
 IncludeDir["miniaudio"] = "GS/vendor/miniaudio"
 IncludeDir["libvterm"] = "GS/vendor/libvterm/include"
 IncludeDir["quickjs"] = "GS/vendor/quickjs"
+IncludeDir["imnodes"] = "GS/vendor/imnodes"
 
 include "GS/vendor/glfw"
 include "GS/vendor/Glad"
@@ -241,7 +242,8 @@ project "TestEnv"
         "%{IncludeDir.ImGui}",
         "%{IncludeDir.libvterm}",
         "%{IncludeDir.quickjs}",
-        "%{IncludeDir.stb_image}"
+        "%{IncludeDir.stb_image}",
+        "%{IncludeDir.imnodes}"
     }
 
     links

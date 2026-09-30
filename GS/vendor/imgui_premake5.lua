@@ -29,12 +29,21 @@ project "ImGui"
 		"imgui/backends/imgui_impl_glfw.h",
 		"imgui/backends/imgui_impl_glfw.cpp",
 		"imgui/backends/imgui_impl_opengl3.h",
-		"imgui/backends/imgui_impl_opengl3.cpp"
+		"imgui/backends/imgui_impl_opengl3.cpp",
+
+		-- The material editor's node graph. Compiled into this project rather
+		-- than a project of its own because it is nothing but ImGui calls:
+		-- it must link against the same ImGui, and a separate static lib
+		-- would only add a link-order dependency to get that right.
+		"imnodes/imnodes.h",
+		"imnodes/imnodes_internal.h",
+		"imnodes/imnodes.cpp"
 	}
 
 	includedirs
 	{
 		"imgui",
+		"imnodes",
 		"glfw/include"
 	}
 
