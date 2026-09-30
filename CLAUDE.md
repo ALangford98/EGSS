@@ -47,10 +47,13 @@ the ladder can be corrected when it is wrong.
 
 ## Git
 
-**Never commit to `main`, and never push.** The owner owns both, commits their
-own work between sessions and sometimes while a reply is being written. Assume
-any git state you did not just observe is stale — check `git log` and
-`git status` rather than trusting an earlier message.
+**Edit and commit directly on `main`; never push.** No feature branch for
+interactive work — the owner asked for this on 2026-09-30, after a session
+branched to obey the old "never commit to `main`" rule and the owner had to
+merge a PR to get the work. Pushing stays the owner's. The owner also commits
+their own work between sessions and sometimes while a reply is being written,
+so assume any git state you did not just observe is stale — check `git log`
+and `git status` before committing, and commit only the files you changed.
 
 **Work directly in the local checkout when nothing forces isolation.** The
 owner runs, tests, and pushes from the same tree an interactive session
