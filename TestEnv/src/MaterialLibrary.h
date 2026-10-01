@@ -1,5 +1,5 @@
 #pragma once
-// One albedo and one normal texture per .gsmat, shared by every entity whose
+// An albedo, normal and roughness texture per .gsmat, shared by every entity whose
 // MeshComponent::MaterialPath names it -- MeshCache's arrangement, for
 // materials. A graph is evaluated once per file, not once per entity.
 //
@@ -24,6 +24,8 @@ namespace MaterialLibrary {
 		// Tangent-space, +Y along +v -- read by the editor shader with a
 		// frame rebuilt from screen-space derivatives (no vertex tangents).
 		std::shared_ptr<GS::Texture2D> Normal;
+		// Grey, read as the Blinn-Phong exponent and specular strength.
+		std::shared_ptr<GS::Texture2D> Roughness;
 		bool Live = false;       // fed by the panel; the file is not consulted
 		bool Warned = false;     // one warning per failure, not one per frame
 		std::filesystem::file_time_type Stamp{};
@@ -63,12 +65,14 @@ namespace MaterialLibrary {
 	{
 		Upload(entry.Albedo, graph.EvaluateOutput(GS::MaterialGraph::Output::Albedo));
 		Upload(entry.Normal, graph.EvaluateOutput(GS::MaterialGraph::Output::Normal));
+		Upload(entry.Roughness, graph.EvaluateOutput(GS::MaterialGraph::Output::Roughness));
 	}
 
 	inline void Fail(Entry& entry, const std::string& why)
 	{
 		entry.Albedo.reset();
 		entry.Normal.reset();
+		entry.Roughness.reset();
 		if (!entry.Warned)
 		{
 			GS_WARN("Material '{0}' unavailable ({1}); linked meshes use their flat colour", why.substr(0, why.find(':')), why);
@@ -132,6 +136,9 @@ namespace MaterialLibrary {
 	// Null exactly when Albedo is. A graph with no Normal and no Height
 	// output still has one -- flat -- so a linked mesh always has both.
 	inline std::shared_ptr<GS::Texture2D> Normal(const std::string& path) { return Resolve(path).Normal; }
+
+	// Likewise; an absent Roughness output is a flat 0.5.
+	inline std::shared_ptr<GS::Texture2D> Roughness(const std::string& path) { return Resolve(path).Roughness; }
 
 	// The Material panel calls this after every change it evaluates -- at
 	// the drag-preview resolution while a slider moves, so linked meshes

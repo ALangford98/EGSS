@@ -1179,6 +1179,17 @@ private:
 			uniform sampler2D u_NormalMap;
 			uniform int u_HasNormalMap;
 
+			// And its roughness, kept in Blinn-Phong rather than moving to a
+			// microfacet model (the owner's call: every unlinked object must
+			// look as it did). Roughness r maps through the Beckmann
+			// correspondence, alpha = r^2 and n = 2/alpha^2 - 2, which puts the
+			// fixed 48 below at r ~ 0.447. Strength scales by (n + 8) / 56 --
+			// Blinn-Phong's energy normalisation (n + 8) / 8pi, relative to
+			// n = 48 -- so a smooth spot is a small bright highlight and a
+			// rough one a broad dim one, and r ~ 0.447 is today's 0.35.
+			uniform sampler2D u_RoughnessMap;
+			uniform int u_HasRoughnessMap;
+
 			vec3 PerturbNormal(vec3 N)
 			{
 				vec3 dp1 = dFdx(v_WorldPosition);
@@ -1211,6 +1222,15 @@ private:
 					normal = PerturbNormal(normal);
 				vec3 toEye  = normalize(u_CameraPosition - v_WorldPosition);
 				vec3 base   = u_Color.rgb;
+				float shininess = 48.0;
+				float specularStrength = 0.35;
+				if (u_HasRoughnessMap != 0)
+				{
+					float r = texture(u_RoughnessMap, v_TexCoord).r;
+					float alpha = r * r;
+					shininess = clamp(2.0 / max(alpha * alpha, 1e-6) - 2.0, 1.0, 2048.0);
+					specularStrength = 0.35 * (shininess + 8.0) / 56.0;
+				}
 				if (u_HasAlbedoMap != 0)
 					base *= texture(u_AlbedoMap, v_TexCoord).rgb;
 
@@ -1227,10 +1247,10 @@ private:
 					float diffuse = max(dot(normal, toLight), 0.0);
 
 					vec3 halfway   = normalize(toLight + toEye);
-					float specular = pow(max(dot(normal, halfway), 0.0), 48.0);
+					float specular = pow(max(dot(normal, halfway), 0.0), shininess);
 
 					lit += base * diffuse * u_LightColors[i] * attenuation
-					     + specular * u_LightColors[i] * attenuation * 0.35;
+					     + specular * u_LightColors[i] * attenuation * specularStrength;
 				}
 
 				color = vec4(lit, u_Color.a);
@@ -1242,6 +1262,7 @@ private:
 		m_SceneMaterial = GS::Material::Create(m_Shader);
 		m_SceneMaterial->Set("u_HasAlbedoMap", 0);
 		m_SceneMaterial->Set("u_HasNormalMap", 0);
+		m_SceneMaterial->Set("u_HasRoughnessMap", 0);
 	}
 
 	// Scene-wide (base-material) uniforms every submesh inherits: which
@@ -1343,6 +1364,8 @@ private:
 				? nullptr : MaterialLibrary::Albedo(mesh.MaterialPath);
 			std::shared_ptr<GS::Texture2D> normalMap = mesh.MaterialPath.empty()
 				? nullptr : MaterialLibrary::Normal(mesh.MaterialPath);
+			std::shared_ptr<GS::Texture2D> roughnessMap = mesh.MaterialPath.empty()
+				? nullptr : MaterialLibrary::Roughness(mesh.MaterialPath);
 
 			for (size_t s = 0; s < submeshes.size(); s++)
 			{
@@ -1362,6 +1385,9 @@ private:
 				mesh.Materials[s]->Set("u_HasNormalMap", normalMap ? 1 : 0);
 				if (normalMap)
 					mesh.Materials[s]->SetTexture("u_NormalMap", normalMap, 1);
+				mesh.Materials[s]->Set("u_HasRoughnessMap", roughnessMap ? 1 : 0);
+				if (roughnessMap)
+					mesh.Materials[s]->SetTexture("u_RoughnessMap", roughnessMap, 2);
 
 				GS::Renderer::SubmitSubmesh(mesh.Materials[s], mesh.Geometry,
 					(unsigned int)s, transform->GetTransform());
