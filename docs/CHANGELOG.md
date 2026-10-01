@@ -7,6 +7,45 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-01 (roughness drives Blinn-Phong shininess -- procedural materials complete)
+
+**Piece 3 of 3**, kept in the existing Blinn-Phong rather than a move to
+Cook-Torrance/GGX. That was the owner's call: every unlinked object must look as
+it did. Roughness r maps through the Beckmann correspondence: alpha = r^2, and
+n = 2/alpha^2 - 2 clamped to [1, 2048], which puts the old fixed exponent 48 at
+r ~ 0.447. Specular strength scales by (n + 8)/56, which is Blinn-Phong's
+energy normalisation (n + 8)/8pi taken relative to n = 48. So at that roughness
+it's exactly the old 0.35: smooth gives a small bright highlight, rough a broad
+dim one. `MaterialLibrary` holds the Roughness output as a third texture.
+
+**Two lights, chosen so each pins one term.** A light at the mirror angle makes
+the halfway vector the normal, so `pow(1, n) = 1` and only the strength shows.
+A light 45 degrees off shows the exponent. Centre pixels, against a float64
+model of the formula at the pixel's exact hit point:
+
+| light / roughness | 0.30 | 0.447 | 0.80 | unlinked |
+| ----------------- | ---- | ----- | ---- | -------- |
+| mirror, expected  | 233  | 153   | 134  | 153      |
+| mirror, measured  | 232  | 153   | 134  | 153      |
+| side, expected    | 106  | 107   | 110  | 107      |
+| side, measured    | 107  | 107   | 110  | 107      |
+
+The two r = 0.30 misses each sit on a rounding boundary (the neighbouring pixel
+reads the expected value), a third of a step from the model. r = 0.447 matches
+unlinked under both lights. Unlinked scene and Cube3D captures stay
+byte-identical.
+
+**The expected values were wrong first, twice, and both times it was the
+measurement.** Python's `round()` is banker's rounding: 0.3 x 255 = 76.5 went to
+76, where `ToRGBA8`'s `lround` writes 77. And pixel (640, 360) is not on the
+optical axis: its ray hits (0.0032, 0.4276), not (0, 0.431). Before those two
+fixes the worst disagreement was 6 levels.
+
+The sample stone (cracks rougher than faces) shows a soft sheen on its faces
+and matte cracks under a near-mirror light. That's the end of wishlist #11 as
+redirected: graph, editor, export, and albedo + normal + roughness on linked
+meshes.
+
 ### 2026-09-30 (normal maps for linked materials, with no vertex tangents)
 
 **Piece 2 of 3 of the procedural materials** (and the editor's half of

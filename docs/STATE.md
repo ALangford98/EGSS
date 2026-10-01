@@ -37,6 +37,9 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-01 — roughness drives shininess** (piece 3 of 3): Beckmann-mapped
+  exponent, normalised strength, in the existing Blinn-Phong. Procedural
+  materials are complete.
 - **2026-09-30 — normal maps for linked materials** (piece 2 of 3): the
   editor shader renders the graph's Normal output, frame from screen-space
   derivatives, no vertex tangents.
@@ -74,10 +77,9 @@ Nothing is in progress. Open threads, none started:
   literals, vec3-typed class members, and script bindings for sound and
   physics (the roadmap's "foundational gaps" names the last as the real
   blocker for gameplay code).
-- **Procedural materials, piece 3** — roughness in shading, which needs an
-  owner decision (Cook-Torrance/GGX, or roughness-to-shininess in the
-  existing Blinn-Phong). Per-vertex tangents are the upgrade path if normal
-  maps spread beyond the editor shader.
+- **Procedural materials beyond the editor shader** — per-vertex tangents,
+  and normal/roughness from imported `.mtl`/glTF, if materials spread to
+  imported models or the planet. Nobody has asked yet.
 - **Text editor Ctrl+Z also undoes the scene** — `EditorMenuBar::DoUndo`
   has no focus guard; a one-line fix, found during the material work.
 - **Mesh authoring follow-ups** — face/edge-picking UI (its own sub-project),
