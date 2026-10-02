@@ -655,6 +655,70 @@ private:
 		delete binding;
 	}
 
+	// The entity a native was called on, as a GS::Entity for GS::ScriptPhysics
+	// -- the same calls the transpiler emits, so interpreted and compiled
+	// scripts reach physics through one implementation.
+	static bool BoundEntity(JSContext* ctx, JSValueConst thisVal, GS::Entity& out)
+	{
+		ScriptEngine* self = (ScriptEngine*)JS_GetRuntimeOpaque(JS_GetRuntime(ctx));
+		EntityBinding* binding = (EntityBinding*)JS_GetOpaque2(ctx, thisVal, self->m_EntityClassId);
+		if (!binding)
+			return false;
+		out = GS::Entity(binding->Scene, binding->Id);
+		return true;
+	}
+
+	static bool Vec3Args(JSContext* ctx, int argc, JSValueConst* argv, glm::vec3& out)
+	{
+		if (argc < 3)
+			return false;
+		double v[3];
+		for (int i = 0; i < 3; i++)
+			if (JS_ToFloat64(ctx, &v[i], argv[i]))
+				return false;
+		out = glm::vec3((float)v[0], (float)v[1], (float)v[2]);
+		return true;
+	}
+
+	template<void (*Apply)(GS::Entity, const glm::vec3&)>
+	static JSValue Native_PhysicsVec3(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv)
+	{
+		GS::Entity entity;
+		if (!BoundEntity(ctx, thisVal, entity))
+			return JS_EXCEPTION;
+		glm::vec3 v;
+		if (!Vec3Args(ctx, argc, argv, v))
+			return JS_ThrowTypeError(ctx, "expected 3 numbers");
+		Apply(entity, v);
+		return JS_UNDEFINED;
+	}
+
+	static JSValue Native_GetVelocity(JSContext* ctx, JSValueConst thisVal, int, JSValueConst*)
+	{
+		GS::Entity entity;
+		if (!BoundEntity(ctx, thisVal, entity))
+			return JS_EXCEPTION;
+		glm::vec3 v = GS::ScriptPhysics::GetVelocity(entity);
+		JSValue arr = JS_NewArray(ctx);
+		JS_SetPropertyUint32(ctx, arr, 0, JS_NewFloat64(ctx, v.x));
+		JS_SetPropertyUint32(ctx, arr, 1, JS_NewFloat64(ctx, v.y));
+		JS_SetPropertyUint32(ctx, arr, 2, JS_NewFloat64(ctx, v.z));
+		return arr;
+	}
+
+	static JSValue Native_IsTouching(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv)
+	{
+		GS::Entity entity;
+		if (!BoundEntity(ctx, thisVal, entity))
+			return JS_EXCEPTION;
+		if (argc < 1)
+			return JS_ThrowTypeError(ctx, "isTouching needs a tag");
+		const char* tag = JS_ToCString(ctx, argv[0]);
+		bool touching = tag && GS::ScriptPhysics::IsTouching(entity, tag);
+		JS_FreeCString(ctx, tag);
+		return JS_NewBool(ctx, touching);
+	}
+
 	static JSValue Native_GetPosition(JSContext* ctx, JSValueConst thisVal, int, JSValueConst*)
 	{
 		ScriptEngine* self = (ScriptEngine*)JS_GetRuntimeOpaque(JS_GetRuntime(ctx));
@@ -969,6 +1033,11 @@ private:
 		JS_SetPropertyStr(m_Context, obj, "setRotation", JS_NewCFunction(m_Context, Native_SetRotation, "setRotation", 3));
 		JS_SetPropertyStr(m_Context, obj, "getScale", JS_NewCFunction(m_Context, Native_GetScale, "getScale", 0));
 		JS_SetPropertyStr(m_Context, obj, "setScale", JS_NewCFunction(m_Context, Native_SetScale, "setScale", 3));
+		JS_SetPropertyStr(m_Context, obj, "applyImpulse", JS_NewCFunction(m_Context, Native_PhysicsVec3<&GS::ScriptPhysics::ApplyImpulse>, "applyImpulse", 3));
+		JS_SetPropertyStr(m_Context, obj, "applyForce", JS_NewCFunction(m_Context, Native_PhysicsVec3<&GS::ScriptPhysics::ApplyForce>, "applyForce", 3));
+		JS_SetPropertyStr(m_Context, obj, "setVelocity", JS_NewCFunction(m_Context, Native_PhysicsVec3<&GS::ScriptPhysics::SetVelocity>, "setVelocity", 3));
+		JS_SetPropertyStr(m_Context, obj, "getVelocity", JS_NewCFunction(m_Context, Native_GetVelocity, "getVelocity", 0));
+		JS_SetPropertyStr(m_Context, obj, "isTouching", JS_NewCFunction(m_Context, Native_IsTouching, "isTouching", 1));
 		return obj;
 	}
 
@@ -1601,6 +1670,29 @@ private:
 			var transformGetter = { getPosition: "Position", getRotation: "Rotation", getScale: "Scale" };
 			var transformSetter = { setPosition: "Position", setRotation: "Rotation", setScale: "Scale" };
 
+			// Physics calls go through GS::ScriptPhysics (GS/Scripting/ScriptPhysics.h),
+			// the same functions the interpreted path's natives call, so the
+			// two cannot disagree -- and it is declared in GS, which is all
+			// the syntax check below can see. Shared by `entity` and any
+			// identifier holding a GS::Entity (a findByTag result). Returns
+			// null for a member that isn't one of these.
+			var physicsVec3Setter = { applyImpulse: "ApplyImpulse", applyForce: "ApplyForce", setVelocity: "SetVelocity" };
+			function emitPhysicsCall(node, target, member, args) {
+				if (physicsVec3Setter[member]) {
+					if (args.length !== 3) fail(node, member + " needs exactly 3 arguments");
+					return "GS::ScriptPhysics::" + physicsVec3Setter[member] + "(" + target + ", glm::vec3(" + emitArgs(args) + "))";
+				}
+				if (member === "getVelocity") {
+					if (args.length !== 0) fail(node, "getVelocity takes no arguments");
+					return "GS::ScriptPhysics::GetVelocity(" + target + ")";
+				}
+				if (member === "isTouching") {
+					if (args.length !== 1) fail(node, "isTouching needs exactly 1 argument, a tag");
+					return "GS::ScriptPhysics::IsTouching(" + target + ", " + emitExpr(args[0]) + ")";
+				}
+				return null;
+			}
+
 			// Mechanical, not general inference: recognizes exactly the two
 			// shapes the spec names -- an identifier this same pass already
 			// tracked as "vec3" (see emitVarDecl below), or a direct,
@@ -1618,7 +1710,7 @@ private:
 				if (node.kind === ts.SyntaxKind.CallExpression && node.arguments.length === 0
 						&& node.expression.kind === ts.SyntaxKind.PropertyAccessExpression) {
 					var callee = node.expression;
-					if (!transformGetter[callee.name.text]) return false;
+					if (!transformGetter[callee.name.text] && callee.name.text !== "getVelocity") return false;
 					return isNamed(callee.expression, "entity") || callee.expression.kind === ts.SyntaxKind.Identifier;
 				}
 				return false;
@@ -1663,6 +1755,8 @@ private:
 							return "entity.Get<GS::TransformComponent>()->" + transformSetter[member] +
 								" = glm::vec3(" + emitArgs(args) + ")";
 						}
+						var physicsCall = emitPhysicsCall(node, "entity", member, args);
+						if (physicsCall) return physicsCall;
 						fail(node, "unsupported entity.* call '" + member + "'");
 					}
 
@@ -1755,6 +1849,8 @@ private:
 							return emitExpr(obj) + ".Get<GS::TransformComponent>()->" + transformSetter[member] +
 								" = glm::vec3(" + emitArgs(args) + ")";
 						}
+						var otherPhysics = emitPhysicsCall(node, emitExpr(obj), member, args);
+						if (otherPhysics) return otherPhysics;
 					}
 
 					fail(node, "unsupported method call '" + member + "'");
