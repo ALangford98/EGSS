@@ -80,8 +80,6 @@ Nothing is in progress. Open threads, none started:
 - **Procedural materials beyond the editor shader** — per-vertex tangents,
   and normal/roughness from imported `.mtl`/glTF, if materials spread to
   imported models or the planet. Nobody has asked yet.
-- **Text editor Ctrl+Z also undoes the scene** — `EditorMenuBar::DoUndo`
-  has no focus guard; a one-line fix, found during the material work.
 - **Mesh authoring follow-ups** — face/edge-picking UI (its own sub-project),
   and the deferred fixes listed in `editor_roadmap.md`.
 - **Breakout's recreation still has no bricks** — possible since

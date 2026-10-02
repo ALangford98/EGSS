@@ -30,6 +30,16 @@
 #include "PlayMode.h"
 #include "SceneSwapGuard.h"
 
+// Whether Ctrl+Z/Ctrl+Y mean the scene's history this frame. Not while a
+// panel with its own history has focus -- the text editor (its buffer's
+// undo) or the material editor (a graph is not the scene) -- since both
+// would act on one keypress. The text editor's was missing: Ctrl+Z there
+// undid the text *and* the last scene edit.
+inline bool SceneOwnsUndoKeys()
+{
+	return !g_TextEditorFocused && !g_MaterialEditorFocused;
+}
+
 class EditorMenuBar : public GS::Layer
 {
 public:
@@ -56,9 +66,7 @@ public:
 			if (!ctrl)
 				return false;
 
-			// The material editor keeps its own history (a graph is not the
-			// scene), so while it has focus these are its keys, not ours.
-			if (!g_MaterialEditorFocused)
+			if (SceneOwnsUndoKeys())
 			{
 				if (e.GetKeyCode() == GS_KEY_Z) { DoUndo(); return true; }
 				if (e.GetKeyCode() == GS_KEY_Y) { DoRedo(); return true; }
