@@ -37,6 +37,11 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-02 — GSS physics bindings**: `applyImpulse`/`applyForce`/
+  `get`/`setVelocity`/`isTouching` in both execution paths via
+  `GS::ScriptPhysics`; Kinematic bodies now drivable; `setPosition`
+  teleports bodies. Also: Ctrl+Z in the text editor no longer undoes the
+  scene.
 - **2026-10-01 — roughness drives shininess** (piece 3 of 3): Beckmann-mapped
   exponent, normalised strength, in the existing Blinn-Phong. Procedural
   materials are complete.

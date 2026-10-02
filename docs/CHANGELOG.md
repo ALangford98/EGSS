@@ -7,6 +7,65 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-02 (GSS scripts reach physics: impulses, velocity, isTouching)
+
+**The physics half of the roadmap's "scripts can't touch physics or sound"
+gap.** See `docs/superpowers/specs/2026-10-02-gss-physics-bindings-design.md`.
+On `entity` and on any `findByTag` entity:
+
+- `applyImpulse(x, y, z)`, `applyForce(x, y, z)`
+- `getVelocity()`, `setVelocity(x, y, z)`
+- `isTouching("Tag")`, polled. The owner chose this over an `OnCollision`
+  callback, which needs a new lifecycle hook and an entity value type that
+  compiled scripts don't have.
+
+`setVelocity` wakes a sleeping body. It's also what finally drives Kinematic
+bodies, which the 2026-09-13 physics spec had left without a driver.
+
+**The calls live in GS, not beside Play mode.** The transpiler's g++ syntax
+check sees only GS headers, so generated C++ can call only what `<GS.h>`
+declares. `GS::ScriptPhysics` declares the calls and a `Backend`, and
+`PlayMode` installs one over its `PhysicsWorld3D` between Play and Stop. The
+interpreted natives and the transpiled C++ call the same functions, so the two
+paths can't drift. An entity with no body gets nothing and one warning, not one
+per frame. A new Play session warns again.
+
+Two Play-mode fixes came with it:
+
+- `Play()` built each body in the same loop that ran that entity's `OnStart`,
+  so a script pushing an entity listed *after* it found no body. Bodies are
+  now all built first.
+- A script's `setPosition` on a physics entity was silently undone by the
+  body-to-transform copy every step. Play mode now remembers what it last
+  wrote and teleports the body when the transform no longer matches.
+
+**Measured**, by a temporary self-test (21/21, deleted after):
+
+- Impulse J on mass m changes velocity by exactly J/m.
+- A Kinematic body moves exactly v·t and doesn't fall.
+- `isTouching("Floor")` first reads true at step 39, against √(2h/g) = 38.3
+  steps.
+- One warning over 100 calls, and again after Stop/Play.
+- A teleported body stays where `setPosition` put it.
+- Interpreted scripts: an `OnStart` impulse lands, and an `OnUpdate`
+  lands and slides at the velocity it set.
+- Every call transpiles to `GS::ScriptPhysics` and passes the real syntax
+  check.
+
+**The launch check was wrong first, not the code.** It left out bodies'
+default linear damping (k = 0.01/s) and missed by 0.5% in x. Against the damped
+closed form, less semi-implicit Euler's known g·dt·t/2 offset (0.0818 here,
+exactly where the first version's "bound" sat), it agrees to 0.0004 in y and
+0.00025 in x.
+
+Breakout's recreation, run 300 steps in Play with its transforms dumped,
+is byte-identical before and after (its scripts use no physics, so this
+covers the two-pass reordering). There's no command-line way to enter Play,
+so this was a numeric dump rather than a capture.
+
+**Not in this:** sound (the other half of the gap, its own spec next),
+`OnCollision`, contact details, raycasts, rotation teleport.
+
 ### 2026-10-01 (roughness drives Blinn-Phong shininess -- procedural materials complete)
 
 **Piece 3 of 3**, kept in the existing Blinn-Phong rather than a move to

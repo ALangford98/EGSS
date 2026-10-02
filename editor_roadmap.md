@@ -44,8 +44,9 @@ sub-project than a feature.
   `.length`/`.map`/`.filter`/`.toArray()` to compiled scripts, but `.find`
   and any way to get a *collection* of entities are still missing, and
   scripts only reach `Transform`/`Input`/`scene.findByTag`/`spawn`/
-  `destroy` — no way to trigger a sound or touch physics from a script,
-  since neither has a binding yet.
+  `destroy`. **Physics bindings landed 2026-10-02** (impulses, velocity,
+  `isTouching`); a script still cannot trigger a sound -- that binding is
+  next.
 
 **Not on this list, and why:** normal maps, shadow mapping, a particle
 system, and post-processing are real, but they're visual-quality gaps a
