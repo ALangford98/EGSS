@@ -48,6 +48,98 @@ namespace PlayMode {
 	};
 	inline std::unordered_map<GS::EntityId, CompiledInstance> s_CompiledPrepared;
 
+	// Body index -> owning entity, for turning a contact back into a tag.
+	inline std::unordered_map<GS::PhysicsWorld3D::BodyHandle, GS::EntityId> s_BodyOwners;
+
+	// The position this tick last wrote into each physics entity's
+	// transform. A transform that no longer matches it at the start of the
+	// next tick was moved by something else -- a script's setPosition -- and
+	// the body is teleported there, instead of the copy-back below silently
+	// undoing the move as it always had.
+	inline std::unordered_map<GS::EntityId, glm::vec3> s_LastSynced;
+
+	// Scripts' applyImpulse/applyForce/get/setVelocity/isTouching land here,
+	// through GS::ScriptPhysics, installed for exactly the life of a Play
+	// session.
+	struct ScriptPhysicsBackend : GS::ScriptPhysics::Backend
+	{
+		static GS::RigidBody3D* Body(GS::EntityId entity, GS::PhysicsWorld3D::BodyHandle* handle = nullptr)
+		{
+			auto found = s_PhysicsBodies.find(entity);
+			if (found == s_PhysicsBodies.end() || !g_EditorScene.IsValid(entity))
+				return nullptr;
+			if (handle)
+				*handle = found->second;
+			return &s_PhysicsWorld.GetBody(found->second);
+		}
+
+		bool ApplyImpulse(GS::EntityId entity, const glm::vec3& impulse) override
+		{
+			GS::PhysicsWorld3D::BodyHandle handle;
+			if (!Body(entity, &handle))
+				return false;
+			s_PhysicsWorld.ApplyImpulse(handle, impulse);   // ignores static bodies, wakes the rest
+			return true;
+		}
+
+		bool ApplyForce(GS::EntityId entity, const glm::vec3& force) override
+		{
+			GS::PhysicsWorld3D::BodyHandle handle;
+			if (!Body(entity, &handle))
+				return false;
+			s_PhysicsWorld.ApplyForce(handle, force);
+			return true;
+		}
+
+		bool GetVelocity(GS::EntityId entity, glm::vec3& out) override
+		{
+			GS::RigidBody3D* body = Body(entity);
+			if (!body)
+				return false;
+			out = body->Velocity;
+			return true;
+		}
+
+		bool SetVelocity(GS::EntityId entity, const glm::vec3& velocity) override
+		{
+			GS::RigidBody3D* body = Body(entity);
+			if (!body)
+				return false;
+			if (body->Type == GS::BodyType::Static)
+				return true;
+			body->Velocity = velocity;
+			// A sleeping body is skipped by integration entirely, so without
+			// this a box at rest would ignore the call.
+			body->Awake = true;
+			body->SleepTimer = 0.0f;
+			return true;
+		}
+
+		bool IsTouching(GS::EntityId entity, const std::string& tag, bool& out) override
+		{
+			GS::PhysicsWorld3D::BodyHandle handle;
+			if (!Body(entity, &handle))
+				return false;
+			out = false;
+			for (const GS::Contact3D& contact : s_PhysicsWorld.GetContacts())
+			{
+				if (contact.A != handle && contact.B != handle)
+					continue;
+				auto owner = s_BodyOwners.find(contact.A == handle ? contact.B : contact.A);
+				if (owner == s_BodyOwners.end() || !g_EditorScene.IsValid(owner->second))
+					continue;
+				const GS::TagComponent* other = g_EditorScene.GetComponent<GS::TagComponent>(owner->second);
+				if (other && other->Name == tag)
+				{
+					out = true;
+					break;
+				}
+			}
+			return true;
+		}
+	};
+	inline ScriptPhysicsBackend s_ScriptPhysicsBackend;
+
 	// Outside g_EditorProjectPath on purpose -- a scratch file, not a
 	// project asset, so it never shows up in the file tree.
 	inline const char* SnapshotPath() { return "play_snapshot.tmp"; }
@@ -138,6 +230,8 @@ namespace PlayMode {
 
 		s_PhysicsWorld = GS::PhysicsWorld3D();
 		s_PhysicsBodies.clear();
+		s_BodyOwners.clear();
+		s_LastSynced.clear();
 
 		// Scoped to this one session, not s_ScriptEngine's lifetime (which
 		// spans every Play/Stop cycle for the whole app run) -- otherwise
@@ -146,12 +240,12 @@ namespace PlayMode {
 		s_ScriptEngine.ClearModuleCache();
 		std::unordered_map<std::string, std::set<std::string>> allDependencies;
 
+		// Every body exists before any script starts: an OnStart that pushes
+		// *another* entity must find its body whichever order the scene lists
+		// them in -- so two passes, bodies then scripts, where this used to be
+		// one loop doing both per entity.
 		for (GS::EntityId id : g_EditorScene.GetEntities())
 		{
-			// Independent of the script check below -- an entity can have
-			// both a script and a PhysicsComponent, and one with only a
-			// PhysicsComponent must not be skipped by the script loop's own
-			// `continue`, so this runs before it, not after.
 			if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(id))
 				if (auto* physics = g_EditorScene.GetComponent<GS::PhysicsComponent>(id))
 				{
@@ -178,8 +272,16 @@ namespace PlayMode {
 					body.Friction = physics->Friction;
 					body.Restitution = physics->Restitution;
 
-					s_PhysicsBodies[id] = s_PhysicsWorld.AddBody(body);
+					GS::PhysicsWorld3D::BodyHandle handle = s_PhysicsWorld.AddBody(body);
+					s_PhysicsBodies[id] = handle;
+					s_BodyOwners[handle] = id;
+					s_LastSynced[id] = transform->Position;
 				}
+		}
+		GS::ScriptPhysics::SetBackend(&s_ScriptPhysicsBackend);
+
+		for (GS::EntityId id : g_EditorScene.GetEntities())
+		{
 
 			if (!g_EditorScene.HasComponent<GS::ScriptComponent>(id))
 				continue;
@@ -236,6 +338,8 @@ namespace PlayMode {
 		if (!s_Playing)
 			return;
 
+		GS::ScriptPhysics::SetBackend(nullptr);
+
 		for (auto& pair : s_Prepared)
 			s_ScriptEngine.ReleasePreparedScript(pair.second);
 		s_Prepared.clear();
@@ -256,6 +360,20 @@ namespace PlayMode {
 		if (!s_Playing)
 			return;
 
+		for (auto& [id, handle] : s_PhysicsBodies)
+		{
+			if (!g_EditorScene.IsValid(id))
+				continue;
+			auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(id);
+			if (!transform || transform->Position == s_LastSynced[id])
+				continue;
+			GS::RigidBody3D& body = s_PhysicsWorld.GetBody(handle);
+			body.Position = transform->Position;
+			body.PreviousPosition = transform->Position;
+			body.Awake = true;
+			body.SleepTimer = 0.0f;
+		}
+
 		s_PhysicsWorld.Step(dt);
 
 		for (auto& [id, handle] : s_PhysicsBodies)
@@ -269,6 +387,7 @@ namespace PlayMode {
 
 			const GS::RigidBody3D& body = s_PhysicsWorld.GetBody(handle);
 			transform->Position = body.Position;
+			s_LastSynced[id] = body.Position;
 
 			float x, y, z;
 			glm::extractEulerAngleXYZ(glm::mat4_cast(body.Orientation), x, y, z);
