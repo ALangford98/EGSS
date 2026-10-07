@@ -141,7 +141,8 @@ project "GS"
 
         postbuildcommands
         {
-            ("{COPY} %{cfg.buildtarget.relpath} ../bin/" .. outputdir .. "/TestEnv" )
+            ("{COPY} %{cfg.buildtarget.relpath} ../bin/" .. outputdir .. "/TestEnv" ),
+            ("{COPY} %{cfg.buildtarget.relpath} ../bin/" .. outputdir .. "/GSPlayer" )
         }
 
     filter "system:linux"
@@ -171,7 +172,9 @@ project "GS"
         postbuildcommands
         {
             ("{MKDIR} ../bin/" .. outputdir .. "/TestEnv"),
-            ("{COPY} %{cfg.buildtarget.relpath} ../bin/" .. outputdir .. "/TestEnv" )
+            ("{COPY} %{cfg.buildtarget.relpath} ../bin/" .. outputdir .. "/TestEnv" ),
+            ("{MKDIR} ../bin/" .. outputdir .. "/GSPlayer"),
+            ("{COPY} %{cfg.buildtarget.relpath} ../bin/" .. outputdir .. "/GSPlayer" )
         }
 
     filter "configurations:Debug"
@@ -355,6 +358,96 @@ project "TestEnv"
     -- and stops voices runs on the main thread in TestEnv, so both first-party
     -- projects being instrumented is what makes this able to say anything at
     -- all.
+    filter "options:sanitize=thread"
+        buildoptions { "-fsanitize=thread", "-fno-omit-frame-pointer" }
+        linkoptions { "-fsanitize=thread" }
+        symbols "On"
+
+-- GSPlayer: runs a project as a game, with no editor in it -- export piece 1,
+-- docs/superpowers/specs/2026-10-07-game-runtime-player-design.md. Shares
+-- the header-only Runtime/ with TestEnv; links only what a game needs (no
+-- ImGui panels, no terminal, no node editor).
+project "GSPlayer"
+    location "Player"
+    kind "ConsoleApp"
+    language "C++"
+
+    targetdir ("bin/" .. outputdir .. "/%{prj.name}")
+    objdir ("bin-int/" .. outputdir .. "/%{prj.name}")
+
+    files
+    {
+        "Player/src/**.h",
+        "Player/src/**.cpp",
+        "Runtime/**.h"
+    }
+
+    includedirs
+    {
+        "GS/vendor/spdlog/include",
+        "GS/src",
+        "%{IncludeDir.glm}",
+        "%{IncludeDir.ImGui}",
+        "%{IncludeDir.quickjs}",
+        "%{IncludeDir.stb_image}",
+        "Runtime"
+    }
+
+    links
+    {
+        "GS",
+        "quickjs"
+    }
+
+    filter "system:windows"
+        cppdialect "C++17"
+        staticruntime "On"
+        systemversion "latest"
+        disablewarnings { "4251" }
+        defines { "GS_PLATFORM_WINDOWS" }
+        postbuildcommands
+        {
+            ("{COPYDIR} %{wks.location}/TestEnv/assets %{cfg.targetdir}/assets")
+        }
+
+    filter "system:linux"
+        cppdialect "C++17"
+        staticruntime "off"
+        defines { "GS_PLATFORM_LINUX" }
+        links { "pthread", "dl" }
+        -- libGS.so beside the binary, as TestEnv -- what lets a packaged
+        -- game carry its own engine library.
+        linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
+        -- The engine's own assets (the TypeScript compiler scripts need,
+        -- fonts) and, for now, the demo projects to run. Piece 2's packager
+        -- will copy only what one game uses.
+        postbuildcommands
+        {
+            ("{COPYDIR} %{wks.location}/TestEnv/assets %{cfg.targetdir}")
+        }
+
+    filter "configurations:Debug"
+        defines { "GS_DEBUG", "GS_ENABLE_ASSERTS", "GS_PROFILE" }
+        runtime "Debug"
+        symbols "On"
+
+    filter "configurations:Release"
+        defines { "GS_RELEASE", "GS_PROFILE" }
+        runtime "Release"
+        optimize "On"
+        symbols "On"
+
+    filter "configurations:Dist"
+        defines "GS_DIST"
+        runtime "Release"
+        optimize "Full"
+        symbols "Off"
+
+    filter "options:sanitize=address"
+        buildoptions { "-fsanitize=address,undefined", "-fno-omit-frame-pointer" }
+        linkoptions { "-fsanitize=address,undefined" }
+        symbols "On"
+
     filter "options:sanitize=thread"
         buildoptions { "-fsanitize=thread", "-fno-omit-frame-pointer" }
         linkoptions { "-fsanitize=thread" }
