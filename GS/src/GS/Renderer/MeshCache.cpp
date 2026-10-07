@@ -1,5 +1,6 @@
 #include "gspch.h"
 #include "GS/Renderer/MeshCache.h"
+#include "GS/Assets.h"
 
 namespace GS {
 
@@ -28,7 +29,7 @@ namespace GS {
 		else if (path == "primitive:cylinder")
 			built = Mesh::CreateCylinder();
 		else
-			built = Mesh::Load(path);
+			built = Mesh::Load(Assets::Resolve(path));   // the key stays the stored path
 
 		std::shared_ptr<Mesh> mesh(built);
 

@@ -21,6 +21,7 @@ namespace GS {
 
 		inline void SetEventCallback(const EventCallbackFn& callback) override { m_Data.EventCallback = callback; }
 		void SetVSync(bool enabled) override;
+		void SetTitle(const std::string& title) override { m_Data.Title = title; glfwSetWindowTitle(m_Window, title.c_str()); }
 		bool IsVSync() const override;
 
 		void SetCursorCaptured(bool captured) override;

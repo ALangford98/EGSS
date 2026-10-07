@@ -13,6 +13,7 @@
 #include "GS/ImGui/ImGuiLayer.h"
 
 #include "GS/Json.h"
+#include "GS/Assets.h"
 #include "GS/Input.h"
 #include "GS/KeyCodes.h"
 #include "GS/MouseButtonCodes.h"

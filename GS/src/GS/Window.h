@@ -67,6 +67,10 @@ namespace GS {
 
 		virtual void SetEventCallback(const EventCallbackFn& callback) = 0;
 		virtual void SetVSync(bool enabled) = 0;
+
+		// After creation: the game player names its window after the
+		// project it is running, which Application's constructor cannot know.
+		virtual void SetTitle(const std::string& title) = 0;
 		virtual bool IsVSync() const = 0;
 
 		// Hide the cursor and stop it hitting the edges of the screen, which is
