@@ -24,8 +24,8 @@
 
 #include "CompiledScript.h"
 
-#include "../assets/demos/BreakoutRecreation/paddle.cpp"
-#include "../assets/demos/BreakoutRecreation/ball.cpp"
+#include "../TestEnv/assets/demos/BreakoutRecreation/paddle.cpp"
+#include "../TestEnv/assets/demos/BreakoutRecreation/ball.cpp"
 
 #include <string>
 #include <vector>

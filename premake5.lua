@@ -231,7 +231,8 @@ project "TestEnv"
     files
     {
         "%{prj.name}/src/**.h",
-        "%{prj.name}/src/**.cpp"
+        "%{prj.name}/src/**.cpp",
+        "Runtime/**.h"
     }
 
     includedirs
@@ -243,7 +244,10 @@ project "TestEnv"
         "%{IncludeDir.libvterm}",
         "%{IncludeDir.quickjs}",
         "%{IncludeDir.stb_image}",
-        "%{IncludeDir.imnodes}"
+        "%{IncludeDir.imnodes}",
+        -- Runtime/ is what a shipped game runs on, shared with GSPlayer:
+        -- see docs/superpowers/specs/2026-10-07-game-runtime-player-design.md.
+        "Runtime"
     }
 
     links

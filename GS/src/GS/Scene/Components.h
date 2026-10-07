@@ -105,7 +105,7 @@ namespace GS {
 		// multiplied by Color. Empty means none -- flat Color, as before this
 		// existed. Only a path: the engine does not evaluate graphs per
 		// entity; the editor resolves it through one shared texture per file
-		// (TestEnv/src/MaterialLibrary.h), the same relationship SourcePath
+		// (Runtime/MaterialLibrary.h), the same relationship SourcePath
 		// has with MeshCache.
 		std::string MaterialPath;
 	};

@@ -1225,7 +1225,7 @@ private:
 		}
 		stack.insert(path);
 
-		std::ifstream file(path, std::ios::in | std::ios::binary);
+		std::ifstream file(GS::Assets::Resolve(path), std::ios::in | std::ios::binary);
 		if (!file.is_open())
 		{
 			error = "could not open imported module '" + path + "'";

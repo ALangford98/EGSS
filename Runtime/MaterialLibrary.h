@@ -44,7 +44,7 @@ namespace MaterialLibrary {
 	inline std::string Key(const std::string& path)
 	{
 		std::error_code ec;
-		std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
+		std::filesystem::path canonical = std::filesystem::weakly_canonical(GS::Assets::Resolve(path), ec);
 		return ec ? path : canonical.string();
 	}
 
