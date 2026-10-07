@@ -61,6 +61,14 @@ public:
 		// or attach logic wants to know the editor's state, it is already set.
 		LoadEditorProjectFromCommandLine();
 
+		// Straight into Play on the scene just loaded, before the first fixed
+		// step -- how an editor Play frame is captured at all, and the
+		// reference GSPlayer's frames are compared against. Not --play: the
+		// engine already uses that to replay an input recording.
+		for (const std::string& argument : GS::Application::GetCommandLine())
+			if (argument == "--start-play")
+				PlayMode::Play();
+
 		// Every demo in DemoRegistry.h, pushed and numbered. Adding one needs
 		// no change here.
 		PushAllDemos(*this);

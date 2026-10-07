@@ -96,14 +96,19 @@ public:
 		RenderMeshes();
 		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 
-		GS::Renderer2D::BeginScene(ActiveCamera());
-		DrawSelectionBox();
-		DrawCameraRays();
-		DrawLightGizmos();
-		DrawMeshEditOverlay();
-		if (m_ShowGizmo)
-			DrawGizmo();
-		GS::Renderer2D::EndScene();
+		// Overlays are the editor's, not the game's: while playing, the view
+		// shows what a player would see -- the same frame GSPlayer draws.
+		if (!PlayMode::IsPlaying())
+		{
+			GS::Renderer2D::BeginScene(ActiveCamera());
+			DrawSelectionBox();
+			DrawCameraRays();
+			DrawLightGizmos();
+			DrawMeshEditOverlay();
+			if (m_ShowGizmo)
+				DrawGizmo();
+			GS::Renderer2D::EndScene();
+		}
 
 		ReadHoveredEntity();
 
