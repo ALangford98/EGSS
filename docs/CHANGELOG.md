@@ -7,6 +7,73 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-07 (GSPlayer: a project runs as a game, with no editor in it)
+
+**Piece 1 of exporting games.** The owner wants games exportable to Linux,
+Windows and the web, then Android and iOS. Every one of those needs a runtime
+with no editor in it, so that came first. The roadmap and the reasons for its
+order are in `docs/superpowers/specs/2026-10-07-game-runtime-player-design.md`:
+runtime, packager + Linux, an Export dialog, Windows via a fetched
+cross-toolchain, Web via Emscripten, Android via the NDK, and iOS as an Xcode
+project (building or signing for iOS needs a Mac).
+
+**What moved.** A header-only `Runtime/` now holds what a running game needs.
+The editor uses it rather than owning it:
+
+- `GameSession`: the physics world, the `GS::ScriptPhysics` backend, scripts
+  and the tick, on any scene. Extracted from `PlayMode`, which keeps only the
+  snapshot and revert.
+- `SceneRenderer`: the lit shader, materials, lights and Play camera.
+  Extracted from `EditorSceneView`.
+- `ScriptEngine`, `CompiledScript*`, `MaterialLibrary`, moved whole.
+- `ProjectManifest`: reading a `.gsproj`.
+
+Also new:
+
+- `GS::Assets::Resolve` is the asset-path seam that web and Android will
+  redirect. It falls back to the working directory because existing projects
+  store paths relative to it.
+- `Window::SetTitle`.
+- The editor's `--start-play`. (`--play` was taken by input replay.)
+- `GSPlayer <project folder>`: 10.4 MB in Release, against the editor's
+  33.7 MB.
+
+**The extraction was checked at every step, not at the end.** Baselines were
+taken first: captures of an editor scene, of Cube3D and of a linked-material
+scene, plus BreakoutRecreation run 300 steps in Play with its transforms
+dumped. After each of the six moves, all four came back byte-identical. The
+dump was later taken from a *second* session after a Play/Stop, which shows a
+session restarts clean.
+
+**The headline check is the player against the editor, byte for byte.**
+
+- BreakoutRecreation (compiled scripts) at step 120: identical.
+- A falling-box project (an interpreted script's impulse, a static floor, a
+  light, a camera) at step 150: identical. Also identical with the script
+  given as a project-relative path through a trailing-slash folder path,
+  which proves the asset root is resolving it.
+- Bad arguments exit 2 with usage; a missing manifest or scene exits 1 with
+  the reason.
+
+**Two visible changes in the editor:**
+
+- **No editor overlays while playing.** The selection box, camera rays,
+  light gizmos and transform gizmo used to draw over the running game; Play
+  now shows what a player sees. It's also what makes editor Play comparable
+  to the player.
+- **Script and module paths resolve the same way they did.** The editor sets
+  no asset root, so nothing about them changed.
+
+**Deferred on purpose:**
+
+- Splitting `ScriptEngine`'s editor-only codegen out of the runtime waits for
+  the Windows port. The two halves share one JS context.
+- Generating a compiled-script registry per project waits for the packager.
+  Until then the player includes the same `CompiledScriptRegistry.h` as the
+  editor.
+- Window resizing in the player is handled in code but was never exercised
+  by a real resize (no GUI automation here).
+
 ### 2026-10-02 (GSS scripts reach physics: impulses, velocity, isTouching)
 
 **The physics half of the roadmap's "scripts can't touch physics or sound"

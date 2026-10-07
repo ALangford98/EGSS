@@ -52,6 +52,22 @@ sub-project than a feature.
 system, and post-processing are real, but they're visual-quality gaps a
 game can ship without at small scale — genuinely blocking gaps come first.
 
+## Exporting games (requested 2026-10-07)
+
+A core engine function: package a game so someone else can install and play
+it, on Linux, Windows and the web, then Android and iOS. Seven pieces, each
+its own spec, in dependency order -- see
+`docs/superpowers/specs/2026-10-07-game-runtime-player-design.md`:
+
+1. ~~Runtime + standalone player~~ -- done 2026-10-07 (`GSPlayer`).
+2. Packager + Linux export (folder / `.tar.gz`, then AppImage).
+3. Editor "Export Game..." dialog.
+4. Windows, cross-compiled from Linux with a fetched toolchain.
+5. Web, via Emscripten + WebGL2.
+6. Android, via the NDK (all on Linux).
+7. iOS, as an Xcode project to finish on a Mac -- building or signing for
+   iOS cannot happen on this machine.
+
 ## Wishlist, easiest to hardest
 
 ### 1. ~~Right-click context menu~~ — done (2026-09-12)

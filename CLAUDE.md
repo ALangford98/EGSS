@@ -5,6 +5,11 @@ Hazel series but diverging where it made sense. `GS/` is the engine, built as
 a shared library; `TestEnv/` is a sandbox app that links against it and holds
 eighteen demos (`TestEnv/src/DemoRegistry.h` is the source of truth for the
 count — check there rather than trust this number if it looks stale again).
+`Runtime/` is the header-only code a running game needs (`GameSession`,
+`SceneRenderer`, `ScriptEngine`, ...), shared by the editor's Play and by
+`Player/` — `GSPlayer`, which runs a project with no editor in it, the first
+piece of exporting games (roadmap in
+`docs/superpowers/specs/2026-10-07-game-runtime-player-design.md`).
 
 This is built to be **understood**, not to ship a game. A working black box is
 worth less here than a mechanism that can be followed. Explain the load-bearing
@@ -95,6 +100,13 @@ an earlier command persists.
 # Flags for TestEnv go after a bare --
 ./gs.py run -- --demo Breakout --record run.rec
 ```
+
+`GSPlayer` builds beside `TestEnv` (`bin/<Config>-linux-x86_64/GSPlayer/`) and
+takes a project folder: `./GSPlayer assets/demos/BreakoutRecreation`. The
+editor's `--start-play` enters Play at startup, so an editor Play frame and a
+player frame can be captured at the same `--capture-step` and compared — they
+are byte-identical by construction, and that is the check. (`--play` is not
+it: that replays an input recording.)
 
 **`TestEnv/` in the repo root is source, not a binary.** The executable is at
 `bin/<Config>-linux-x86_64/TestEnv/TestEnv` and must run from that directory —
