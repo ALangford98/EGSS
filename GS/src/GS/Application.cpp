@@ -120,7 +120,8 @@ namespace GS {
 
 			// The value-taking flags: a bare `--capture` with nothing after it
 			// captures nothing, so it should not hide anything either.
-			if ((argument == "--capture" || argument == "--play")
+			// --export is the editor's headless game export: nobody watches it.
+			if ((argument == "--capture" || argument == "--play" || argument == "--export")
 				&& i + 1 < s_CommandLine.size())
 				automated = true;
 		}

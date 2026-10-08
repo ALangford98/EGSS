@@ -34,12 +34,17 @@
 #include "NetworkPanel.h"
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
+#include "GameExporter.h"
 
 class TestEnv : public GS::Application
 {
 public:
 	TestEnv()
 	{
+		// Headless game export -- GameExporter.h. Runs and exits before any
+		// editor state loads: nothing an export does depends on it.
+		RunExportIfAsked();
+
 		// Before the demos, so that on the step it hands over, the demo it
 		// hands over *to* is already the active one when the demos are walked.
 		// Pushed unconditionally; without --warmup it does nothing at all.
@@ -94,6 +99,35 @@ public:
 	// call glDeleteVertexArrays/glDeleteBuffers, which is undefined behavior
 	// against a dead context. Clearing it here, while TestEnv (and therefore
 	// the context) is still alive, avoids that.
+	static void RunExportIfAsked()
+	{
+		const std::vector<std::string>& arguments = GS::Application::GetCommandLine();
+		GameExporter::Options options;
+		bool asked = false;
+		for (size_t i = 1; i + 1 < arguments.size(); i++)
+		{
+			if (arguments[i] == "--export") { options.ProjectFolder = arguments[i + 1]; asked = true; }
+			if (arguments[i] == "--out") options.OutDir = arguments[i + 1];
+			if (arguments[i] == "--export-config") options.Config = arguments[i + 1];
+		}
+		if (!asked)
+			return;
+		if (options.OutDir.empty())
+			options.OutDir = "exports";
+
+		ScriptEngine engine;
+		GameExporter::Result result = GameExporter::Export(options, engine);
+		if (result.Ok)
+		{
+			GS_INFO("Exported to {0}", result.PackageDir);
+			std::printf("Exported: %s\nArchive:  %s\n", result.PackageDir.c_str(), result.Archive.c_str());
+			std::exit(0);
+		}
+		GS_ERROR("Export failed: {0}", result.Error);
+		std::fprintf(stderr, "Export failed: %s\n", result.Error.c_str());
+		std::exit(1);
+	}
+
 	~TestEnv() override
 	{
 		// If the window closes while Play is still active (Play clicked,

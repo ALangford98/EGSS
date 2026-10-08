@@ -244,7 +244,7 @@ def premake_path(allow_fetch=True):
     return fetch_premake(directory, name)
 
 
-def generate(allow_fetch=True, sanitize=False):
+def generate(allow_fetch=True, sanitize=False, player_scripts=None):
     """Regenerate project files. Cheap, so it is not conditional.
 
     Output is swallowed unless it fails. Because this now runs on every build,
@@ -264,6 +264,8 @@ def generate(allow_fetch=True, sanitize=False):
     # objects away from plain ones.
     if sanitize:
         command.append("--sanitize=" + sanitize)
+    if player_scripts:
+        command.append("--player-scripts=" + player_scripts)
 
     print("\033[90m$ " + " ".join(command) + "\033[0m")
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
@@ -891,6 +893,10 @@ def main():
     parser.add_argument("--keep", action="append", metavar="TREE",
                         help="with `prune`, a tree to spare by name; may be "
                              "given more than once")
+    parser.add_argument("--player-scripts", metavar="HEADER",
+                        help="with `build`: build only GSPlayer, against this "
+                             "compiled-script registry header, into "
+                             "bin/Export-* -- what TestEnv --export runs")
     parser.add_argument("--steps", type=int, default=SANITIZE_STEPS,
                         help=f"fixed steps per demo in a sweep (default {SANITIZE_STEPS})")
     # Everything after a bare -- goes to TestEnv rather than to this script,
@@ -949,6 +955,28 @@ def main():
                               generate_first=not skip_gen)
 
     configs = CONFIGS if args.config == "all" else [args.config]
+
+    # An export build of the player: generated with the option, only that
+    # target built, then the project files regenerated plain -- so a later
+    # bare `make` builds the normal player, not this project's.
+    if args.player_scripts:
+        if args.command != "build" or args.config == "all" or IS_WINDOWS:
+            sys.exit("--player-scripts: `build <one config>`, on Linux")
+        header = os.path.abspath(args.player_scripts)
+        if generate(allow_fetch=not args.no_fetch, player_scripts=header) != 0:
+            return 1
+        # make cannot tell that the -D naming the header changed: an export
+        # of a second game kept the first game's objects, and shipped the
+        # first game's compiled scripts. The export player's own folders are
+        # cleared so it is always compiled against the header just given.
+        system = platform.system().lower()
+        for tree in ("bin-int", "bin"):
+            shutil.rmtree(os.path.join(ROOT, tree,
+                f"Export-{args.config.capitalize()}-{system}-x86_64", "GSPlayer"),
+                ignore_errors=True)
+        code = run(["make", f"-j{args.jobs}", f"config={args.config}", "GSPlayer"])
+        generate(allow_fetch=not args.no_fetch)
+        return code
 
     if args.command == "prune":
         return prune(keep=set(args.keep or []), delete=args.delete)

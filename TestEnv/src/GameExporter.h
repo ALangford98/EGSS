@@ -1,0 +1,492 @@
+#pragma once
+// Exports a project as a game someone else can run: a folder holding the
+// player (renamed after the game), libGS.so, and game/ -- the project with
+// exactly the files it uses -- plus a .tar.gz of that folder. Linux for now;
+// see docs/superpowers/specs/2026-10-08-packager-linux-export-design.md.
+//
+//   TestEnv --export <project folder> --out <dir> [--export-config dist]
+//
+// Run from the editor's binary folder (assets/typescript.js compiles the
+// scripts). Piece 3's Export dialog calls Export() directly.
+//
+// Stages, each of which can fail the export with a message naming the
+// file -- a package that breaks on someone else's machine is worse than no
+// package:
+//   1. Scan every scene the manifest lists: mesh files (.obj -> mtllib ->
+//      texture maps), materials (.gsmat, self-contained), scripts.
+//   2. Scripts: one with a GS-GENERATED <stem>.cpp beside it is a graduated
+//      class and goes into the player's registry; any other is compiled
+//      here to one self-contained .js (imports spliced in), so the shipped
+//      game never loads the TypeScript compiler.
+//   3. Build GSPlayer against that registry (gs.py build --player-scripts),
+//      into bin/Export-*.
+//   4. Stage: copy files, rewrite every scene path to its place under game/.
+//   5. Archive with the system tar.
+#include <GS.h>
+
+#include "ProjectManifest.h"
+#include "ScriptEngine.h"
+
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+
+namespace GameExporter {
+
+	struct Options
+	{
+		std::string ProjectFolder;
+		std::string OutDir;
+		std::string Config = "dist";
+	};
+
+	struct Result
+	{
+		bool Ok = false;
+		std::string Error;
+		std::string PackageDir;
+		std::string Archive;
+	};
+
+	namespace Detail {
+		namespace fs = std::filesystem;
+
+		// Letters, digits, '-' and '_' kept; anything else becomes a space,
+		// and runs of spaces collapse to one. "Rock/Paper (v2)" becomes
+		// "Rock Paper v2" -- a name, not a path, and no stray hyphens in
+		// the executable built from it.
+		inline std::string SafeName(const std::string& name)
+		{
+			std::string out;
+			for (char c : name)
+			{
+				bool keep = std::isalnum((unsigned char)c) || c == '-' || c == '_';
+				char next = keep ? c : ' ';
+				if (next == ' ' && (out.empty() || out.back() == ' '))
+					continue;
+				out += next;
+			}
+			while (!out.empty() && out.back() == ' ')
+				out.pop_back();
+			return out.empty() ? std::string("Game") : out;
+		}
+
+		// The executable: lower case, spaces as hyphens.
+		inline std::string ExecutableName(const std::string& safeName)
+		{
+			std::string out;
+			for (char c : safeName)
+				out += c == ' ' ? '-' : (char)std::tolower((unsigned char)c);
+			return out;
+		}
+
+		inline bool ReadFile(const fs::path& path, std::string& out)
+		{
+			std::ifstream file(path, std::ios::in | std::ios::binary);
+			if (!file)
+				return false;
+			std::stringstream buffer;
+			buffer << file.rdbuf();
+			out = buffer.str();
+			return true;
+		}
+
+		inline bool IsInside(const fs::path& path, const fs::path& folder)
+		{
+			fs::path rel = path.lexically_relative(folder);
+			return !rel.empty() && *rel.begin() != "..";
+		}
+
+		struct Exporter
+		{
+			fs::path Project;   // absolute
+			fs::path Game;      // <package>/game
+			ScriptEngine& Engine;
+			std::string Error;
+			std::set<std::string> Copied;
+			// Graduated scripts: absolute .cpp path and class name.
+			std::vector<std::pair<std::string, std::string>> Compiled;
+
+			Exporter(fs::path project, fs::path game, ScriptEngine& engine)
+				: Project(std::move(project)), Game(std::move(game)), Engine(engine) {}
+
+			bool Fail(const std::string& message)
+			{
+				if (Error.empty())
+					Error = message;
+				return false;
+			}
+
+			// Where a stored path's file is, the way the editor would find it:
+			// absolute, else under the project, else from the working
+			// directory (projects store binary-relative paths).
+			bool Locate(const std::string& stored, fs::path& out)
+			{
+				std::error_code ec;
+				fs::path p(stored);
+				if (p.is_absolute())
+					out = p;
+				else if (fs::exists(Project / p, ec))
+					out = Project / p;
+				else
+					out = fs::absolute(p, ec);
+				out = out.lexically_normal();
+				return fs::is_regular_file(out, ec);
+			}
+
+			// Its place under game/: project-relative if inside the project,
+			// else external/ with its stored layout kept.
+			std::string PackagePath(const std::string& stored, const fs::path& source)
+			{
+				if (IsInside(source, Project))
+					return source.lexically_relative(Project).generic_string();
+				fs::path p(stored);
+				fs::path tail = p.is_absolute() ? source.relative_path() : p.lexically_normal();
+				if (!tail.empty() && *tail.begin() == "..")
+					tail = source.relative_path();
+				return (fs::path("external") / tail).generic_string();
+			}
+
+			bool Copy(const fs::path& source, const std::string& packagePath)
+			{
+				if (!Copied.insert(packagePath).second)
+					return true;
+				std::error_code ec;
+				fs::path target = Game / packagePath;
+				fs::create_directories(target.parent_path(), ec);
+				fs::copy_file(source, target, fs::copy_options::overwrite_existing, ec);
+				if (ec)
+					return Fail("could not copy '" + source.string() + "': " + ec.message());
+				return true;
+			}
+
+			// A file named inside another (mtllib in an .obj, map_Kd in an
+			// .mtl) is relative to that file; copying it the same distance
+			// from the copy keeps the reference valid untouched.
+			bool CopySibling(const fs::path& ownerSource, const std::string& ownerPackage,
+				const std::string& reference, const std::string& what)
+			{
+				std::error_code ec;
+				fs::path source = (ownerSource.parent_path() / reference).lexically_normal();
+				if (!fs::is_regular_file(source, ec))
+					return Fail(what + " '" + reference + "' named by '" + ownerSource.string() + "' does not exist");
+				std::string package = (fs::path(ownerPackage).parent_path() / reference).lexically_normal().generic_string();
+				return Copy(source, package);
+			}
+
+			bool CopyObjChain(const fs::path& objSource, const std::string& objPackage)
+			{
+				std::string text;
+				if (!ReadFile(objSource, text))
+					return Fail("could not read '" + objSource.string() + "'");
+				std::istringstream lines(text);
+				std::string line;
+				while (std::getline(lines, line))
+				{
+					std::istringstream fields(line);
+					std::string key, file;
+					fields >> key;
+					if (key != "mtllib")
+						continue;
+					fields >> std::ws;
+					std::getline(fields, file);
+					while (!file.empty() && (file.back() == '\r' || file.back() == ' '))
+						file.pop_back();
+					if (!CopySibling(objSource, objPackage, file, "material library"))
+						return false;
+					fs::path mtlSource = (objSource.parent_path() / file).lexically_normal();
+					std::string mtlPackage = (fs::path(objPackage).parent_path() / file).lexically_normal().generic_string();
+					if (!CopyMtlTextures(mtlSource, mtlPackage))
+						return false;
+				}
+				return true;
+			}
+
+			bool CopyMtlTextures(const fs::path& mtlSource, const std::string& mtlPackage)
+			{
+				std::string text;
+				if (!ReadFile(mtlSource, text))
+					return Fail("could not read '" + mtlSource.string() + "'");
+				std::istringstream lines(text);
+				std::string line;
+				while (std::getline(lines, line))
+				{
+					std::istringstream fields(line);
+					std::string key;
+					fields >> key;
+					if (key.rfind("map_", 0) != 0 && key != "bump" && key != "norm" && key != "disp")
+						continue;
+					// The file is the last token: options such as "-bm 0.5"
+					// may come before it.
+					std::string token, file;
+					while (fields >> token)
+						file = token;
+					if (!file.empty() && !CopySibling(mtlSource, mtlPackage, file, "texture"))
+						return false;
+				}
+				return true;
+			}
+
+			static std::string RestOfLine(std::istringstream& fields)
+			{
+				std::string rest;
+				std::getline(fields >> std::ws, rest);
+				while (!rest.empty() && (rest.back() == '\r' || rest.back() == ' '))
+					rest.pop_back();
+				return rest;
+			}
+
+			// One scene: every file it names copied, every path rewritten.
+			bool ExportScene(const std::string& sceneRelative)
+			{
+				fs::path sceneSource = (Project / sceneRelative).lexically_normal();
+				std::string text;
+				if (!ReadFile(sceneSource, text))
+					return Fail("scene '" + sceneRelative + "' named by project.gsproj does not exist");
+
+				std::ostringstream out;
+				std::istringstream lines(text);
+				std::string line, tag = "?";
+				while (std::getline(lines, line))
+				{
+					std::istringstream fields(line);
+					std::string kind;
+					fields >> kind;
+					if (kind == "tag")
+						tag = RestOfLine(fields);
+
+					if (kind == "mesh")
+					{
+						std::string path, rest;
+						fields >> path;
+						rest = RestOfLine(fields);
+						if (path.rfind("primitive:", 0) != 0)
+						{
+							fs::path source;
+							if (!Locate(path, source))
+								return Fail("mesh '" + path + "' on entity '" + tag + "' in " + sceneRelative + " does not exist");
+							std::string package = PackagePath(path, source);
+							if (!Copy(source, package))
+								return false;
+							if (source.extension() == ".obj" && !CopyObjChain(source, package))
+								return false;
+							path = package;
+						}
+						out << "mesh " << path << (rest.empty() ? "" : " " + rest) << "\n";
+						continue;
+					}
+					if (kind == "material")
+					{
+						std::string path = RestOfLine(fields);
+						fs::path source;
+						if (!Locate(path, source))
+							return Fail("material '" + path + "' on entity '" + tag + "' in " + sceneRelative + " does not exist");
+						std::string package = PackagePath(path, source);
+						if (!Copy(source, package))
+							return false;
+						out << "material " << package << "\n";
+						continue;
+					}
+					if (kind == "script")
+					{
+						std::string path = RestOfLine(fields), package;
+						if (!ExportScript(path, tag, sceneRelative, package))
+							return false;
+						out << "script " << package << "\n";
+						continue;
+					}
+					out << line << "\n";
+				}
+
+				std::error_code ec;
+				fs::path target = Game / sceneRelative;
+				fs::create_directories(target.parent_path(), ec);
+				std::ofstream file(target, std::ios::binary);
+				if (!(file << out.str()))
+					return Fail("could not write '" + target.string() + "'");
+				return true;
+			}
+
+			bool ExportScript(const std::string& path, const std::string& tag, const std::string& scene, std::string& package)
+			{
+				fs::path source;
+				if (!Locate(path, source))
+					return Fail("script '" + path + "' on entity '" + tag + "' in " + scene + " does not exist");
+				package = PackagePath(path, source);
+
+				// Graduated: the class goes into the player; no file ships,
+				// and the scene keeps a path only for the class name.
+				fs::path cpp = fs::path(source).replace_extension(".cpp");
+				std::string firstLine;
+				{
+					std::ifstream file(cpp);
+					std::getline(file, firstLine);
+				}
+				if (firstLine.rfind("// GS-GENERATED", 0) == 0)
+				{
+					std::string name = ScriptEngine::ClassNameFromPath(source.string());
+					bool known = false;
+					for (const auto& entry : Compiled)
+						known = known || entry.second == name;
+					if (!known)
+						Compiled.push_back({ cpp.string(), name });
+					return true;
+				}
+
+				std::string tsSource, js, error;
+				if (!ReadFile(source, tsSource))
+					return Fail("could not read script '" + source.string() + "'");
+				if (!Engine.CompileScriptToJS(source.string(), tsSource, error, js))
+					return Fail("script '" + path + "' did not compile: " + error);
+				package = fs::path(package).replace_extension(".js").generic_string();
+				if (!Copied.insert(package).second)
+					return true;
+				std::error_code ec;
+				fs::path target = Game / package;
+				fs::create_directories(target.parent_path(), ec);
+				std::ofstream file(target, std::ios::binary);
+				if (!(file << js))
+					return Fail("could not write '" + target.string() + "'");
+				return true;
+			}
+		};
+
+		inline std::string Capitalized(std::string config)
+		{
+			if (!config.empty())
+				config[0] = (char)std::toupper((unsigned char)config[0]);
+			return config;
+		}
+	}
+
+	inline Result Export(const Options& options, ScriptEngine& engine)
+	{
+		namespace fs = std::filesystem;
+		using namespace Detail;
+		Result result;
+		std::error_code ec;
+
+		fs::path project = fs::absolute(options.ProjectFolder, ec).lexically_normal();
+		std::string projectString = project.string();
+		while (projectString.size() > 1 && projectString.back() == '/')
+			projectString.pop_back();
+		project = projectString;
+
+		ProjectManifest manifest;
+		if (!ReadProjectManifest(projectString, manifest))
+		{
+			result.Error = "no readable " + std::string(ProjectManifestFilename()) + " with a scene in '" + projectString + "'";
+			return result;
+		}
+
+		std::string name = SafeName(manifest.Name.empty() ? project.filename().string() : manifest.Name);
+		fs::path out = fs::absolute(options.OutDir, ec).lexically_normal();
+		fs::path package = out / name;
+		fs::path build = out / ".build" / name;
+
+		// A re-export replaces the package: stale files from a previous one
+		// must not ride along.
+		fs::remove_all(package, ec);
+		fs::create_directories(package / "game", ec);
+		fs::create_directories(build, ec);
+		if (ec)
+		{
+			result.Error = "could not create '" + package.string() + "': " + ec.message();
+			return result;
+		}
+
+		// A failed export leaves nothing behind: a half-written package that
+		// looks finished is worse than none.
+		struct RemoveOnFailure
+		{
+			const Result& Outcome;
+			fs::path Package;
+			~RemoveOnFailure()
+			{
+				std::error_code ignored;
+				if (!Outcome.Ok)
+					fs::remove_all(Package, ignored);
+			}
+		} cleanup{ result, package };
+
+		Exporter exporter(project, package / "game", engine);
+
+		std::set<std::string> scenes;
+		for (const SceneEntry& entry : manifest.Scenes)
+			scenes.insert(entry.RelativePath);
+		scenes.insert(manifest.SceneRelativePath);
+		for (const std::string& scene : scenes)
+			if (!exporter.ExportScene(scene))
+			{
+				result.Error = exporter.Error;
+				return result;
+			}
+		fs::copy_file(project / ProjectManifestFilename(), package / "game" / ProjectManifestFilename(),
+			fs::copy_options::overwrite_existing, ec);
+
+		// This project's compiled-script registry, and the player built
+		// against it.
+		fs::path header = build / "compiled_scripts.gen.h";
+		{
+			std::ofstream h(header);
+			h << "// Generated by GameExporter for '" << manifest.Name << "' -- do not edit.\n"
+			  << "#pragma once\n#include <vector>\n";
+			for (const auto& [cpp, cls] : exporter.Compiled)
+				h << "#include \"" << cpp << "\"\n";
+			h << "inline const std::vector<CompiledScriptEntry> s_CompiledScripts = {\n";
+			for (const auto& [cpp, cls] : exporter.Compiled)
+				h << "\tMakeCompiledScriptEntry<GeneratedScripts::" << cls << ">(\"" << cls << "\"),\n";
+			h << "};\n";
+		}
+
+#ifdef GS_REPO_ROOT
+		std::string root = GS_REPO_ROOT;
+#else
+		result.Error = "exporting needs the engine source tree (GS_REPO_ROOT) and is Linux-only for now";
+		return result;
+#endif
+		fs::path log = build / "build.log";
+		std::string command = "python3 \"" + root + "/gs.py\" build " + options.Config
+			+ " --player-scripts \"" + header.string() + "\" > \"" + log.string() + "\" 2>&1";
+		GS_INFO("GameExporter: building the player for '{0}' ({1})", manifest.Name, options.Config);
+		if (std::system(command.c_str()) != 0)
+		{
+			result.Error = "building the player failed -- see " + log.string();
+			return result;
+		}
+
+		std::string config = Capitalized(options.Config);
+		fs::path player = fs::path(root) / "bin" / ("Export-" + config + "-linux-x86_64") / "GSPlayer" / "GSPlayer";
+		fs::path library = fs::path(root) / "bin" / (config + "-linux-x86_64") / "GS" / "libGS.so";
+		fs::path executable = package / ExecutableName(name);
+		fs::copy_file(player, executable, fs::copy_options::overwrite_existing, ec);
+		if (!ec)
+			fs::copy_file(library, package / "libGS.so", fs::copy_options::overwrite_existing, ec);
+		if (ec)
+		{
+			result.Error = "could not copy the built player: " + ec.message();
+			return result;
+		}
+		fs::permissions(executable, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec
+			| fs::perms::others_read | fs::perms::others_exec, ec);
+
+		fs::path archive = out / (name + "-linux-x86_64.tar.gz");
+		fs::remove(archive, ec);
+		std::string tar = "tar -czf \"" + archive.string() + "\" -C \"" + out.string() + "\" \"" + name + "\"";
+		if (std::system(tar.c_str()) != 0)
+		{
+			result.Error = "tar failed for '" + archive.string() + "'";
+			return result;
+		}
+
+		result.Ok = true;
+		result.PackageDir = package.string();
+		result.Archive = archive.string();
+		return result;
+	}
+
+}

@@ -30,6 +30,12 @@ newoption {
     }
 }
 
+newoption {
+    trigger = "player-scripts",
+    value = "PATH",
+    description = "Build GSPlayer against one project's compiled-script registry header, into bin/Export-* (TestEnv's GameExporter)"
+}
+
 outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
 
 -- Its own tree, so nothing links an instrumented object against a plain one
@@ -398,6 +404,15 @@ project "GSPlayer"
         "GS",
         "quickjs"
     }
+
+    -- An export build: this player compiled against one project's own
+    -- compiled scripts (the registry header GameExporter generates), into
+    -- folders of its own so the normal player build is never overwritten.
+    if _OPTIONS["player-scripts"] then
+        targetdir ("bin/Export-" .. outputdir .. "/%{prj.name}")
+        objdir ("bin-int/Export-" .. outputdir .. "/%{prj.name}")
+        defines { 'GS_COMPILED_SCRIPTS_HEADER="' .. _OPTIONS["player-scripts"] .. '"' }
+    end
 
     filter "system:windows"
         cppdialect "C++17"
