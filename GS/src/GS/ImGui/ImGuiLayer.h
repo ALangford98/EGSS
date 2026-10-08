@@ -62,6 +62,11 @@ namespace GS {
 			s_FontSizePixels = sizePixels;
 		}
 
+		// No imgui.ini read or written. A shipped game has no panels whose
+		// layout is worth remembering, and must not leave files in whatever
+		// folder it was launched from. Same timing rule as SetFontPath.
+		static void DisableIniFile() { s_NoIniFile = true; }
+
 		// Runtime font switching, unlike the static SetFontPath above (which
 		// only works pre-OnAttach) -- called any time after the ImGui
 		// context exists. Queues the request; Begin() applies it at the
@@ -87,6 +92,7 @@ namespace GS {
 
 		static std::string s_FontPath;
 		static float s_FontSizePixels;
+		static bool s_NoIniFile;
 
 		bool m_FontReloadPending = false;
 		std::string m_PendingControlsPath, m_PendingEditorPath, m_PendingTerminalPath;

@@ -13,6 +13,7 @@
 namespace GS {
 
 	std::string ImGuiLayer::s_FontPath;
+	bool ImGuiLayer::s_NoIniFile = false;
 	float ImGuiLayer::s_FontSizePixels = 16.0f;
 
 	ImGuiLayer::ImGuiLayer()
@@ -37,6 +38,8 @@ namespace GS {
 		// only captured while a text field is active, which is what a game
 		// wants.
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+		if (s_NoIniFile)
+			io.IniFilename = nullptr;
 
 		if (m_ViewportsEnabled)
 			io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;

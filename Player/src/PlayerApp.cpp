@@ -1,6 +1,11 @@
 // GSPlayer: runs a GS project as a game -- no editor, no demos, no panels.
 //
-//   GSPlayer <project folder> [engine flags: --lockstep, --capture ...]
+//   GSPlayer [project folder] [engine flags: --lockstep, --capture ...]
+//
+// With no folder it runs game/ beside itself -- how a packaged game starts
+// when double-clicked. It always changes directory to its own folder first
+// (engine files such as the TypeScript compiler are found relative to it),
+// so a relative --capture path lands there too; pass an absolute one.
 //
 // Reads the folder's project.gsproj, names the window after the project,
 // resolves the project's assets against the folder (GS::Assets), loads its
@@ -154,14 +159,27 @@ namespace {
 		Player()
 		{
 			const std::vector<std::string>& arguments = GS::Application::GetCommandLine();
-			if (arguments.size() < 2 || arguments[1].rfind("--", 0) == 0)
-				Fail("usage: GSPlayer <project folder> [engine flags]", 2);
+			bool given = arguments.size() >= 2 && arguments[1].rfind("--", 0) != 0;
 
-			// "game", "game/" and "." are the same folder.
-			std::filesystem::path folder = std::filesystem::path(arguments[1]).lexically_normal();
+			// Absolute before the directory change below: a folder typed
+			// relative to where the player was launched from means there.
+			std::error_code ec;
+			std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec).parent_path();
+			std::filesystem::path folder = given
+				? std::filesystem::absolute(arguments[1], ec)
+				: self / "game";
+			folder = folder.lexically_normal();
 			std::string folderString = folder.string();
 			while (folderString.size() > 1 && folderString.back() == '/')
 				folderString.pop_back();
+
+			// A packaged game is double-clicked from a file manager, or run
+			// from a shell anywhere: the working directory is not its folder.
+			if (!self.empty())
+				std::filesystem::current_path(self, ec);
+
+			if (!given && !std::filesystem::exists(folder / ProjectManifestFilename()))
+				Fail("usage: GSPlayer [project folder] [engine flags] -- no folder given and no game/ beside the player", 2);
 
 			ProjectManifest manifest;
 			if (!ReadProjectManifest(folderString, manifest))
@@ -175,5 +193,6 @@ namespace {
 
 GS::Application* GS::CreateApplication()
 {
+	GS::ImGuiLayer::DisableIniFile();
 	return new Player();
 }
