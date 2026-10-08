@@ -18,6 +18,7 @@
 #include "CompiledScriptRegistry.h"
 #include "ScriptEngine.h"
 
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <set>
@@ -130,7 +131,14 @@ public:
 			ScriptEngine::PreparedScript prepared;
 			std::string error;
 			std::set<std::string> imports;
-			if (!m_Engine.PrepareEntityScript(&m_Scene, id, script->ScriptPath, buffer.str(), error, prepared, &imports))
+			// A .js script was compiled at export (imports already spliced
+			// in) and runs without the TypeScript compiler; anything else is
+			// GSS source, compiled here.
+			bool isJs = std::filesystem::path(script->ScriptPath).extension() == ".js";
+			bool prepared_ok = isJs
+				? m_Engine.PrepareEntityScriptFromJS(&m_Scene, id, buffer.str(), error, prepared)
+				: m_Engine.PrepareEntityScript(&m_Scene, id, script->ScriptPath, buffer.str(), error, prepared, &imports);
+			if (!prepared_ok)
 			{
 				GS_ERROR("GameSession: entity {0}'s script failed to prepare: {1}", id, error);
 				continue;

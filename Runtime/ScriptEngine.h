@@ -64,7 +64,7 @@ public:
 
 	ScriptResult RunScript(const std::string& tsSource)
 	{
-		if (!m_Ready && !Initialize())
+		if ((!m_Ready && !Initialize()) || !EnsureTypeScript())
 		{
 			ScriptResult failure;
 			failure.Error = "Script engine failed to initialize (see log).";
@@ -147,11 +147,25 @@ public:
 	// collects every module (transitively) imported, purely so PlayMode
 	// can write the dependency manifest -- see
 	// docs/superpowers/specs/2026-09-11-script-imports-design.md.
+	// Compile, then run: the editor's path, unchanged.
 	bool PrepareEntityScript(GS::Scene* scene, GS::EntityId entityId, const std::string& scriptPath,
 		const std::string& tsSource, std::string& error, PreparedScript& out,
 		std::set<std::string>* outDependencies = nullptr)
 	{
-		if (!m_Ready && !Initialize())
+		std::string jsCode;
+		if (!CompileScriptToJS(scriptPath, tsSource, error, jsCode, outDependencies))
+			return false;
+		return PrepareEntityScriptFromJS(scene, entityId, jsCode, error, out);
+	}
+
+	// The compiling half: imports analysed and spliced in, TypeScript
+	// stripped to JavaScript -- self-contained, so the result can be written
+	// to a file and run later with no compiler (the exporter does exactly
+	// that). `outDependencies` receives every module spliced in.
+	bool CompileScriptToJS(const std::string& scriptPath, const std::string& tsSource, std::string& error,
+		std::string& jsCode, std::set<std::string>* outDependencies = nullptr)
+	{
+		if ((!m_Ready && !Initialize()) || !EnsureTypeScript())
 		{
 			error = "Script engine failed to initialize (see log).";
 			return false;
@@ -225,8 +239,21 @@ public:
 			return false;
 		}
 
-		std::string jsCode = GetStringProperty(transpileResult, "code");
+		jsCode = GetStringProperty(transpileResult, "code");
 		JS_FreeValue(m_Context, transpileResult);
+		return true;
+	}
+
+	// The running half: needs QuickJS only. What a shipped game uses, given
+	// a script CompileScriptToJS produced at export.
+	bool PrepareEntityScriptFromJS(GS::Scene* scene, GS::EntityId entityId, const std::string& jsCode,
+		std::string& error, PreparedScript& out)
+	{
+		if (!m_Ready && !Initialize())
+		{
+			error = "Script engine failed to initialize (see log).";
+			return false;
+		}
 
 		std::string wrapped = "(function(entity, input, scene) {" + jsCode +
 			"\nreturn { onStart: typeof OnStart === 'function' ? OnStart : null, "
@@ -464,7 +491,7 @@ public:
 	// for what reads that stamp later (not built in this task).
 	bool TranspileToCpp(const std::string& source, const std::string& className, std::string& error, std::string& outCpp)
 	{
-		if (!m_Ready && !Initialize())
+		if ((!m_Ready && !Initialize()) || !EnsureTypeScript())
 		{
 			error = "Script engine failed to initialize (see log).";
 			return false;
@@ -1319,35 +1346,6 @@ private:
 		JS_SetPropertyStr(m_Context, global, "console", consoleObj);
 		JS_FreeValue(m_Context, global);
 
-		std::ifstream tsFile("assets/typescript.js", std::ios::in | std::ios::binary);
-		if (!tsFile.is_open())
-		{
-			GS_ERROR("ScriptEngine: could not open assets/typescript.js");
-			JS_FreeContext(m_Context);
-			m_Context = nullptr;
-			JS_FreeRuntime(m_Runtime);
-			m_Runtime = nullptr;
-			m_InitFailed = true;
-			return false;
-		}
-		std::stringstream tsBuffer;
-		tsBuffer << tsFile.rdbuf();
-		std::string tsSource = tsBuffer.str();
-
-		JSValue loadResult = JS_Eval(m_Context, tsSource.c_str(), tsSource.size(), "typescript.js", JS_EVAL_TYPE_GLOBAL);
-		if (JS_IsException(loadResult))
-		{
-			GS_ERROR("ScriptEngine: failed to load typescript.js: {0}", DescribeException());
-			JS_FreeValue(m_Context, loadResult);
-			JS_FreeContext(m_Context);
-			m_Context = nullptr;
-			JS_FreeRuntime(m_Runtime);
-			m_Runtime = nullptr;
-			m_InitFailed = true;
-			return false;
-		}
-		JS_FreeValue(m_Context, loadResult);
-
 		// Created only here, past every failure path above -- m_InputObject
 		// used to be set up right after JS_NewContext, which left it on the
 		// runtime's GC object list on both the missing-typescript.js and
@@ -1366,6 +1364,47 @@ private:
 		JS_SetPropertyStr(m_Context, m_SceneObject, "destroy", JS_NewCFunction(m_Context, Native_SceneDestroy, "destroy", 1));
 
 		m_Ready = true;
+		return true;
+	}
+
+	// The TypeScript compiler, loaded the first time something has to be
+	// *compiled* -- not by Initialize. A shipped game runs scripts exported
+	// as JavaScript (PrepareEntityScriptFromJS) and never needs it: 8.9 MB
+	// it does not have to carry or read. See
+	// docs/superpowers/specs/2026-10-08-packager-linux-export-design.md.
+	bool EnsureTypeScript()
+	{
+		if (m_TypeScriptLoaded)
+			return true;
+		if (m_TypeScriptFailed)
+			return false;
+
+		std::ifstream tsFile("assets/typescript.js", std::ios::in | std::ios::binary);
+		if (!tsFile.is_open())
+		{
+			GS_ERROR("ScriptEngine: could not open assets/typescript.js");
+			m_TypeScriptFailed = true;
+			return false;
+		}
+		std::stringstream tsBuffer;
+		tsBuffer << tsFile.rdbuf();
+		std::string tsSource = tsBuffer.str();
+
+		// Lifted for the load: m_Deadline keeps whatever the last script call
+		// set, and loaded lazily this can come long after one has expired --
+		// the interrupt handler would then abort the compiler's own eval,
+		// the failure the m_Deadline comment below describes.
+		m_Deadline = std::chrono::steady_clock::time_point::max();
+		JSValue loadResult = JS_Eval(m_Context, tsSource.c_str(), tsSource.size(), "typescript.js", JS_EVAL_TYPE_GLOBAL);
+		if (JS_IsException(loadResult))
+		{
+			GS_ERROR("ScriptEngine: failed to load typescript.js: {0}", DescribeException());
+			JS_FreeValue(m_Context, loadResult);
+			m_TypeScriptFailed = true;
+			return false;
+		}
+		JS_FreeValue(m_Context, loadResult);
+		m_TypeScriptLoaded = true;
 		return true;
 	}
 
@@ -2302,6 +2341,8 @@ private:
 	JSContext* m_Context = nullptr;
 	bool m_Ready = false;
 	bool m_InitFailed = false;
+	bool m_TypeScriptLoaded = false;
+	bool m_TypeScriptFailed = false;
 	JSValue m_InputObject = JS_UNDEFINED;
 	JSValue m_SceneObject = JS_UNDEFINED;
 	// Which GS::Scene the native findByTag/spawn/destroy functions operate
