@@ -108,6 +108,13 @@ player frame can be captured at the same `--capture-step` and compared — they
 are byte-identical by construction, and that is the check. (`--play` is not
 it: that replays an input recording.)
 
+**Exporting a game** (Linux): from the editor's binary folder,
+`./TestEnv --export <project folder> --out <dir>` writes
+`<dir>/<Game Name>/` (the player renamed, `libGS.so`, `game/`) and a
+`.tar.gz`. It builds a player against the project's own compiled scripts via
+`./gs.py build dist --player-scripts <header>`, into `bin/Export-*`. Verify an
+export by unpacking it elsewhere and running it from another directory.
+
 **`TestEnv/` in the repo root is source, not a binary.** The executable is at
 `bin/<Config>-linux-x86_64/TestEnv/TestEnv` and must run from that directory —
 assets load by path relative to it, and screenshots, recordings, `imgui.ini` and

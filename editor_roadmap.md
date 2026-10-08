@@ -60,7 +60,8 @@ its own spec, in dependency order -- see
 `docs/superpowers/specs/2026-10-07-game-runtime-player-design.md`:
 
 1. ~~Runtime + standalone player~~ -- done 2026-10-07 (`GSPlayer`).
-2. Packager + Linux export (folder / `.tar.gz`, then AppImage).
+2. ~~Packager + Linux export~~ -- done 2026-10-08 (`TestEnv --export`,
+   folder + `.tar.gz`). AppImage still to do.
 3. Editor "Export Game..." dialog.
 4. Windows, cross-compiled from Linux with a fetched toolchain.
 5. Web, via Emscripten + WebGL2.

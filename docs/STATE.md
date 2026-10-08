@@ -37,6 +37,10 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-08 — Linux export** (export piece 2 of 7):
+  `TestEnv --export <project> --out <dir>` → a self-contained folder +
+  `.tar.gz`; scripts ship as JS, no TypeScript compiler; per-project compiled
+  scripts. Verified unpacked elsewhere and run from `/`.
 - **2026-10-07 — GSPlayer** (export piece 1 of 7): `Runtime/` shared by the
   editor and a player that runs a project with no editor; byte-identical to
   editor Play (`--start-play`). Editor Play no longer draws overlays.
@@ -85,11 +89,10 @@ Nothing is in progress. Open threads, none started:
   literals, vec3-typed class members, and script bindings for sound and
   physics (the roadmap's "foundational gaps" names the last as the real
   blocker for gameplay code).
-- **Exporting games, pieces 2–7** — next is the packager + Linux export:
-  scan what a game uses, pre-strip scripts to JS (drop the 8.9 MB TypeScript
-  compiler), generate the project's compiled-script registry, build the
-  player for it, emit a folder / `.tar.gz`, then an AppImage. See the
-  roadmap in `docs/superpowers/specs/2026-10-07-game-runtime-player-design.md`.
+- **Exporting games, pieces 3–7** — next is the editor's "Export Game…"
+  dialog (calls `GameExporter::Export`), plus the AppImage follow-up to
+  piece 2. Then Windows, Web, Android, iOS. Roadmap in
+  `docs/superpowers/specs/2026-10-07-game-runtime-player-design.md`.
 - **Sound bindings for GSS** — the other half of the scripts gap; paused
   for the export work.
 - **Procedural materials beyond the editor shader** — per-vertex tangents,

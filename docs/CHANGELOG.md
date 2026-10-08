@@ -7,6 +7,83 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-08 (a game exports as a Linux package someone else can run)
+
+**Piece 2 of exporting games.**
+
+```
+TestEnv --export <project> --out <dir>
+```
+
+That writes `<dir>/<Game Name>/`: the player renamed after the game,
+`libGS.so`, and `game/` holding exactly the files the game uses. Next to it
+goes a `.tar.gz`. See
+`docs/superpowers/specs/2026-10-08-packager-linux-export-design.md`.
+
+**What a game needs was measured, not guessed.** There's no strace on this
+machine, so I used an `LD_PRELOAD` open() logger built in the scratchpad.
+Breakout (compiled scripts) opens only its manifest and scene. An interpreted
+game also opens its `.gss` and the **8.9 MB `typescript.js`**, by a path
+relative to the working directory. Both wrote `imgui.ini` wherever they were
+launched. Three changes follow from that:
+
+- **`ScriptEngine` is split at its natural seam.** `CompileScriptToJS` does
+  import analysis and splicing plus TS → JS. `PrepareEntityScriptFromJS` is
+  QuickJS only. The compiler loads lazily, and its load lifts the interrupt
+  deadline, because `m_Deadline` outlives each script call and an
+  already-expired one would abort a lazy load. That's the failure the
+  deadline's own comment records from earlier. A `.js` script path runs with
+  no compiler at all.
+- **The player changes directory to its own folder.** It first makes any
+  project argument absolute, since that's relative to where it was launched.
+  With no argument it runs `game/` beside itself.
+- **The player writes no `imgui.ini`** (`ImGuiLayer::DisableIniFile`).
+
+**What the exporter does:**
+
+- Scans every scene the manifest lists. That covers mesh files (an `.obj`
+  with its `mtllib` and texture maps), `.gsmat` materials, and scripts.
+- Copies what it finds and rewrites each scene path. Files from outside the
+  project go under `external/`, with their layout kept so an `.obj` still
+  finds its `.mtl`.
+- Compiles interpreted scripts to one self-contained `.js` each.
+- Treats a script with a `GS-GENERATED` `<stem>.cpp` beside it as compiled,
+  generates a registry header of those, and builds `GSPlayer` (Dist) against
+  it with `gs.py build --player-scripts`, into `bin/Export-*`.
+- Fails on a missing referenced file, naming it and the entity, and leaves
+  nothing behind. A re-export replaces the old package.
+
+**Verified the way someone else would use it.** I unpacked each tarball
+elsewhere and ran it from `/`. Three games were tested:
+
+- BreakoutRecreation (compiled scripts).
+- The falling-box game (an interpreted script).
+- A stress project: an engine model by a binary-relative path, a textured
+  `.obj` → `.mtl` → `.png` chain from outside the project by an absolute
+  path, a script importing a module, and the name "Stress: Test/Game", which
+  became "Stress Test Game".
+
+Each captured **byte-identical to editor Play** at step 150, and the open()
+logger showed **zero** files opened from the source tree and no
+`typescript.js`. The falling-box package is 3.0 MB compressed.
+
+**The test caught a real bug.** Breakout's package first differed, because
+the player had been built *without* its compiled scripts. The stress game's
+export had built the player first, Breakout's export changed only the `-D`
+naming the registry header, and make, which can't see a changed flag (the
+same trap the sanitizer builds already avoid with their own tree), kept the
+stale objects. `gs.py` now clears the export player's folders on every export
+build.
+
+**One difference from the editor, deliberately.** The export treats any
+script with a `GS-GENERATED` `.cpp` beside it as compiled. The editor runs
+only the scripts registered by hand in `CompiledScriptRegistry.h`. For
+BreakoutRecreation the two agree.
+
+**Not yet:** the AppImage (a single double-clickable file, which needs
+`appimagetool` fetched, a `.desktop` file and an icon), the editor's Export
+dialog (piece 3), and other platforms.
+
 ### 2026-10-07 (GSPlayer: a project runs as a game, with no editor in it)
 
 **Piece 1 of exporting games.** The owner wants games exportable to Linux,
