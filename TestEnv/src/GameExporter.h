@@ -29,6 +29,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -42,6 +43,9 @@ namespace GameExporter {
 		std::string ProjectFolder;
 		std::string OutDir;
 		std::string Config = "dist";
+		// Told each stage as it starts -- the Export dialog shows it. Called
+		// on whatever thread Export runs on.
+		std::function<void(const std::string&)> OnStage;
 	};
 
 	struct Result
@@ -50,6 +54,7 @@ namespace GameExporter {
 		std::string Error;
 		std::string PackageDir;
 		std::string Archive;
+		std::string Executable;
 	};
 
 	namespace Detail {
@@ -369,6 +374,8 @@ namespace GameExporter {
 		using namespace Detail;
 		Result result;
 		std::error_code ec;
+		auto stage = [&](const std::string& what) { if (options.OnStage) options.OnStage(what); };
+		stage("Scanning the project and compiling scripts");
 
 		fs::path project = fs::absolute(options.ProjectFolder, ec).lexically_normal();
 		std::string projectString = project.string();
@@ -453,6 +460,7 @@ namespace GameExporter {
 		std::string command = "python3 \"" + root + "/gs.py\" build " + options.Config
 			+ " --player-scripts \"" + header.string() + "\" > \"" + log.string() + "\" 2>&1";
 		GS_INFO("GameExporter: building the player for '{0}' ({1})", manifest.Name, options.Config);
+		stage("Building the player (about a minute)");
 		if (std::system(command.c_str()) != 0)
 		{
 			result.Error = "building the player failed -- see " + log.string();
@@ -460,6 +468,7 @@ namespace GameExporter {
 		}
 
 		std::string config = Capitalized(options.Config);
+		stage("Packaging");
 		fs::path player = fs::path(root) / "bin" / ("Export-" + config + "-linux-x86_64") / "GSPlayer" / "GSPlayer";
 		fs::path library = fs::path(root) / "bin" / (config + "-linux-x86_64") / "GS" / "libGS.so";
 		fs::path executable = package / ExecutableName(name);
@@ -474,6 +483,7 @@ namespace GameExporter {
 		fs::permissions(executable, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec
 			| fs::perms::others_read | fs::perms::others_exec, ec);
 
+		stage("Archiving");
 		fs::path archive = out / (name + "-linux-x86_64.tar.gz");
 		fs::remove(archive, ec);
 		std::string tar = "tar -czf \"" + archive.string() + "\" -C \"" + out.string() + "\" \"" + name + "\"";
@@ -486,6 +496,7 @@ namespace GameExporter {
 		result.Ok = true;
 		result.PackageDir = package.string();
 		result.Archive = archive.string();
+		result.Executable = executable.string();
 		return result;
 	}
 

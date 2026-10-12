@@ -76,9 +76,20 @@ inline bool SaveEditorScene(const std::string& path)
 // (DemoRegistry.h) only ever moves g_ActiveDemo off InvalidDemo when --demo is
 // given, and this function only runs the editor's own boot logic, so whichever
 // flag is present decides which of the two ever does anything observable.
+inline bool OpenEditorProject(const std::string& folderPath);   // below; --project uses it
+
 inline void LoadEditorProjectFromCommandLine()
 {
 	const std::vector<std::string>& arguments = GS::Application::GetCommandLine();
+
+	// --project <folder>: a whole project, as File > Open Project would.
+	for (size_t i = 1; i + 1 < arguments.size(); i++)
+		if (arguments[i] == "--project")
+		{
+			if (!OpenEditorProject(arguments[i + 1]))
+				GS_WARN("--project '{0}' could not be opened; starting blank", arguments[i + 1]);
+			return;
+		}
 
 	for (size_t i = 1; i + 1 < arguments.size(); i++)
 	{

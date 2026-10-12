@@ -27,6 +27,7 @@
 #include "EditorShell.h"
 #include "FileBrowserPopup.h"
 #include "MaterialEditorPanel.h"
+#include "ExportDialog.h"
 #include "PlayMode.h"
 #include "SceneSwapGuard.h"
 
@@ -154,6 +155,11 @@ private:
 
 		ImGui::Separator();
 
+		if (ImGui::MenuItem("Export Game...", nullptr, false, !g_EditorProjectPath.empty()))
+			m_ExportDialog.Open();
+
+		ImGui::Separator();
+
 		if (ImGui::MenuItem("New Material...", nullptr, false, g_MaterialEditor != nullptr))
 		{
 			// Starts in the project, which is where a material the scene
@@ -213,6 +219,17 @@ private:
 
 	void DrawFileDialogs()
 	{
+		// --open-export-dialog: opens it on the first frame -- how a capture
+		// shows the dialog, since nothing here can click a menu.
+		if (!m_CheckedExportFlag)
+		{
+			m_CheckedExportFlag = true;
+			for (const std::string& argument : GS::Application::GetCommandLine())
+				if (argument == "--open-export-dialog")
+					m_ExportDialog.Open();
+		}
+		m_ExportDialog.Draw();
+
 		if (m_PendingPopup)
 		{
 			ImGui::OpenPopup(m_PendingPopup);
@@ -587,4 +604,6 @@ private:
 	// Deferring the actual OpenPopup call to here is the same fix already
 	// used for the Find popup via m_FindRequested, below.
 	const char* m_PendingPopup = nullptr;
+	ExportDialog m_ExportDialog;
+	bool m_CheckedExportFlag = false;
 };

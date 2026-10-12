@@ -44,6 +44,10 @@ public:
 
 	// Compared against the file as last saved, not against the undo
 	// stack's settled text -- an edit made this frame counts too.
+	// For callers outside the panel -- the Export dialog saves before
+	// exporting, since an export reads materials from disk.
+	void SaveNow() { Save(); }
+
 	bool HasUnsavedChanges() const
 	{
 		return !m_Path.empty() && GS::SerializeMaterialGraph(m_Graph) != m_Saved;
