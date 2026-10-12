@@ -175,6 +175,143 @@ TOOLS = {
 }
 
 
+def target_folder(config, target):
+    """The bin/ folder premake writes for a target: its system, architecture
+    and suffix -- e.g. Dist-linux-ARM64-android (premake5.lua's outputdir).
+    GameExporter spells the same names; keep the two in step."""
+    return config.capitalize() + {
+        "windows": "-windows-x86_64",
+        "web": "-linux-x86_64-web",
+        "android": "-linux-ARM64-android",
+    }.get(target, "-linux-x86_64")
+
+
+ANDROID_MIN_SDK = 26
+ANDROID_TARGET_SDK = 36
+
+ANDROID_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="{app_id}" android:versionCode="1" android:versionName="1.0">
+  <uses-sdk android:minSdkVersion="{min_sdk}" android:targetSdkVersion="{target_sdk}"/>
+  <uses-feature android:glEsVersion="0x00030000" android:required="true"/>
+  <application android:label="{label}" android:icon="@mipmap/icon"
+      android:hasCode="false" android:extractNativeLibs="false"
+      android:appCategory="game" android:isGame="true">
+    <activity android:name="android.app.NativeActivity" android:exported="true"
+        android:launchMode="singleTask" android:screenOrientation="sensorLandscape"
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+        android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density">
+      <meta-data android:name="android.app.lib_name" android:value="gsplayer"/>
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/>
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>
+"""
+
+
+def android_app_id(name):
+    """com.gsgame.<name>: letters and digits of the game's name, lower case,
+    and a letter first -- what a Java package segment must be."""
+    segment = re.sub(r"[^a-z0-9]", "", name.lower()) or "game"
+    if not segment[0].isalpha():
+        segment = "g" + segment
+    return "com.gsgame." + segment
+
+
+def package_apk(lib, game, name, icon, out):
+    """Assemble, align and sign an APK with no Gradle and no Java code: a
+    NativeActivity manifest and the icon linked by aapt2, then the player's
+    library and the game added as plain zip entries.
+
+    The library is stored, not deflated, and zipalign -P 16 puts it on a
+    16 KB boundary: with extractNativeLibs="false" Android maps it straight
+    out of the APK, which needs both (and 16 KB pages are what Android 15+
+    devices with large pages require). The game goes under assets/ beside
+    game.files, the list the platform layer unpacks from, because an APK's
+    asset folders cannot be walked for subfolders at run time."""
+    if fetch_tool("android") != 0:
+        return 1
+    sdk = tool_dir("android")
+    tools = os.path.join(sdk, "build-tools")
+    llvm = os.path.join(sdk, "ndk", "toolchains", "llvm", "prebuilt", "linux-x86_64", "bin")
+    jdk_bin = os.path.join(sdk, "jdk", "bin")
+    environment = dict(os.environ, JAVA_HOME=os.path.join(sdk, "jdk"),
+                       PATH=jdk_bin + os.pathsep + os.environ.get("PATH", ""))
+    app_id = android_app_id(name)
+    print(f"APK {app_id}: {os.path.basename(out)}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        def tool(*command):
+            result = subprocess.run(list(command), env=environment, capture_output=True, text=True)
+            if result.returncode != 0:
+                sys.exit(f"{os.path.basename(command[0])} failed:\n{result.stdout}{result.stderr}")
+
+        label = (name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                     .replace('"', "&quot;"))
+        manifest = os.path.join(tmp, "AndroidManifest.xml")
+        with open(manifest, "w") as handle:
+            handle.write(ANDROID_MANIFEST.format(app_id=app_id, label=label,
+                         min_sdk=ANDROID_MIN_SDK, target_sdk=ANDROID_TARGET_SDK))
+        os.makedirs(os.path.join(tmp, "res", "mipmap"))
+        shutil.copyfile(icon, os.path.join(tmp, "res", "mipmap", "icon.png"))
+        tool(os.path.join(tools, "aapt2"), "compile", "--dir", os.path.join(tmp, "res"),
+             "-o", os.path.join(tmp, "res.zip"))
+        base = os.path.join(tmp, "base.apk")
+        tool(os.path.join(tools, "aapt2"), "link", "-o", base, "--manifest", manifest,
+             "-I", os.path.join(sdk, "platform", "android.jar"), os.path.join(tmp, "res.zip"))
+
+        # Symbols are for the debugger, not the phone: stripped, the Dist
+        # library is a fraction of its size.
+        stripped = os.path.join(tmp, "libgsplayer.so")
+        tool(os.path.join(llvm, "llvm-strip"), "--strip-unneeded", lib, "-o", stripped)
+
+        files = []
+        for directory, _, names in os.walk(game):
+            for filename in sorted(names):
+                path = os.path.join(directory, filename)
+                files.append(os.path.relpath(path, os.path.dirname(game)).replace(os.sep, "/"))
+        files.sort()
+        # The build's identity, first line of game.files: a hash of every
+        # file shipped, so the device unpacks again exactly when something
+        # changed (Platform/Android compares it with the copy it unpacked).
+        digest = hashlib.sha256()
+        for relative in files:
+            digest.update(relative.encode() + b"\0")
+            with open(os.path.join(os.path.dirname(game), relative), "rb") as handle:
+                digest.update(handle.read())
+        listing = f"gs-files 1 {digest.hexdigest()[:16]}\n" + "".join(f + "\n" for f in files)
+
+        with zipfile.ZipFile(base, "a") as apk:
+            apk.write(stripped, "lib/arm64-v8a/libgsplayer.so", compress_type=zipfile.ZIP_STORED)
+            apk.writestr("assets/game.files", listing, compress_type=zipfile.ZIP_DEFLATED)
+            for relative in files:
+                apk.write(os.path.join(os.path.dirname(game), relative), "assets/" + relative,
+                          compress_type=zipfile.ZIP_DEFLATED)
+
+        aligned = os.path.join(tmp, "aligned.apk")
+        tool(os.path.join(tools, "zipalign"), "-P", "16", "-f", "4", base, aligned)
+
+        # A debug key, made once per machine and kept beside the SDK, so
+        # every export from here is signed by the same key and installs
+        # over the last one. A store release needs the developer's own key.
+        keystore = os.path.join(sdk, "debug.keystore")
+        if not os.path.isfile(keystore):
+            tool(os.path.join(jdk_bin, "keytool"), "-genkeypair", "-keystore", keystore,
+                 "-storepass", "android", "-alias", "androiddebugkey", "-keypass", "android",
+                 "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000",
+                 "-dname", "CN=Android Debug,O=Android,C=US")
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        # No v4 sidecar (.idsig): it only serves adb incremental installs.
+        tool(os.path.join(tools, "apksigner"), "sign", "--ks", keystore, "--v4-signing-enabled", "false",
+             "--ks-pass", "pass:android", "--key-pass", "pass:android", "--out", out, aligned)
+        tool(os.path.join(tools, "apksigner"), "verify", out)
+    print(f"APK signed: {out}")
+    return 0
+
+
 def tool_dir(name):
     return os.path.join(ROOT, "vendor", "bin", name)
 
@@ -247,6 +384,14 @@ def fetch_tool(name):
                             dest = os.path.realpath(os.path.join(base, info.filename))
                             if not dest.startswith(base + os.sep) and dest != base:
                                 sys.exit(f"{name}: archive member escapes its folder: {info.filename}")
+                            if stat.S_ISLNK(info.external_attr >> 16):
+                                link = bundle.read(info).decode()
+                                pointed = os.path.realpath(os.path.join(os.path.dirname(dest), link))
+                                if os.path.isabs(link) or not pointed.startswith(base + os.sep):
+                                    sys.exit(f"{name}: archive link escapes its folder: {info.filename} -> {link}")
+                                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                                os.symlink(link, dest)
+                                continue
                             bundle.extract(info, base)
                             mode = (info.external_attr >> 16) & 0o777
                             if mode and not info.is_dir():
@@ -384,14 +529,6 @@ def premake_path(allow_fetch=True):
     directory = os.path.join(ROOT, "vendor", "bin", "premake")
     path = os.path.join(directory, name)
 
-                            if stat.S_ISLNK(info.external_attr >> 16):
-                                link = bundle.read(info).decode()
-                                pointed = os.path.realpath(os.path.join(os.path.dirname(dest), link))
-                                if os.path.isabs(link) or not pointed.startswith(base + os.sep):
-                                    sys.exit(f"{name}: archive link escapes its folder: {info.filename} -> {link}")
-                                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                                os.symlink(link, dest)
-                                continue
     if os.path.isfile(path):
         return path
 
@@ -405,7 +542,7 @@ def premake_path(allow_fetch=True):
 
 
 def generate(allow_fetch=True, sanitize=False, player_scripts=None, target_os=None,
-             web=False, web_game=None):
+             web=False, web_game=None, android_ndk=None):
     """Regenerate project files. Cheap, so it is not conditional.
 
     Output is swallowed unless it fails. Because this now runs on every build,
@@ -433,6 +570,8 @@ def generate(allow_fetch=True, sanitize=False, player_scripts=None, target_os=No
         command.append("--web")
     if web_game:
         command.append("--web-game=" + web_game)
+    if android_ndk:
+        command += ["--android", "--android-ndk=" + android_ndk]
 
     print("\033[90m$ " + " ".join(command) + "\033[0m")
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
@@ -1038,7 +1177,7 @@ def main():
     parser = argparse.ArgumentParser(description="Build and run GS.")
     parser.add_argument("command", nargs="?", default="run",
                         choices=["build", "run", "clean", "gen", "sanitize",
-                                 "prune", "windows", "traps", "fetch"])
+                                 "prune", "windows", "traps", "fetch", "apk"])
     parser.add_argument("config", nargs="?", default="debug",
                         choices=CONFIGS + ["all"] + list(TOOLS))
     parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
@@ -1062,13 +1201,18 @@ def main():
                              "given more than once")
     parser.add_argument("--web-game", metavar="FOLDER",
                         help="with --target web: the game folder preloaded into the page")
-    parser.add_argument("--target", choices=["linux", "windows", "web"], default="linux",
+    parser.add_argument("--target", choices=["linux", "windows", "web", "android"], default="linux",
                         help="with `build`: cross-build GSPlayer for another "
                              "platform (windows: llvm-mingw, fetched on first use)")
     parser.add_argument("--player-scripts", metavar="HEADER",
                         help="with `build`: build only GSPlayer, against this "
                              "compiled-script registry header, into "
                              "bin/Export-* -- what TestEnv --export runs")
+    parser.add_argument("--lib", help="apk: the built libgsplayer.so")
+    parser.add_argument("--game", help="apk: the exported game/ folder")
+    parser.add_argument("--name", help="apk: the game's name (label, application id)")
+    parser.add_argument("--icon", help="apk: the launcher icon (PNG)")
+    parser.add_argument("--out", help="apk: where to write the signed .apk")
     parser.add_argument("--steps", type=int, default=SANITIZE_STEPS,
                         help=f"fixed steps per demo in a sweep (default {SANITIZE_STEPS})")
     # Everything after a bare -- goes to TestEnv rather than to this script,
@@ -1099,6 +1243,12 @@ def main():
     # `fetch <tool>`: the second positional is the tool's name, not a config.
     if args.command == "fetch":
         return fetch_tool(args.config)
+
+    if args.command == "apk":
+        if not all((args.lib, args.game, args.name, args.icon, args.out)):
+            sys.exit("apk: --lib, --game, --name, --icon and --out are all needed")
+        return package_apk(os.path.abspath(args.lib), os.path.abspath(args.game), args.name,
+                           os.path.abspath(args.icon), os.path.abspath(args.out))
 
     if args.command == "windows":
         # Runs until interrupted. Its own script rather than something built in
@@ -1156,10 +1306,24 @@ def main():
             environment.update(CC=os.path.join(emscripten, "emcc"), CXX=os.path.join(emscripten, "em++"),
                                AR=os.path.join(emscripten, "emar"),
                                EM_CONFIG=os.path.join(tool_dir("emsdk"), ".emscripten"))
+        # Android: the NDK's own clang, told its target and API level by
+        # name -- aarch64-linux-android26-clang is a wrapper that adds
+        # --target=aarch64-linux-android26. API 26 (Android 8) is the floor:
+        # AAudio, which miniaudio prefers, starts there.
+        android_ndk = None
+        if args.target == "android":
+            if fetch_tool("android") != 0:
+                return 1
+            android_ndk = os.path.join(tool_dir("android"), "ndk")
+            llvm = os.path.join(android_ndk, "toolchains", "llvm", "prebuilt", "linux-x86_64", "bin")
+            environment.update(CC=os.path.join(llvm, "aarch64-linux-android26-clang"),
+                               CXX=os.path.join(llvm, "aarch64-linux-android26-clang++"),
+                               AR=os.path.join(llvm, "llvm-ar"))
         web_game = os.path.abspath(args.web_game) if args.web_game else None
         if generate(allow_fetch=not args.no_fetch, player_scripts=header,
                     target_os="windows" if args.target == "windows" else None,
-                    web=args.target == "web", web_game=web_game) != 0:
+                    web=args.target == "web", web_game=web_game,
+                    android_ndk=android_ndk) != 0:
             return 1
         # make cannot tell that the -D naming the header changed: an export
         # of a second game kept the first game's objects, and shipped the
@@ -1169,11 +1333,9 @@ def main():
         # system, and the web build's -web suffix. Using the host's name here
         # once cleared the wrong folder for Windows and the web -- a second web
         # export then shipped the first game, baked into the reused .data.
-        system = "windows" if args.target == "windows" else "linux"
-        suffix = "-web" if args.target == "web" else ""
         for tree in ("bin-int", "bin"):
             shutil.rmtree(os.path.join(ROOT, tree,
-                f"Export-{args.config.capitalize()}-{system}-x86_64{suffix}", "GSPlayer"),
+                "Export-" + target_folder(args.config, args.target), "GSPlayer"),
                 ignore_errors=True)
         # A plain web build bakes --web-game into its .data at link time, and
         # make relinks only when an object changed: removing the page forces

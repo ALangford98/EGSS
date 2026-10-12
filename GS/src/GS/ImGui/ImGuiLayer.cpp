@@ -5,10 +5,17 @@
 #include "GS/Log.h"
 
 #include <imgui.h>
-#include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
 
+// Android has no GLFW. Its window hands touches to the engine as mouse
+// events, and the layer forwards those to ImGui itself (OnEvent) -- ImGui's
+// own Android backend would read the same AInputEvents a second time.
+#ifdef GS_PLATFORM_ANDROID
+#include "GS/Events/MouseEvent.h"
+#else
+#include <backends/imgui_impl_glfw.h>
 #include <GLFW/glfw3.h>
+#endif
 
 namespace GS {
 
@@ -86,11 +93,15 @@ namespace GS {
 			style.Colors[ImGuiCol_WindowBg].w = 1.0f;
 		}
 
+#ifdef GS_PLATFORM_ANDROID
+		io.BackendPlatformName = "gs_android";
+#else
 		GLFWwindow* window = static_cast<GLFWwindow*>(Application::Get().GetWindow().GetNativeWindow());
 
 		// The GLFW backend installs its own callbacks and chains to the ones
 		// the window already set, so engine events keep flowing.
 		ImGui_ImplGlfw_InitForOpenGL(window, true);
+#endif
 #ifdef GS_GLES
 		ImGui_ImplOpenGL3_Init("#version 300 es");
 #else
@@ -103,12 +114,32 @@ namespace GS {
 	void ImGuiLayer::OnDetach()
 	{
 		ImGui_ImplOpenGL3_Shutdown();
+#ifndef GS_PLATFORM_ANDROID
 		ImGui_ImplGlfw_Shutdown();
+#endif
 		ImGui::DestroyContext();
 	}
 
 	void ImGuiLayer::OnEvent(Event& e)
 	{
+#ifdef GS_PLATFORM_ANDROID
+		{
+			ImGuiIO& io = ImGui::GetIO();
+			EventDispatcher dispatcher(e);
+			dispatcher.Dispatch<MouseMovedEvent>([&io](MouseMovedEvent& moved) {
+				io.AddMousePosEvent(moved.GetX(), moved.GetY());
+				return false;
+			});
+			dispatcher.Dispatch<MouseButtonPressedEvent>([&io](MouseButtonPressedEvent& pressed) {
+				io.AddMouseButtonEvent(pressed.GetMouseButton(), true);
+				return false;
+			});
+			dispatcher.Dispatch<MouseButtonReleasedEvent>([&io](MouseButtonReleasedEvent& released) {
+				io.AddMouseButtonEvent(released.GetMouseButton(), false);
+				return false;
+			});
+		}
+#endif
 		if (m_BlockEvents)
 		{
 			ImGuiIO& io = ImGui::GetIO();
@@ -165,7 +196,22 @@ namespace GS {
 		ApplyPendingFontReload();
 
 		ImGui_ImplOpenGL3_NewFrame();
+#ifdef GS_PLATFORM_ANDROID
+		// What the GLFW backend's NewFrame would do: the display size, and
+		// the time since the last frame (which ImGui asserts is positive).
+		{
+			static auto last = std::chrono::steady_clock::now();
+			auto now = std::chrono::steady_clock::now();
+			float delta = std::chrono::duration<float>(now - last).count();
+			last = now;
+			ImGuiIO& io = ImGui::GetIO();
+			Window& window = Application::Get().GetWindow();
+			io.DisplaySize = ImVec2((float)window.GetWidth(), (float)window.GetHeight());
+			io.DeltaTime = delta > 0.0f ? delta : 1.0f / 60.0f;
+		}
+#else
 		ImGui_ImplGlfw_NewFrame();
+#endif
 		ImGui::NewFrame();
 
 		// A full-window dock target, created before any layer renders so that
@@ -185,6 +231,7 @@ namespace GS {
 		ImGui::Render();
 		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
+#ifndef GS_PLATFORM_ANDROID
 		if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
 		{
 			// RenderPlatformWindowsDefault walks every extra viewport, making
@@ -202,6 +249,7 @@ namespace GS {
 			ImGui::RenderPlatformWindowsDefault();
 			glfwMakeContextCurrent(backup);
 		}
+#endif
 	}
 
 }

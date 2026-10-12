@@ -47,6 +47,10 @@ project "ImGui"
 		"glfw/include"
 	}
 
+	-- Android has no GLFW; its window feeds ImGui itself (ImGuiLayer).
+	filter "options:android"
+		removefiles { "imgui/backends/imgui_impl_glfw.*" }
+
 	filter "system:linux"
 		pic "On"
 		systemversion "latest"

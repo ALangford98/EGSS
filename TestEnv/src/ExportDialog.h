@@ -171,10 +171,8 @@ private:
 		ImGui::Text("Project: %s", g_EditorProjectPath.c_str());
 		ImGui::Spacing();
 
-		// Only Linux exists yet; the others are listed so the roadmap is
-		// visible where the choice is made.
-		static const char* targets[] = { "Linux (x86_64)", "Windows (x86_64)", "Web (WebGL 2)", "Android -- not yet" };
-		static const int available = 3;
+		static const char* targets[] = { "Linux (x86_64)", "Windows (x86_64)", "Web (WebGL 2)", "Android (arm64 APK)" };
+		static const int available = 4;
 		if (ImGui::BeginCombo("Target", targets[m_Target]))
 		{
 			for (int i = 0; i < 4; i++)
@@ -186,6 +184,9 @@ private:
 			ImGui::TextDisabled("Cross-built with llvm-mingw (downloaded on first use, ~80 MB).");
 		if (m_Target == 2)
 			ImGui::TextDisabled("Built with Emscripten (downloaded on first use, ~1.7 GB). Serve the folder over HTTP to play.");
+
+		if (m_Target == 3)
+			ImGui::TextDisabled("Built with the Android NDK and SDK tools (downloaded on first use, ~1 GB). Touch is the pointer.");
 
 		ImGui::InputText("Output folder", m_OutDir, sizeof(m_OutDir));
 		ImGui::SameLine();
@@ -238,7 +239,7 @@ private:
 		options.ProjectFolder = g_EditorProjectPath;
 		options.OutDir = m_OutDir;
 		options.Config = m_Config == 0 ? "dist" : "release";
-		options.Target = m_Target == 1 ? "windows" : m_Target == 2 ? "web" : "linux";
+		options.Target = m_Target == 1 ? "windows" : m_Target == 2 ? "web" : m_Target == 3 ? "android" : "linux";
 		m_LastTarget = m_Target;
 		m_Job.Start(options);
 	}
@@ -298,7 +299,7 @@ private:
 	FileBrowserPopup m_FolderBrowser;
 	char m_OutDir[1024] = {};
 	int m_Config = 0;
-	int m_Target = 0;       // 0 Linux, 1 Windows
+	int m_Target = 0;       // 0 Linux, 1 Windows, 2 web, 3 Android
 	int m_LastTarget = 0;   // what the result on screen was exported for
 	bool m_OpenRequested = false;
 	bool m_AskingAboutUnsaved = false;

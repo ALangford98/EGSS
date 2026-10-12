@@ -42,6 +42,17 @@ newoption {
 }
 
 newoption {
+    trigger = "android",
+    description = "Build GSPlayer as an Android library (libgsplayer.so, arm64) with the NDK: gs.py build <config> --target android"
+}
+
+newoption {
+    trigger = "android-ndk",
+    value = "PATH",
+    description = "With --android: the NDK, for native_app_glue's source"
+}
+
+newoption {
     trigger = "player-scripts",
     value = "PATH",
     description = "Build GSPlayer against one project's compiled-script registry header, into bin/Export-* (TestEnv's GameExporter)"
@@ -63,6 +74,21 @@ if _OPTIONS["web"] then
         defines { "GS_PLATFORM_WEB", "GS_GLES" }
         buildoptions { "-fwasm-exceptions" }
         linkoptions { "-fwasm-exceptions" }
+    filter {}
+end
+
+-- Android (export piece 6) is the web's pattern again: generated on the
+-- Linux host, built by another compiler (the NDK's clang, from gs.py), in a
+-- tree of its own, with every "system:linux" block standing aside. ARM64
+-- rather than the workspace's x64, which would hand clang -m64 and
+-- /usr/lib64. GLES 3 through the same paths the browser takes.
+if _OPTIONS["android"] then
+    outputdir = outputdir .. "-android"
+    filter "options:android"
+        architecture "ARM64"
+        defines { "GS_PLATFORM_ANDROID", "GS_GLES", "IMGUI_IMPL_OPENGL_ES3" }
+        cppdialect "C++17"
+        pic "On"
     filter {}
 end
 
@@ -205,7 +231,7 @@ project "GS"
             WindowsCopyFile("%{cfg.buildtarget.relpath}", "../bin/" .. outputdir .. "/GSPlayer")
         }
 
-    filter { "system:linux", "not options:web" }
+    filter { "system:linux", "not options:web", "not options:android" }
         cppdialect "C++17"
         staticruntime "off"
         pic "On"
@@ -244,6 +270,23 @@ project "GS"
         removeincludedirs { "%{IncludeDir.Glad}" }
         includedirs { "%{prj.name}/src/Platform/GLES/shim" }
         removelinks { "GLFW", "Glad" }
+
+    -- Each platform layer is compiled only for its platform.
+    filter "not options:android"
+        removefiles { "%{prj.name}/src/Platform/Android/**" }
+
+    -- Android: static into the one libgsplayer.so the activity loads; no
+    -- GLFW at all, the platform layer in Platform/Android instead.
+    filter "options:android"
+        kind "StaticLib"
+        removefiles { "%{prj.name}/src/Platform/Glfw/**" }
+        removeincludedirs { "%{IncludeDir.Glad}", "%{IncludeDir.GLFW}" }
+        includedirs { "%{prj.name}/src/Platform/GLES/shim" }
+        removelinks { "GLFW", "Glad" }
+    if _OPTIONS["android-ndk"] then
+        filter "options:android"
+            includedirs { _OPTIONS["android-ndk"] .. "/sources/android/native_app_glue" }
+    end
 
     filter "configurations:Debug"
         defines { "GS_DEBUG", "GS_ENABLE_ASSERTS", "GS_PROFILE" }
@@ -355,7 +398,7 @@ project "TestEnv"
             WindowsCopyDir("%{wks.location}/TestEnv/assets", "%{cfg.targetdir}/assets")
         }
 
-    filter { "system:linux", "not options:web" }
+    filter { "system:linux", "not options:web", "not options:android" }
         cppdialect "C++17"
         staticruntime "off"
 
@@ -488,7 +531,7 @@ project "GSPlayer"
             WindowsCopyDir("%{wks.location}/TestEnv/assets", "%{cfg.targetdir}/assets")
         }
 
-    filter { "system:linux", "not options:web" }
+    filter { "system:linux", "not options:web", "not options:android" }
         cppdialect "C++17"
         staticruntime "off"
         defines { "GS_PLATFORM_LINUX" }
@@ -526,6 +569,21 @@ project "GSPlayer"
             "-sEXPORTED_RUNTIME_METHODS=FS",
             "--shell-file %{wks.location}/Player/web/shell.html",
         }
+    -- Android: libgsplayer.so, which the APK's NativeActivity loads.
+    -- native_app_glue (NDK source, compiled in) calls android_main;
+    -- -u keeps ANativeActivity_onCreate, which nothing in the library
+    -- calls and the linker would otherwise drop. libc++ linked statically,
+    -- so the APK carries one library rather than two.
+    filter "options:android"
+        kind "SharedLib"
+        targetname "gsplayer"
+        links { "ImGui", "android", "EGL", "GLESv3", "log", "m", "dl" }
+        linkoptions { "-u ANativeActivity_onCreate", "-static-libstdc++", "-Wl,--no-undefined" }
+    if _OPTIONS["android-ndk"] then
+        filter "options:android"
+            files { _OPTIONS["android-ndk"] .. "/sources/android/native_app_glue/android_native_app_glue.c" }
+            includedirs { _OPTIONS["android-ndk"] .. "/sources/android/native_app_glue" }
+    end
     if _OPTIONS["web-game"] then
         filter "options:web"
             linkoptions { '--preload-file "' .. _OPTIONS["web-game"] .. '@/game"' }

@@ -20,4 +20,18 @@ int main(int argc, char** argv)
 	app->Run();
 	delete app;
 }
+
+#elif defined(GS_PLATFORM_ANDROID)
+
+// No main on Android: the NativeActivity loads the game's library and
+// native_app_glue calls this, on a thread of its own. Platform/Android does
+// the rest -- waits for the window, unpacks the game, calls
+// CreateApplication -- and the app runs exactly as it would anywhere else.
+struct android_app;
+namespace GS::Android { void Main(android_app* app); }
+
+extern "C" void android_main(android_app* app)
+{
+	GS::Android::Main(app);
+}
 #endif

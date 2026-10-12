@@ -44,8 +44,8 @@ namespace GameExporter {
 		std::string ProjectFolder;
 		std::string OutDir;
 		std::string Config = "dist";
-		// "linux", "windows" (cross-built with llvm-mingw) or "web"
-		// (Emscripten + WebGL2).
+		// "linux", "windows" (cross-built with llvm-mingw), "web"
+		// (Emscripten + WebGL2) or "android" (the NDK; an arm64 APK).
 		std::string Target = "linux";
 		// Told each stage as it starts -- the Export dialog shows it. Called
 		// on whatever thread Export runs on.
@@ -401,9 +401,10 @@ namespace GameExporter {
 		// game into one output folder cannot collide.
 		bool windows = options.Target == "windows";
 		bool web = options.Target == "web";
-		if (!windows && !web && options.Target != "linux")
+		bool android = options.Target == "android";
+		if (!windows && !web && !android && options.Target != "linux")
 		{
-			result.Error = "unknown export target '" + options.Target + "' (linux, windows, web)";
+			result.Error = "unknown export target '" + options.Target + "' (linux, windows, web, android)";
 			return result;
 		}
 		std::string platform = options.Target;
@@ -474,6 +475,7 @@ namespace GameExporter {
 		fs::path log = build / "build.log";
 		std::string command = "python3 \"" + root + "/gs.py\" build " + options.Config
 			+ (windows ? " --target windows" : "")
+			+ (android ? " --target android" : "")
 			+ (web ? " --target web --web-game \"" + (package / "game").string() + "\"" : "")
 			+ " --player-scripts \"" + header.string() + "\" > \"" + log.string() + "\" 2>&1";
 		GS_INFO("GameExporter: building the player for '{0}' ({1})", manifest.Name, options.Config);
@@ -531,6 +533,45 @@ namespace GameExporter {
 			result.PackageDir = package.string();
 			result.Archive = archive.string();
 			result.Executable = (package / "index.html").string();
+			return result;
+		}
+		// Android: one signed APK, assembled by gs.py apk from the player
+		// library and game/ (which goes inside it, under assets/). Installed
+		// with `adb install`, or opened on the phone itself.
+		if (android)
+		{
+			ec.clear();
+			fs::path icon = manifest.Icon.empty()
+				? fs::path(root) / "TestEnv" / "assets" / "export" / "default-icon.png"
+				: project / manifest.Icon;
+			if (!fs::is_regular_file(icon, ec))
+			{
+				result.Error = "icon '" + icon.string() + "' named by project.gsproj does not exist";
+				return result;
+			}
+			fs::path lib = bin / ("Export-" + config + "-linux-ARM64-android") / "GSPlayer" / "libgsplayer.so";
+			fs::path apk = package / (name + ".apk");
+			std::string assemble = "python3 \"" + root + "/gs.py\" apk --lib \"" + lib.string()
+				+ "\" --game \"" + (package / "game").string() + "\" --name \"" + name
+				+ "\" --icon \"" + icon.string() + "\" --out \"" + apk.string()
+				+ "\" >> \"" + log.string() + "\" 2>&1";
+			stage("Assembling and signing the APK");
+			if (std::system(assemble.c_str()) != 0 || !fs::exists(apk, ec))
+			{
+				result.Error = "assembling the APK failed -- see " + log.string();
+				return result;
+			}
+			fs::remove_all(package / "game", ec);
+			std::ofstream(package / "README.txt") << name << " -- a GS game for Android (8.0 or later, 64-bit ARM).\n\n"
+				"Install it from a computer with the phone connected and USB debugging on:\n"
+				"    adb install -r \"" << name << ".apk\"\n"
+				"or copy the .apk to the phone and open it there (allow installing from\n"
+				"that app when asked). It is signed with a debug key: fine for testing\n"
+				"and sharing directly, not for a store.\n";
+			result.Ok = true;
+			result.PackageDir = package.string();
+			result.Archive = apk.string();
+			result.Executable = apk.string();
 			return result;
 		}
 		fs::path executable = package / (ExecutableName(name) + (windows ? ".exe" : ""));
