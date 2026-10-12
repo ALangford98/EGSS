@@ -7,10 +7,11 @@
 #include <imgui.h>
 #include <backends/imgui_impl_opengl3.h>
 
-// Android has no GLFW. Its window hands touches to the engine as mouse
-// events, and the layer forwards those to ImGui itself (OnEvent) -- ImGui's
-// own Android backend would read the same AInputEvents a second time.
-#ifdef GS_PLATFORM_ANDROID
+// Android and iOS have no GLFW. Their windows hand touches to the engine as
+// mouse events, and the layer forwards those to ImGui itself (OnEvent) --
+// ImGui's own Android backend would read the same AInputEvents a second time.
+#if defined(GS_PLATFORM_ANDROID) || defined(GS_PLATFORM_IOS)
+#define GS_NO_GLFW
 #include "GS/Events/MouseEvent.h"
 #else
 #include <backends/imgui_impl_glfw.h>
@@ -93,8 +94,8 @@ namespace GS {
 			style.Colors[ImGuiCol_WindowBg].w = 1.0f;
 		}
 
-#ifdef GS_PLATFORM_ANDROID
-		io.BackendPlatformName = "gs_android";
+#ifdef GS_NO_GLFW
+		io.BackendPlatformName = "gs_touch";
 #else
 		GLFWwindow* window = static_cast<GLFWwindow*>(Application::Get().GetWindow().GetNativeWindow());
 
@@ -114,7 +115,7 @@ namespace GS {
 	void ImGuiLayer::OnDetach()
 	{
 		ImGui_ImplOpenGL3_Shutdown();
-#ifndef GS_PLATFORM_ANDROID
+#ifndef GS_NO_GLFW
 		ImGui_ImplGlfw_Shutdown();
 #endif
 		ImGui::DestroyContext();
@@ -122,7 +123,7 @@ namespace GS {
 
 	void ImGuiLayer::OnEvent(Event& e)
 	{
-#ifdef GS_PLATFORM_ANDROID
+#ifdef GS_NO_GLFW
 		{
 			ImGuiIO& io = ImGui::GetIO();
 			EventDispatcher dispatcher(e);
@@ -196,7 +197,7 @@ namespace GS {
 		ApplyPendingFontReload();
 
 		ImGui_ImplOpenGL3_NewFrame();
-#ifdef GS_PLATFORM_ANDROID
+#ifdef GS_NO_GLFW
 		// What the GLFW backend's NewFrame would do: the display size, and
 		// the time since the last frame (which ImGui asserts is positive).
 		{
@@ -231,7 +232,7 @@ namespace GS {
 		ImGui::Render();
 		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-#ifndef GS_PLATFORM_ANDROID
+#ifndef GS_NO_GLFW
 		if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
 		{
 			// RenderPlatformWindowsDefault walks every extra viewport, making

@@ -35,6 +35,11 @@ namespace GS {
 		return new OpenGLFramebuffer(spec);
 	}
 
+	static unsigned int s_ScreenRendererID = 0;
+
+	void Framebuffer::SetScreenRendererID(unsigned int id) { s_ScreenRendererID = id; }
+	unsigned int Framebuffer::GetScreenRendererID() { return s_ScreenRendererID; }
+
 	OpenGLFramebuffer::OpenGLFramebuffer(const FramebufferSpecification& spec)
 		: m_Specification(spec)
 	{
@@ -148,7 +153,7 @@ namespace GS {
 			"Framebuffer is incomplete");
 
 		glBindTexture(GL_TEXTURE_2D, 0);
-		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		glBindFramebuffer(GL_FRAMEBUFFER, s_ScreenRendererID);
 	}
 
 	void OpenGLFramebuffer::Bind()
@@ -161,7 +166,7 @@ namespace GS {
 
 	void OpenGLFramebuffer::Unbind()
 	{
-		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		glBindFramebuffer(GL_FRAMEBUFFER, s_ScreenRendererID);
 	}
 
 	void OpenGLFramebuffer::Resize(unsigned int width, unsigned int height)

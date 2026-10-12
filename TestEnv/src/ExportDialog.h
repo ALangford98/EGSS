@@ -171,11 +171,12 @@ private:
 		ImGui::Text("Project: %s", g_EditorProjectPath.c_str());
 		ImGui::Spacing();
 
-		static const char* targets[] = { "Linux (x86_64)", "Windows (x86_64)", "Web (WebGL 2)", "Android (arm64 APK)" };
-		static const int available = 4;
+		static const char* targets[] = { "Linux (x86_64)", "Windows (x86_64)", "Web (WebGL 2)", "Android (arm64 APK)",
+			"iOS (Xcode project)" };
+		static const int available = 5;
 		if (ImGui::BeginCombo("Target", targets[m_Target]))
 		{
-			for (int i = 0; i < 4; i++)
+			for (int i = 0; i < 5; i++)
 				if (ImGui::Selectable(targets[i], i == m_Target, i < available ? 0 : ImGuiSelectableFlags_Disabled))
 					m_Target = i;
 			ImGui::EndCombo();
@@ -187,6 +188,8 @@ private:
 
 		if (m_Target == 3)
 			ImGui::TextDisabled("Built with the Android NDK and SDK tools (downloaded on first use, ~1 GB). Touch is the pointer.");
+		if (m_Target == 4)
+			ImGui::TextDisabled("Writes an Xcode project to build and sign on a Mac -- iOS cannot be built here.");
 
 		ImGui::InputText("Output folder", m_OutDir, sizeof(m_OutDir));
 		ImGui::SameLine();
@@ -239,7 +242,7 @@ private:
 		options.ProjectFolder = g_EditorProjectPath;
 		options.OutDir = m_OutDir;
 		options.Config = m_Config == 0 ? "dist" : "release";
-		options.Target = m_Target == 1 ? "windows" : m_Target == 2 ? "web" : m_Target == 3 ? "android" : "linux";
+		options.Target = m_Target == 1 ? "windows" : m_Target == 2 ? "web" : m_Target == 3 ? "android" : m_Target == 4 ? "ios" : "linux";
 		m_LastTarget = m_Target;
 		m_Job.Start(options);
 	}
@@ -299,7 +302,7 @@ private:
 	FileBrowserPopup m_FolderBrowser;
 	char m_OutDir[1024] = {};
 	int m_Config = 0;
-	int m_Target = 0;       // 0 Linux, 1 Windows, 2 web, 3 Android
+	int m_Target = 0;       // 0 Linux, 1 Windows, 2 web, 3 Android, 4 iOS
 	int m_LastTarget = 0;   // what the result on screen was exported for
 	bool m_OpenRequested = false;
 	bool m_AskingAboutUnsaved = false;

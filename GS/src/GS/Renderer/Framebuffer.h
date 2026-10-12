@@ -77,6 +77,13 @@ namespace GS {
 		virtual const FramebufferSpecification& GetSpecification() const = 0;
 
 		static Framebuffer* Create(const FramebufferSpecification& spec);
+
+		// The framebuffer that *is* the window, which Unbind returns to. 0
+		// everywhere but iOS: there is no default framebuffer there, and
+		// the window's is one the platform layer made from its layer -- a
+		// bind of 0 would draw into nothing.
+		static void SetScreenRendererID(unsigned int id);
+		static unsigned int GetScreenRendererID();
 	};
 
 }

@@ -38,9 +38,11 @@ namespace {
 		if (length == 0 || length >= sizeof(buffer) / sizeof(buffer[0]))
 			return {};
 		return std::filesystem::path(std::wstring(buffer, length)).parent_path();
-#elif defined(GS_PLATFORM_ANDROID)
-		// The executable is the system's app_process; the game was unpacked
-		// from the APK and the platform layer started here, beside game/.
+#elif defined(GS_PLATFORM_ANDROID) || defined(GS_PLATFORM_IOS)
+		// Android: the executable is the system's app_process; the game was
+		// unpacked from the APK and the platform layer started here, beside
+		// game/. iOS: the platform layer started in the app bundle's
+		// resources, where game/ was copied as a folder.
 		std::error_code ec;
 		return std::filesystem::current_path(ec);
 #else

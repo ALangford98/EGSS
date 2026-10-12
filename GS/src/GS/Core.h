@@ -1,9 +1,10 @@
 #pragma once
 
-// GLES 3.0 rather than desktop GL: WebGL2 in a browser, OpenGL ES on Android.
-// The renderer's dialect differences (shader version line, clears, the calls
-// GLES lacks) key off this; platform matters (main loop, window) do not.
-#if (defined(GS_PLATFORM_WEB) || defined(GS_PLATFORM_ANDROID)) && !defined(GS_GLES)
+// GLES 3.0 rather than desktop GL: WebGL2 in a browser, OpenGL ES on Android
+// and iOS. The renderer's dialect differences (shader version line, clears,
+// the calls GLES lacks) key off this; platform matters (main loop, window)
+// do not.
+#if (defined(GS_PLATFORM_WEB) || defined(GS_PLATFORM_ANDROID) || defined(GS_PLATFORM_IOS)) && !defined(GS_GLES)
 	#define GS_GLES
 #endif
 
@@ -24,9 +25,10 @@
 	#endif
 	#include <signal.h>
 	#define GS_DEBUGBREAK() raise(SIGTRAP)
-#elif defined(GS_PLATFORM_WEB) || defined(GS_PLATFORM_ANDROID)
-	// The web and Android builds link the engine statically into one module
-	// (the wasm, or the app's single .so): nothing to export, no import side.
+#elif defined(GS_PLATFORM_WEB) || defined(GS_PLATFORM_ANDROID) || defined(GS_PLATFORM_IOS)
+	// The web, Android and iOS builds link the engine statically into one
+	// module (the wasm, the app's single .so, the app binary): nothing to
+	// export, no import side.
 	#define GS_API
 	#define GS_DEBUGBREAK() __builtin_trap()
 #else

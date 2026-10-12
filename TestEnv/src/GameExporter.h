@@ -45,7 +45,8 @@ namespace GameExporter {
 		std::string OutDir;
 		std::string Config = "dist";
 		// "linux", "windows" (cross-built with llvm-mingw), "web"
-		// (Emscripten + WebGL2) or "android" (the NDK; an arm64 APK).
+		// (Emscripten + WebGL2), "android" (the NDK; an arm64 APK) or
+		// "ios" (an Xcode project, built on a Mac -- not here).
 		std::string Target = "linux";
 		// Told each stage as it starts -- the Export dialog shows it. Called
 		// on whatever thread Export runs on.
@@ -402,9 +403,10 @@ namespace GameExporter {
 		bool windows = options.Target == "windows";
 		bool web = options.Target == "web";
 		bool android = options.Target == "android";
-		if (!windows && !web && !android && options.Target != "linux")
+		bool ios = options.Target == "ios";
+		if (!windows && !web && !android && !ios && options.Target != "linux")
 		{
-			result.Error = "unknown export target '" + options.Target + "' (linux, windows, web, android)";
+			result.Error = "unknown export target '" + options.Target + "' (linux, windows, web, android, ios)";
 			return result;
 		}
 		std::string platform = options.Target;
@@ -473,6 +475,56 @@ namespace GameExporter {
 		return result;
 #endif
 		fs::path log = build / "build.log";
+
+		// iOS: no player is built here -- the iOS SDK exists only inside
+		// Xcode. The package is an Xcode project holding the engine source,
+		// the compiled scripts and game/, which Xcode builds and signs.
+		if (ios)
+		{
+			ec.clear();
+			fs::path icon = manifest.Icon.empty()
+				? fs::path(root) / "TestEnv" / "assets" / "export" / "default-icon.png"
+				: project / manifest.Icon;
+			if (!fs::is_regular_file(icon, ec))
+			{
+				result.Error = "icon '" + icon.string() + "' named by project.gsproj does not exist";
+				return result;
+			}
+			fs::path xcode = build / "xcode";
+			std::string generate = "python3 \"" + root + "/tools/ios_project.py\" --game \""
+				+ (package / "game").string() + "\" --name \"" + name + "\" --icon \"" + icon.string()
+				+ "\" --scripts \"" + header.string() + "\" --out \"" + xcode.string()
+				+ "\" > \"" + log.string() + "\" 2>&1";
+			stage("Writing the Xcode project");
+			if (std::system(generate.c_str()) != 0)
+			{
+				result.Error = "writing the Xcode project failed -- see " + log.string();
+				return result;
+			}
+			fs::remove_all(package, ec);
+			fs::rename(xcode, package, ec);
+			if (ec)
+			{
+				result.Error = "could not move the Xcode project into place: " + ec.message();
+				return result;
+			}
+
+			stage("Archiving");
+			fs::path archive = out / (name + "-ios-xcode.zip");
+			fs::remove(archive, ec);
+			std::string pack = "cd \"" + (out / platform).string() + "\" && python3 -m zipfile -c \"" + archive.string() + "\" \"" + name + "\"";
+			if (std::system(pack.c_str()) != 0)
+			{
+				result.Error = "archiving failed for '" + archive.string() + "'";
+				return result;
+			}
+			result.Ok = true;
+			result.PackageDir = package.string();
+			result.Archive = archive.string();
+			result.Executable = (package / (name + ".xcodeproj")).string();
+			return result;
+		}
+
 		std::string command = "python3 \"" + root + "/gs.py\" build " + options.Config
 			+ (windows ? " --target windows" : "")
 			+ (android ? " --target android" : "")

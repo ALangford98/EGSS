@@ -34,4 +34,16 @@ extern "C" void android_main(android_app* app)
 {
 	GS::Android::Main(app);
 }
+
+#elif defined(GS_PLATFORM_IOS)
+
+// UIKit owns the run loop on iOS: main hands over to UIApplicationMain, and
+// the platform layer creates the application once a window scene connects
+// and runs a frame per display refresh.
+namespace GS::iOS { int Main(int argc, char** argv); }
+
+int main(int argc, char** argv)
+{
+	return GS::iOS::Main(argc, argv);
+}
 #endif
