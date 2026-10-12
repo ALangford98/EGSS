@@ -62,12 +62,25 @@ its own spec, in dependency order -- see
 1. ~~Runtime + standalone player~~ -- done 2026-10-07 (`GSPlayer`).
 2. ~~Packager + Linux export~~ -- done 2026-10-08 (`TestEnv --export`,
    folder + `.tar.gz`). AppImage still to do.
-3. Editor "Export Game..." dialog.
+3. ~~Editor "Export Game..." dialog~~ -- done 2026-10-12.
 4. Windows, cross-compiled from Linux with a fetched toolchain.
 5. Web, via Emscripten + WebGL2.
-6. Android, via the NDK (all on Linux).
-7. iOS, as an Xcode project to finish on a Mac -- building or signing for
-   iOS cannot happen on this machine.
+6. Android, via the NDK (all on Linux). Assessed 2026-10-12, feasible:
+   all 60 shaders are GLSL 3.30 core, close to GLES 3.0 (rewrite the
+   `#version` line and add precision in one place, `Shader::Create`); only
+   three desktop-only GL calls (debug callback, `glDrawBuffer`, wireframe
+   `glPolygonMode`) to skip; `GS::Assets::Resolve` is where APK assets plug
+   in. The real work: a native-activity platform layer (EGL context, touch,
+   pause/resume that can lose the GL context -- GLFW does not run on
+   Android, and `ImGuiLayer`/`Input.cpp` call GLFW directly today); a touch
+   API for GSS (`input.isKeyDown` is all scripts have -- an owner design
+   decision); packaging with the fetched NDK + SDK command-line tools
+   (several GB), debug-signed or keystore-signed / App Bundle for Play;
+   testing on a phone over adb or the emulator (needs KVM).
+7. iOS, as an Xcode project to finish on a Mac -- building, signing and
+   installing need macOS + Xcode and an Apple Developer account. OpenGL ES
+   is deprecated on iOS (still works); long-term that means Metal, natively
+   or through ANGLE.
 
 ## Wishlist, easiest to hardest
 

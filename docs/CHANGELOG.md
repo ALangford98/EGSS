@@ -7,6 +7,49 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-12 (File > Export Game..., and what mobile would take)
+
+**Piece 3 of exporting games:** the editor's dialog over `GameExporter`.
+
+- **Target:** Linux. Windows, Web and Android are listed but disabled, so the
+  roadmap is visible where the choice is made.
+- **Output folder:** defaults to `<Project> Exports` beside the project.
+- **Build:** Dist or Release.
+
+The export runs on its own thread, with its own `ScriptEngine`, and reports
+each stage through a new `GameExporter::Options::OnStage` along with the
+elapsed time. Unsaved scene or material edits get Save and Export / Export
+Saved Version / Cancel, since the export reads from disk. On success it
+offers Open Folder and Run Game, both launched detached. There's no Cancel:
+stopping a make halfway isn't worth the risk yet. Two new startup flags:
+`--project <folder>` (beside `--scene`) and `--open-export-dialog`.
+
+**Verified:**
+
+- A temporary test drove the dialog's `ExportJob`. It reported all five
+  stages in order, and its package was **identical byte for byte, compiled
+  player included,** to a command-line export of the same project.
+- That game, run from `/`, captures identical to editor Play.
+- A capture with a project open shows the dialog. The menu click itself
+  isn't exercised, since there's no GUI automation here.
+
+**One slip on the way:** a failed build went unnoticed because the command
+ran on regardless, and the *old* binary then sat as a hidden editor until
+its timeout. It looked like a hang. Builds are now checked before anything
+runs.
+
+**Mobile was assessed when the owner asked whether it is possible.** It's
+recorded in `editor_roadmap.md` under the export roadmap's Android and iOS
+items. Short version:
+
+- **Android is fully buildable on Linux.** All 60 shaders are GLSL 3.30 core,
+  close to GLES 3.0. Only three desktop-only GL calls are used. The piece-1
+  asset seam is where the APK plugs in. The work is a native-activity
+  platform layer to replace GLFW, a touch API for GSS, and NDK/SDK packaging.
+- **iOS needs a Mac.**
+
+The owner kept the order: Windows, then Web, then Android, then iOS.
+
 ### 2026-10-08 (a game exports as a Linux package someone else can run)
 
 **Piece 2 of exporting games.**
