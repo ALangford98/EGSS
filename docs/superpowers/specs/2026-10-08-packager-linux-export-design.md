@@ -87,3 +87,25 @@ not shipped separately: they are spliced into the `.js`).
 - A scene referencing a missing file: export fails, naming it.
 - Player run with no argument from elsewhere finds `game/`.
 - Three configs build; editor regression captures unchanged.
+
+## Addendum 2026-10-12: AppImage
+
+Built after the `.tar.gz`, as a second artifact: `<Game Name>-x86_64.AppImage`.
+
+- `gs.py fetch <tool>` downloads pinned tools into `vendor/bin/<tool>/`,
+  verifying the SHA-256 GitHub publishes for each release asset before
+  writing it -- premake's rule. `appimagetool` 1.9.1 and the type-2 runtime
+  `20251108`; the exporter fetches them on first use.
+- AppDir: `AppRun` (execs `usr/bin/<game>`; the player changes to its own
+  folder itself), `<game>.desktop` (Categories=Game), `<game>.png` and
+  `.DirIcon`, the package under `usr/bin/`. Built with
+  `APPIMAGE_EXTRACT_AND_RUN=1` so no FUSE is needed to build.
+- Icon: an optional `icon <path>` line in `project.gsproj`, project-relative;
+  the engine's default icon otherwise. The editor's `WriteProjectManifest`
+  carries an existing icon line forward, since its callers build the
+  manifest from editor state that knows nothing of it.
+
+Verified: the falling-box game's AppImage (3.7 MB), run from `/` both with
+`APPIMAGE_EXTRACT_AND_RUN=1` and through a real FUSE mount, captures
+byte-identical to editor Play; a custom icon becomes the AppImage's icon; a
+manifest saved through `WriteProjectManifest` keeps its icon line.

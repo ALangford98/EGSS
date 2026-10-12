@@ -34,7 +34,6 @@
 #include "NetworkPanel.h"
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
-#include "ManifestIconTest.h" // TEMPORARY
 #include "GameExporter.h"
 
 class TestEnv : public GS::Application
@@ -45,7 +44,6 @@ public:
 		// Headless game export -- GameExporter.h. Runs and exits before any
 		// editor state loads: nothing an export does depends on it.
 		RunExportIfAsked();
-		ManifestIconTest::Run(); // TEMPORARY
 
 		// Before the demos, so that on the step it hands over, the demo it
 		// hands over *to* is already the active one when the demos are walked.
