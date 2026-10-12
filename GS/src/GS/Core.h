@@ -17,6 +17,11 @@
 	#endif
 	#include <signal.h>
 	#define GS_DEBUGBREAK() raise(SIGTRAP)
+#elif defined(GS_PLATFORM_WEB)
+	// The web build links the engine statically into the one wasm module:
+	// nothing to export, no import side.
+	#define GS_API
+	#define GS_DEBUGBREAK() __builtin_trap()
 #else
 	#error Unsupported Platform.
 #endif

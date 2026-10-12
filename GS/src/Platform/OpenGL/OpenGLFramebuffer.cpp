@@ -135,7 +135,13 @@ namespace GS {
 		else if (m_ColorAttachments.empty())
 		{
 			// Depth-only, as a shadow map would be.
+#ifdef GS_PLATFORM_WEB
+			// GLES 3 / WebGL2 has only the plural form.
+			GLenum none = GL_NONE;
+			glDrawBuffers(1, &none);
+#else
 			glDrawBuffer(GL_NONE);
+#endif
 		}
 
 		GS_CORE_ASSERT(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE,

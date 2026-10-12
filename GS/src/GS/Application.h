@@ -16,6 +16,7 @@ namespace GS {
 		virtual ~Application();
 
 		void Run();
+		void RunFrame();
 
 		void OnEvent(Event& e);
 

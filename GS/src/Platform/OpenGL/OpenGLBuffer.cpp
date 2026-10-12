@@ -68,11 +68,26 @@ namespace GS {
 		: m_Count(count)
 	{
 		glGenBuffers(1, &m_RendererID);
+#ifdef GS_PLATFORM_WEB
+		// WebGL fixes a buffer's target the first time it is bound, and an
+		// element buffer first bound as GL_ARRAY_BUFFER can never be bound as
+		// an element buffer again -- every draw then failed with
+		// INVALID_OPERATION and the frame came out black. So it is bound as
+		// what it is, with no VAO bound while it is, so no VAO's element
+		// binding is clobbered (the reason for the desktop path below).
+		GLint vertexArray = 0;
+		glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vertexArray);
+		glBindVertexArray(0);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_RendererID);
+		glBufferData(GL_ELEMENT_ARRAY_BUFFER, count * sizeof(unsigned int), indices, GL_STATIC_DRAW);
+		glBindVertexArray((GLuint)vertexArray);
+#else
 		// Bound as GL_ARRAY_BUFFER rather than GL_ELEMENT_ARRAY_BUFFER: the
 		// element binding is VAO state, and uploading here would clobber
 		// whichever VAO happens to be bound.
 		glBindBuffer(GL_ARRAY_BUFFER, m_RendererID);
 		glBufferData(GL_ARRAY_BUFFER, count * sizeof(unsigned int), indices, GL_STATIC_DRAW);
+#endif
 	}
 
 	OpenGLIndexBuffer::~OpenGLIndexBuffer()

@@ -10,8 +10,9 @@ namespace GS {
 	RendererAPI::API RendererAPI::s_API = RendererAPI::API::OpenGL;
 	RendererAPI* RenderCommand::s_RendererAPI = new OpenGLRendererAPI();
 
+#ifndef GS_PLATFORM_WEB
 	// Turns GL's silent failures into log lines. Only fires if the context was
-	// created with GLFW_OPENGL_DEBUG_CONTEXT.
+	// created with GLFW_OPENGL_DEBUG_CONTEXT. (WebGL2 has no debug output.)
 	static void OpenGLMessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity,
 		GLsizei length, const GLchar* message, const void* userParam)
 	{
@@ -23,10 +24,11 @@ namespace GS {
 			case GL_DEBUG_SEVERITY_NOTIFICATION: return;
 		}
 	}
+#endif
 
 	void OpenGLRendererAPI::Init()
 	{
-#ifdef GS_DEBUG
+#if defined(GS_DEBUG) && !defined(GS_PLATFORM_WEB)
 		glEnable(GL_DEBUG_OUTPUT);
 		glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
 		glDebugMessageCallback(OpenGLMessageCallback, nullptr);
@@ -42,7 +44,10 @@ namespace GS {
 		// context created with four samples and multisampling disabled draws
 		// exactly as it did before, silently. Reported below so the log says
 		// which of the two failed if a driver refuses the hint.
+#ifndef GS_PLATFORM_WEB
+		// WebGL2 has no switch: an antialiased context always resolves.
 		glEnable(GL_MULTISAMPLE);
+#endif
 
 		GLint samples = 0;
 		glGetIntegerv(GL_SAMPLES, &samples);
@@ -83,9 +88,12 @@ namespace GS {
 		glEnable(GL_DEPTH_TEST);
 		glDepthMask(GL_TRUE);
 		glDisable(GL_CULL_FACE);
-		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 		glLineWidth(1.0f);
+#ifndef GS_PLATFORM_WEB
+		// Neither exists in WebGL2; fill is its only polygon mode.
+		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 		glPointSize(1.0f);
+#endif
 	}
 
 	void OpenGLRendererAPI::SetViewport(unsigned int x, unsigned int y, unsigned int width, unsigned int height)
@@ -96,11 +104,22 @@ namespace GS {
 	void OpenGLRendererAPI::SetClearColor(const glm::vec4& color)
 	{
 		glClearColor(color.r, color.g, color.b, color.a);
+		m_ClearColor = color;
 	}
 
 	void OpenGLRendererAPI::Clear()
 	{
+#ifdef GS_PLATFORM_WEB
+		// WebGL2 refuses glClear(COLOR) outright (INVALID_OPERATION, nothing
+		// cleared) while an integer colour attachment is among the draw
+		// buffers -- the editor's entity-id target is one. Desktop GL only
+		// leaves the integer values undefined. So: draw buffer 0 cleared on
+		// its own, the integer one left to ClearAttachment's glClearBufferiv.
+		glClearBufferfv(GL_COLOR, 0, &m_ClearColor.r);
+		glClear(GL_DEPTH_BUFFER_BIT);
+#else
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+#endif
 	}
 
 	void OpenGLRendererAPI::DrawIndexed(const std::shared_ptr<VertexArray>& vertexArray,
@@ -174,6 +193,7 @@ namespace GS {
 		// GL_FRONT_AND_BACK is the only face argument the core profile accepts;
 		// asking for one side is a deprecated form that errors rather than
 		// doing half the job.
+#ifndef GS_PLATFORM_WEB
 		GLenum which = GL_FILL;
 
 		switch (mode)
@@ -184,6 +204,9 @@ namespace GS {
 		}
 
 		glPolygonMode(GL_FRONT_AND_BACK, which);
+#else
+		(void)mode;   // wireframe is a debug view; WebGL2 has no polygon mode
+#endif
 	}
 
 	void OpenGLRendererAPI::SetPointSize(float size)
@@ -192,8 +215,12 @@ namespace GS {
 		// vertex shader's `gl_PointSize`, and a shader that never writes one
 		// leaves it undefined -- which came out as points too small to see, and
 		// looked like the points were not being drawn at all.
+#ifndef GS_PLATFORM_WEB
 		glDisable(GL_PROGRAM_POINT_SIZE);
 		glPointSize(size);
+#else
+		(void)size;
+#endif
 	}
 
 	void OpenGLRendererAPI::SetCullFace(CullFace face)
@@ -274,14 +301,21 @@ namespace GS {
 
 	void OpenGLRendererAPI::BeginGpuTimer()
 	{
+#ifndef GS_PLATFORM_WEB
 		if (m_GpuQuery == 0)
 			glGenQueries(1, &m_GpuQuery);
 
 		glBeginQuery(GL_TIME_ELAPSED, m_GpuQuery);
+#endif
 	}
 
 	double OpenGLRendererAPI::EndGpuTimerMs()
 	{
+#ifdef GS_PLATFORM_WEB
+		// Timer queries are an optional WebGL2 extension; the diagnostic
+		// reports zero rather than depend on it.
+		return 0.0;
+#else
 		glEndQuery(GL_TIME_ELAPSED);
 
 		// Blocking -- see the note on RendererAPI::EndGpuTimerMs. Correct
@@ -292,6 +326,7 @@ namespace GS {
 		glGetQueryObjectui64v(m_GpuQuery, GL_QUERY_RESULT, &nanoseconds);
 
 		return (double)nanoseconds / 1.0e6;
+#endif
 	}
 
 }

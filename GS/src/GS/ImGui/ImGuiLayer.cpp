@@ -86,7 +86,11 @@ namespace GS {
 		// The GLFW backend installs its own callbacks and chains to the ones
 		// the window already set, so engine events keep flowing.
 		ImGui_ImplGlfw_InitForOpenGL(window, true);
+#ifdef GS_PLATFORM_WEB
+		ImGui_ImplOpenGL3_Init("#version 300 es");
+#else
 		ImGui_ImplOpenGL3_Init("#version 330");
+#endif
 
 		GS_CORE_INFO("ImGui {0} initialized", IMGUI_VERSION);
 	}

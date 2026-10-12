@@ -107,7 +107,14 @@ namespace GS {
 		template<typename Fn>
 		void ParallelRows(int rows, Fn fn)
 		{
+#ifdef GS_PLATFORM_WEB
+			// No threads on the web build: browsers allow them only on pages
+			// served with cross-origin-isolation headers, which a game host
+			// may not set. The output is identical at any count anyway.
+			static const int workers = 1;
+#else
 			static const int workers = std::max(1, (int)std::thread::hardware_concurrency());
+#endif
 			int count = std::min(workers, rows);
 			if (count <= 1)
 			{

@@ -37,6 +37,7 @@ namespace GS {
 
 		unsigned int GetMaxTextureSlots() const override { return m_MaxTextureSlots; }
 	private:
+		glm::vec4 m_ClearColor = glm::vec4(0.0f);
 		// Queried once in Init rather than per call: glGet round-trips to the
 		// driver, and this cannot change for the life of the context.
 		unsigned int m_MaxTextureSlots = 16;

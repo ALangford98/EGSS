@@ -111,6 +111,32 @@ namespace GS {
 		return shaderSources;
 	}
 
+#ifdef GS_PLATFORM_WEB
+	// "#version 330[ core]" -> "#version 300 es" plus default precisions,
+	// highp throughout: mediump would change results against desktop, which
+	// is the reference every export is compared with.
+	static std::string ToGlslEs(const std::string& source)
+	{
+		size_t at = source.find("#version");
+		if (at == std::string::npos)
+			return source;
+		size_t eol = source.find('\n', at);
+		// Nothing before the version line: the engine's shaders are raw
+		// strings that begin with a newline and indentation, which desktop
+		// GLSL accepts and GLSL ES rejects ("#version must occur on the first
+		// line") -- and with the version rejected the compiler fell back to
+		// ES 1.00, where isampler2D does not exist either.
+		return std::string(
+			"#version 300 es\n"
+			"precision highp float;\n"
+			"precision highp int;\n"
+			"precision highp sampler2D;\n"
+			"precision highp isampler2D;\n"
+			"precision highp usampler2D;\n")
+			+ (eol == std::string::npos ? std::string() : source.substr(eol + 1));
+	}
+#endif
+
 	void OpenGLShader::Compile(const std::unordered_map<unsigned int, std::string>& shaderSources)
 	{
 		unsigned int program = glCreateProgram();
@@ -123,7 +149,16 @@ namespace GS {
 			const std::string& source = kv.second;
 
 			unsigned int shader = glCreateShader(type);
+#ifdef GS_PLATFORM_WEB
+			// Every shader is written as GLSL 3.30 core; WebGL2 takes GLSL ES
+			// 3.00, which differs for this engine's shaders only in the
+			// version line and in requiring default precisions. Rewritten in
+			// this one place rather than each shader carrying both.
+			std::string webSource = ToGlslEs(source);
+			const char* sourceCStr = webSource.c_str();
+#else
 			const char* sourceCStr = source.c_str();
+#endif
 			glShaderSource(shader, 1, &sourceCStr, nullptr);
 			glCompileShader(shader);
 

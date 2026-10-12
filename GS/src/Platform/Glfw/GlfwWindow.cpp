@@ -121,7 +121,13 @@ namespace GS {
 		// falls off sharply -- four already turns a binary edge into five
 		// levels -- and because this has to run on integrated graphics.
 		glfwWindowHint(GLFW_SAMPLES, 4);
-#ifdef GS_DEBUG
+#ifdef GS_PLATFORM_WEB
+		// A GLES 3.0 context, which Emscripten's GLFW makes a WebGL2 one.
+		glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+#endif
+#if defined(GS_DEBUG) && !defined(GS_PLATFORM_WEB)
 		// Required for glDebugMessageCallback to receive anything.
 		glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
 #endif

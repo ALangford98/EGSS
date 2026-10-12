@@ -1,4 +1,8 @@
 #include "gspch.h"
+
+#ifdef GS_PLATFORM_WEB
+#include <emscripten.h>
+#endif
 #include "Application.h"
 
 #include "Window.h"
@@ -325,185 +329,207 @@ namespace GS {
 	// "spiral of death". Clamping means the simulation simply loses that time.
 	static const float s_MaxFrameTime = 0.25f;
 
-	void Application::Run()
+	// One frame: the fixed steps owed, the variable update, ImGui, captures,
+	// the swap. Run loops it; a browser cannot run a blocking loop at all,
+	// so on the web Emscripten calls this once per animation frame instead.
+	void Application::RunFrame()
 	{
-		while (m_Running)
+		// Rolls last frame's totals over before anything is timed.
+		Instrumentor::NextFrame();
+		GS_PROFILE_SCOPE("Frame");
+
+		float frameTime;
+
+		if (m_Lockstep)
 		{
-			// Rolls last frame's totals over before anything is timed.
-			Instrumentor::NextFrame();
-			GS_PROFILE_SCOPE("Frame");
+			// Simulation time, not wall-clock: exactly one fixed step per
+			// frame, so frame N *is* step N.
+			//
+			// Normally the accumulator is fed real elapsed time, which is
+			// right for an interactive app and fatal for a reproducible
+			// one -- how many steps have run by frame 240 then depends on
+			// how fast the machine happened to be, and two identical runs
+			// captured at the same frame come back different. Measured:
+			// they did.
+			frameTime = m_FixedTimestep;
+		}
+		else
+		{
+			float time = GetTime();
+			frameTime = time - m_LastFrameTime;
+			m_LastFrameTime = time;
 
-			float frameTime;
+			if (frameTime > s_MaxFrameTime)
+				frameTime = s_MaxFrameTime;
+		}
 
-			if (m_Lockstep)
+		if (!m_Minimized)
+		{
+			// Bank the real time, then spend it in fixed-size pieces. The
+			// remainder stays in the accumulator for next frame, which is
+			// what keeps the simulation rate independent of the frame rate.
+			m_Accumulator += frameTime;
+			m_FixedStepsLastFrame = 0;
+
+			while (m_Accumulator >= m_FixedTimestep)
 			{
-				// Simulation time, not wall-clock: exactly one fixed step per
-				// frame, so frame N *is* step N.
-				//
-				// Normally the accumulator is fed real elapsed time, which is
-				// right for an interactive app and fatal for a reproducible
-				// one -- how many steps have run by frame 240 then depends on
-				// how fast the machine happened to be, and two identical runs
-				// captured at the same frame come back different. Measured:
-				// they did.
-				frameTime = m_FixedTimestep;
+				GS_PROFILE_SCOPE("Layer::OnFixedUpdate");
+
+				// Input is sampled and replayed here, on the simulation's
+				// clock, rather than per frame. A recording indexed by
+				// frames would replay differently on a machine that draws
+				// them at a different rate.
+				Replay::BeginStep(m_StepCount);
+
+				for (Layer* layer : m_LayerStack)
+					layer->OnFixedUpdate(m_FixedTimestep);
+
+				m_Accumulator -= m_FixedTimestep;
+				m_FixedStepsLastFrame++;
+				m_StepCount++;
 			}
-			else
-			{
-				float time = GetTime();
-				frameTime = time - m_LastFrameTime;
-				m_LastFrameTime = time;
 
-				if (frameTime > s_MaxFrameTime)
-					frameTime = s_MaxFrameTime;
+			// Whatever is left over, as a fraction of one step. Layers use
+			// it to render between the last two simulation states rather
+			// than snapping to the most recent one.
+			m_InterpolationAlpha = m_Accumulator / m_FixedTimestep;
+
+			{
+				GS_PROFILE_SCOPE("Layer::OnUpdate");
+
+				// Persistent pipeline state back to the baseline before any
+				// layer draws, so a layer that leaves it altered cannot
+				// reconfigure the next frame -- or the next demo. See
+				// RendererAPI::ResetState for what leaked and how it was
+				// measured.
+				RenderCommand::ResetState();
+
+				// Bottom-up, so later layers draw over earlier ones.
+				for (Layer* layer : m_LayerStack)
+					layer->OnUpdate(frameTime);
 			}
 
-			if (!m_Minimized)
 			{
-				// Bank the real time, then spend it in fixed-size pieces. The
-				// remainder stays in the accumulator for next frame, which is
-				// what keeps the simulation rate independent of the frame rate.
-				m_Accumulator += frameTime;
-				m_FixedStepsLastFrame = 0;
+				GS_PROFILE_SCOPE("ImGui");
 
-				while (m_Accumulator >= m_FixedTimestep)
+				// The frame is still begun and ended when the UI is hidden,
+				// so ImGui's own state stays consistent -- only the panels
+				// are skipped. They print frame times in milliseconds,
+				// which makes an otherwise reproducible capture differ
+				// every run for reasons that have nothing to do with what
+				// is being tested.
+				m_ImGuiLayer->Begin();
+
+				if (!m_HideUI)
 				{
-					GS_PROFILE_SCOPE("Layer::OnFixedUpdate");
-
-					// Input is sampled and replayed here, on the simulation's
-					// clock, rather than per frame. A recording indexed by
-					// frames would replay differently on a machine that draws
-					// them at a different rate.
-					Replay::BeginStep(m_StepCount);
-
 					for (Layer* layer : m_LayerStack)
-						layer->OnFixedUpdate(m_FixedTimestep);
-
-					m_Accumulator -= m_FixedTimestep;
-					m_FixedStepsLastFrame++;
-					m_StepCount++;
+						layer->OnImGuiRender();
 				}
 
-				// Whatever is left over, as a fraction of one step. Layers use
-				// it to render between the last two simulation states rather
-				// than snapping to the most recent one.
-				m_InterpolationAlpha = m_Accumulator / m_FixedTimestep;
-
-				{
-					GS_PROFILE_SCOPE("Layer::OnUpdate");
-
-					// Persistent pipeline state back to the baseline before any
-					// layer draws, so a layer that leaves it altered cannot
-					// reconfigure the next frame -- or the next demo. See
-					// RendererAPI::ResetState for what leaked and how it was
-					// measured.
-					RenderCommand::ResetState();
-
-					// Bottom-up, so later layers draw over earlier ones.
-					for (Layer* layer : m_LayerStack)
-						layer->OnUpdate(frameTime);
-				}
-
-				{
-					GS_PROFILE_SCOPE("ImGui");
-
-					// The frame is still begun and ended when the UI is hidden,
-					// so ImGui's own state stays consistent -- only the panels
-					// are skipped. They print frame times in milliseconds,
-					// which makes an otherwise reproducible capture differ
-					// every run for reasons that have nothing to do with what
-					// is being tested.
-					m_ImGuiLayer->Begin();
-
-					if (!m_HideUI)
-					{
-						for (Layer* layer : m_LayerStack)
-							layer->OnImGuiRender();
-					}
-
-					m_ImGuiLayer->End();
-				}
-			}
-			else
-			{
-				// Nothing is simulating while minimized, so drop the banked
-				// time instead of releasing it in a burst on restore.
-				m_Accumulator = 0.0f;
-			}
-
-			// The scheduled shot. By simulation step where one was asked for,
-			// by frame otherwise -- and >= rather than == because several
-			// steps can run in one frame, so the exact number may be stepped
-			// straight over.
-			if (!m_CapturePath.empty() && !m_Captured)
-			{
-				bool due = m_CaptureStep != 0
-					? m_StepCount >= m_CaptureStep
-					: m_FrameCount >= m_CaptureFrame;
-
-				if (due)
-				{
-					CaptureFrame(m_CapturePath);
-					m_Captured = true;
-				}
-			}
-
-			// The only moment a finished frame exists. After the swap the back
-			// buffer's contents are undefined, so a capture taken there reads
-			// whatever the driver left behind -- which is the "two probes came
-			// back byte-identical" failure wearing a different hat.
-			if (!m_PendingCapturePath.empty() && !m_Minimized)
-			{
-				GS_PROFILE_SCOPE("ScreenCapture");
-
-				GS_CORE_INFO("Capturing at frame {0}, step {1}", m_FrameCount, m_StepCount);
-
-				ScreenCapture::SaveFrame(m_PendingCapturePath,
-					m_Window->GetWidth(), m_Window->GetHeight());
-
-				m_PendingCapturePath.clear();
-
-				// The shot was the whole errand unless told otherwise.
-				if (!m_ExitAfterExplicit)
-					m_ExitAfterFrame = m_FrameCount + 1;
-			}
-
-			{
-				// Mostly the VSync wait: the swap blocks until the display is
-				// ready. A large number here is the GPU idling, not work.
-				GS_PROFILE_SCOPE("Window::OnUpdate (swap + poll)");
-				m_Window->OnUpdate();
-			}
-
-			m_FrameCount++;
-
-			if (m_ExitAfterFrame != 0 && m_FrameCount >= m_ExitAfterFrame)
-			{
-				GS_CORE_INFO("Exiting after {0} frames as requested", m_FrameCount);
-				m_Running = false;
-			}
-
-			// A replay that has run out has nothing left to drive it, and
-			// carrying on would show the simulation continuing from recorded
-			// state under no input at all -- which is a different thing from
-			// what was recorded and would be easy to mistake for it.
-			if (m_ExitWhenReplayEnds && Replay::PlaybackFinished())
-			{
-				GS_CORE_INFO("Replay finished at step {0}", m_StepCount);
-
-				// A capture scheduled past the end of the recording never
-				// fires, and the run exits looking entirely successful with no
-				// file written. Say so -- an empty output directory is a
-				// miserable thing to debug from.
-				if (!m_CapturePath.empty() && !m_Captured)
-				{
-					GS_CORE_ERROR("Capture at step {0} never happened: the replay is only {1} steps",
-						m_CaptureStep, Replay::GetTotalSteps());
-				}
-
-				m_Running = false;
+				m_ImGuiLayer->End();
 			}
 		}
+		else
+		{
+			// Nothing is simulating while minimized, so drop the banked
+			// time instead of releasing it in a burst on restore.
+			m_Accumulator = 0.0f;
+		}
+
+		// The scheduled shot. By simulation step where one was asked for,
+		// by frame otherwise -- and >= rather than == because several
+		// steps can run in one frame, so the exact number may be stepped
+		// straight over.
+		if (!m_CapturePath.empty() && !m_Captured)
+		{
+			bool due = m_CaptureStep != 0
+				? m_StepCount >= m_CaptureStep
+				: m_FrameCount >= m_CaptureFrame;
+
+			if (due)
+			{
+				CaptureFrame(m_CapturePath);
+				m_Captured = true;
+			}
+		}
+
+		// The only moment a finished frame exists. After the swap the back
+		// buffer's contents are undefined, so a capture taken there reads
+		// whatever the driver left behind -- which is the "two probes came
+		// back byte-identical" failure wearing a different hat.
+		if (!m_PendingCapturePath.empty() && !m_Minimized)
+		{
+			GS_PROFILE_SCOPE("ScreenCapture");
+
+			GS_CORE_INFO("Capturing at frame {0}, step {1}", m_FrameCount, m_StepCount);
+
+			ScreenCapture::SaveFrame(m_PendingCapturePath,
+				m_Window->GetWidth(), m_Window->GetHeight());
+#ifdef GS_PLATFORM_WEB
+			// In a browser the file lands in Emscripten's in-memory
+			// filesystem, where nothing outside the page can see it. A page
+			// that wants it -- the export test harness -- defines this hook.
+			EM_ASM({ if (Module.onGsCapture) Module.onGsCapture(UTF8ToString($0)); },
+				m_PendingCapturePath.c_str());
+#endif
+
+			m_PendingCapturePath.clear();
+
+			// The shot was the whole errand unless told otherwise.
+			if (!m_ExitAfterExplicit)
+				m_ExitAfterFrame = m_FrameCount + 1;
+		}
+
+		{
+			// Mostly the VSync wait: the swap blocks until the display is
+			// ready. A large number here is the GPU idling, not work.
+			GS_PROFILE_SCOPE("Window::OnUpdate (swap + poll)");
+			m_Window->OnUpdate();
+		}
+
+		m_FrameCount++;
+
+		if (m_ExitAfterFrame != 0 && m_FrameCount >= m_ExitAfterFrame)
+		{
+			GS_CORE_INFO("Exiting after {0} frames as requested", m_FrameCount);
+			m_Running = false;
+		}
+
+		// A replay that has run out has nothing left to drive it, and
+		// carrying on would show the simulation continuing from recorded
+		// state under no input at all -- which is a different thing from
+		// what was recorded and would be easy to mistake for it.
+		if (m_ExitWhenReplayEnds && Replay::PlaybackFinished())
+		{
+			GS_CORE_INFO("Replay finished at step {0}", m_StepCount);
+
+			// A capture scheduled past the end of the recording never
+			// fires, and the run exits looking entirely successful with no
+			// file written. Say so -- an empty output directory is a
+			// miserable thing to debug from.
+			if (!m_CapturePath.empty() && !m_Captured)
+			{
+				GS_CORE_ERROR("Capture at step {0} never happened: the replay is only {1} steps",
+					m_CaptureStep, Replay::GetTotalSteps());
+			}
+
+			m_Running = false;
+		}
+	}
+
+	void Application::Run()
+	{
+#ifdef GS_PLATFORM_WEB
+		emscripten_set_main_loop_arg([](void* self) {
+			Application* app = (Application*)self;
+			app->RunFrame();
+			if (!app->m_Running)
+				emscripten_cancel_main_loop();
+		}, this, 0, true);
+#else
+		while (m_Running)
+			RunFrame();
+#endif
 		GS_CORE_INFO("Application run loop exiting");
 	}
 }
