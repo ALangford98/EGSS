@@ -65,7 +65,8 @@ its own spec, in dependency order -- see
 3. ~~Editor "Export Game..." dialog~~ -- done 2026-10-12.
 4. ~~Windows~~ -- done 2026-10-12, cross-compiled with llvm-mingw, verified
    under Wine. Deferred: an embedded `.ico`, code signing.
-5. Web, via Emscripten + WebGL2.
+5. ~~Web~~ -- done 2026-10-12 (Emscripten + WebGL2), verified in headless
+   Firefox.
 6. Android, via the NDK (all on Linux). Assessed 2026-10-12, feasible:
    all 60 shaders are GLSL 3.30 core, close to GLES 3.0 (rewrite the
    `#version` line and add precision in one place, `Shader::Create`); only

@@ -37,6 +37,8 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-12 — Web export** (export piece 5): Emscripten + WebGL2,
+  byte-identical to editor Play in headless Firefox.
 - **2026-10-12 — Windows export + Linux AppImage** (export pieces 4 and
   2b): cross-built with fetched llvm-mingw; byte-identical under Wine.
 - **2026-10-12 — File > Export Game…** (export piece 3 of 7): background
@@ -94,8 +96,8 @@ Nothing is in progress. Open threads, none started:
   literals, vec3-typed class members, and script bindings for sound and
   physics (the roadmap's "foundational gaps" names the last as the real
   blocker for gameplay code).
-- **Exporting games, pieces 5–7** — Web (Emscripten), Android, iOS; the
-  owner asked for all of them without stopping. Windows `.ico` embedding is
+- **Exporting games, pieces 6–7** — Android, then iOS; the owner asked for
+  all of them without stopping. Windows `.ico` embedding is
   a small deferred follow-up. Roadmap and the mobile assessment in
   `editor_roadmap.md`.
 - **Sound bindings for GSS** — the other half of the scripts gap; paused

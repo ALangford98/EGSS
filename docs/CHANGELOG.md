@@ -7,6 +7,45 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-12 (Web export: the engine runs in a browser, byte-identical)
+
+**Piece 5.** `--export-target web` (and in the dialog) writes `index.html`,
+`GSPlayer.js/.wasm/.data` with the game preloaded at `/game`, and a README
+saying to serve the folder, all zipped. See
+`docs/superpowers/specs/2026-10-12-web-export-design.md` for the decisions.
+In brief: Emscripten 6.0.11, pinned; a `--web` premake option rather than a
+new OS; the main loop split into `RunFrame`; no threads; wasm exceptions.
+
+**Every web-specific bug was found by measurement:**
+
+- **The first build had no `main` at all.** `EntryPoint.h` listed only
+  Windows and Linux. Emscripten linked it without a word, at 172 KB.
+- **"Running..." and then silence** showed it. That came from a page shell
+  whose `?harness=1` mode forwards the engine log to the test server.
+- **The shaders were rejected** because the engine's raw strings start with a
+  newline, and GLSL ES requires `#version` on the first line.
+- **Per-stage `glGetError` checks** showed `INVALID_OPERATION` on the clear,
+  the scene draw and the blit.
+- **The clear:** WebGL2 refuses `glClear` while an integer attachment is a
+  draw buffer.
+- **The draws:** wrapping every WebGL2 method with a `getError` check (kept
+  as `?glcheck=1`) named `bindBuffer(ELEMENT_ARRAY_BUFFER)`. WebGL fixes a
+  buffer's target at its first bind, and the index buffer had been uploaded
+  through `GL_ARRAY_BUFFER`, a desktop idiom.
+
+**Verified** in headless Firefox (throwaway profile, a local server that
+accepts the engine's capture). Breakout (compiled scripts) and the
+falling-box game (an interpreted script, as JS), exported, unzipped and run,
+are **byte-identical to editor Play on Linux**. Firefox's WebGL2 runs on the
+same NVIDIA driver.
+
+**The second web export first shipped the first game.** `gs.py` cleared the
+export build folder named after the *host* system, which isn't the folder the
+Windows and web builds use. The web build reused the old link, `.data`
+included. The Windows exports had passed only because their second game had
+no compiled scripts. Both are fixed, and verified by exporting in the order
+that exposed it.
+
 ### 2026-10-12 (Windows export, cross-built from Linux; and the Linux AppImage)
 
 **The owner asked for every remaining export piece without stopping between
