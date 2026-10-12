@@ -37,6 +37,9 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-12 — iOS export** (export piece 7, the last): an Xcode project
+  to build on a Mac. **Never built by Xcode** — compiled/linked here under
+  the iOS defines with stand-ins for UIKit. All seven export pieces landed.
 - **2026-10-12 — Android export** (export piece 6): arm64 APK via the NDK,
   NativeActivity, touch as the GSS pointer. **Verified statically only** —
   never run on a device yet. GSS gained `input.isPointerDown/pointerX/Y`.

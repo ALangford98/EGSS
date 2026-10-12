@@ -7,6 +7,44 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-12 (iOS export: an Xcode project, checked without a Mac)
+
+**Piece 7, the last of the export roadmap.** `--export-target ios` (and the
+dialog) writes an Xcode project: the engine, runtime and player source the
+game uses, its compiled scripts, `game/` as a bundle folder, Info.plist, a
+1024 px icon, and a generated `project.pbxproj` (`tools/ios_project.py`).
+The design is in `docs/superpowers/specs/2026-10-12-ios-export-design.md`.
+
+`Platform/iOS/iOSPlatform.mm` is the platform layer:
+
+- **Window and context:** a UIWindowScene holding a CAEAGLLayer view with a
+  GLES 3 context.
+- **Run loop:** a CADisplayLink drives `Application::RunFrame`, the split
+  the web made. It is paused while the scene is inactive.
+- **Input:** one finger is mouse button 0.
+- **The one renderer change:** iOS has no default framebuffer, so
+  `Framebuffer::SetScreenRendererID` tells `Unbind` where the screen is.
+
+**Nothing iOS builds on Linux**, so the checks here are everything short of
+Xcode:
+
+- **Compile and link.** All 82 listed sources compile with the host clang
+  under the project's own defines and paths, read back from the pbxproj.
+  They link with stand-ins for exactly the four symbols the `.mm` defines.
+  Only miniaudio's Linux audio backends are left undefined, so the source
+  list is complete. This found `quickjs.c`'s generated `builtin-*.h`
+  headers missing from the copy: the premake list never names them.
+- **The Objective-C++.** The `.mm` type-checks against stand-in UIKit
+  headers written from Apple's documented signatures. An injected
+  misspelled selector was caught.
+- **The project file.** An independent parser resolves every id in the
+  pbxproj, and every file it names exists.
+- **Other targets.** The desktop, web and Android captures are unchanged.
+
+**It has never been built by Xcode or run on a device.** The first Xcode
+build is the open item. OpenGL ES is deprecated on iOS, so a future SDK
+dropping it would end this path.
+
 ### 2026-10-12 (Android export: an APK, verified statically; GSS pointer input)
 
 **Piece 6.** `--export-target android` (and in the dialog) builds the player

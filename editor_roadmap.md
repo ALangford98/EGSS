@@ -74,10 +74,13 @@ its own spec, in dependency order -- see
    (`adb install -r`, `adb logcat -s GS APPLICATION`) is the open item.
    Deferred: x86_64, a release keystore, app id / orientation in the
    project manifest, engine flags via intent extras.
-7. iOS, as an Xcode project to finish on a Mac -- building, signing and
-   installing need macOS + Xcode and an Apple Developer account. OpenGL ES
-   is deprecated on iOS (still works); long-term that means Metal, natively
-   or through ANGLE.
+7. ~~iOS~~ -- built 2026-10-12 as an Xcode project to finish on a Mac
+   (`docs/superpowers/specs/2026-10-12-ios-export-design.md`): UIScene +
+   CAEAGLLayer (GLES 3), CADisplayLink driving `RunFrame`. **Never built by
+   Xcode** -- checked here by compiling and linking every source under the
+   iOS defines and type-checking the `.mm` against stand-in headers. Open
+   items: the first Xcode build and device run; OpenGL ES is deprecated on
+   iOS, so Metal (natively or via ANGLE) is the long-term answer.
 
 ## Wishlist, easiest to hardest
 
