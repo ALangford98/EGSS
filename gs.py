@@ -147,6 +147,23 @@ TOOLS = {
          "dd8e25632640cfc1fb570c7fa4cc374e8a5e5a72",
          "git:6.0.11"),
     ],
+    # Android export (piece 6): the NDK (the native compiler), the SDK pieces
+    # an APK is assembled from without Gradle (build-tools: aapt2, zipalign,
+    # apksigner; the platform's android.jar), and a JDK for apksigner and
+    # keytool. Google's repository manifest publishes SHA-1 for its packages
+    # (repository2-3.xml) -- weaker than SHA-256 but the publisher's own, so
+    # those are checked against it rather than a hash taken on first use.
+    "android": [
+        ("https://dl.google.com/android/repository/android-ndk-r29-linux.zip",
+         "sha1:87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b", "unpack:ndk"),
+        ("https://dl.google.com/android/repository/build-tools_r37_linux.zip",
+         "sha1:70954e99f4c3d9d46ee70fa32624672fe7cd6ebe", "unpack:build-tools"),
+        ("https://dl.google.com/android/repository/platform-36_r02.zip",
+         "sha1:2c1a80dd4d9f7d0e6dd336ec603d9b5c55a6f576", "unpack:platform"),
+        ("https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/"
+         "OpenJDK17U-jdk_x64_linux_hotspot_17.0.20.1_1.tar.gz",
+         "3808d1d15e3ec6bd5b84057fb5d84c33d8a1536a258146bcea2e603fc726e08e", "unpack:jdk"),
+    ],
     # Verifying a Windows export on this Linux machine: a portable Wine,
     # used to *run* the exported game, never shipped with it.
     "wine": [
@@ -189,8 +206,10 @@ def fetch_tool(name):
             open(marker, "w").close()
             continue
         target = os.path.join(directory, filename)
-        unpack = filename == "unpack"
-        marker = os.path.join(directory, ".unpacked-" + expected_sha[:16])
+        unpack = filename == "unpack" or filename.startswith("unpack:")
+        # "unpack:<sub>" unpacks into a subfolder, for tools made of several archives.
+        unpack_into = os.path.join(directory, filename[7:]) if filename.startswith("unpack:") else directory
+        marker = os.path.join(directory, ".unpacked-" + expected_sha.split(":")[-1][:16])
         if (unpack and os.path.isfile(marker)) or (not unpack and os.path.isfile(target)):
             continue
         print(f"fetching {url}")
@@ -199,8 +218,9 @@ def fetch_tool(name):
                 payload = response.read()
         except Exception as error:
             sys.exit(f"Could not download {url}: {error}")
-        actual_sha = hashlib.sha256(payload).hexdigest()
-        if actual_sha != expected_sha:
+        algorithm, _, expected_digest = expected_sha.rpartition(":")
+        actual_sha = hashlib.new(algorithm or "sha256", payload).hexdigest()
+        if actual_sha != expected_digest:
             sys.exit(f"{filename}: checksum does not match.\n  expected {expected_sha}\n"
                      f"  got      {actual_sha}\nRefusing to install it.")
         if unpack:
@@ -212,12 +232,29 @@ def fetch_tool(name):
                 archive = os.path.join(tmp, "archive")
                 with open(archive, "wb") as handle:
                     handle.write(payload)
-                with tarfile.open(archive) as bundle:
-                    bundle.extractall(tmp + "/x", filter="data")
+                if url.endswith(".zip"):
+                    # zipfile has no "data" filter: each member's path is
+                    # checked by hand, and the Unix mode bits it would drop
+                    # are restored -- otherwise the NDK's compilers unpack
+                    # without their execute bit.
+                    with zipfile.ZipFile(archive) as bundle:
+                        base = os.path.realpath(tmp + "/x")
+                        for info in bundle.infolist():
+                            dest = os.path.realpath(os.path.join(base, info.filename))
+                            if not dest.startswith(base + os.sep) and dest != base:
+                                sys.exit(f"{name}: archive member escapes its folder: {info.filename}")
+                            bundle.extract(info, base)
+                            mode = (info.external_attr >> 16) & 0o777
+                            if mode and not info.is_dir():
+                                os.chmod(dest, mode)
+                else:
+                    with tarfile.open(archive) as bundle:
+                        bundle.extractall(tmp + "/x", filter="data")
                 top = os.listdir(tmp + "/x")
                 root = os.path.join(tmp, "x", top[0]) if len(top) == 1 else tmp + "/x"
+                os.makedirs(unpack_into, exist_ok=True)
                 for entry in os.listdir(root):
-                    shutil.move(os.path.join(root, entry), os.path.join(directory, entry))
+                    shutil.move(os.path.join(root, entry), os.path.join(unpack_into, entry))
             open(marker, "w").close()
             continue
         with open(target, "wb") as handle:
