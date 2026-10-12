@@ -173,13 +173,17 @@ private:
 
 		// Only Linux exists yet; the others are listed so the roadmap is
 		// visible where the choice is made.
-		static const char* targets[] = { "Linux (x86_64)", "Windows -- not yet", "Web -- not yet", "Android -- not yet" };
-		if (ImGui::BeginCombo("Target", targets[0]))
+		static const char* targets[] = { "Linux (x86_64)", "Windows (x86_64)", "Web -- not yet", "Android -- not yet" };
+		static const int available = 2;
+		if (ImGui::BeginCombo("Target", targets[m_Target]))
 		{
 			for (int i = 0; i < 4; i++)
-				ImGui::Selectable(targets[i], i == 0, i == 0 ? 0 : ImGuiSelectableFlags_Disabled);
+				if (ImGui::Selectable(targets[i], i == m_Target, i < available ? 0 : ImGuiSelectableFlags_Disabled))
+					m_Target = i;
 			ImGui::EndCombo();
 		}
+		if (m_Target == 1)
+			ImGui::TextDisabled("Cross-built with llvm-mingw (downloaded on first use, ~80 MB).");
 
 		ImGui::InputText("Output folder", m_OutDir, sizeof(m_OutDir));
 		ImGui::SameLine();
@@ -232,6 +236,8 @@ private:
 		options.ProjectFolder = g_EditorProjectPath;
 		options.OutDir = m_OutDir;
 		options.Config = m_Config == 0 ? "dist" : "release";
+		options.Target = m_Target == 1 ? "windows" : "linux";
+		m_LastTarget = m_Target;
 		m_Job.Start(options);
 	}
 
@@ -253,13 +259,18 @@ private:
 			ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.5f, 1.0f), "Exported.");
 			ImGui::TextWrapped("%s", result.PackageDir.c_str());
 			ImGui::TextDisabled("%s", result.Archive.c_str());
-			ImGui::TextDisabled("%s", result.AppImage.c_str());
+			if (!result.AppImage.empty())
+				ImGui::TextDisabled("%s", result.AppImage.c_str());
 			if (ImGui::Button("Open Folder"))
 				Launch("xdg-open \"" + result.PackageDir + "\"");
 			ImGui::SameLine();
-			if (ImGui::Button("Run Game"))
-				Launch("\"" + result.Executable + "\"");
-			ImGui::SameLine();
+			// A Windows package is run on Windows; this machine is not one.
+			if (m_LastTarget == 0)
+			{
+				if (ImGui::Button("Run Game"))
+					Launch("\"" + result.Executable + "\"");
+				ImGui::SameLine();
+			}
 		}
 		else
 		{
@@ -285,6 +296,8 @@ private:
 	FileBrowserPopup m_FolderBrowser;
 	char m_OutDir[1024] = {};
 	int m_Config = 0;
+	int m_Target = 0;       // 0 Linux, 1 Windows
+	int m_LastTarget = 0;   // what the result on screen was exported for
 	bool m_OpenRequested = false;
 	bool m_AskingAboutUnsaved = false;
 	bool m_ShowResult = false;

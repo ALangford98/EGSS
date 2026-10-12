@@ -43,6 +43,8 @@ namespace GameExporter {
 		std::string ProjectFolder;
 		std::string OutDir;
 		std::string Config = "dist";
+		// "linux" or "windows" (cross-built with llvm-mingw).
+		std::string Target = "linux";
 		// Told each stage as it starts -- the Export dialog shows it. Called
 		// on whatever thread Export runs on.
 		std::function<void(const std::string&)> OnStage;
@@ -393,8 +395,17 @@ namespace GameExporter {
 
 		std::string name = SafeName(manifest.Name.empty() ? project.filename().string() : manifest.Name);
 		fs::path out = fs::absolute(options.OutDir, ec).lexically_normal();
-		fs::path package = out / name;
-		fs::path build = out / ".build" / name;
+		// One folder per target, so a Linux and a Windows export of the same
+		// game into one output folder cannot collide.
+		bool windows = options.Target == "windows";
+		if (!windows && options.Target != "linux")
+		{
+			result.Error = "unknown export target '" + options.Target + "' (linux, windows)";
+			return result;
+		}
+		std::string platform = windows ? "windows" : "linux";
+		fs::path package = out / platform / name;
+		fs::path build = out / ".build" / platform / name;
 
 		// A re-export replaces the package: stale files from a previous one
 		// must not ride along.
@@ -459,6 +470,7 @@ namespace GameExporter {
 #endif
 		fs::path log = build / "build.log";
 		std::string command = "python3 \"" + root + "/gs.py\" build " + options.Config
+			+ (windows ? " --target windows" : "")
 			+ " --player-scripts \"" + header.string() + "\" > \"" + log.string() + "\" 2>&1";
 		GS_INFO("GameExporter: building the player for '{0}' ({1})", manifest.Name, options.Config);
 		stage("Building the player (about a minute)");
@@ -470,12 +482,30 @@ namespace GameExporter {
 
 		std::string config = Capitalized(options.Config);
 		stage("Packaging");
-		fs::path player = fs::path(root) / "bin" / ("Export-" + config + "-linux-x86_64") / "GSPlayer" / "GSPlayer";
-		fs::path library = fs::path(root) / "bin" / (config + "-linux-x86_64") / "GS" / "libGS.so";
-		fs::path executable = package / ExecutableName(name);
+		fs::path bin = fs::path(root) / "bin";
+		fs::path executable = package / (ExecutableName(name) + (windows ? ".exe" : ""));
+		// What ships beside the player: the engine library, and on Windows
+		// llvm-mingw's C++ runtime -- shipped as DLLs rather than linked
+		// statically, because a static copy in both the exe and GS.dll would
+		// give them separate C++ runtimes, and strings, shared pointers and
+		// exceptions cross that boundary.
+		std::vector<fs::path> libraries;
+		fs::path player;
+		if (windows)
+		{
+			player = bin / ("Export-" + config + "-windows-x86_64") / "GSPlayer" / "GSPlayer.exe";
+			fs::path runtime = fs::path(root) / "vendor" / "bin" / "llvm-mingw" / "x86_64-w64-mingw32" / "bin";
+			libraries = { bin / (config + "-windows-x86_64") / "GS" / "GS.dll", runtime / "libc++.dll", runtime / "libunwind.dll" };
+		}
+		else
+		{
+			player = bin / ("Export-" + config + "-linux-x86_64") / "GSPlayer" / "GSPlayer";
+			libraries = { bin / (config + "-linux-x86_64") / "GS" / "libGS.so" };
+		}
 		fs::copy_file(player, executable, fs::copy_options::overwrite_existing, ec);
-		if (!ec)
-			fs::copy_file(library, package / "libGS.so", fs::copy_options::overwrite_existing, ec);
+		for (const fs::path& library : libraries)
+			if (!ec)
+				fs::copy_file(library, package / library.filename(), fs::copy_options::overwrite_existing, ec);
 		if (ec)
 		{
 			result.Error = "could not copy the built player: " + ec.message();
@@ -484,13 +514,25 @@ namespace GameExporter {
 		fs::permissions(executable, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec
 			| fs::perms::others_read | fs::perms::others_exec, ec);
 
+		// A .tar.gz for Linux, a .zip for Windows (what each platform's
+		// users expect); either way <Game Name>/ is its single top folder.
 		stage("Archiving");
-		fs::path archive = out / (name + "-linux-x86_64.tar.gz");
+		fs::path archive = out / (name + "-" + platform + "-x86_64" + (windows ? ".zip" : ".tar.gz"));
 		fs::remove(archive, ec);
-		std::string tar = "tar -czf \"" + archive.string() + "\" -C \"" + out.string() + "\" \"" + name + "\"";
-		if (std::system(tar.c_str()) != 0)
+		std::string pack = windows
+			? "cd \"" + (out / platform).string() + "\" && python3 -m zipfile -c \"" + archive.string() + "\" \"" + name + "\""
+			: "tar -czf \"" + archive.string() + "\" -C \"" + (out / platform).string() + "\" \"" + name + "\"";
+		if (std::system(pack.c_str()) != 0)
 		{
-			result.Error = "tar failed for '" + archive.string() + "'";
+			result.Error = "archiving failed for '" + archive.string() + "'";
+			return result;
+		}
+		result.Executable = executable.string();
+		if (windows)
+		{
+			result.Ok = true;
+			result.PackageDir = package.string();
+			result.Archive = archive.string();
 			return result;
 		}
 

@@ -109,6 +109,7 @@ public:
 			if (arguments[i] == "--export") { options.ProjectFolder = arguments[i + 1]; asked = true; }
 			if (arguments[i] == "--out") options.OutDir = arguments[i + 1];
 			if (arguments[i] == "--export-config") options.Config = arguments[i + 1];
+			if (arguments[i] == "--export-target") options.Target = arguments[i + 1];
 		}
 		if (!asked)
 			return;
