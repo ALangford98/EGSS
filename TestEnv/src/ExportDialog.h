@@ -173,8 +173,8 @@ private:
 
 		// Only Linux exists yet; the others are listed so the roadmap is
 		// visible where the choice is made.
-		static const char* targets[] = { "Linux (x86_64)", "Windows (x86_64)", "Web -- not yet", "Android -- not yet" };
-		static const int available = 2;
+		static const char* targets[] = { "Linux (x86_64)", "Windows (x86_64)", "Web (WebGL 2)", "Android -- not yet" };
+		static const int available = 3;
 		if (ImGui::BeginCombo("Target", targets[m_Target]))
 		{
 			for (int i = 0; i < 4; i++)
@@ -184,6 +184,8 @@ private:
 		}
 		if (m_Target == 1)
 			ImGui::TextDisabled("Cross-built with llvm-mingw (downloaded on first use, ~80 MB).");
+		if (m_Target == 2)
+			ImGui::TextDisabled("Built with Emscripten (downloaded on first use, ~1.7 GB). Serve the folder over HTTP to play.");
 
 		ImGui::InputText("Output folder", m_OutDir, sizeof(m_OutDir));
 		ImGui::SameLine();
@@ -236,7 +238,7 @@ private:
 		options.ProjectFolder = g_EditorProjectPath;
 		options.OutDir = m_OutDir;
 		options.Config = m_Config == 0 ? "dist" : "release";
-		options.Target = m_Target == 1 ? "windows" : "linux";
+		options.Target = m_Target == 1 ? "windows" : m_Target == 2 ? "web" : "linux";
 		m_LastTarget = m_Target;
 		m_Job.Start(options);
 	}

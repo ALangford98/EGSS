@@ -28,6 +28,7 @@
 #include "ScriptEngine.h"
 
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <fstream>
@@ -43,7 +44,8 @@ namespace GameExporter {
 		std::string ProjectFolder;
 		std::string OutDir;
 		std::string Config = "dist";
-		// "linux" or "windows" (cross-built with llvm-mingw).
+		// "linux", "windows" (cross-built with llvm-mingw) or "web"
+		// (Emscripten + WebGL2).
 		std::string Target = "linux";
 		// Told each stage as it starts -- the Export dialog shows it. Called
 		// on whatever thread Export runs on.
@@ -398,12 +400,13 @@ namespace GameExporter {
 		// One folder per target, so a Linux and a Windows export of the same
 		// game into one output folder cannot collide.
 		bool windows = options.Target == "windows";
-		if (!windows && options.Target != "linux")
+		bool web = options.Target == "web";
+		if (!windows && !web && options.Target != "linux")
 		{
-			result.Error = "unknown export target '" + options.Target + "' (linux, windows)";
+			result.Error = "unknown export target '" + options.Target + "' (linux, windows, web)";
 			return result;
 		}
-		std::string platform = windows ? "windows" : "linux";
+		std::string platform = options.Target;
 		fs::path package = out / platform / name;
 		fs::path build = out / ".build" / platform / name;
 
@@ -471,6 +474,7 @@ namespace GameExporter {
 		fs::path log = build / "build.log";
 		std::string command = "python3 \"" + root + "/gs.py\" build " + options.Config
 			+ (windows ? " --target windows" : "")
+			+ (web ? " --target web --web-game \"" + (package / "game").string() + "\"" : "")
 			+ " --player-scripts \"" + header.string() + "\" > \"" + log.string() + "\" 2>&1";
 		GS_INFO("GameExporter: building the player for '{0}' ({1})", manifest.Name, options.Config);
 		stage("Building the player (about a minute)");
@@ -483,6 +487,52 @@ namespace GameExporter {
 		std::string config = Capitalized(options.Config);
 		stage("Packaging");
 		fs::path bin = fs::path(root) / "bin";
+
+		// The web: the page, its script, the wasm module and the preloaded
+		// filesystem (.data -- the game is inside it, so game/ was only the
+		// build's input). index.html carries the game's name; a README says
+		// it must be served, since browsers will not load .wasm from file://.
+		if (web)
+		{
+			ec.clear();   // earlier steps may leave it set; the copies below check it
+			fs::path built = bin / ("Export-" + config + "-linux-x86_64-web") / "GSPlayer";
+			for (const char* file : { "GSPlayer.js", "GSPlayer.wasm", "GSPlayer.data" })
+				if (!ec)
+					fs::copy_file(built / file, package / file, fs::copy_options::overwrite_existing, ec);
+			std::string page;
+			if (ec || !ReadFile(built / "GSPlayer.html", page))
+			{
+				result.Error = "could not copy the built page: " + (ec ? ec.message() : std::string("no GSPlayer.html"));
+				return result;
+			}
+			size_t title = page.find("<title>GS Game</title>");
+			if (title != std::string::npos)
+				page.replace(title, std::strlen("<title>GS Game</title>"), "<title>" + name + "</title>");
+			std::ofstream(package / "index.html", std::ios::binary) << page;
+			std::ofstream(package / "README.txt") << name << " -- a GS game for the web.\n\n"
+				"Serve this folder with any static web server and open index.html, for example:\n"
+				"    python3 -m http.server 8000\n"
+				"    then http://localhost:8000/\n"
+				"Opening index.html straight from disk will not work: browsers refuse to\n"
+				"load the game's .wasm and .data files from a file:// page.\n"
+				"Needs a browser with WebGL 2 (any current Firefox, Chrome, Edge or Safari).\n";
+			fs::remove_all(package / "game", ec);
+
+			stage("Archiving");
+			fs::path archive = out / (name + "-web.zip");
+			fs::remove(archive, ec);
+			std::string pack = "cd \"" + (out / platform).string() + "\" && python3 -m zipfile -c \"" + archive.string() + "\" \"" + name + "\"";
+			if (std::system(pack.c_str()) != 0)
+			{
+				result.Error = "archiving failed for '" + archive.string() + "'";
+				return result;
+			}
+			result.Ok = true;
+			result.PackageDir = package.string();
+			result.Archive = archive.string();
+			result.Executable = (package / "index.html").string();
+			return result;
+		}
 		fs::path executable = package / (ExecutableName(name) + (windows ? ".exe" : ""));
 		// What ships beside the player: the engine library, and on Windows
 		// llvm-mingw's C++ runtime -- shipped as DLLs rather than linked
