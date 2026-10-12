@@ -19,6 +19,11 @@ namespace GS {
 	{
 		return ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureKeyboard;
 	}
+
+	bool ImGuiLayer::WantsMouse()
+	{
+		return ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse;
+	}
 	float ImGuiLayer::s_FontSizePixels = 16.0f;
 
 	ImGuiLayer::ImGuiLayer()

@@ -102,6 +102,19 @@ namespace GS {
 		inline static float GetMouseX() { return GetMousePosition().first; }
 		inline static float GetMouseY() { return GetMousePosition().second; }
 
+		// The pointer: the mouse, or on a touch screen the finger, which the
+		// Android window reports as mouse button 0 at the touch point. One
+		// name for both so a game written at a desk plays on a phone.
+		//
+		// Position as a fraction of the window, (0, 0) top-left and (1, 1)
+		// bottom-right, not in pixels: a game laid out against a 1280x720
+		// window reads the same place on a 2400x1080 screen. Outside the
+		// window (a mouse can be) it runs past 0..1 rather than clamping, so
+		// a drag off the edge still moves the way the hand did.
+		inline static bool IsPointerDown() { return IsMouseButtonPressed(0); }
+		static float GetPointerX();
+		static float GetPointerY();
+
 		// --- Replay ----------------------------------------------------------
 
 		// Answer every query from this snapshot instead of the hardware. The

@@ -1,7 +1,8 @@
 #include "gspch.h"
 #include "GS/Input.h"
 
-#include <GLFW/glfw3.h>
+#include "GS/Application.h"
+#include "GS/KeyCodes.h"
 
 namespace GS {
 
@@ -19,8 +20,10 @@ namespace GS {
 		// GLFW rejects anything outside [GLFW_KEY_SPACE, GLFW_KEY_LAST] with an
 		// error rather than returning "not pressed", so the sweep starts at 32
 		// rather than 0. The gaps inside the range are harmless -- they read as
-		// released and nothing ever sets them.
-		for (int key = GLFW_KEY_SPACE; key <= GLFW_KEY_LAST; key++)
+		// released and nothing ever sets them. The GS codes are GLFW's own
+		// numbers, spelled without GLFW so a build with no GLFW (Android) can
+		// compile this.
+		for (int key = GS_KEY_SPACE; key <= GS_KEY_MENU; key++)
 			snapshot.SetKey(key, s_Instance->IsKeyPressedImpl(key));
 
 		for (int button = 0; button < InputSnapshot::MaxMouseButtons; button++)
@@ -31,6 +34,22 @@ namespace GS {
 		snapshot.MouseY = y;
 
 		return snapshot;
+	}
+
+	// Divided by the window as it is now. A replayed run reads recorded
+	// pixels against the current window, so a recording replays its pointer
+	// faithfully only at the size it was made -- the same as raw mouse
+	// positions always have.
+	float Input::GetPointerX()
+	{
+		unsigned int width = Application::Get().GetWindow().GetWidth();
+		return width > 0 ? GetMouseX() / (float)width : 0.0f;
+	}
+
+	float Input::GetPointerY()
+	{
+		unsigned int height = Application::Get().GetWindow().GetHeight();
+		return height > 0 ? GetMouseY() / (float)height : 0.0f;
 	}
 
 }

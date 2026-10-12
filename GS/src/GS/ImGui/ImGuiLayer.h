@@ -74,6 +74,9 @@ namespace GS {
 		// what it marks, so code outside it (the runtime, scripts) cannot
 		// link against ImGui directly. False when there is no UI context.
 		static bool WantsKeyboard();
+		// The same for the mouse: true while it is over a panel, so a click
+		// on a button is not also a tap in the game under it.
+		static bool WantsMouse();
 
 		// Runtime font switching, unlike the static SetFontPath above (which
 		// only works pre-OnAttach) -- called any time after the ImGui
