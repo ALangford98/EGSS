@@ -37,6 +37,9 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-12 — Android export** (export piece 6): arm64 APK via the NDK,
+  NativeActivity, touch as the GSS pointer. **Verified statically only** —
+  never run on a device yet. GSS gained `input.isPointerDown/pointerX/Y`.
 - **2026-10-12 — Web export** (export piece 5): Emscripten + WebGL2,
   byte-identical to editor Play in headless Firefox.
 - **2026-10-12 — Windows export + Linux AppImage** (export pieces 4 and

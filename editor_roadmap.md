@@ -67,18 +67,13 @@ its own spec, in dependency order -- see
    under Wine. Deferred: an embedded `.ico`, code signing.
 5. ~~Web~~ -- done 2026-10-12 (Emscripten + WebGL2), verified in headless
    Firefox.
-6. Android, via the NDK (all on Linux). Assessed 2026-10-12, feasible:
-   all 60 shaders are GLSL 3.30 core, close to GLES 3.0 (rewrite the
-   `#version` line and add precision in one place, `Shader::Create`); only
-   three desktop-only GL calls (debug callback, `glDrawBuffer`, wireframe
-   `glPolygonMode`) to skip; `GS::Assets::Resolve` is where APK assets plug
-   in. The real work: a native-activity platform layer (EGL context, touch,
-   pause/resume that can lose the GL context -- GLFW does not run on
-   Android, and `ImGuiLayer`/`Input.cpp` call GLFW directly today); a touch
-   API for GSS (`input.isKeyDown` is all scripts have -- an owner design
-   decision); packaging with the fetched NDK + SDK command-line tools
-   (several GB), debug-signed or keystore-signed / App Bundle for Play;
-   testing on a phone over adb or the emulator (needs KVM).
+6. ~~Android~~ -- built 2026-10-12: an arm64 APK (NativeActivity, no
+   Gradle), touch as the GSS pointer (`input.isPointerDown/pointerX/Y`),
+   `docs/superpowers/specs/2026-10-12-android-export-design.md`. **Verified
+   statically only** -- no device or KVM here; the first run on a phone
+   (`adb install -r`, `adb logcat -s GS APPLICATION`) is the open item.
+   Deferred: x86_64, a release keystore, app id / orientation in the
+   project manifest, engine flags via intent extras.
 7. iOS, as an Xcode project to finish on a Mac -- building, signing and
    installing need macOS + Xcode and an Apple Developer account. OpenGL ES
    is deprecated on iOS (still works); long-term that means Metal, natively

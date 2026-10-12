@@ -7,6 +7,76 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-12 (Android export: an APK, verified statically; GSS pointer input)
+
+**Piece 6.** `--export-target android` (and in the dialog) builds the player
+as `libgsplayer.so` with the NDK and wraps it in a signed arm64 APK: a
+NativeActivity, so no Java and no Gradle. The decisions are in
+`docs/superpowers/specs/2026-10-12-android-export-design.md`. **It has not
+run yet:** there is no `/dev/kvm` for an emulator and no phone was attached.
+Everything below was checked without running it, and the first device run
+is the open item.
+
+**GSS pointer input came first.** A phone has no keys, so a game written
+against `input.isKeyDown` could not be played on one. Now there is
+`input.isPointerDown()`, `pointerX()` and `pointerY()`, in both the
+interpreted and transpiled paths:
+
+- The pointer is the mouse, or a finger on a touch screen.
+- Its position is a fraction of the window, so a layout made at 1280x720
+  reads the same place on any screen.
+- It reads as up while over an ImGui panel.
+
+It was checked with a hand-written binary recording in a 1280x720 window.
+The recording held the pointer at (320, 540), then released it at
+(1920, −72). Interpreted, the script read `0.25 0.75 down`, then
+`1.5 -0.1 up`: off the window and not clamped, as intended. Transpiled to
+C++ in an exported player, it read the same. The first attempt measured
+nothing at all, because interpreted `console.log` goes to the engine's
+captured output, not the log. It was the test, not the code.
+
+**`GS_GLES` now names the browser's GLES paths**, so Android takes them as
+well. It is defined on the command line too: `gspch.h` doesn't include
+`Core.h`, and a file testing it first would silently get desktop GL.
+
+**Platform/Android:**
+
+- An EGL context for the life of the game, and a surface for the life of the
+  activity's window. With no surface the window is 0x0, which Application
+  already reads as minimised.
+- The first finger is mouse button 0.
+- The game is unpacked from the APK on first start, as listed in
+  `game.files` (hash-stamped, written last), so file I/O is unchanged.
+- logcat logging.
+- `android_main` ends the process, so a relaunch can't inherit stale
+  statics.
+
+**`gs.py apk`** links the manifest and icon with aapt2. It stores the
+stripped library uncompressed on a 16 KB boundary (`zipalign -P 16`), adds
+the game under `assets/`, and signs with a debug key made once per machine.
+
+**Static checks:**
+
+- `aapt2 badging`: min 26, target 36, GLES 3.0, arm64-v8a, NativeActivity.
+- `zipalign -c -P 16` passes, and the library's data is at APK offset 16384.
+- LOAD segments are aligned to 0x4000.
+- `apksigner` verifies v2 and v3.
+- Only system libraries are NEEDED, the entry points are exported, and
+  `--no-undefined` held.
+- Breakout's compiled `Paddle` and `Ball` are in the library. The
+  falling-box game's `push.js` is in the APK.
+- All three Android configs build. Desktop captures, Breakout player vs
+  editor, and the web capture are all byte-identical to before.
+
+**The fetcher couldn't unpack the NDK.** `zipfile` writes a symlink as a
+small file holding its target's name, so `clang` ran as a shell script:
+"clang-21: command not found". Links are now restored, and refused if they
+point outside the tool's folder.
+
+**The regression captures came back blank once.** That was the measurement:
+`/tmp`'s 10-day cleanup had removed the scene files they load. They were
+recreated from the session record, and the captures are identical.
+
 ### 2026-10-12 (Web export: the engine runs in a browser, byte-identical)
 
 **Piece 5.** `--export-target web` (and in the dialog) writes `index.html`,

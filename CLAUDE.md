@@ -109,10 +109,11 @@ are byte-identical by construction, and that is the check. (`--play` is not
 it: that replays an input recording.)
 
 **Exporting a game**: from the editor's binary folder,
-`./TestEnv --export <project folder> --out <dir> [--export-target windows]`
+`./TestEnv --export <project folder> --out <dir> [--export-target windows|web|android]`
 writes `<dir>/<target>/<Game Name>/` plus an archive (Linux: `.tar.gz` and an
-AppImage; Windows: `.zip`). It builds a player against the project's own
-compiled scripts (`./gs.py build dist [--target windows] --player-scripts
+AppImage; Windows: `.zip`; web: a `.zip` to serve; Android: a signed `.apk`,
+assembled by `./gs.py apk`). It builds a player against the project's own
+compiled scripts (`./gs.py build dist [--target ...] --player-scripts
 <header>`, into `bin/Export-*`). Toolchains are fetched, checksum-pinned, by
 `./gs.py fetch <tool>` into `vendor/bin/`. Verify an export by unpacking it
 elsewhere and running it from another directory -- Windows ones under the
