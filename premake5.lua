@@ -31,12 +31,37 @@ newoption {
 }
 
 newoption {
+    trigger = "web",
+    description = "Build for the browser with Emscripten (WebGL2): gs.py build <config> --target web"
+}
+
+newoption {
+    trigger = "web-game",
+    value = "PATH",
+    description = "With --web: the game folder to preload into the page at /game"
+}
+
+newoption {
     trigger = "player-scripts",
     value = "PATH",
     description = "Build GSPlayer against one project's compiled-script registry header, into bin/Export-* (TestEnv's GameExporter)"
 }
 
 outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
+
+-- The web build (export piece 5) is generated on the Linux host but is not
+-- Linux: its own tree, GS_PLATFORM_WEB instead of GS_PLATFORM_LINUX (every
+-- first-party "system:linux" block below stands aside under --web), and
+-- WebAssembly exceptions -- Emscripten's default aborts on any throw, and the
+-- engine and spdlog throw and catch.
+if _OPTIONS["web"] then
+    outputdir = outputdir .. "-web"
+    filter "options:web"
+        defines { "GS_PLATFORM_WEB" }
+        buildoptions { "-fwasm-exceptions" }
+        linkoptions { "-fwasm-exceptions" }
+    filter {}
+end
 
 -- Post-build copies for a Windows *target*. Premake expands {COPY}/{COPYDIR}
 -- for the target's shell (cmd and xcopy), but when Windows is cross-built from
@@ -177,7 +202,7 @@ project "GS"
             WindowsCopyFile("%{cfg.buildtarget.relpath}", "../bin/" .. outputdir .. "/GSPlayer")
         }
 
-    filter "system:linux"
+    filter { "system:linux", "not options:web" }
         cppdialect "C++17"
         staticruntime "off"
         pic "On"
@@ -206,6 +231,16 @@ project "GS"
             ("{MKDIR} ../bin/" .. outputdir .. "/GSPlayer"),
             ("{COPY} %{cfg.buildtarget.relpath} ../bin/" .. outputdir .. "/GSPlayer" )
         }
+
+    -- The browser: one wasm module, so the engine links in statically. GLFW
+    -- comes from Emscripten (-sUSE_GLFW=3) and GL from WebGL2, so neither
+    -- vendored GLFW nor glad is built or linked; a shim stands in for
+    -- glad's header.
+    filter "options:web"
+        kind "StaticLib"
+        removeincludedirs { "%{IncludeDir.Glad}" }
+        includedirs { "%{prj.name}/src/Platform/Web/shim" }
+        removelinks { "GLFW", "Glad" }
 
     filter "configurations:Debug"
         defines { "GS_DEBUG", "GS_ENABLE_ASSERTS", "GS_PROFILE" }
@@ -317,7 +352,7 @@ project "TestEnv"
             WindowsCopyDir("%{wks.location}/TestEnv/assets", "%{cfg.targetdir}/assets")
         }
 
-    filter "system:linux"
+    filter { "system:linux", "not options:web" }
         cppdialect "C++17"
         staticruntime "off"
 
@@ -450,7 +485,7 @@ project "GSPlayer"
             WindowsCopyDir("%{wks.location}/TestEnv/assets", "%{cfg.targetdir}/assets")
         }
 
-    filter "system:linux"
+    filter { "system:linux", "not options:web" }
         cppdialect "C++17"
         staticruntime "off"
         defines { "GS_PLATFORM_LINUX" }
@@ -470,6 +505,28 @@ project "GSPlayer"
     -- and Release keep the console for their logs.
     filter { "system:windows", "configurations:Dist" }
         kind "WindowedApp"
+
+    -- GSPlayer.html (+ .js, .wasm, .data): the game preloaded into the
+    -- in-memory filesystem at /game when --web-game names it. 5 MB of stack:
+    -- Emscripten's default 64 KB is far less than the physics and QuickJS
+    -- use on desktop.
+    filter "options:web"
+        targetextension ".html"
+        links { "ImGui" }
+        linkoptions {
+            "-sUSE_GLFW=3",
+            "-sMIN_WEBGL_VERSION=2",
+            "-sMAX_WEBGL_VERSION=2",
+            "-sALLOW_MEMORY_GROWTH=1",
+            "-sFORCE_FILESYSTEM=1",
+            "-sSTACK_SIZE=5MB",
+            "-sEXPORTED_RUNTIME_METHODS=FS",
+            "--shell-file %{wks.location}/Player/web/shell.html",
+        }
+    if _OPTIONS["web-game"] then
+        filter "options:web"
+            linkoptions { '--preload-file "' .. _OPTIONS["web-game"] .. '@/game"' }
+    end
 
     filter "configurations:Debug"
         defines { "GS_DEBUG", "GS_ENABLE_ASSERTS", "GS_PROFILE" }

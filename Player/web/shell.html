@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GS Game</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1c21; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #status { position: absolute; left: 12px; bottom: 10px; color: #8a8f99;
+            font: 13px system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+<div id="status">Loading...</div>
+<script>
+  // GSPlayer in a browser (export piece 5). Engine flags can be passed as
+  // ?args=--lockstep%20--capture%20/shot.png -- the same flags as on desktop.
+  // ?harness=1 posts captures back to the test server that served the page;
+  // without it the hook is absent and nothing leaves the page.
+  var params = new URLSearchParams(location.search);
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    arguments: (params.get('args') || '').split(' ').filter(Boolean),
+    print: function (text) { console.log(text); },
+    printErr: function (text) { console.warn(text); },
+    setStatus: function (text) { document.getElementById('status').textContent = text; },
+    onRuntimeInitialized: function () { document.getElementById('status').textContent = ''; },
+  };
+  if (params.get('harness') === '1') {
+    // The harness also wants the console: the engine's log, and any error
+    // the page hits, sent to the server that served it.
+    var send = function (text) { fetch('/log', { method: 'POST', body: String(text) + '\n' }); };
+    Module.print = function (text) { console.log(text); send(text); };
+    Module.printErr = function (text) { console.warn(text); send(text); };
+    window.addEventListener('error', function (e) { send('PAGE ERROR: ' + e.message); });
+    Module.setStatus = function (text) { document.getElementById('status').textContent = text; if (text) send('status: ' + text); };
+    send('harness: page script ran');
+    // ?glcheck=1: name each WebGL call that raises an error, and the error --
+    // how the web port's black frame was traced to an index buffer bound
+    // under the wrong target. getError after every call stalls the GPU, so
+    // it is opt-in even for the harness.
+    if (params.get('glcheck') === '1') (function () {
+      var proto = WebGL2RenderingContext.prototype, reported = {}, count = 0;
+      Object.getOwnPropertyNames(proto).forEach(function (name) {
+        var desc = Object.getOwnPropertyDescriptor(proto, name);
+        if (!desc || typeof desc.value !== 'function' || name === 'getError') return;
+        var original = desc.value;
+        proto[name] = function () {
+          var result = original.apply(this, arguments);
+          var error = this.getError();
+          if (error && count < 25 && !reported[name + error]) {
+            reported[name + error] = true; count++;
+            var args = Array.prototype.slice.call(arguments, 0, 4).map(function (v) {
+              return (v && typeof v === 'object') ? (v.constructor && v.constructor.name) : String(v); });
+            send('GLCALL ' + name + '(' + args.join(', ') + ') -> 0x' + error.toString(16));
+          }
+          return result;
+        };
+      });
+    })();
+    ['log', 'warn', 'error'].forEach(function (level) {
+      var original = console[level].bind(console);
+      console[level] = function () { original.apply(null, arguments); send(level + ': ' + Array.prototype.join.call(arguments, ' ')); };
+    });
+    window.addEventListener('unhandledrejection', function (e) { send('PAGE REJECTION: ' + e.reason); });
+    Module.onGsCapture = function (path) {
+      var bytes = Module.FS.readFile(path);
+      fetch('/capture', { method: 'POST', body: bytes }).then(function () {
+        document.title = 'captured';
+      });
+    };
+  }
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

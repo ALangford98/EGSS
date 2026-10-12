@@ -138,6 +138,15 @@ TOOLS = {
          "bb7bb7654b33d5aa8712acb837c963b2e0c56352560c76105270a3268c665c21",
          "unpack"),
     ],
+    # Web export (piece 5): the Emscripten SDK, cloned at a pinned tag whose
+    # commit is checked (git's equivalent of the checksum), then told to
+    # install and activate that same release -- emsdk verifies the toolchain
+    # it downloads against its own manifest.
+    "emsdk": [
+        ("https://github.com/emscripten-core/emsdk.git",
+         "dd8e25632640cfc1fb570c7fa4cc374e8a5e5a72",
+         "git:6.0.11"),
+    ],
     # Verifying a Windows export on this Linux machine: a portable Wine,
     # used to *run* the exported game, never shipped with it.
     "wine": [
@@ -160,6 +169,25 @@ def fetch_tool(name):
     directory = tool_dir(name)
     os.makedirs(directory, exist_ok=True)
     for url, expected_sha, filename in TOOLS[name]:
+        if filename.startswith("git:"):
+            version = filename[4:]
+            marker = os.path.join(directory, ".installed-" + version)
+            if os.path.isfile(marker):
+                continue
+            if not os.path.isdir(os.path.join(directory, ".git")):
+                shutil.rmtree(directory, ignore_errors=True)
+                if subprocess.call(["git", "clone", "--quiet", "--depth", "1", "--branch", version,
+                                    url, directory]) != 0:
+                    sys.exit(f"Could not clone {url} at {version}")
+            head = subprocess.check_output(["git", "-C", directory, "rev-parse", "HEAD"], text=True).strip()
+            if head != expected_sha:
+                sys.exit(f"{name} {version}: commit {head} is not the pinned {expected_sha}. Refusing to use it.")
+            tool = os.path.join(directory, "emsdk")
+            if subprocess.call([tool, "install", version]) != 0 or \
+               subprocess.call([tool, "activate", version]) != 0:
+                sys.exit(f"{name}: install/activate {version} failed")
+            open(marker, "w").close()
+            continue
         target = os.path.join(directory, filename)
         unpack = filename == "unpack"
         marker = os.path.join(directory, ".unpacked-" + expected_sha[:16])
@@ -327,7 +355,8 @@ def premake_path(allow_fetch=True):
     return fetch_premake(directory, name)
 
 
-def generate(allow_fetch=True, sanitize=False, player_scripts=None, target_os=None):
+def generate(allow_fetch=True, sanitize=False, player_scripts=None, target_os=None,
+             web=False, web_game=None):
     """Regenerate project files. Cheap, so it is not conditional.
 
     Output is swallowed unless it fails. Because this now runs on every build,
@@ -351,6 +380,10 @@ def generate(allow_fetch=True, sanitize=False, player_scripts=None, target_os=No
         command.append("--player-scripts=" + player_scripts)
     if target_os:
         command.append("--os=" + target_os)
+    if web:
+        command.append("--web")
+    if web_game:
+        command.append("--web-game=" + web_game)
 
     print("\033[90m$ " + " ".join(command) + "\033[0m")
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
@@ -978,7 +1011,9 @@ def main():
     parser.add_argument("--keep", action="append", metavar="TREE",
                         help="with `prune`, a tree to spare by name; may be "
                              "given more than once")
-    parser.add_argument("--target", choices=["linux", "windows"], default="linux",
+    parser.add_argument("--web-game", metavar="FOLDER",
+                        help="with --target web: the game folder preloaded into the page")
+    parser.add_argument("--target", choices=["linux", "windows", "web"], default="linux",
                         help="with `build`: cross-build GSPlayer for another "
                              "platform (windows: llvm-mingw, fetched on first use)")
     parser.add_argument("--player-scripts", metavar="HEADER",
@@ -1065,18 +1100,41 @@ def main():
             toolchain = os.path.join(tool_dir("llvm-mingw"), "bin", "x86_64-w64-mingw32-")
             environment.update(CC=toolchain + "clang", CXX=toolchain + "clang++",
                                AR=toolchain + "ar", RC=toolchain + "windres")
+        if args.target == "web":
+            if fetch_tool("emsdk") != 0:
+                return 1
+            emscripten = os.path.join(tool_dir("emsdk"), "upstream", "emscripten")
+            environment.update(CC=os.path.join(emscripten, "emcc"), CXX=os.path.join(emscripten, "em++"),
+                               AR=os.path.join(emscripten, "emar"),
+                               EM_CONFIG=os.path.join(tool_dir("emsdk"), ".emscripten"))
+        web_game = os.path.abspath(args.web_game) if args.web_game else None
         if generate(allow_fetch=not args.no_fetch, player_scripts=header,
-                    target_os=None if args.target == "linux" else args.target) != 0:
+                    target_os="windows" if args.target == "windows" else None,
+                    web=args.target == "web", web_game=web_game) != 0:
             return 1
         # make cannot tell that the -D naming the header changed: an export
         # of a second game kept the first game's objects, and shipped the
         # first game's compiled scripts. The export player's own folders are
         # cleared so it is always compiled against the header just given.
-        system = platform.system().lower()
+        # The folder premake actually writes for this target: the *target's*
+        # system, and the web build's -web suffix. Using the host's name here
+        # once cleared the wrong folder for Windows and the web -- a second web
+        # export then shipped the first game, baked into the reused .data.
+        system = "windows" if args.target == "windows" else "linux"
+        suffix = "-web" if args.target == "web" else ""
         for tree in ("bin-int", "bin"):
             shutil.rmtree(os.path.join(ROOT, tree,
-                f"Export-{args.config.capitalize()}-{system}-x86_64", "GSPlayer"),
+                f"Export-{args.config.capitalize()}-{system}-x86_64{suffix}", "GSPlayer"),
                 ignore_errors=True)
+        # A plain web build bakes --web-game into its .data at link time, and
+        # make relinks only when an object changed: removing the page forces
+        # the link that re-reads the game folder.
+        if args.target == "web":
+            for name in ("GSPlayer.html", "GSPlayer.data"):
+                try:
+                    os.remove(os.path.join(ROOT, "bin", f"{args.config.capitalize()}-linux-x86_64-web", "GSPlayer", name))
+                except FileNotFoundError:
+                    pass
         code = run(["make", f"-j{args.jobs}", f"config={args.config}", "GSPlayer"], env=environment)
         generate(allow_fetch=not args.no_fetch)
         return code
