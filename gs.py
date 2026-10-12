@@ -54,6 +54,7 @@ import os
 import re
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -236,7 +237,10 @@ def fetch_tool(name):
                     # zipfile has no "data" filter: each member's path is
                     # checked by hand, and the Unix mode bits it would drop
                     # are restored -- otherwise the NDK's compilers unpack
-                    # without their execute bit.
+                    # without their execute bit. So are symlinks, which
+                    # zipfile writes out as small files holding the target's
+                    # name: the NDK's `clang` is one (-> clang-21), and ran
+                    # as a shell script saying "clang-21: command not found".
                     with zipfile.ZipFile(archive) as bundle:
                         base = os.path.realpath(tmp + "/x")
                         for info in bundle.infolist():
@@ -380,6 +384,14 @@ def premake_path(allow_fetch=True):
     directory = os.path.join(ROOT, "vendor", "bin", "premake")
     path = os.path.join(directory, name)
 
+                            if stat.S_ISLNK(info.external_attr >> 16):
+                                link = bundle.read(info).decode()
+                                pointed = os.path.realpath(os.path.join(os.path.dirname(dest), link))
+                                if os.path.isabs(link) or not pointed.startswith(base + os.sep):
+                                    sys.exit(f"{name}: archive link escapes its folder: {info.filename} -> {link}")
+                                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                                os.symlink(link, dest)
+                                continue
     if os.path.isfile(path):
         return path
 
