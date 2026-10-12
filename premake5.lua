@@ -57,7 +57,10 @@ outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
 if _OPTIONS["web"] then
     outputdir = outputdir .. "-web"
     filter "options:web"
-        defines { "GS_PLATFORM_WEB" }
+        -- GS_GLES on the command line, not only in Core.h: gspch.h does not
+        -- include Core.h, and a file testing it first would silently take the
+        -- desktop GL path.
+        defines { "GS_PLATFORM_WEB", "GS_GLES" }
         buildoptions { "-fwasm-exceptions" }
         linkoptions { "-fwasm-exceptions" }
     filter {}
@@ -239,7 +242,7 @@ project "GS"
     filter "options:web"
         kind "StaticLib"
         removeincludedirs { "%{IncludeDir.Glad}" }
-        includedirs { "%{prj.name}/src/Platform/Web/shim" }
+        includedirs { "%{prj.name}/src/Platform/GLES/shim" }
         removelinks { "GLFW", "Glad" }
 
     filter "configurations:Debug"

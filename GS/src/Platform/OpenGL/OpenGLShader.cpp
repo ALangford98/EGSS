@@ -111,7 +111,7 @@ namespace GS {
 		return shaderSources;
 	}
 
-#ifdef GS_PLATFORM_WEB
+#ifdef GS_GLES
 	// "#version 330[ core]" -> "#version 300 es" plus default precisions,
 	// highp throughout: mediump would change results against desktop, which
 	// is the reference every export is compared with.
@@ -149,7 +149,7 @@ namespace GS {
 			const std::string& source = kv.second;
 
 			unsigned int shader = glCreateShader(type);
-#ifdef GS_PLATFORM_WEB
+#ifdef GS_GLES
 			// Every shader is written as GLSL 3.30 core; WebGL2 takes GLSL ES
 			// 3.00, which differs for this engine's shaders only in the
 			// version line and in requiring default precisions. Rewritten in

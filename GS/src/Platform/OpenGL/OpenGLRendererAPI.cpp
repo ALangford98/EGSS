@@ -10,7 +10,7 @@ namespace GS {
 	RendererAPI::API RendererAPI::s_API = RendererAPI::API::OpenGL;
 	RendererAPI* RenderCommand::s_RendererAPI = new OpenGLRendererAPI();
 
-#ifndef GS_PLATFORM_WEB
+#ifndef GS_GLES
 	// Turns GL's silent failures into log lines. Only fires if the context was
 	// created with GLFW_OPENGL_DEBUG_CONTEXT. (WebGL2 has no debug output.)
 	static void OpenGLMessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity,
@@ -28,7 +28,7 @@ namespace GS {
 
 	void OpenGLRendererAPI::Init()
 	{
-#if defined(GS_DEBUG) && !defined(GS_PLATFORM_WEB)
+#if defined(GS_DEBUG) && !defined(GS_GLES)
 		glEnable(GL_DEBUG_OUTPUT);
 		glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
 		glDebugMessageCallback(OpenGLMessageCallback, nullptr);
@@ -44,7 +44,7 @@ namespace GS {
 		// context created with four samples and multisampling disabled draws
 		// exactly as it did before, silently. Reported below so the log says
 		// which of the two failed if a driver refuses the hint.
-#ifndef GS_PLATFORM_WEB
+#ifndef GS_GLES
 		// WebGL2 has no switch: an antialiased context always resolves.
 		glEnable(GL_MULTISAMPLE);
 #endif
@@ -89,7 +89,7 @@ namespace GS {
 		glDepthMask(GL_TRUE);
 		glDisable(GL_CULL_FACE);
 		glLineWidth(1.0f);
-#ifndef GS_PLATFORM_WEB
+#ifndef GS_GLES
 		// Neither exists in WebGL2; fill is its only polygon mode.
 		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 		glPointSize(1.0f);
@@ -109,7 +109,7 @@ namespace GS {
 
 	void OpenGLRendererAPI::Clear()
 	{
-#ifdef GS_PLATFORM_WEB
+#ifdef GS_GLES
 		// WebGL2 refuses glClear(COLOR) outright (INVALID_OPERATION, nothing
 		// cleared) while an integer colour attachment is among the draw
 		// buffers -- the editor's entity-id target is one. Desktop GL only
@@ -193,7 +193,7 @@ namespace GS {
 		// GL_FRONT_AND_BACK is the only face argument the core profile accepts;
 		// asking for one side is a deprecated form that errors rather than
 		// doing half the job.
-#ifndef GS_PLATFORM_WEB
+#ifndef GS_GLES
 		GLenum which = GL_FILL;
 
 		switch (mode)
@@ -215,7 +215,7 @@ namespace GS {
 		// vertex shader's `gl_PointSize`, and a shader that never writes one
 		// leaves it undefined -- which came out as points too small to see, and
 		// looked like the points were not being drawn at all.
-#ifndef GS_PLATFORM_WEB
+#ifndef GS_GLES
 		glDisable(GL_PROGRAM_POINT_SIZE);
 		glPointSize(size);
 #else
@@ -301,7 +301,7 @@ namespace GS {
 
 	void OpenGLRendererAPI::BeginGpuTimer()
 	{
-#ifndef GS_PLATFORM_WEB
+#ifndef GS_GLES
 		if (m_GpuQuery == 0)
 			glGenQueries(1, &m_GpuQuery);
 
@@ -311,7 +311,7 @@ namespace GS {
 
 	double OpenGLRendererAPI::EndGpuTimerMs()
 	{
-#ifdef GS_PLATFORM_WEB
+#ifdef GS_GLES
 		// Timer queries are an optional WebGL2 extension; the diagnostic
 		// reports zero rather than depend on it.
 		return 0.0;

@@ -68,7 +68,7 @@ namespace GS {
 		: m_Count(count)
 	{
 		glGenBuffers(1, &m_RendererID);
-#ifdef GS_PLATFORM_WEB
+#ifdef GS_GLES
 		// WebGL fixes a buffer's target the first time it is bound, and an
 		// element buffer first bound as GL_ARRAY_BUFFER can never be bound as
 		// an element buffer again -- every draw then failed with
