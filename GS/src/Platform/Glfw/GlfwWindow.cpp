@@ -1,13 +1,20 @@
 #include "gspch.h"
-#include "LinuxWindow.h"
+#include "GlfwWindow.h"
 
+// The window for both desktop platforms: GLFW does the Win32 and X11 work
+// alike, and this file once existed twice (Linux/ and Windows/), with the
+// Windows copy left behind as the Linux one grew. Only wallpaper mode is
+// platform-specific -- X11 below; on Windows it warns and does nothing.
+//
 // The native handle, for wallpaper mode. GLFW here is built `_GLFW_X11` only,
 // so this is the X11 window even inside a Wayland session -- the session runs
 // it through XWayland, and XWayland windows are managed by the compositor like
 // any other X11 client.
+#ifdef GS_PLATFORM_LINUX
 #define GLFW_EXPOSE_NATIVE_X11
 #include <GLFW/glfw3native.h>
 #include <X11/Xatom.h>
+#endif
 
 #include "GS/Events/ApplicationEvent.h"
 #include "GS/Events/KeyEvent.h"
@@ -35,7 +42,7 @@ namespace GS {
 
 	Window* Window::Create(const WindowProps& props)
 	{
-		return new LinuxWindow(props);
+		return new GlfwWindow(props);
 	}
 
 	std::vector<MonitorInfo> Window::GetMonitors()
@@ -72,17 +79,17 @@ namespace GS {
 		return monitors;
 	}
 
-	LinuxWindow::LinuxWindow(const WindowProps& props)
+	GlfwWindow::GlfwWindow(const WindowProps& props)
 	{
 		Init(props);
 	}
 
-	LinuxWindow::~LinuxWindow()
+	GlfwWindow::~GlfwWindow()
 	{
 		Shutdown();
 	}
 
-	void LinuxWindow::Init(const WindowProps& props)
+	void GlfwWindow::Init(const WindowProps& props)
 	{
 		m_Data.Title = props.Title;
 		m_Data.Width = props.Width;
@@ -209,8 +216,14 @@ namespace GS {
 	// as an ordinary window instead -- in which case what you get is a
 	// borderless fullscreen window rather than a wallpaper, and the answer is a
 	// native layer-shell surface instead. That is the experiment.
-	void LinuxWindow::MakeDesktopWindow(bool show)
+	void GlfwWindow::MakeDesktopWindow(bool show)
 	{
+#ifndef GS_PLATFORM_LINUX
+		GS_CORE_WARN("--wallpaper is X11-only; ignored on this platform");
+		if (show)
+			glfwShowWindow(m_Window);
+		return;
+#else
 		Display* display = glfwGetX11Display();
 		::Window handle = glfwGetX11Window(m_Window);
 
@@ -250,12 +263,13 @@ namespace GS {
 			// primary starts at negative coordinates.
 			glfwSetWindowPos(m_Window, m_WallpaperX, m_WallpaperY);
 		}
+#endif
 	}
 
 	// Each callback recovers the WindowData from the user pointer, builds the
 	// matching Event, and hands it to whatever set the callback. GLFW is C, so
 	// these have to be captureless lambdas.
-	void LinuxWindow::SetGLFWCallbacks()
+	void GlfwWindow::SetGLFWCallbacks()
 	{
 		glfwSetWindowSizeCallback(m_Window, [](GLFWwindow* window, int width, int height)
 		{
@@ -350,18 +364,18 @@ namespace GS {
 		});
 	}
 
-	void LinuxWindow::Shutdown()
+	void GlfwWindow::Shutdown()
 	{
 		glfwDestroyWindow(m_Window);
 	}
 
-	void LinuxWindow::OnUpdate()
+	void GlfwWindow::OnUpdate()
 	{
 		glfwPollEvents();
 		glfwSwapBuffers(m_Window);
 	}
 
-	void LinuxWindow::SetVSync(bool enabled)
+	void GlfwWindow::SetVSync(bool enabled)
 	{
 		if (enabled)
 			glfwSwapInterval(1);
@@ -371,12 +385,12 @@ namespace GS {
 		m_Data.VSync = enabled;
 	}
 
-	bool LinuxWindow::IsVSync() const
+	bool GlfwWindow::IsVSync() const
 	{
 		return m_Data.VSync;
 	}
 
-	void LinuxWindow::SetCursorCaptured(bool captured)
+	void GlfwWindow::SetCursorCaptured(bool captured)
 	{
 		if (m_Data.CursorCaptured == captured)
 			return;

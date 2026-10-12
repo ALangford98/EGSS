@@ -4,7 +4,7 @@
 
 namespace GS {
 
-	class LinuxInput : public Input
+	class GlfwInput : public Input
 	{
 	protected:
 		bool IsKeyPressedImpl(int keycode) override;

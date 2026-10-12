@@ -128,8 +128,6 @@ project "GS"
         -- would otherwise fire on nearly every GS_API class.
         disablewarnings { "4251" }
 
-        removefiles { "%{prj.name}/src/Platform/Linux/**" }
-
         defines
         {
             "GS_PLATFORM_WINDOWS",
@@ -155,8 +153,6 @@ project "GS"
         cppdialect "C++17"
         staticruntime "off"
         pic "On"
-
-        removefiles { "%{prj.name}/src/Platform/Windows/**" }
 
         defines
         {

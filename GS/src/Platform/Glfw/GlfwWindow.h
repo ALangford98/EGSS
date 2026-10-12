@@ -6,11 +6,11 @@
 #include <GLFW/glfw3.h>
 
 namespace GS {
-	class LinuxWindow : public Window
+	class GlfwWindow : public Window
 	{
 	public:
-		LinuxWindow(const WindowProps&);
-		virtual ~LinuxWindow();
+		GlfwWindow(const WindowProps&);
+		virtual ~GlfwWindow();
 
 		void OnUpdate() override;
 

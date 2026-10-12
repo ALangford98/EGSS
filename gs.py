@@ -130,6 +130,21 @@ TOOLS = {
          "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d",
          "runtime-x86_64"),
     ],
+    # Windows export (piece 4): a self-contained Clang + MinGW-w64 + UCRT
+    # cross toolchain. Unpacked, one top-level folder stripped.
+    "llvm-mingw": [
+        ("https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/"
+         "llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64.tar.xz",
+         "bb7bb7654b33d5aa8712acb837c963b2e0c56352560c76105270a3268c665c21",
+         "unpack"),
+    ],
+    # Verifying a Windows export on this Linux machine: a portable Wine,
+    # used to *run* the exported game, never shipped with it.
+    "wine": [
+        ("https://github.com/Kron4ek/Wine-Builds/releases/download/11.18/wine-11.18-amd64.tar.xz",
+         "5717663b0541afe99efee507e1eac88d452b8adff0d3a5065abeed527890a3e8",
+         "unpack"),
+    ],
 }
 
 
@@ -146,7 +161,9 @@ def fetch_tool(name):
     os.makedirs(directory, exist_ok=True)
     for url, expected_sha, filename in TOOLS[name]:
         target = os.path.join(directory, filename)
-        if os.path.isfile(target):
+        unpack = filename == "unpack"
+        marker = os.path.join(directory, ".unpacked-" + expected_sha[:16])
+        if (unpack and os.path.isfile(marker)) or (not unpack and os.path.isfile(target)):
             continue
         print(f"fetching {url}")
         try:
@@ -158,6 +175,23 @@ def fetch_tool(name):
         if actual_sha != expected_sha:
             sys.exit(f"{filename}: checksum does not match.\n  expected {expected_sha}\n"
                      f"  got      {actual_sha}\nRefusing to install it.")
+        if unpack:
+            # Verified above, then unpacked with the "data" filter, which
+            # refuses absolute paths, ".." escapes and device files -- a
+            # crafted archive cannot write outside the tool's folder. The
+            # single top-level folder these archives have is stripped.
+            with tempfile.TemporaryDirectory() as tmp:
+                archive = os.path.join(tmp, "archive")
+                with open(archive, "wb") as handle:
+                    handle.write(payload)
+                with tarfile.open(archive) as bundle:
+                    bundle.extractall(tmp + "/x", filter="data")
+                top = os.listdir(tmp + "/x")
+                root = os.path.join(tmp, "x", top[0]) if len(top) == 1 else tmp + "/x"
+                for entry in os.listdir(root):
+                    shutil.move(os.path.join(root, entry), os.path.join(directory, entry))
+            open(marker, "w").close()
+            continue
         with open(target, "wb") as handle:
             handle.write(payload)
         os.chmod(target, 0o755)
