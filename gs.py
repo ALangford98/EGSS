@@ -116,6 +116,55 @@ PREMAKE_ARCHIVES = {
 }
 
 
+# Tools the game exporter downloads on first use, each pinned to a version
+# and to the SHA-256 its publisher lists for it (GitHub's release-asset
+# digests), checked before anything is written -- the same rule premake
+# follows above. Installed under vendor/bin/<tool>/, which is gitignored.
+TOOLS = {
+    # AppImage: one double-clickable file for a Linux export (piece 2).
+    "appimagetool": [
+        ("https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage",
+         "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0",
+         "appimagetool"),
+        ("https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64",
+         "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d",
+         "runtime-x86_64"),
+    ],
+}
+
+
+def tool_dir(name):
+    return os.path.join(ROOT, "vendor", "bin", name)
+
+
+def fetch_tool(name):
+    """Download, verify and install one pinned tool. Already-present files
+    are left alone, so this is cheap to call before every use."""
+    if name not in TOOLS:
+        sys.exit(f"Unknown tool '{name}'. Known: {', '.join(sorted(TOOLS))}")
+    directory = tool_dir(name)
+    os.makedirs(directory, exist_ok=True)
+    for url, expected_sha, filename in TOOLS[name]:
+        target = os.path.join(directory, filename)
+        if os.path.isfile(target):
+            continue
+        print(f"fetching {url}")
+        try:
+            with urllib.request.urlopen(url, timeout=600) as response:
+                payload = response.read()
+        except Exception as error:
+            sys.exit(f"Could not download {url}: {error}")
+        actual_sha = hashlib.sha256(payload).hexdigest()
+        if actual_sha != expected_sha:
+            sys.exit(f"{filename}: checksum does not match.\n  expected {expected_sha}\n"
+                     f"  got      {actual_sha}\nRefusing to install it.")
+        with open(target, "wb") as handle:
+            handle.write(payload)
+        os.chmod(target, 0o755)
+    print(f"{name} ready in {os.path.relpath(directory, ROOT)}")
+    return 0
+
+
 def run(command, **kwargs):
     """Run a command in the project root, echoing it first."""
     print("\033[90m$ " + " ".join(command) + "\033[0m")
@@ -871,9 +920,9 @@ def main():
     parser = argparse.ArgumentParser(description="Build and run GS.")
     parser.add_argument("command", nargs="?", default="run",
                         choices=["build", "run", "clean", "gen", "sanitize",
-                                 "prune", "windows", "traps"])
+                                 "prune", "windows", "traps", "fetch"])
     parser.add_argument("config", nargs="?", default="debug",
-                        choices=CONFIGS + ["all"])
+                        choices=CONFIGS + ["all"] + list(TOOLS))
     parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
     parser.add_argument("--no-gen", action="store_true",
                         help="skip regenerating project files")
@@ -923,6 +972,10 @@ def main():
     mode = "thread" if args.thread else ("address" if args.sanitize else None)
     if args.command == "sanitize" and mode is None:
         mode = "address"
+
+    # `fetch <tool>`: the second positional is the tool's name, not a config.
+    if args.command == "fetch":
+        return fetch_tool(args.config)
 
     if args.command == "windows":
         # Runs until interrupted. Its own script rather than something built in

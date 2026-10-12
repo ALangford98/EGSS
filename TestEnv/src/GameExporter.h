@@ -55,6 +55,7 @@ namespace GameExporter {
 		std::string PackageDir;
 		std::string Archive;
 		std::string Executable;
+		std::string AppImage;
 	};
 
 	namespace Detail {
@@ -493,7 +494,61 @@ namespace GameExporter {
 			return result;
 		}
 
+		// The AppImage: the same package as one double-clickable file. An
+		// AppDir is laid out -- AppRun, a .desktop entry, the icon, the
+		// package under usr/bin -- and appimagetool squashes it onto the
+		// pinned type-2 runtime. Run with APPIMAGE_EXTRACT_AND_RUN so neither
+		// the tool nor the result needs FUSE on the machine.
+		stage("Building the AppImage");
+		fs::path tools = fs::path(root) / "vendor" / "bin" / "appimagetool";
+		if (!fs::exists(tools / "appimagetool", ec) || !fs::exists(tools / "runtime-x86_64", ec))
+		{
+			std::string fetch = "python3 \"" + root + "/gs.py\" fetch appimagetool >> \"" + log.string() + "\" 2>&1";
+			if (std::system(fetch.c_str()) != 0)
+			{
+				result.Error = "could not fetch appimagetool -- see " + log.string();
+				return result;
+			}
+		}
+		std::string exe = ExecutableName(name);
+		fs::path appDir = build / "AppDir";
+		fs::remove_all(appDir, ec);
+		fs::create_directories(appDir / "usr" / "bin", ec);
+		fs::copy(package, appDir / "usr" / "bin", fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+		fs::path icon = manifest.Icon.empty()
+			? fs::path(root) / "TestEnv" / "assets" / "export" / "default-icon.png"
+			: project / manifest.Icon;
+		if (!fs::is_regular_file(icon, ec))
+		{
+			result.Error = "icon '" + icon.string() + "' named by project.gsproj does not exist";
+			return result;
+		}
+		fs::copy_file(icon, appDir / (exe + ".png"), fs::copy_options::overwrite_existing, ec);
+		fs::copy_file(icon, appDir / ".DirIcon", fs::copy_options::overwrite_existing, ec);
+		{
+			std::ofstream desktop(appDir / (exe + ".desktop"));
+			desktop << "[Desktop Entry]\nType=Application\nName=" << name << "\nExec=" << exe
+				<< "\nIcon=" << exe << "\nCategories=Game;\nTerminal=false\n";
+			std::ofstream run(appDir / "AppRun");
+			// The player changes to its own folder itself; AppRun only has
+			// to find it inside the mounted (or extracted) image.
+			run << "#!/bin/sh\nHERE=\"$(dirname \"$(readlink -f \"$0\")\")\"\nexec \"$HERE/usr/bin/" << exe << "\" \"$@\"\n";
+		}
+		fs::permissions(appDir / "AppRun", fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec
+			| fs::perms::others_read | fs::perms::others_exec, ec);
+		fs::path appImage = out / (name + "-x86_64.AppImage");
+		fs::remove(appImage, ec);
+		std::string squash = "ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 \"" + (tools / "appimagetool").string()
+			+ "\" --runtime-file \"" + (tools / "runtime-x86_64").string() + "\" \"" + appDir.string()
+			+ "\" \"" + appImage.string() + "\" >> \"" + log.string() + "\" 2>&1";
+		if (std::system(squash.c_str()) != 0 || !fs::exists(appImage, ec))
+		{
+			result.Error = "appimagetool failed -- see " + log.string();
+			return result;
+		}
+
 		result.Ok = true;
+		result.AppImage = appImage.string();
 		result.PackageDir = package.string();
 		result.Archive = archive.string();
 		result.Executable = executable.string();

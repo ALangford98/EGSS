@@ -118,6 +118,16 @@ inline bool WriteProjectManifest(const std::string& folderPath, const ProjectMan
 {
 	std::filesystem::path manifestPath = std::filesystem::path(folderPath) / ProjectManifestFilename();
 
+	// Callers build the manifest from editor state, which has no icon in it;
+	// carry forward the one already on disk rather than silently drop it.
+	std::string icon = manifest.Icon;
+	if (icon.empty())
+	{
+		ProjectManifest existing;
+		if (ReadProjectManifest(folderPath, existing))
+			icon = existing.Icon;
+	}
+
 	std::ofstream out(manifestPath.string());
 	if (!out)
 		return false;
@@ -127,6 +137,8 @@ inline bool WriteProjectManifest(const std::string& folderPath, const ProjectMan
 	out << "scene " << manifest.SceneRelativePath << "\n";
 	for (const SceneEntry& entry : manifest.Scenes)
 		out << "sceneentry " << entry.Name << " " << entry.RelativePath << "\n";
+	if (!icon.empty())
+		out << "icon " << icon << "\n";
 	return true;
 }
 

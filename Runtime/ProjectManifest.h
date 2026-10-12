@@ -24,6 +24,9 @@ struct ProjectManifest
 	std::string Name;
 	std::string SceneRelativePath;
 	std::vector<SceneEntry> Scenes;
+	// Optional, project-relative: the exported game's icon (a PNG). Empty
+	// means the engine's default.
+	std::string Icon;
 };
 
 inline const char* ProjectManifestFilename() { return "project.gsproj"; }
@@ -64,6 +67,10 @@ inline bool ReadProjectManifest(const std::string& folderPath, ProjectManifest& 
 		else if (key == "scene")
 		{
 			fields >> out.SceneRelativePath;
+		}
+		else if (key == "icon")
+		{
+			std::getline(fields >> std::ws, out.Icon);
 		}
 		else if (key == "sceneentry")
 		{

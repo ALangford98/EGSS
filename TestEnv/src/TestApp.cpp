@@ -34,6 +34,7 @@
 #include "NetworkPanel.h"
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
+#include "ManifestIconTest.h" // TEMPORARY
 #include "GameExporter.h"
 
 class TestEnv : public GS::Application
@@ -44,6 +45,7 @@ public:
 		// Headless game export -- GameExporter.h. Runs and exits before any
 		// editor state loads: nothing an export does depends on it.
 		RunExportIfAsked();
+		ManifestIconTest::Run(); // TEMPORARY
 
 		// Before the demos, so that on the step it hands over, the demo it
 		// hands over *to* is already the active one when the demos are walked.
@@ -120,7 +122,8 @@ public:
 		if (result.Ok)
 		{
 			GS_INFO("Exported to {0}", result.PackageDir);
-			std::printf("Exported: %s\nArchive:  %s\n", result.PackageDir.c_str(), result.Archive.c_str());
+			std::printf("Exported: %s\nArchive:  %s\nAppImage: %s\n", result.PackageDir.c_str(),
+				result.Archive.c_str(), result.AppImage.c_str());
 			std::exit(0);
 		}
 		GS_ERROR("Export failed: {0}", result.Error);
