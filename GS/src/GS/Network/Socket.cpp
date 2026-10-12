@@ -1,13 +1,58 @@
 #include "gspch.h"
 #include "GS/Network/Socket.h"
 
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <cerrno>
+#include <cstdint>
 #include <cstdlib>
+
+// BSD sockets on Linux, Winsock on Windows. The two differ only at the edges
+// this block papers over: how a socket is closed and made non-blocking, the
+// buffer pointer types, the error code for "nothing to read", and Winsock's
+// need to be started once before any socket exists.
+#ifdef GS_PLATFORM_WINDOWS
+	#include <winsock2.h>
+	#include <ws2tcpip.h>
+	namespace {
+		using ssize_t = long long;
+		using socklen_t = int;
+		// Once per process, before the first socket: Winsock refuses every
+		// call until WSAStartup has run.
+		void EnsureWinsock()
+		{
+			static bool started = [] { WSADATA data; return WSAStartup(MAKEWORD(2, 2), &data) == 0; }();
+			(void)started;
+		}
+		void CloseHandle(intptr_t handle) { closesocket((SOCKET)handle); }
+		void MakeNonBlocking(intptr_t handle) { u_long on = 1; ioctlsocket((SOCKET)handle, FIONBIO, &on); }
+		// WSAECONNRESET on a UDP receive is Windows reporting an ICMP "port
+		// unreachable" for an earlier send -- meaningless for connectionless
+		// UDP, and treated as an error it would make a client's socket look
+		// broken whenever its server restarts. It is "nothing to read".
+		bool NothingToRead()
+		{
+			int error = WSAGetLastError();
+			return error == WSAEWOULDBLOCK || error == WSAECONNRESET;
+		}
+	}
+#else
+	#include <sys/socket.h>
+	#include <netinet/in.h>
+	#include <arpa/inet.h>
+	#include <fcntl.h>
+	#include <unistd.h>
+	namespace {
+		void EnsureWinsock() {}
+		void CloseHandle(intptr_t handle) { close((int)handle); }
+		void MakeNonBlocking(intptr_t handle)
+		{
+			int flags = fcntl((int)handle, F_GETFL, 0);
+			fcntl((int)handle, F_SETFL, flags | O_NONBLOCK);
+		}
+		// EAGAIN/EWOULDBLOCK just means "nothing waiting" on a non-blocking
+		// socket -- not a real error.
+		bool NothingToRead() { return errno == EAGAIN || errno == EWOULDBLOCK; }
+	}
+#endif
 
 namespace GS {
 
@@ -36,7 +81,8 @@ namespace GS {
 
 	bool Socket::Bind(uint16_t port)
 	{
-		m_Handle = socket(AF_INET, SOCK_DGRAM, 0);
+		EnsureWinsock();
+		m_Handle = (intptr_t)socket(AF_INET, SOCK_DGRAM, 0);
 		if (m_Handle < 0)
 		{
 			GS_CORE_ERROR("Socket::Bind: socket() failed");
@@ -48,15 +94,14 @@ namespace GS {
 		address.sin_addr.s_addr = htonl(INADDR_ANY);
 		address.sin_port = htons(port);
 
-		if (bind(m_Handle, (sockaddr*)&address, sizeof(address)) < 0)
+		if (bind(m_Handle, (sockaddr*)&address, sizeof(address)) != 0)
 		{
 			GS_CORE_ERROR("Socket::Bind: bind() failed for port {0}", port);
 			Close();
 			return false;
 		}
 
-		int flags = fcntl(m_Handle, F_GETFL, 0);
-		fcntl(m_Handle, F_SETFL, flags | O_NONBLOCK);
+		MakeNonBlocking(m_Handle);
 
 		sockaddr_in actual{};
 		socklen_t actualLen = sizeof(actual);
@@ -70,7 +115,7 @@ namespace GS {
 	{
 		if (m_Handle >= 0)
 		{
-			close(m_Handle);
+			CloseHandle(m_Handle);
 			m_Handle = -1;
 			m_LocalPort = 0;
 		}
@@ -83,7 +128,7 @@ namespace GS {
 		address.sin_addr.s_addr = htonl(to.IP);
 		address.sin_port = htons(to.Port);
 
-		ssize_t sent = sendto(m_Handle, data, size, 0, (sockaddr*)&address, sizeof(address));
+		ssize_t sent = sendto(m_Handle, (const char*)data, (int)size, 0, (sockaddr*)&address, sizeof(address));
 		return sent == (ssize_t)size;
 	}
 
@@ -92,13 +137,9 @@ namespace GS {
 		sockaddr_in from{};
 		socklen_t fromLen = sizeof(from);
 
-		ssize_t received = recvfrom(m_Handle, buffer, maxSize, 0, (sockaddr*)&from, &fromLen);
+		ssize_t received = recvfrom(m_Handle, (char*)buffer, (int)maxSize, 0, (sockaddr*)&from, &fromLen);
 		if (received < 0)
-		{
-			// EAGAIN/EWOULDBLOCK just means "nothing waiting" on a non-blocking
-			// socket -- not a real error.
-			return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
-		}
+			return NothingToRead() ? 0 : -1;
 
 		fromOut.IP = ntohl(from.sin_addr.s_addr);
 		fromOut.Port = ntohs(from.sin_port);

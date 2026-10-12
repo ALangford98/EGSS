@@ -4,6 +4,8 @@
 #include "GS/Core.h"
 #include "GS/Log.h"
 
+#include <cstdint>
+
 namespace GS {
 
 	// Host byte order throughout -- converted to/from network byte order only
@@ -38,7 +40,8 @@ namespace GS {
 		uint16_t LocalPort() const { return m_LocalPort; }
 
 	private:
-		int m_Handle = -1;
+		// An fd on Linux, a SOCKET (pointer-sized) on Windows; -1 is none on both.
+		intptr_t m_Handle = -1;
 		uint16_t m_LocalPort = 0;
 	};
 

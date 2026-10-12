@@ -28,6 +28,22 @@
 
 namespace {
 
+	// The folder the player's own executable is in -- where it changes to,
+	// and where a packaged game's game/ sits.
+	std::filesystem::path ExecutableFolder()
+	{
+#ifdef GS_PLATFORM_WINDOWS
+		wchar_t buffer[32768];
+		DWORD length = GetModuleFileNameW(nullptr, buffer, (DWORD)(sizeof(buffer) / sizeof(buffer[0])));
+		if (length == 0 || length >= sizeof(buffer) / sizeof(buffer[0]))
+			return {};
+		return std::filesystem::path(std::wstring(buffer, length)).parent_path();
+#else
+		std::error_code ec;
+		return std::filesystem::read_symlink("/proc/self/exe", ec).parent_path();
+#endif
+	}
+
 	// Printed to stderr as well as the log: someone launching a game from a
 	// shell needs to see why it did not start.
 	[[noreturn]] void Fail(const std::string& message, int code)
@@ -164,7 +180,7 @@ namespace {
 			// Absolute before the directory change below: a folder typed
 			// relative to where the player was launched from means there.
 			std::error_code ec;
-			std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec).parent_path();
+			std::filesystem::path self = ExecutableFolder();
 			std::filesystem::path folder = given
 				? std::filesystem::absolute(arguments[1], ec)
 				: self / "game";

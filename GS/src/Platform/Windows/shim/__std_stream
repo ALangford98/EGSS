@@ -1,0 +1,22 @@
+// A stand-in for libc++'s private <__std_stream>, on the include path only
+// when cross-building for Windows with llvm-mingw (libc++).
+//
+// The fmt bundled in the vendored spdlog (v1.12) includes that private header
+// on Windows + libc++, to reach std::__stdoutbuf's FILE* for a console
+// Unicode fast path. Newer libc++ no longer ships the header, so every file
+// using spdlog failed to compile. Rather than edit the submodule or move
+// every build to a newer spdlog, this declares a type of that name that no
+// stream ever is: fmt's dynamic_cast to it fails, and it takes its ordinary
+// output path. All that is lost is that fast path, on Windows only.
+#pragma once
+#include <cstdio>
+#include <streambuf>
+
+namespace std {
+	template <class CharT>
+	class __stdoutbuf : public basic_streambuf<CharT>
+	{
+	public:
+		FILE* __file_ = nullptr;
+	};
+}

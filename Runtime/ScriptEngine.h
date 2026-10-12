@@ -15,7 +15,6 @@
 
 #include <GS.h>
 #include <quickjs.h>
-#include <imgui.h>
 
 #include <algorithm>
 #include <chrono>
@@ -855,7 +854,7 @@ private:
 		// reason: this view sits beside the Inspector/Assets/Find text
 		// fields, and typing in one of those shouldn't also drive whatever
 		// script is running under Play.
-		if (ImGui::GetIO().WantCaptureKeyboard)
+		if (GS::ImGuiLayer::WantsKeyboard())
 			return JS_NewBool(ctx, false);
 		if (argc < 1)
 			return JS_NewBool(ctx, false);

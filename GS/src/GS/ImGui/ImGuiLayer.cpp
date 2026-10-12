@@ -14,6 +14,11 @@ namespace GS {
 
 	std::string ImGuiLayer::s_FontPath;
 	bool ImGuiLayer::s_NoIniFile = false;
+
+	bool ImGuiLayer::WantsKeyboard()
+	{
+		return ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureKeyboard;
+	}
 	float ImGuiLayer::s_FontSizePixels = 16.0f;
 
 	ImGuiLayer::ImGuiLayer()

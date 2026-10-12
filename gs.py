@@ -327,7 +327,7 @@ def premake_path(allow_fetch=True):
     return fetch_premake(directory, name)
 
 
-def generate(allow_fetch=True, sanitize=False, player_scripts=None):
+def generate(allow_fetch=True, sanitize=False, player_scripts=None, target_os=None):
     """Regenerate project files. Cheap, so it is not conditional.
 
     Output is swallowed unless it fails. Because this now runs on every build,
@@ -349,6 +349,8 @@ def generate(allow_fetch=True, sanitize=False, player_scripts=None):
         command.append("--sanitize=" + sanitize)
     if player_scripts:
         command.append("--player-scripts=" + player_scripts)
+    if target_os:
+        command.append("--os=" + target_os)
 
     print("\033[90m$ " + " ".join(command) + "\033[0m")
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
@@ -976,6 +978,9 @@ def main():
     parser.add_argument("--keep", action="append", metavar="TREE",
                         help="with `prune`, a tree to spare by name; may be "
                              "given more than once")
+    parser.add_argument("--target", choices=["linux", "windows"], default="linux",
+                        help="with `build`: cross-build GSPlayer for another "
+                             "platform (windows: llvm-mingw, fetched on first use)")
     parser.add_argument("--player-scripts", metavar="HEADER",
                         help="with `build`: build only GSPlayer, against this "
                              "compiled-script registry header, into "
@@ -1045,12 +1050,23 @@ def main():
 
     # An export build of the player: generated with the option, only that
     # target built, then the project files regenerated plain -- so a later
-    # bare `make` builds the normal player, not this project's.
-    if args.player_scripts:
+    # bare `make` builds the normal player, not this project's. --target
+    # windows cross-compiles the same way, with llvm-mingw as the compiler:
+    # premake's --os=windows picks the projects' Windows filters, and the
+    # gmake2 Makefiles take CC/CXX/AR from the environment.
+    if args.player_scripts or args.target != "linux":
         if args.command != "build" or args.config == "all" or IS_WINDOWS:
-            sys.exit("--player-scripts: `build <one config>`, on Linux")
-        header = os.path.abspath(args.player_scripts)
-        if generate(allow_fetch=not args.no_fetch, player_scripts=header) != 0:
+            sys.exit("--player-scripts / --target: `build <one config>`, on Linux")
+        header = os.path.abspath(args.player_scripts) if args.player_scripts else None
+        environment = dict(os.environ)
+        if args.target == "windows":
+            if fetch_tool("llvm-mingw") != 0:
+                return 1
+            toolchain = os.path.join(tool_dir("llvm-mingw"), "bin", "x86_64-w64-mingw32-")
+            environment.update(CC=toolchain + "clang", CXX=toolchain + "clang++",
+                               AR=toolchain + "ar", RC=toolchain + "windres")
+        if generate(allow_fetch=not args.no_fetch, player_scripts=header,
+                    target_os=None if args.target == "linux" else args.target) != 0:
             return 1
         # make cannot tell that the -D naming the header changed: an export
         # of a second game kept the first game's objects, and shipped the
@@ -1061,7 +1077,7 @@ def main():
             shutil.rmtree(os.path.join(ROOT, tree,
                 f"Export-{args.config.capitalize()}-{system}-x86_64", "GSPlayer"),
                 ignore_errors=True)
-        code = run(["make", f"-j{args.jobs}", f"config={args.config}", "GSPlayer"])
+        code = run(["make", f"-j{args.jobs}", f"config={args.config}", "GSPlayer"], env=environment)
         generate(allow_fetch=not args.no_fetch)
         return code
 

@@ -67,6 +67,14 @@ namespace GS {
 		// folder it was launched from. Same timing rule as SetFontPath.
 		static void DisableIniFile() { s_NoIniFile = true; }
 
+		// Whether a UI text field has the keyboard right now -- so a running
+		// game's key polling can stand aside while someone types in the
+		// editor. Here rather than callers asking ImGui themselves: ImGui
+		// lives inside the engine library, and on Windows a DLL exports only
+		// what it marks, so code outside it (the runtime, scripts) cannot
+		// link against ImGui directly. False when there is no UI context.
+		static bool WantsKeyboard();
+
 		// Runtime font switching, unlike the static SetFontPath above (which
 		// only works pre-OnAttach) -- called any time after the ImGui
 		// context exists. Queues the request; Begin() applies it at the

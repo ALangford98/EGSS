@@ -27,7 +27,12 @@
 	#ifndef WIN32_LEAN_AND_MEAN
 		#define WIN32_LEAN_AND_MEAN
 	#endif
-	#include <Windows.h>
+	#include <windows.h>
+	// 16-bit-era pointer qualifiers, still defined (empty) by windows.h:
+	// they turn `float near = 0.0f;` into `float = 0.0f;`. Nothing modern
+	// uses them.
+	#undef near
+	#undef far
 #endif
 
 

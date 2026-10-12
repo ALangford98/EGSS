@@ -38,6 +38,25 @@ newoption {
 
 outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
 
+-- Post-build copies for a Windows *target*. Premake expands {COPY}/{COPYDIR}
+-- for the target's shell (cmd and xcopy), but when Windows is cross-built from
+-- Linux (gs.py build --target windows) make runs them in the host's /bin/sh,
+-- which choked on the first one. On a non-Windows host these spell the
+-- host's own commands instead; built on Windows, premake's tokens as before.
+function WindowsCopyFile(from, toDir)
+    if os.host() ~= "windows" then
+        return "mkdir -p " .. toDir .. " && cp -f " .. from .. " " .. toDir
+    end
+    return "{COPY} " .. from .. " " .. toDir
+end
+
+function WindowsCopyDir(from, to)
+    if os.host() ~= "windows" then
+        return "mkdir -p " .. to .. " && cp -rf " .. from .. "/. " .. to
+    end
+    return "{COPYDIR} " .. from .. " " .. to
+end
+
 -- Its own tree, so nothing links an instrumented object against a plain one
 -- and no plain build is ever slowed by a stale instrumented object. A suffix on
 -- the directory rather than flags added in place, because make cannot tell that
@@ -128,10 +147,18 @@ project "GS"
         -- would otherwise fire on nearly every GS_API class.
         disablewarnings { "4251" }
 
+        -- libc++ (llvm-mingw) no longer ships a private header the bundled
+        -- fmt includes on Windows; see the shim's own comment.
+        includedirs { "%{prj.name}/src/Platform/Windows/shim" }
+
         defines
         {
             "GS_PLATFORM_WINDOWS",
-            "GS_BUILD_DLL"
+            "GS_BUILD_DLL",
+            -- windows.h otherwise defines min/max as macros, which break
+            -- every std::min/std::max in the engine.
+            "NOMINMAX",
+            "WIN32_LEAN_AND_MEAN"
         }
 
         links
@@ -140,13 +167,14 @@ project "GS"
             "gdi32",
             "user32",
             "shell32",
-            "winmm"
+            "winmm",
+            "ws2_32"
         }
 
         postbuildcommands
         {
-            ("{COPY} %{cfg.buildtarget.relpath} ../bin/" .. outputdir .. "/TestEnv" ),
-            ("{COPY} %{cfg.buildtarget.relpath} ../bin/" .. outputdir .. "/GSPlayer" )
+            WindowsCopyFile("%{cfg.buildtarget.relpath}", "../bin/" .. outputdir .. "/TestEnv"),
+            WindowsCopyFile("%{cfg.buildtarget.relpath}", "../bin/" .. outputdir .. "/GSPlayer")
         }
 
     filter "system:linux"
@@ -286,7 +314,7 @@ project "TestEnv"
 
         postbuildcommands
         {
-            ("{COPYDIR} %{wks.location}/TestEnv/assets %{cfg.targetdir}/assets")
+            WindowsCopyDir("%{wks.location}/TestEnv/assets", "%{cfg.targetdir}/assets")
         }
 
     filter "system:linux"
@@ -415,10 +443,11 @@ project "GSPlayer"
         staticruntime "On"
         systemversion "latest"
         disablewarnings { "4251" }
-        defines { "GS_PLATFORM_WINDOWS" }
+        defines { "GS_PLATFORM_WINDOWS", "NOMINMAX", "WIN32_LEAN_AND_MEAN" }
+        includedirs { "GS/src/Platform/Windows/shim" }
         postbuildcommands
         {
-            ("{COPYDIR} %{wks.location}/TestEnv/assets %{cfg.targetdir}/assets")
+            WindowsCopyDir("%{wks.location}/TestEnv/assets", "%{cfg.targetdir}/assets")
         }
 
     filter "system:linux"
@@ -436,6 +465,11 @@ project "GSPlayer"
         {
             ("{COPYDIR} %{wks.location}/TestEnv/assets %{cfg.targetdir}")
         }
+
+    -- A shipped Windows game opens no console window behind itself. Debug
+    -- and Release keep the console for their logs.
+    filter { "system:windows", "configurations:Dist" }
+        kind "WindowedApp"
 
     filter "configurations:Debug"
         defines { "GS_DEBUG", "GS_ENABLE_ASSERTS", "GS_PROFILE" }
