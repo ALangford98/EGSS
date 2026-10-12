@@ -61,9 +61,10 @@ its own spec, in dependency order -- see
 
 1. ~~Runtime + standalone player~~ -- done 2026-10-07 (`GSPlayer`).
 2. ~~Packager + Linux export~~ -- done 2026-10-08 (`TestEnv --export`,
-   folder + `.tar.gz`). AppImage still to do.
+   folder + `.tar.gz`); AppImage added 2026-10-12.
 3. ~~Editor "Export Game..." dialog~~ -- done 2026-10-12.
-4. Windows, cross-compiled from Linux with a fetched toolchain.
+4. ~~Windows~~ -- done 2026-10-12, cross-compiled with llvm-mingw, verified
+   under Wine. Deferred: an embedded `.ico`, code signing.
 5. Web, via Emscripten + WebGL2.
 6. Android, via the NDK (all on Linux). Assessed 2026-10-12, feasible:
    all 60 shaders are GLSL 3.30 core, close to GLES 3.0 (rewrite the

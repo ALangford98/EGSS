@@ -7,6 +7,53 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-12 (Windows export, cross-built from Linux; and the Linux AppImage)
+
+**The owner asked for every remaining export piece without stopping between
+them,** so the design calls were made during the work. Each is recorded in
+its spec (`2026-10-12-windows-export-design.md`, and an AppImage addendum to
+the piece-2 spec).
+
+**Tools are fetched, pinned, and checked against their checksums.**
+`gs.py fetch <tool>` follows premake's rule: a pinned version, and the
+SHA-256 the publisher lists (GitHub release-asset digests), checked before
+anything is written. Archives are extracted with the `data` filter, so they
+can't write outside their folder. Pinned so far: `appimagetool` 1.9.1 and
+runtime 20251108, llvm-mingw 20260922, and a portable Wine 11.18 that's used
+only to run Windows exports here.
+
+**AppImage.** The Linux export also writes `<Game>-x86_64.AppImage`, built
+with `APPIMAGE_EXTRACT_AND_RUN`. An optional `icon` manifest line sets its
+icon, otherwise a default engine icon is used. The editor's manifest writer
+carries that line forward. The AppImage is 3.7 MB for the falling-box game,
+and it's byte-identical to editor Play both extracted-and-run and through a
+real FUSE mount.
+
+**Windows.** `gs.py build <config> --target windows` cross-builds the player
+with llvm-mingw through premake's own Windows filters. The port needed:
+
+- One GLFW window class for both desktops. The stale Windows copy is gone.
+- `windows.h` hygiene: `NOMINMAX`, and `near`/`far` undefined. These are
+  empty 16-bit-era macros, and they turned `float near = 0.0f` into
+  `float = 0.0f`.
+- A shim for a libc++ private header that the bundled `fmt` includes.
+- Winsock for `Socket`, with UDP `WSAECONNRESET` treated as nothing to read.
+- `GS::ImGuiLayer::WantsKeyboard()`. A Windows DLL exports only what it
+  marks, so `Runtime/` can't link ImGui.
+- `GetModuleFileNameW` for the player's own folder.
+- Host-shell copies when cross-building.
+
+Packages ship `libc++.dll` and `libunwind.dll` rather than linking the C++
+runtime statically: separate runtimes in the exe and `GS.dll` would break
+anything that crosses between them. Dist is a GUI-subsystem app. The
+`ScriptEngine` split that piece 4 was going to need turned out unnecessary.
+
+**Verified under Wine, with OpenGL passed to the real driver.** Breakout
+(compiled scripts in a cross-built registry) and the falling-box game,
+exported for Windows, unzipped fresh and run from `/`, both capture
+**byte-identical** to editor Play on Linux. None of it has run on real
+Windows hardware.
+
 ### 2026-10-12 (File > Export Game..., and what mobile would take)
 
 **Piece 3 of exporting games:** the editor's dialog over `GameExporter`.

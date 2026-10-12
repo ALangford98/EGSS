@@ -108,12 +108,15 @@ player frame can be captured at the same `--capture-step` and compared — they
 are byte-identical by construction, and that is the check. (`--play` is not
 it: that replays an input recording.)
 
-**Exporting a game** (Linux): from the editor's binary folder,
-`./TestEnv --export <project folder> --out <dir>` writes
-`<dir>/<Game Name>/` (the player renamed, `libGS.so`, `game/`) and a
-`.tar.gz`. It builds a player against the project's own compiled scripts via
-`./gs.py build dist --player-scripts <header>`, into `bin/Export-*`. Verify an
-export by unpacking it elsewhere and running it from another directory.
+**Exporting a game**: from the editor's binary folder,
+`./TestEnv --export <project folder> --out <dir> [--export-target windows]`
+writes `<dir>/<target>/<Game Name>/` plus an archive (Linux: `.tar.gz` and an
+AppImage; Windows: `.zip`). It builds a player against the project's own
+compiled scripts (`./gs.py build dist [--target windows] --player-scripts
+<header>`, into `bin/Export-*`). Toolchains are fetched, checksum-pinned, by
+`./gs.py fetch <tool>` into `vendor/bin/`. Verify an export by unpacking it
+elsewhere and running it from another directory -- Windows ones under the
+fetched Wine (`vendor/bin/wine/bin/wine`, with a scratch `WINEPREFIX`).
 
 **`TestEnv/` in the repo root is source, not a binary.** The executable is at
 `bin/<Config>-linux-x86_64/TestEnv/TestEnv` and must run from that directory —
