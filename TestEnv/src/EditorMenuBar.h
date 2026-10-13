@@ -22,6 +22,7 @@
 #include "Demo.h"
 #include "DemoRegistry.h"
 #include "EditorProject.h"
+#include "EditorProjectDialogs.h"
 #include "EditorHistory.h"
 #include "EditorSceneView.h"
 #include "EditorShell.h"
@@ -44,7 +45,17 @@ inline bool SceneOwnsUndoKeys()
 class EditorMenuBar : public GS::Layer
 {
 public:
-	EditorMenuBar() : Layer("EditorMenuBar") {}
+	EditorMenuBar() : Layer("EditorMenuBar")
+	{
+		// The window's close button asks first when work would be lost.
+		// With the UI hidden nothing could answer the question, so it quits.
+		GS::Application::Get().SetCloseRequestHandler([]
+		{
+			if (GS::Application::Get().IsUIHidden())
+				return true;
+			return SceneSwapGuard::RequestAction([] { GS::Application::Get().Close(); }, true);
+		});
+	}
 
 	void OnEvent(GS::Event& e) override
 	{
@@ -66,6 +77,16 @@ public:
 				|| GS::Input::IsKeyPressed(GS_KEY_RIGHT_CONTROL);
 			if (!ctrl)
 				return false;
+
+			// Ctrl+S saves the scene -- except where a panel saves its own
+			// file on it (the text editor saves and builds the script, the
+			// material editor saves the material), and during Play.
+			if (e.GetKeyCode() == GS_KEY_S && SceneOwnsUndoKeys())
+			{
+				if (!PlayMode::IsPlaying() && !g_EditorScenePath.empty())
+					SaveNow();
+				return true;
+			}
 
 			if (SceneOwnsUndoKeys())
 			{
@@ -97,6 +118,7 @@ public:
 			ImGui::EndMainMenuBar();
 		}
 
+		UpdateTitle();
 		DrawFileDialogs();
 		DrawViewDialogs();
 		DrawFindPopup();
@@ -129,33 +151,48 @@ private:
 		if (!ImGui::BeginMenu("File"))
 			return;
 
+		bool project = !g_EditorProjectPath.empty();
+		bool playing = PlayMode::IsPlaying();
+
 		if (ImGui::MenuItem("New Project..."))
-			m_PendingPopup = "New Project";
+			m_Projects.OpenNewProject();
 		if (ImGui::MenuItem("Open Project..."))
-			m_PendingPopup = "Open Project";
-
-		ImGui::Separator();
-
-		// "Save" works with or without an open Project: with one, it goes
-		// through the manifest; without one (a bare --scene session), it
-		// falls through to the same SaveEditorScene a --scene boot always
-		// had -- the spec calls this "additive... not a replacement".
-		if (ImGui::MenuItem("Save", nullptr, false, !g_EditorScenePath.empty()))
+			m_Projects.OpenOpenProject();
+		if (ImGui::BeginMenu("Open Recent"))
 		{
-			if (!g_EditorProjectPath.empty())
-				SaveEditorProject();
-			else
-				SaveEditorScene(g_EditorScenePath);
-			EditorHistory::MarkClean();
+			const auto& recents = m_Projects.Recents();
+			if (recents.empty())
+				ImGui::TextDisabled("(none)");
+			std::string open;
+			for (const auto& recent : recents)
+			{
+				std::string label = recent.Name + "  --  " + recent.Path;
+				if (ImGui::MenuItem(label.c_str(), nullptr, recent.Path == g_EditorProjectPath, recent.Exists))
+					open = recent.Path;
+			}
+			if (!open.empty())
+				m_Projects.RequestOpenProject(open);
+			ImGui::EndMenu();
 		}
-		if (ImGui::MenuItem("Save As..."))
-			m_PendingPopup = "Save Project As";
-		if (ImGui::MenuItem("Rename Project...", nullptr, false, !g_EditorProjectPath.empty()))
-			m_PendingPopup = "Rename Project";
+		if (ImGui::MenuItem("Close Project", nullptr, false, project && !playing))
+			m_Projects.RequestCloseProject();
 
 		ImGui::Separator();
 
-		if (ImGui::MenuItem("Export Game...", nullptr, false, !g_EditorProjectPath.empty()))
+		// Not during Play: the scene then is the running game, not the one
+		// being edited -- Stop restores that.
+		if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, !g_EditorScenePath.empty() && !playing))
+			SaveNow();
+		if (ImGui::MenuItem("Save Scene As...", nullptr, false, project && !playing))
+			m_Projects.OpenSaveSceneAs();
+
+		ImGui::Separator();
+
+		if (ImGui::MenuItem("Rename Project...", nullptr, false, project))
+			m_Projects.OpenRenameProject();
+		if (ImGui::MenuItem("Duplicate Project...", nullptr, false, project && !playing))
+			m_Projects.OpenDuplicateProject();
+		if (ImGui::MenuItem("Export Game...", nullptr, false, project && !playing))
 			m_ExportDialog.Open();
 
 		ImGui::Separator();
@@ -164,15 +201,17 @@ private:
 		{
 			// Starts in the project, which is where a material the scene
 			// links to belongs; the Browse button can go anywhere else.
-			if (m_DialogPath[0] == '\0' && !g_EditorProjectPath.empty())
+			if (m_MaterialFolder[0] == '\0' && project)
 			{
-				strncpy(m_DialogPath, g_EditorProjectPath.c_str(), sizeof(m_DialogPath) - 1);
-				m_DialogPath[sizeof(m_DialogPath) - 1] = '\0';
+				strncpy(m_MaterialFolder, g_EditorProjectPath.c_str(), sizeof(m_MaterialFolder) - 1);
+				m_MaterialFolder[sizeof(m_MaterialFolder) - 1] = '\0';
 			}
 			m_PendingPopup = "New Material";
 		}
 
-		if (ImGui::BeginMenu("Open Demo"))
+		// A demo's content, as a new scene of the open project -- every
+		// scene belongs to a project, so this needs one.
+		if (ImGui::BeginMenu("Add Demo Scene", project && !playing))
 		{
 			for (int i = 0; i < s_DemoCount; i++)
 			{
@@ -183,17 +222,17 @@ private:
 				{
 					SceneSwapGuard::RequestSceneSwap([this, i]
 					{
-						g_EditorScene.Clear();
-						g_EditorScenePath.clear();
-						// A demo's exported content isn't a Project (no folder, no
-						// manifest) -- leaving the previous project's path/name
-						// behind would keep Save/Rename Project enabled while
-						// pointing at a manifest that no longer matches what's
-						// on screen.
-						g_EditorProjectPath.clear();
-						g_EditorProjectName.clear();
+						std::string name = UniqueSceneName(s_Demos[i].Name);
+						std::string error;
+						bool ok = CreateSceneInProject(name, error) && OpenProjectScene(name, error);
 						SceneSwapGuard::ResetForNewScene();
-						s_DemoInstances[i]->OnExportToScene(g_EditorScene);
+						if (ok)
+						{
+							s_DemoInstances[i]->OnExportToScene(g_EditorScene);
+							ok = SaveEditorScene(error);
+						}
+						if (!ok)
+							m_Projects.ShowError(error);
 					});
 				}
 			}
@@ -203,18 +242,32 @@ private:
 		ImGui::EndMenu();
 	}
 
-	// One InputText + one "Browse..." button, shared by all three project
-	// dialogs below rather than repeated three times -- Browse opens
-	// m_FolderBrowser rooted at whatever's already typed (or the working
-	// directory if that's empty or not a real folder; FileBrowserPopup::Open
-	// falls back to that itself), so re-opening it narrows from wherever
-	// the field already points instead of restarting from scratch.
-	void DrawFolderField()
+	// "<Project> -- <Scene>*  ·  GS Editor": what is open, and whether it
+	// has unsaved changes, without opening a menu. Set only when it changes.
+	void UpdateTitle()
 	{
-		ImGui::InputText("Folder", m_DialogPath, sizeof(m_DialogPath));
-		ImGui::SameLine();
-		if (ImGui::Button("Browse...##folder"))
-			m_FolderBrowser.Open("Choose Project Folder", FileBrowserPopup::Mode::PickFolder, m_DialogPath);
+		std::string title;
+		std::string scene = g_EditorScenePath.empty() ? std::string()
+			: std::filesystem::path(g_EditorScenePath).stem().string() + (SceneSwapGuard::SceneIsDirty() ? "*" : "");
+		if (!g_EditorProjectPath.empty())
+			title = g_EditorProjectName + " -- " + scene + "  \xC2\xB7  GS Editor";
+		else if (!scene.empty())
+			title = scene + "  \xC2\xB7  GS Editor";
+		else
+			title = "GS Editor";
+		if (title != m_Title)
+		{
+			m_Title = title;
+			GS::Application::Get().GetWindow().SetTitle(title);
+		}
+	}
+
+	// File > Save Scene and Ctrl+S.
+	void SaveNow()
+	{
+		std::string error;
+		if (!SceneSwapGuard::SaveAll(false, error))
+			m_Projects.ShowError("Could not save: " + error);
 	}
 
 	void DrawFileDialogs()
@@ -229,6 +282,7 @@ private:
 					m_ExportDialog.Open();
 		}
 		m_ExportDialog.Draw();
+		m_Projects.Draw();
 
 		if (m_PendingPopup)
 		{
@@ -236,109 +290,32 @@ private:
 			m_PendingPopup = nullptr;
 		}
 
-		if (ImGui::BeginPopupModal("New Project", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-		{
-			DrawFolderField();
-			ImGui::InputText("Name", m_DialogName, sizeof(m_DialogName));
-			if (ImGui::Button("Create"))
-			{
-				bool succeeded = false;
-				bool ranNow = SceneSwapGuard::RequestSceneSwap([this, &succeeded]
-				{
-					succeeded = CreateEditorProject(m_DialogPath, m_DialogName);
-					if (succeeded)
-						SceneSwapGuard::ResetForNewScene();
-				});
-				// Either it ran now and we know whether it succeeded, or
-				// it was handed to the Unsaved Changes modal -- either
-				// way, this dialog's own job is done.
-				if (!ranNow || succeeded)
-					ImGui::CloseCurrentPopup();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel"))
-				ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
-		}
-
-		if (ImGui::BeginPopupModal("Open Project", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-		{
-			DrawFolderField();
-			if (ImGui::Button("Open"))
-			{
-				bool succeeded = false;
-				bool ranNow = SceneSwapGuard::RequestSceneSwap([this, &succeeded]
-				{
-					// GS::Scene::Load clears the scene before returning
-					// false on a wrong tag/version, so a failed open can
-					// still have wiped g_EditorScene -- history/selection
-					// must be reset regardless of whether the open itself
-					// succeeded.
-					succeeded = OpenEditorProject(m_DialogPath);
-					SceneSwapGuard::ResetForNewScene();
-				});
-				if (!ranNow || succeeded)
-					ImGui::CloseCurrentPopup();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel"))
-				ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
-		}
-
-		if (ImGui::BeginPopupModal("Save Project As", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-		{
-			DrawFolderField();
-			ImGui::InputText("Name", m_DialogName, sizeof(m_DialogName));
-			if (ImGui::Button("Save") && SaveEditorProjectAs(m_DialogPath, m_DialogName))
-			{
-				EditorHistory::MarkClean();
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel"))
-				ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
-		}
-
 		if (ImGui::BeginPopupModal("New Material", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 		{
-			DrawFolderField();
-			ImGui::InputText("Name", m_DialogName, sizeof(m_DialogName));
+			ImGui::InputText("Folder", m_MaterialFolder, sizeof(m_MaterialFolder));
+			ImGui::SameLine();
+			if (ImGui::Button("Browse...##material"))
+				m_FolderBrowser.Open("Choose Folder", FileBrowserPopup::Mode::PickFolder, m_MaterialFolder);
+			ImGui::InputText("Name", m_MaterialName, sizeof(m_MaterialName));
 			ImGui::TextDisabled("Creates <folder>/<name>.gsmat and opens it in the Material panel.");
-			if (ImGui::Button("Create") && m_DialogName[0] != '\0' && g_MaterialEditor
-				&& g_MaterialEditor->NewMaterial((std::filesystem::path(m_DialogPath) / (std::string(m_DialogName) + ".gsmat")).string()))
+			if (ImGui::Button("Create") && m_MaterialName[0] != '\0' && g_MaterialEditor
+				&& g_MaterialEditor->NewMaterial((std::filesystem::path(m_MaterialFolder) / (std::string(m_MaterialName) + ".gsmat")).string()))
 				ImGui::CloseCurrentPopup();
 			ImGui::SameLine();
 			if (ImGui::Button("Cancel"))
 				ImGui::CloseCurrentPopup();
+
+			// Inside the modal, so it stacks on it rather than closing it --
+			// see EditorProjectDialogs::DrawBrowser.
+			if (m_FolderBrowser.HasResult())
+			{
+				std::string picked = m_FolderBrowser.TakeResult();
+				strncpy(m_MaterialFolder, picked.c_str(), sizeof(m_MaterialFolder) - 1);
+				m_MaterialFolder[sizeof(m_MaterialFolder) - 1] = '\0';
+			}
+			m_FolderBrowser.Draw();
 			ImGui::EndPopup();
 		}
-
-		if (ImGui::BeginPopupModal("Rename Project", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-		{
-			ImGui::InputText("Name", m_DialogName, sizeof(m_DialogName));
-			if (ImGui::Button("Rename") && RenameEditorProject(m_DialogName))
-				ImGui::CloseCurrentPopup();
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel"))
-				ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
-		}
-
-		// Drawn once here rather than three times (one per dialog above) --
-		// only one of New/Open/Save-As can be open at a time anyway (they're
-		// all modals), so one shared browser and one shared result-apply is
-		// enough. Runs after every "if BeginPopupModal" block above so a
-		// Browse click made this frame still reaches ImGui::OpenPopup before
-		// the frame ends.
-		if (m_FolderBrowser.HasResult())
-		{
-			std::string picked = m_FolderBrowser.TakeResult();
-			strncpy(m_DialogPath, picked.c_str(), sizeof(m_DialogPath) - 1);
-			m_DialogPath[sizeof(m_DialogPath) - 1] = '\0';
-		}
-		m_FolderBrowser.Draw();
 	}
 
 	void DrawEditMenu()
@@ -541,10 +518,10 @@ private:
 	{
 		if (ImGui::BeginPopupModal("Save Layout", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 		{
-			ImGui::InputText("Name", m_DialogName, sizeof(m_DialogName));
+			ImGui::InputText("Name", m_LayoutName, sizeof(m_LayoutName));
 			if (ImGui::Button("Save"))
 			{
-				SaveLayoutPreset(m_DialogName);
+				SaveLayoutPreset(m_LayoutName);
 				ImGui::CloseCurrentPopup();
 			}
 			ImGui::SameLine();
@@ -585,15 +562,17 @@ private:
 		{
 			if (ImGui::Button("Stop"))
 			{
-				PlayMode::Stop();
-				SceneSwapGuard::ResetForNewScene(); // Stop()'s Scene::Load is a scene swap like any other -- same stale-id-aliasing risk New/Open/Open Demo already guard against
+				SceneSwapGuard::StopPlayKeepingUnsaved();
 			}
 		}
 	}
 private:
-	char m_DialogPath[256] = "";
-	char m_DialogName[128] = "";
+	char m_MaterialFolder[512] = "";
+	char m_MaterialName[128] = "";
+	char m_LayoutName[128] = "";
 	FileBrowserPopup m_FolderBrowser;
+	EditorProjectDialogs m_Projects;
+	std::string m_Title;
 	char m_FindQuery[128] = "";
 	bool m_FindRequested = false;
 	// OpenPopup must run at the same ID-stack scope as the matching

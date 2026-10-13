@@ -84,6 +84,15 @@ namespace GS {
 		// Stashed by EntryPoint before the application is constructed, so the
 		// constructor can read its own flags.
 		static void SetCommandLine(int argc, char** argv);
+
+		// Asked when the window's close button is pressed, before anything
+		// stops. Returning false keeps the application running -- an editor
+		// with unsaved work asks first, then calls Close() itself once the
+		// user has chosen. Unset, a close request quits as it always has.
+		void SetCloseRequestHandler(std::function<bool()> handler) { m_CloseRequestHandler = std::move(handler); }
+
+		// Quit at the end of this frame, as an unhandled close request does.
+		void Close() { m_Running = false; }
 		static const std::vector<std::string>& GetCommandLine();
 
 		// **Is the loop being driven by steps rather than by the clock?**
@@ -122,6 +131,7 @@ namespace GS {
 		bool OnWindowResize(WindowResizeEvent& e);
 	private:
 		std::unique_ptr<Window> m_Window;
+		std::function<bool()> m_CloseRequestHandler;
 		bool m_Running = true;
 		bool m_Minimized = false;
 		LayerStack m_LayerStack;

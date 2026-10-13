@@ -305,6 +305,8 @@ namespace GS {
 
 	bool Application::OnWindowClose(WindowCloseEvent& e)
 	{
+		if (m_CloseRequestHandler && !m_CloseRequestHandler())
+			return true;
 		m_Running = false;
 		return true;
 	}

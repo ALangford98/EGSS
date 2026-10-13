@@ -69,6 +69,18 @@ public:
 		if (!ImGui::BeginPopupModal(m_Title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings))
 			return;
 
+		// Up out of the folder it opened in -- without it a project anywhere
+		// but under the starting folder could not be reached.
+		std::filesystem::path parent = std::filesystem::path(m_Root).parent_path();
+		ImGui::BeginDisabled(parent.empty() || parent == std::filesystem::path(m_Root));
+		if (ImGui::SmallButton("Up"))
+		{
+			m_Root = parent.string();
+			if (m_Mode == Mode::PickFolder)
+				m_Selected = m_Root;
+		}
+		ImGui::EndDisabled();
+		ImGui::SameLine();
 		ImGui::TextDisabled("%s", m_Root.c_str());
 		ImGui::BeginChild("##browserentries", ImVec2(0.0f, -32.0f), true);
 		DrawDirectory(m_Root);

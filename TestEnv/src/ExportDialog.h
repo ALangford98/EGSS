@@ -130,15 +130,18 @@ public:
 				DrawUnsaved();
 			else
 				DrawSettings();
+
+			// Inside the modal, so the browser stacks on top of it: opened
+			// from the root scope, ImGui closed this dialog to make room
+			// (see EditorProjectDialogs::DrawBrowser).
+			if (m_FolderBrowser.HasResult())
+			{
+				std::string picked = m_FolderBrowser.TakeResult();
+				std::snprintf(m_OutDir, sizeof(m_OutDir), "%s", picked.c_str());
+			}
+			m_FolderBrowser.Draw();
 			ImGui::EndPopup();
 		}
-
-		if (m_FolderBrowser.HasResult())
-		{
-			std::string picked = m_FolderBrowser.TakeResult();
-			std::snprintf(m_OutDir, sizeof(m_OutDir), "%s", picked.c_str());
-		}
-		m_FolderBrowser.Draw();
 	}
 
 	ExportJob& Job() { return m_Job; }
@@ -146,7 +149,7 @@ public:
 private:
 	static bool HasUnsavedWork()
 	{
-		return EditorHistory::IsDirty() || (g_MaterialEditor && g_MaterialEditor->HasUnsavedChanges());
+		return EditorHistory::IsDirty() || g_SceneNeedsSave || (g_MaterialEditor && g_MaterialEditor->HasUnsavedChanges());
 	}
 
 	void PrepareFields()
@@ -220,7 +223,8 @@ private:
 		ImGui::TextUnformatted("The project has unsaved changes. The export reads the project from disk.");
 		if (ImGui::Button("Save and Export"))
 		{
-			if (EditorHistory::IsDirty() && SaveEditorProject())
+			std::string error;
+			if ((EditorHistory::IsDirty() || g_SceneNeedsSave) && SaveEditorScene(error))
 				EditorHistory::MarkClean();
 			if (g_MaterialEditor && g_MaterialEditor->HasUnsavedChanges())
 				g_MaterialEditor->SaveNow();

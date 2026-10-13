@@ -114,14 +114,17 @@ public:
 	{
 		GS::MaterialGraph graph;
 		std::string error;
-		if (!GS::LoadMaterialGraph(path, graph, error))
+		// A scene's material path is project-relative; the editor reads and
+		// writes the file it names.
+		std::string resolved = GS::Assets::Resolve(path);
+		if (!GS::LoadMaterialGraph(resolved, graph, error))
 		{
 			m_Status = error;
 			m_StatusIsError = true;
 			return false;
 		}
 		m_Graph = std::move(graph);
-		m_Path = path;
+		m_Path = resolved;
 		m_Undo.clear();
 		m_Redo.clear();
 		m_Committed = m_Saved = GS::SerializeMaterialGraph(m_Graph);

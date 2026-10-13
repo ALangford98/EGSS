@@ -448,7 +448,8 @@ public:
 			if (broken)
 				ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Material: %s (missing or invalid)", mesh->MaterialPath.c_str());
 			else
-				ImGui::TextDisabled("Material: %s", mesh->MaterialPath.empty() ? "(none)" : mesh->MaterialPath.c_str());
+				ImGui::TextDisabled("Material: %s%s", mesh->MaterialPath.empty() ? "(none)" : mesh->MaterialPath.c_str(),
+					IsOutsideProject(mesh->MaterialPath) ? "  (outside the project)" : "");
 			if (ImGui::Button("Browse...##material"))
 				m_MaterialBrowser.Open("Choose Material", FileBrowserPopup::Mode::PickFile,
 					g_EditorProjectPath.empty() ? "." : g_EditorProjectPath, ".gsmat");
@@ -522,31 +523,12 @@ public:
 					// generic name rather than crashing on a null dereference.
 					auto* entityTag = g_EditorScene.GetComponent<GS::TagComponent>(m_Selected);
 					std::string exportName = entityTag ? entityTag->Name : "Mesh";
-					std::string exportPath = "assets/" + exportName + ".obj";
-
-					// Collision suffix -- default entity names are literally
-					// "Cube"/"Sphere"/etc. (PlaceEntityCommand's own
-					// defaults), so two never-renamed entities colliding on
-					// the same export path is a real, likely case, not a
-					// hypothetical one. Skipped when this entity's own
-					// SourcePath already *is* the target path -- re-editing
-					// the same entity a second time should overwrite its own
-					// previous export, not spawn Cube1.obj, Cube2.obj, ...
-					// forever.
-					if (mesh->SourcePath != exportPath && std::filesystem::exists(exportPath))
-					{
-						int suffix = 1;
-						std::string candidate;
-						do
-						{
-							candidate = "assets/" + exportName + std::to_string(suffix) + ".obj";
-							suffix++;
-						} while (std::filesystem::exists(candidate) && candidate != mesh->SourcePath);
-						exportPath = candidate;
-					}
+					// In the project's meshes/ folder, so the edit travels
+					// with the project; re-editing overwrites its own file.
+					std::string exportPath = NewAssetPath("meshes", exportName, ".obj", mesh->SourcePath);
 
 					std::string error;
-					if (GS::ObjWriter::Save(exportPath, finalData, error))
+					if (GS::ObjWriter::Save(AssetDiskPath(exportPath), finalData, error))
 					{
 						std::string oldPath = mesh->SourcePath;
 						mesh->SourcePath = exportPath;
@@ -683,17 +665,14 @@ public:
 			if (ImGui::InputText("##scriptpath", pathBuf, sizeof(pathBuf)))
 				script->ScriptPath = pathBuf;
 			ImGui::SameLine();
-			// Rooted at the open project's folder (falls back to the
-			// working directory itself if none is open) -- that's a real
-			// path only relative to the working directory, per how
-			// ScriptEngine/PlayMode actually open it (a plain
-			// std::ifstream against ScriptPath, no project-folder prefix),
-			// which is why the result is converted back to that below
-			// rather than kept as the absolute path the browser picked it
-			// with.
+			// Rooted at the open project's folder; the pick is stored
+			// relative to it (StoreAssetPath), which is how the runtime
+			// resolves it.
 			if (ImGui::Button("Browse...##script"))
 				m_ScriptBrowser.Open("Choose Script", FileBrowserPopup::Mode::PickFile,
 					g_EditorProjectPath.empty() ? "." : g_EditorProjectPath, ".gss");
+			if (IsOutsideProject(script->ScriptPath))
+				ImGui::TextDisabled("Outside the project -- it will not move with it.");
 			if (ImGui::Button("Remove Script"))
 				g_EditorScene.RemoveComponent<GS::ScriptComponent>(m_Selected);
 		}
@@ -708,24 +687,20 @@ public:
 			std::string picked = m_ScriptBrowser.TakeResult();
 			if (auto* script = g_EditorScene.GetComponent<GS::ScriptComponent>(m_Selected))
 			{
-				std::error_code ec;
-				std::filesystem::path relative = std::filesystem::relative(picked, std::filesystem::current_path(ec), ec);
-				script->ScriptPath = (ec || relative.empty()) ? picked : relative.generic_string();
+				script->ScriptPath = StoreAssetPath(picked);
 			}
 		}
 		m_ScriptBrowser.Draw();
 
-		// Relative to the working directory when it can be, for the same
-		// reason the script path is: that is how the scene is reloaded.
+		// Relative to the project when inside it, absolute otherwise -- the
+		// form GS::Assets resolves in the editor and the player alike.
 		if (m_MaterialBrowser.HasResult())
 		{
 			std::string picked = m_MaterialBrowser.TakeResult();
 			if (auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(m_Selected))
 			{
-				std::error_code ec;
-				std::filesystem::path relative = std::filesystem::relative(picked, std::filesystem::current_path(ec), ec);
 				std::string old = mesh->MaterialPath;
-				mesh->MaterialPath = (ec || relative.empty()) ? picked : relative.generic_string();
+				mesh->MaterialPath = StoreAssetPath(picked);
 				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::MeshComponent, std::string>>(
 					m_Selected, &GS::MeshComponent::MaterialPath, old, mesh->MaterialPath));
 			}
@@ -1004,7 +979,7 @@ private:
 		else if (mesh->SourcePath.rfind("primitive:cylinder", 0) == 0)
 			outData = GS::Mesh::CreateCylinderData();
 		else
-			return GS::Mesh::LoadData(mesh->SourcePath, outData, error);
+			return GS::Mesh::LoadData(GS::Assets::Resolve(mesh->SourcePath), outData, error);
 		return true;
 	}
 
@@ -1059,20 +1034,9 @@ private:
 
 			// Same collision-suffixed path Done (Edit Mesh) already
 			// computes -- deliberately identical, not re-derived.
-			std::string exportPath = "assets/" + exportName + ".obj";
-			if (mesh->SourcePath != exportPath && std::filesystem::exists(exportPath))
-			{
-				int suffix = 1;
-				std::string candidate;
-				do
-				{
-					candidate = "assets/" + exportName + std::to_string(suffix) + ".obj";
-					suffix++;
-				} while (std::filesystem::exists(candidate) && candidate != mesh->SourcePath);
-				exportPath = candidate;
-			}
+			std::string exportPath = NewAssetPath("meshes", exportName, ".obj", mesh->SourcePath);
 
-			if (!GS::ObjWriter::Save(exportPath, data, error))
+			if (!GS::ObjWriter::Save(AssetDiskPath(exportPath), data, error))
 				return false;
 
 			std::string oldPath = mesh->SourcePath;
@@ -1091,7 +1055,8 @@ private:
 			chartIds = GS::UvUnwrap::FindIslandsFromUVs(data);
 		}
 
-		return GS::UvTemplateWriter::Write("assets/" + exportName + "_uv.png", resolution, data, chartIds, error);
+		return GS::UvTemplateWriter::Write(AssetDiskPath(NewAssetPath("textures", exportName + "_uv", ".png")),
+			resolution, data, chartIds, error);
 	}
 
 	void BuildTarget()
