@@ -3,6 +3,8 @@
 // the editor when it opens a project and by GSPlayer when it runs one.
 #include <GS.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -27,7 +29,25 @@ struct ProjectManifest
 	// Optional, project-relative: the exported game's icon (a PNG). Empty
 	// means the engine's default.
 	std::string Icon;
+	// Multisample anti-aliasing, samples per pixel (1 = off). The editor's
+	// scene view and the exported game both draw with it, so the editor
+	// shows what the game will look like. Absent: 4, the window's own.
+	unsigned int Antialiasing = 4;
 };
+
+inline unsigned int DefaultAntialiasing() { return 4; }
+
+// --antialiasing <n> on the command line, for the editor or the player:
+// overrides the project's setting for this run -- how a regression capture
+// asks for the exact output it was taken with. 0 when absent.
+inline unsigned int AntialiasingOverride()
+{
+	const std::vector<std::string>& arguments = GS::Application::GetCommandLine();
+	for (size_t i = 1; i + 1 < arguments.size(); i++)
+		if (arguments[i] == "--antialiasing")
+			return (unsigned int)std::max(1, std::atoi(arguments[i + 1].c_str()));
+	return 0;
+}
 
 inline const char* ProjectManifestFilename() { return "project.gsproj"; }
 
@@ -67,6 +87,12 @@ inline bool ReadProjectManifest(const std::string& folderPath, ProjectManifest& 
 		else if (key == "scene")
 		{
 			fields >> out.SceneRelativePath;
+		}
+		else if (key == "antialiasing")
+		{
+			int samples = 0;
+			if (fields >> samples && samples >= 1)
+				out.Antialiasing = (unsigned int)samples;
 		}
 		else if (key == "icon")
 		{

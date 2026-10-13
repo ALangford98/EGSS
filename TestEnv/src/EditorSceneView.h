@@ -1071,6 +1071,11 @@ private:
 			GS::FramebufferTextureFormat::RED_INTEGER,
 			GS::FramebufferTextureFormat::DEPTH24STENCIL8
 		};
+		// Anti-aliased like the window the demos draw into: without it this
+		// target -- and so the whole editor view -- had hard, stepped edges
+		// the demos never showed.
+		m_Antialiasing = EditorAntialiasing();
+		spec.Samples = m_Antialiasing;
 
 		m_Framebuffer.reset(GS::Framebuffer::Create(spec));
 		m_BlitCamera.SetProjection(-1.0f, 1.0f, -1.0f, 1.0f);
@@ -1113,6 +1118,15 @@ private:
 		if (window.GetWidth() > 0 && window.GetHeight() > 0 &&
 			(spec.Width != window.GetWidth() || spec.Height != window.GetHeight()))
 			m_Framebuffer->Resize(window.GetWidth(), window.GetHeight());
+
+		// The project's setting changes (View > Anti-aliasing, or another
+		// project opening): rebuilt at the new level.
+		unsigned int antialiasing = EditorAntialiasing();
+		if (antialiasing != m_Antialiasing)
+		{
+			m_Antialiasing = antialiasing;
+			m_Framebuffer->SetSamples(antialiasing);
+		}
 	}
 
 	void BlitToWindow()
@@ -1803,6 +1817,7 @@ private:
 	bool m_MouseDownLastFrame = false;
 	float m_DragStartT = 0.0f;
 	glm::vec3 m_DragStartPosition{ 0.0f };
+	unsigned int m_Antialiasing = 1;     // samples asked of m_Framebuffer
 	float m_GizmoLength = 1.0f;
 	float m_GizmoPickPixels = 12.0f;
 

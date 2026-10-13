@@ -29,6 +29,12 @@ namespace GS {
 		// In order. Colour attachments are numbered by their position here;
 		// a depth format may appear at most once, in any position.
 		std::vector<FramebufferTextureFormat> Attachments;
+
+		// Multisample anti-aliasing: samples per pixel, 1 for none. Drawing
+		// lands in multisampled buffers, resolved into the attachments --
+		// the textures callers read -- on Unbind and before a pixel read.
+		// More than the driver offers is clamped to its maximum.
+		unsigned int Samples = 1;
 	};
 
 	// An off-screen render target. Draw calls issued while it is bound land in
@@ -54,6 +60,10 @@ namespace GS {
 		// Destroys and recreates the attachments. Cheap enough to call
 		// whenever a panel is resized, but not something to do every frame.
 		virtual void Resize(unsigned int width, unsigned int height) = 0;
+
+		// Changes the anti-aliasing level, rebuilding the buffers. The
+		// effective count (after clamping) is in GetSpecification().Samples.
+		virtual void SetSamples(unsigned int samples) = 0;
 
 		// Reads one pixel back from an integer attachment. Synchronous, so it
 		// stalls the pipeline -- fine once per frame under the cursor, not

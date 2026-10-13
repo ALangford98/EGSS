@@ -76,16 +76,21 @@ namespace {
 			if (!m_Scene.Load(scenePath))
 				Fail("could not load scene '" + scenePath + "'", 1);
 
-			// The same target the editor's Scene view draws into -- colour,
-			// entity id, depth -- so the frame is drawn the same way.
+			// Colour and depth, anti-aliased as the project says -- the
+			// editor's Scene view draws with the same setting, which is why
+			// the two frames match. No entity-id attachment: nothing in a
+			// game picks by pixel, and GLES (web, Android, iOS) cannot
+			// multisample an integer one, so having it would have cost those
+			// platforms their anti-aliasing.
 			GS::FramebufferSpecification spec;
 			spec.Width = window.GetWidth() > 0 ? window.GetWidth() : 1280;
 			spec.Height = window.GetHeight() > 0 ? window.GetHeight() : 720;
 			spec.Attachments = {
 				GS::FramebufferTextureFormat::RGBA8,
-				GS::FramebufferTextureFormat::RED_INTEGER,
 				GS::FramebufferTextureFormat::DEPTH24STENCIL8
 			};
+			unsigned int forced = AntialiasingOverride();
+			spec.Samples = forced ? forced : m_Manifest.Antialiasing;
 			m_Framebuffer.reset(GS::Framebuffer::Create(spec));
 			m_BlitCamera.SetProjection(-1.0f, 1.0f, -1.0f, 1.0f);
 
@@ -134,7 +139,6 @@ namespace {
 			m_Framebuffer->Bind();
 			GS::RenderCommand::SetClearColor({ 0.10f, 0.11f, 0.13f, 1.0f });
 			GS::RenderCommand::Clear();
-			m_Framebuffer->ClearAttachment(1, -1);
 			GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 			m_Renderer.Render(m_Scene, *camera);
 			GS::RenderCommand::SetCullFace(GS::CullFace::None);

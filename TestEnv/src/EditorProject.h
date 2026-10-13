@@ -45,6 +45,20 @@ inline std::string g_EditorProjectName;
 // lines). The scene CRUD below keeps it and the manifest in step.
 inline std::vector<SceneEntry> g_ProjectScenes;
 
+// The open project's anti-aliasing (its manifest's `antialiasing`), which
+// the scene view draws with. Changed from View > Anti-aliasing, and written
+// to the manifest straight away, as a rename is.
+inline unsigned int g_ProjectAntialiasing = 4;
+
+// What the scene view should draw with now: --antialiasing for this run,
+// else the project's, else the default.
+inline unsigned int EditorAntialiasing()
+{
+	if (unsigned int forced = AntialiasingOverride())
+		return forced;
+	return g_EditorProjectPath.empty() ? DefaultAntialiasing() : g_ProjectAntialiasing;
+}
+
 // Unsaved changes that are not in the undo history: asset paths rewritten
 // to the project-relative form when an older project was opened. Cleared
 // by a save and by opening another scene.
@@ -245,6 +259,10 @@ inline bool WriteProjectManifest(const std::string& folderPath, const ProjectMan
 	out << "scene " << manifest.SceneRelativePath << "\n";
 	for (const SceneEntry& entry : manifest.Scenes)
 		out << "sceneentry " << entry.Name << " " << entry.RelativePath << "\n";
+	// Only when not the default, so a project that never touched it keeps
+	// the manifest it had.
+	if (manifest.Antialiasing != DefaultAntialiasing())
+		out << "antialiasing " << manifest.Antialiasing << "\n";
 	if (!icon.empty())
 		out << "icon " << icon << "\n";
 	return true;
@@ -261,6 +279,7 @@ inline void PersistProjectScenes()
 	ProjectManifest manifest;
 	manifest.Name = g_EditorProjectName;
 	manifest.Scenes = g_ProjectScenes;
+	manifest.Antialiasing = g_ProjectAntialiasing;
 
 	for (const SceneEntry& entry : g_ProjectScenes)
 	{
@@ -320,6 +339,7 @@ inline void CloseEditorProject()
 	g_EditorProjectName.clear();
 	g_ProjectScenes.clear();
 	g_SceneNeedsSave = false;
+	g_ProjectAntialiasing = DefaultAntialiasing();
 	GS::Assets::SetRoot("");
 }
 
@@ -357,6 +377,7 @@ inline bool OpenEditorProject(const std::string& path, std::string& error)
 	g_EditorProjectPath = normalised;
 	g_EditorProjectName = manifest.Name.empty() ? folder.filename().string() : manifest.Name;
 	g_ProjectScenes = manifest.Scenes;
+	g_ProjectAntialiasing = manifest.Antialiasing;
 	GS::Assets::SetRoot(normalised);
 
 	if (!LoadSceneFile(scenePath, error))

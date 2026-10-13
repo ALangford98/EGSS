@@ -15,6 +15,7 @@ namespace GS {
 		void Unbind() override;
 
 		void Resize(unsigned int width, unsigned int height) override;
+		void SetSamples(unsigned int samples) override;
 
 		int ReadPixel(unsigned int attachmentIndex, int x, int y) override;
 		glm::vec4 ReadPixelRGBA(unsigned int attachmentIndex, int x, int y) override;
@@ -31,6 +32,12 @@ namespace GS {
 		// Tears down any existing attachments and builds them from the current
 		// specification. Used by both the constructor and Resize.
 		void Invalidate();
+		void Release();
+		void BuildMultisampled();
+
+		// Multisampled buffers -> the attachment textures. Leaves the
+		// framebuffer bindings as it found them.
+		void Resolve();
 	private:
 		FramebufferSpecification m_Specification;
 
@@ -42,6 +49,16 @@ namespace GS {
 		unsigned int m_RendererID = 0;
 		std::vector<unsigned int> m_ColorAttachments;
 		unsigned int m_DepthAttachment = 0;
+
+		// What was asked for; m_Specification.Samples is what was built.
+		unsigned int m_RequestedSamples = 1;
+
+		// With Samples > 1: where drawing goes. Renderbuffers, because
+		// nothing samples a multisampled image directly -- it is only ever
+		// resolved into the textures above.
+		unsigned int m_MultisampleID = 0;
+		std::vector<unsigned int> m_MultisampleColor;
+		unsigned int m_MultisampleDepth = 0;
 	};
 
 }

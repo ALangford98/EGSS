@@ -502,6 +502,29 @@ private:
 
 		ImGui::Separator();
 
+		// A project setting, not an editor one: the exported game draws with
+		// it too, so what the view shows is what the game will.
+		if (ImGui::BeginMenu("Anti-aliasing"))
+		{
+			bool project = !g_EditorProjectPath.empty();
+			bool forced = AntialiasingOverride() != 0;
+			if (!project)
+				ImGui::TextDisabled("A project setting -- open a project to change it.");
+			if (forced)
+				ImGui::TextDisabled("Set by --antialiasing for this run.");
+			static const struct { const char* Label; unsigned int Samples; } levels[] = {
+				{ "Off", 1 }, { "2x MSAA", 2 }, { "4x MSAA", 4 }, { "8x MSAA", 8 } };
+			for (const auto& level : levels)
+				if (ImGui::MenuItem(level.Label, nullptr, EditorAntialiasing() == level.Samples, project && !forced))
+				{
+					g_ProjectAntialiasing = level.Samples;
+					PersistProjectScenes();
+				}
+			ImGui::EndMenu();
+		}
+
+		ImGui::Separator();
+
 		if (ImGui::MenuItem("Save current layout as..."))
 			m_PendingPopup = "Save Layout";
 		if (ImGui::MenuItem("Reset to default") && g_EditorShellInstance)
