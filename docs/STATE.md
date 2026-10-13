@@ -37,6 +37,10 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-13 — Project save/load reworked** (project-centric): the
+  editor reopens the last project or shows a Projects window; Ctrl+S;
+  quit asks; asset paths project-relative (older projects migrate on
+  open). Fixed Browse… closing its own dialog.
 - **2026-10-12 — iOS export** (export piece 7, the last): an Xcode project
   to build on a Mac. **Never built by Xcode** — compiled/linked here under
   the iOS defines with stand-ins for UIKit. All seven export pieces landed.

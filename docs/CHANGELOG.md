@@ -7,6 +7,64 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-13 (Project save/load reworked around the project)
+
+The owner couldn't get saving and loading to work. Reading the flow showed
+why; the decisions are in
+`docs/superpowers/specs/2026-10-13-project-save-load-design.md`.
+
+**What was broken:**
+
+- **Browse… closed its own dialog**, in New Project, Open Project, Save As
+  and Export. The browser was opened at the root popup level, and ImGui
+  closes every popup above the level a popup opens at (`ClosePopupToLevel`
+  in `OpenPopupEx`). So the folder then picked went nowhere. Confirmed in
+  ImGui's source, and fixed by drawing each browser inside the dialog that
+  asked. A capture with New Project's browser open shows the dialog still
+  behind it.
+- **A relaunch reopened the last scene file**, without its project.
+- **Asset picks were stored relative to the editor's build folder**
+  (`../../../../MyGame/x.gss`). Edit Mesh and Export UV Template wrote into
+  the build folder's `assets/`, never into the project.
+- **Save As wrote one scene and a one-scene manifest.** New Project and
+  Save As overwrote any project already in the chosen folder.
+- **No Ctrl+S, and no question on quit.** Stopping Play cleared the undo
+  history, and with it the record of unsaved edits, so Play, Stop, quit
+  lost them.
+
+**Now:**
+
+- **Startup:** the editor reopens the last project, or shows a Projects
+  window of recent ones. The list is per user, in
+  `$XDG_CONFIG_HOME/gs-editor/`, and untouched by `--capture`, `--play`
+  and `--export` runs.
+- **Saving:** Ctrl+S and File > Save Scene save the scene; Save Scene As
+  adds a new scene to the project.
+- **Copying:** Duplicate Project copies the whole folder.
+- **Quitting:** the window's close button asks first, through a new
+  `Application::SetCloseRequestHandler`. Any action that would replace the
+  scene asks too, and stops Play first, so the edited scene is what gets
+  saved.
+- **Paths:** asset paths are project-relative, with the project as the
+  `GS::Assets` root. Edited meshes go to `<project>/meshes/`. The editor's
+  own `assets/...` keep the editor-relative form.
+- **Older projects migrate on open.** The rewrite happens in memory, and
+  the scene opens marked unsaved, so nothing is written until you save.
+- **The repository's BreakoutRecreation** now names its scripts
+  `paddle.gss` and `ball.gss`.
+
+**Verified** by a temporary self-test, 43 checks against hand-written file
+contents in a scratch folder and a scratch `XDG_CONFIG_HOME`.
+
+- **Its first run caught a real hole.** A legacy `../../..` path that
+  climbs past `/` also resolves from the project folder, because `/..` is
+  `/`, so it was kept. Paths containing `..` now always migrate.
+- **Startup was checked both ways:** an interactive launch reopens the
+  last project, and a capture run neither reopens it nor rewrites the list.
+- **Nothing else moved.** The editor, material and cube captures, Breakout
+  in editor Play, GSPlayer, and a fresh export unpacked elsewhere are all
+  byte-identical to before.
+
 ### 2026-10-12 (iOS export: an Xcode project, checked without a Mac)
 
 **Piece 7, the last of the export roadmap.** `--export-target ios` (and the
