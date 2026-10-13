@@ -25,6 +25,7 @@
 #include "EditorProject.h"
 #include "EntityGroups.h"
 #include "FileBrowserPopup.h"
+#include "GizmoMath.h"
 #include "MaterialEditorPanel.h"
 #include "MaterialLibrary.h"
 #include "SceneRenderer.h"
@@ -59,6 +60,19 @@ public:
 	}
 
 	bool IsActive() const { return g_ActiveDemo == InvalidDemo; }
+
+	// What the gizmo does: 1, 2, 3 choose, T cycles, and the menu bar shows
+	// and sets it. Not W/E/R, the usual editor keys -- WASD and Q/E fly the
+	// camera here.
+	enum class GizmoMode { Move, Rotate, Scale };
+	GizmoMode GetGizmoMode() const { return m_GizmoMode; }
+	void SetGizmoMode(GizmoMode mode)
+	{
+		// Not mid-drag: the gesture would change meaning under the cursor.
+		if (m_DragAxis < 0)
+			m_GizmoMode = mode;
+	}
+	bool IsMeshEditing() const { return m_MeshEditActive; }
 
 	void Select(GS::EntityId entity) { m_Selected = entity; }
 	GS::EntityId GetSelected() const { return m_Selected; }
@@ -105,9 +119,21 @@ public:
 			DrawCameraRays();
 			DrawLightGizmos();
 			DrawMeshEditOverlay();
-			if (m_ShowGizmo)
-				DrawGizmo();
 			GS::Renderer2D::EndScene();
+
+			// The gizmo on top of everything, in a batch of its own with no
+			// depth test. Depth-tested, it sat at the selected object's
+			// centre *inside* the object, and any object larger than the
+			// handles hid it completely -- a capture of a 2 m box showed no
+			// gizmo at all, in any mode, the old Move one included.
+			if (m_ShowGizmo)
+			{
+				GS::RenderCommand::SetDepthTest(false);
+				GS::Renderer2D::BeginScene(ActiveCamera());
+				DrawGizmo();
+				GS::Renderer2D::EndScene();
+				GS::RenderCommand::SetDepthTest(true);
+			}
 		}
 
 		ReadHoveredEntity();
@@ -184,6 +210,17 @@ public:
 				m_GroupPromptRequested = true;
 				m_GroupPromptNeedsConfirm = EntityGroups::AnyAlreadyGrouped(m_MultiSelection);
 			}
+			// Gizmo modes: not while typing into a field, and not with Ctrl
+			// (Ctrl+number is left free for something else).
+			else if (!CtrlHeld() && !ImGui::GetIO().WantCaptureKeyboard)
+			{
+				if (e.GetKeyCode() == GS_KEY_1) SetGizmoMode(GizmoMode::Move);
+				else if (e.GetKeyCode() == GS_KEY_2) SetGizmoMode(GizmoMode::Rotate);
+				else if (e.GetKeyCode() == GS_KEY_3) SetGizmoMode(GizmoMode::Scale);
+				else if (e.GetKeyCode() == GS_KEY_T)
+					SetGizmoMode(m_GizmoMode == GizmoMode::Move ? GizmoMode::Rotate
+						: m_GizmoMode == GizmoMode::Rotate ? GizmoMode::Scale : GizmoMode::Move);
+			}
 			return false;
 		});
 	}
@@ -192,6 +229,8 @@ public:
 	{
 		if (!IsActive())
 			return;
+
+		DrawGizmoDragTooltip();
 
 		// An entity Ctrl-selected earlier can be deleted from under the
 		// multi-selection (Delete key, or another session action) --
@@ -1424,7 +1463,7 @@ private:
 	}
 
 	// Nearest edit-session point to a screen-space click, in the same
-	// on-screen-pixel-distance terms as the gizmo's own AxisScreenDistance --
+	// on-screen-pixel-distance terms as the gizmo's own HandleScreenDistance --
 	// `const` because, like WorldToScreen, it only reads state (the mouse
 	// click itself is handled by Task 9's caller).
 	int PickMeshEditPoint(const glm::vec2& mouse) const
@@ -1497,26 +1536,135 @@ private:
 		return true;
 	}
 
-	float AxisScreenDistance(int axis, const glm::vec2& mouse)
+	// --- The gizmo -----------------------------------------------------------
+	// One set of handles, three modes (1/2/3, T cycles; the menu bar shows
+	// which): Move drags along world axes, Rotate turns about them, Scale
+	// stretches along the entity's own axes or, from the centre, uniformly.
+	// Hold Ctrl to snap rotation to 15 degrees and scale to steps of 0.1.
+	// A mesh-edit session moves single points, so it is Move only.
+	//
+	// Handle ids: 0, 1, 2 are the X, Y, Z axes; 3 is Scale's centre.
+
+	GizmoMode EffectiveGizmoMode() const { return m_MeshEditActive ? GizmoMode::Move : m_GizmoMode; }
+
+	// A fixed share of the distance to the camera, so the gizmo is the same
+	// size on screen near or far. It was a fixed metre: a speck at fifty
+	// metres, and wider than the view at half a metre.
+	float GizmoLength()
 	{
 		glm::vec3* origin = GizmoPosition();
 		if (!origin)
-			return std::numeric_limits<float>::max();
+			return m_GizmoLength;
+		return std::max(0.05f, glm::length(*origin - m_Camera.GetPosition()) * m_GizmoScreenShare);
+	}
 
+	static glm::mat3 RotationFromEuler(const glm::vec3& degrees) { return GizmoMath::RotationFromEuler(degrees); }
+
+	// Which way a handle points in the world: the world axis, except Scale
+	// on one entity, whose handles follow its own (rotated) axes -- scale is
+	// applied before rotation, so that is the direction it stretches.
+	glm::vec3 GizmoAxis(int axis)
+	{
 		glm::vec3 direction(0.0f);
 		direction[axis] = 1.0f;
+		if (EffectiveGizmoMode() == GizmoMode::Scale && m_MultiSelection.size() <= 1)
+			if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected))
+				return glm::normalize(RotationFromEuler(transform->Rotation) * direction);
+		return direction;
+	}
 
+	// A point on the ring around world axis `axis`, at angle `theta`.
+	glm::vec3 RingPoint(const glm::vec3& origin, int axis, float radius, float theta) const
+	{
+		glm::vec3 u(0.0f), v(0.0f);
+		u[(axis + 1) % 3] = 1.0f;
+		v[(axis + 2) % 3] = 1.0f;
+		return origin + radius * (std::cos(theta) * u + std::sin(theta) * v);
+	}
+
+	float SegmentScreenDistance(const glm::vec3& from, const glm::vec3& to, const glm::vec2& mouse) const
+	{
 		glm::vec2 a, b;
-		if (!WorldToScreen(*origin, a) || !WorldToScreen(*origin + direction * m_GizmoLength, b))
+		if (!WorldToScreen(from, a) || !WorldToScreen(to, b))
 			return std::numeric_limits<float>::max();
-
 		glm::vec2 segment = b - a;
 		float lengthSquared = glm::dot(segment, segment);
 		if (lengthSquared < 0.0001f)
 			return glm::length(mouse - a);
-
 		float t = glm::clamp(glm::dot(mouse - a, segment) / lengthSquared, 0.0f, 1.0f);
 		return glm::length(mouse - (a + segment * t));
+	}
+
+	float HandleScreenDistance(int handle, const glm::vec2& mouse)
+	{
+		glm::vec3* target = GizmoPosition();
+		if (!target)
+			return std::numeric_limits<float>::max();
+		glm::vec3 origin = *target;
+		float length = GizmoLength();
+
+		switch (EffectiveGizmoMode())
+		{
+			case GizmoMode::Rotate:
+			{
+				if (handle > 2)
+					return std::numeric_limits<float>::max();
+				float best = std::numeric_limits<float>::max();
+				for (int i = 0; i < s_RingSegments; i++)
+				{
+					float a = glm::two_pi<float>() * i / s_RingSegments;
+					float b = glm::two_pi<float>() * (i + 1) / s_RingSegments;
+					best = std::min(best, SegmentScreenDistance(RingPoint(origin, handle, length, a),
+						RingPoint(origin, handle, length, b), mouse));
+				}
+				return best;
+			}
+			case GizmoMode::Scale:
+				if (handle == 3)
+				{
+					glm::vec2 centre;
+					return WorldToScreen(origin, centre) ? glm::length(mouse - centre) : std::numeric_limits<float>::max();
+				}
+				return SegmentScreenDistance(origin, origin + GizmoAxis(handle) * length, mouse);
+			case GizmoMode::Move:
+			default:
+				if (handle > 2)
+					return std::numeric_limits<float>::max();
+				return SegmentScreenDistance(origin, origin + GizmoAxis(handle) * length, mouse);
+		}
+	}
+
+	// The nearest handle within reach of the cursor, or -1. Scale's centre
+	// is tried first: every axis line starts there too.
+	int PickHandle(const glm::vec2& mouse)
+	{
+		if (EffectiveGizmoMode() == GizmoMode::Scale && HandleScreenDistance(3, mouse) < m_GizmoPickPixels)
+			return 3;
+		int best = -1;
+		float bestDistance = m_GizmoPickPixels;
+		for (int axis = 0; axis < 3; axis++)
+		{
+			float distance = HandleScreenDistance(axis, mouse);
+			if (distance < bestDistance)
+			{
+				bestDistance = distance;
+				best = axis;
+			}
+		}
+		return best;
+	}
+
+	static bool RayPlane(const glm::vec3& rayOrigin, const glm::vec3& rayDirection,
+		const glm::vec3& planePoint, const glm::vec3& normal, glm::vec3& hit)
+	{
+		float facing = glm::dot(rayDirection, normal);
+		if (std::abs(facing) < 0.0001f)
+			return false;
+		float t = glm::dot(planePoint - rayOrigin, normal) / facing;
+		if (t < 0.0f)
+			return false;
+		hit = rayOrigin + rayDirection * t;
+		return true;
 	}
 
 	void UpdateGizmo()
@@ -1544,55 +1692,16 @@ private:
 
 		if (!down)
 		{
-			// The drag just ended (m_DragAxis was set) -- push one command
-			// for the whole gesture here, not per-frame while dragging, so
-			// Undo puts the object back where it was grabbed in a single
-			// step rather than replaying every intermediate frame.
+			// One command for the whole gesture, pushed when it ends, so Undo
+			// puts things back as they were grabbed in a single step.
 			//
-			// Excluded while a mesh-edit session is active: GizmoPosition()
-			// then returns &m_MeshEditSessionWorldPoint, not &transform->
-			// Position, so m_DragStartPosition holds the *point's* world
-			// coordinate and transform->Position (the entity's own, untouched
-			// origin) is a different value entirely -- comparing them here
-			// would push a bogus EditFieldCommand onto the global
-			// EditorHistory stack whose "old value" is not any real prior
-			// position of this entity. The mesh-edit session has its own
-			// undo stack (EditableMesh::PushUndo/Undo) for exactly this
-			// gesture; this global one must stay out of it.
+			// Not while a mesh-edit session is active: GizmoPosition() then
+			// returns the *point's* world position, not the entity's, and
+			// the session has its own undo stack for exactly this gesture.
 			if (m_DragAxis >= 0 && !m_MeshEditActive)
-			{
-				if (m_MultiSelection.size() > 1)
-				{
-					std::vector<GS::EntityId> entities;
-					std::vector<glm::vec3> before, after;
-					bool anyMoved = false;
-					for (auto& [entity, startPos] : m_MultiSelectionStartPositions)
-						if (auto* memberTransform = g_EditorScene.GetComponent<GS::TransformComponent>(entity))
-						{
-							entities.push_back(entity);
-							before.push_back(startPos);
-							after.push_back(memberTransform->Position);
-							if (memberTransform->Position != startPos)
-								anyMoved = true;
-						}
-					if (anyMoved)
-						EditorHistory::Push(std::make_unique<MultiMoveCommand>(entities, before, after));
-				}
-				else if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected))
-					if (transform->Position != m_DragStartPosition)
-						EditorHistory::Push(std::make_unique<EditFieldCommand<GS::TransformComponent, glm::vec3>>(
-							m_Selected, &GS::TransformComponent::Position, m_DragStartPosition, transform->Position));
-			}
-
+				FinishGizmoDrag();
 			m_DragAxis = -1;
-			m_HoverAxis = -1;
-
-			for (int axis = 0; axis < 3; axis++)
-				if (AxisScreenDistance(axis, mouse) < m_GizmoPickPixels)
-				{
-					m_HoverAxis = axis;
-					break;
-				}
+			m_HoverAxis = PickHandle(mouse);
 			return;
 		}
 
@@ -1601,24 +1710,51 @@ private:
 
 		if (m_DragAxis < 0)
 		{
-			if (m_HoverAxis < 0 || !justPressed)
-				return;
+			if (m_HoverAxis >= 0 && justPressed)
+				BeginGizmoDrag(m_HoverAxis, mouse, rayOrigin, rayDirection);
+			return;
+		}
 
-			glm::vec3* target = GizmoPosition();
-			if (!target)
-				return;
+		switch (m_DragMode)
+		{
+			case GizmoMode::Move: DragMove(rayOrigin, rayDirection); break;
+			case GizmoMode::Rotate: DragRotate(mouse, rayOrigin, rayDirection); break;
+			case GizmoMode::Scale: DragScale(mouse, rayOrigin, rayDirection); break;
+		}
+	}
 
-			glm::vec3 axisDirection(0.0f);
-			axisDirection[m_HoverAxis] = 1.0f;
+	void BeginGizmoDrag(int handle, const glm::vec2& mouse, const glm::vec3& rayOrigin, const glm::vec3& rayDirection)
+	{
+		glm::vec3* target = GizmoPosition();
+		if (!target)
+			return;
 
+		m_DragMode = EffectiveGizmoMode();
+		m_DragStartPosition = *target;
+		m_DragStartMouse = mouse;
+		m_DragValue = m_DragMode == GizmoMode::Scale ? 1.0f : 0.0f;
+
+		// Whole transforms of everything the gesture can change -- what
+		// Rotate and Scale compute from, and their undo's "before".
+		m_DragStartTransforms.clear();
+		if (!m_MeshEditActive)
+		{
+			if (m_MultiSelection.size() > 1)
+			{
+				for (GS::EntityId entity : m_MultiSelection)
+					if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(entity))
+						m_DragStartTransforms.push_back({ entity, *transform });
+			}
+			else if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected))
+				m_DragStartTransforms.push_back({ m_Selected, *transform });
+		}
+
+		if (m_DragMode == GizmoMode::Move)
+		{
 			float t;
-			if (!ClosestPointOnAxis(*target, axisDirection, rayOrigin, rayDirection, t))
+			if (!ClosestPointOnAxis(*target, GizmoAxis(handle), rayOrigin, rayDirection, t))
 				return;
-
-			m_DragAxis = m_HoverAxis;
 			m_DragStartT = t;
-			m_DragStartPosition = *target;
-
 			if (m_MultiSelection.size() > 1)
 			{
 				m_MultiSelectionStartPositions.clear();
@@ -1626,11 +1762,38 @@ private:
 					if (auto* memberTransform = g_EditorScene.GetComponent<GS::TransformComponent>(entity))
 						m_MultiSelectionStartPositions.push_back({ entity, memberTransform->Position });
 			}
-			return;
+		}
+		else if (m_DragMode == GizmoMode::Rotate)
+		{
+			// Turned by where the cursor meets the ring's plane -- unless the
+			// ring is seen edge-on, where that point runs off to infinity:
+			// then sideways mouse movement turns it instead.
+			glm::vec3 normal(0.0f), hit;
+			normal[handle] = 1.0f;
+			m_RotateByScreen = std::abs(glm::dot(rayDirection, normal)) < 0.08f
+				|| !RayPlane(rayOrigin, rayDirection, *target, normal, hit)
+				|| glm::length(hit - *target) < 0.0001f;
+			if (!m_RotateByScreen)
+				m_RotatePrevious = glm::normalize(hit - *target);
+			m_RotateAngle = 0.0f;
+		}
+		else if (handle != 3)
+		{
+			m_DragScaleAxis = GizmoAxis(handle);
+			float t;
+			if (!ClosestPointOnAxis(*target, m_DragScaleAxis, rayOrigin, rayDirection, t))
+				return;
+			// Grabbed (nearly) at the centre, a ratio of distances would
+			// explode: the handle's own length stands in.
+			m_DragStartT = std::abs(t) < GizmoLength() * 0.1f ? GizmoLength() : t;
 		}
 
-		glm::vec3 axisDirection(0.0f);
-		axisDirection[m_DragAxis] = 1.0f;
+		m_DragAxis = handle;
+	}
+
+	void DragMove(const glm::vec3& rayOrigin, const glm::vec3& rayDirection)
+	{
+		glm::vec3 axisDirection = GizmoAxis(m_DragAxis);
 
 		float t;
 		if (!ClosestPointOnAxis(m_DragStartPosition, axisDirection, rayOrigin, rayDirection, t))
@@ -1644,6 +1807,7 @@ private:
 		// origin to the cursor.
 		glm::vec3 newPivot = m_DragStartPosition + axisDirection * (t - m_DragStartT);
 		*target = newPivot;
+		m_DragValue = t - m_DragStartT;
 
 		if (m_MultiSelection.size() > 1)
 		{
@@ -1654,6 +1818,127 @@ private:
 		}
 	}
 
+	void DragRotate(const glm::vec2& mouse, const glm::vec3& rayOrigin, const glm::vec3& rayDirection)
+	{
+		glm::vec3 normal(0.0f);
+		normal[m_DragAxis] = 1.0f;
+
+		if (m_RotateByScreen)
+			m_RotateAngle = (mouse.x - m_DragStartMouse.x) * 0.5f;
+		else
+		{
+			// Summed a frame at a time, so a drag can go round more than
+			// once -- one atan2 against the start would wrap at 180.
+			glm::vec3 hit;
+			if (RayPlane(rayOrigin, rayDirection, m_DragStartPosition, normal, hit)
+				&& glm::length(hit - m_DragStartPosition) > 0.0001f)
+			{
+				glm::vec3 current = glm::normalize(hit - m_DragStartPosition);
+				m_RotateAngle += GizmoMath::SignedAngle(m_RotatePrevious, current, normal);
+				m_RotatePrevious = current;
+			}
+		}
+
+		float angle = CtrlHeld() ? std::round(m_RotateAngle / 15.0f) * 15.0f : m_RotateAngle;
+		m_DragValue = angle;
+
+		// About the pivot: a lone entity's own position (which so stays
+		// put), or a group's centre, which its members orbit.
+		for (auto& [entity, start] : m_DragStartTransforms)
+			if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(entity))
+				*transform = GizmoMath::Rotated(start, m_DragStartPosition, m_DragAxis, angle);
+	}
+
+	void DragScale(const glm::vec2& mouse, const glm::vec3& rayOrigin, const glm::vec3& rayDirection)
+	{
+		float factor;
+		if (m_DragAxis == 3)
+		{
+			// The centre: right or up grows, left or down shrinks.
+			float delta = (mouse.x - m_DragStartMouse.x) - (mouse.y - m_DragStartMouse.y);
+			factor = 1.0f + delta * 0.005f;
+		}
+		else
+		{
+			float t;
+			if (!ClosestPointOnAxis(m_DragStartPosition, m_DragScaleAxis, rayOrigin, rayDirection, t))
+				return;
+			factor = t / m_DragStartT;
+		}
+		if (CtrlHeld())
+			factor = std::round(factor * 10.0f) / 10.0f;
+		factor = std::max(factor, 0.01f);
+		m_DragValue = factor;
+
+		// Each entity in place, along its own axes.
+		for (auto& [entity, start] : m_DragStartTransforms)
+			if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(entity))
+				*transform = GizmoMath::Scaled(start, m_DragAxis, factor);
+	}
+
+	static bool SameTransform(const GS::TransformComponent& a, const GS::TransformComponent& b)
+	{
+		return a.Position == b.Position && a.Rotation == b.Rotation && a.Scale == b.Scale;
+	}
+
+	void FinishGizmoDrag()
+	{
+		if (m_DragMode == GizmoMode::Move)
+		{
+			if (m_MultiSelection.size() > 1)
+			{
+				std::vector<GS::EntityId> entities;
+				std::vector<glm::vec3> before, after;
+				bool anyMoved = false;
+				for (auto& [entity, startPos] : m_MultiSelectionStartPositions)
+					if (auto* memberTransform = g_EditorScene.GetComponent<GS::TransformComponent>(entity))
+					{
+						entities.push_back(entity);
+						before.push_back(startPos);
+						after.push_back(memberTransform->Position);
+						if (memberTransform->Position != startPos)
+							anyMoved = true;
+					}
+				if (anyMoved)
+					EditorHistory::Push(std::make_unique<MultiMoveCommand>(entities, before, after));
+			}
+			else if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected))
+				if (transform->Position != m_DragStartPosition)
+					EditorHistory::Push(std::make_unique<EditFieldCommand<GS::TransformComponent, glm::vec3>>(
+						m_Selected, &GS::TransformComponent::Position, m_DragStartPosition, transform->Position));
+			return;
+		}
+
+		std::vector<GS::EntityId> entities;
+		std::vector<GS::TransformComponent> before, after;
+		bool changed = false;
+		for (auto& [entity, start] : m_DragStartTransforms)
+			if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(entity))
+			{
+				entities.push_back(entity);
+				before.push_back(start);
+				after.push_back(*transform);
+				changed = changed || !SameTransform(start, *transform);
+			}
+		if (changed)
+			EditorHistory::Push(std::make_unique<SetTransformsCommand>(entities, before, after));
+	}
+
+	// What the drag has done so far, beside the cursor.
+	void DrawGizmoDragTooltip()
+	{
+		if (m_DragAxis < 0 || GS::Application::Get().IsUIHidden())
+			return;
+		static const char* axes[] = { "X", "Y", "Z", "all" };
+		const char* axis = axes[m_DragAxis];
+		switch (m_DragMode)
+		{
+			case GizmoMode::Move: ImGui::SetTooltip("Move %s  %+.3f", axis, m_DragValue); break;
+			case GizmoMode::Rotate: ImGui::SetTooltip("Rotate %s  %+.1f deg%s", axis, m_DragValue, CtrlHeld() ? "  (snap 15)" : ""); break;
+			case GizmoMode::Scale: ImGui::SetTooltip("Scale %s  x%.3f%s", axis, m_DragValue, CtrlHeld() ? "  (snap 0.1)" : ""); break;
+		}
+	}
+
 	void DrawGizmo()
 	{
 		glm::vec3* target = GizmoPosition();
@@ -1661,30 +1946,80 @@ private:
 			return;
 
 		glm::vec3 origin = *target;
+		float length = GizmoLength();
 
 		const glm::vec4 axisColors[3] = {
 			{ 1.0f, 0.25f, 0.25f, 1.0f }, { 0.30f, 1.0f, 0.35f, 1.0f }, { 0.35f, 0.55f, 1.0f, 1.0f }
 		};
-
-		for (int axis = 0; axis < 3; axis++)
+		const glm::vec4 active(1.0f, 1.0f, 0.5f, 1.0f);
+		auto colorOf = [&](int handle, const glm::vec4& normal)
 		{
-			glm::vec3 direction(0.0f);
-			direction[axis] = 1.0f;
+			return (handle == m_DragAxis || (m_DragAxis < 0 && handle == m_HoverAxis)) ? active : normal;
+		};
 
-			glm::vec4 color = axisColors[axis];
-			if (axis == m_DragAxis || (m_DragAxis < 0 && axis == m_HoverAxis))
-				color = glm::vec4(1.0f, 1.0f, 0.5f, 1.0f);
+		switch (EffectiveGizmoMode())
+		{
+			case GizmoMode::Move:
+				for (int axis = 0; axis < 3; axis++)
+				{
+					glm::vec3 direction = GizmoAxis(axis);
+					glm::vec4 color = colorOf(axis, axisColors[axis]);
+					glm::vec3 tip = origin + direction * length;
+					GS::Renderer2D::DrawLine(origin, tip, color);
 
-			glm::vec3 tip = origin + direction * m_GizmoLength;
-			GS::Renderer2D::DrawLine(origin, tip, color);
+					// A little cross at the tip, so the end of the handle is
+					// visible even when the line is nearly edge-on.
+					glm::vec3 a(0.0f), b(0.0f);
+					a[(axis + 1) % 3] = 0.06f * length;
+					b[(axis + 2) % 3] = 0.06f * length;
+					GS::Renderer2D::DrawLine(tip - a, tip + a, color);
+					GS::Renderer2D::DrawLine(tip - b, tip + b, color);
+				}
+				break;
 
-			// A little cross at the tip, so the end of the handle is visible
-			// even when the line is nearly edge-on to the camera.
-			glm::vec3 a(0.0f), b(0.0f);
-			a[(axis + 1) % 3] = 0.06f;
-			b[(axis + 2) % 3] = 0.06f;
-			GS::Renderer2D::DrawLine(tip - a, tip + a, color);
-			GS::Renderer2D::DrawLine(tip - b, tip + b, color);
+			case GizmoMode::Rotate:
+				for (int axis = 0; axis < 3; axis++)
+				{
+					glm::vec4 color = colorOf(axis, axisColors[axis]);
+					for (int i = 0; i < s_RingSegments; i++)
+					{
+						float a = glm::two_pi<float>() * i / s_RingSegments;
+						float b = glm::two_pi<float>() * (i + 1) / s_RingSegments;
+						GS::Renderer2D::DrawLine(RingPoint(origin, axis, length, a), RingPoint(origin, axis, length, b), color);
+					}
+				}
+				break;
+
+			case GizmoMode::Scale:
+			{
+				// A small cube: the conventional mark of a scale handle.
+				auto box = [](const glm::vec3& centre, float half, const glm::vec4& color)
+				{
+					for (int axis = 0; axis < 3; axis++)
+					{
+						int u = (axis + 1) % 3, v = (axis + 2) % 3;
+						for (int corner = 0; corner < 4; corner++)
+						{
+							glm::vec3 offset(0.0f);
+							offset[u] = (corner & 1) ? half : -half;
+							offset[v] = (corner & 2) ? half : -half;
+							glm::vec3 from = centre + offset, to = centre + offset;
+							from[axis] -= half;
+							to[axis] += half;
+							GS::Renderer2D::DrawLine(from, to, color);
+						}
+					}
+				};
+				for (int axis = 0; axis < 3; axis++)
+				{
+					glm::vec4 color = colorOf(axis, axisColors[axis]);
+					glm::vec3 tip = origin + GizmoAxis(axis) * length;
+					GS::Renderer2D::DrawLine(origin, tip, color);
+					box(tip, 0.05f * length, color);
+				}
+				box(origin, 0.07f * length, colorOf(3, glm::vec4(0.9f, 0.9f, 0.9f, 1.0f)));
+				break;
+			}
 		}
 	}
 
@@ -1818,8 +2153,20 @@ private:
 	float m_DragStartT = 0.0f;
 	glm::vec3 m_DragStartPosition{ 0.0f };
 	unsigned int m_Antialiasing = 1;     // samples asked of m_Framebuffer
-	float m_GizmoLength = 1.0f;
+	float m_GizmoLength = 1.0f;          // world units, when there is nothing to measure from
+	float m_GizmoScreenShare = 0.15f;    // gizmo length / distance to the camera
 	float m_GizmoPickPixels = 12.0f;
+	static constexpr int s_RingSegments = 64;
+
+	GizmoMode m_GizmoMode = GizmoMode::Move;
+	GizmoMode m_DragMode = GizmoMode::Move;
+	glm::vec2 m_DragStartMouse{ 0.0f };
+	float m_DragValue = 0.0f;            // what the tooltip shows: distance, degrees or factor
+	std::vector<std::pair<GS::EntityId, GS::TransformComponent>> m_DragStartTransforms;
+	bool m_RotateByScreen = false;
+	glm::vec3 m_RotatePrevious{ 1.0f, 0.0f, 0.0f };
+	float m_RotateAngle = 0.0f;
+	glm::vec3 m_DragScaleAxis{ 1.0f, 0.0f, 0.0f };
 
 	glm::vec2 m_PreviousMouse{ 0.0f, 0.0f };
 	float m_MoveSpeed = 3.0f;

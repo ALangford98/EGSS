@@ -565,6 +565,33 @@ private:
 		ImGui::EndMenu();
 	}
 
+	// Move / Rotate / Scale beside Play: which one the gizmo is in, and the
+	// key for each, where they are seen. A mesh-edit session moves points
+	// only, so the other two are shown off while one is open.
+	void DrawGizmoModes()
+	{
+		if (!g_EditorSceneView)
+			return;
+		using Mode = EditorSceneView::GizmoMode;
+		static const struct { Mode Value; const char* Label; const char* Tip; } modes[] = {
+			{ Mode::Move, "Move", "Move along an axis (1)" },
+			{ Mode::Rotate, "Rotate", "Rotate about an axis -- Ctrl snaps to 15 degrees (2)" },
+			{ Mode::Scale, "Scale", "Scale along an axis, or uniformly from the centre -- Ctrl snaps to 0.1 (3)" },
+		};
+		ImGui::Separator();
+		bool meshEdit = g_EditorSceneView->IsMeshEditing();
+		for (const auto& mode : modes)
+		{
+			bool current = meshEdit ? mode.Value == Mode::Move : g_EditorSceneView->GetGizmoMode() == mode.Value;
+			ImGui::BeginDisabled(meshEdit && mode.Value != Mode::Move);
+			if (ImGui::Selectable(mode.Label, current, 0, ImVec2(ImGui::CalcTextSize(mode.Label).x, 0.0f)))
+				g_EditorSceneView->SetGizmoMode(mode.Value);
+			ImGui::EndDisabled();
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+				ImGui::SetTooltip("%s  --  T cycles", mode.Tip);
+		}
+	}
+
 	// Plain buttons in the menu bar strip itself, not a dropdown -- always
 	// visible, matching how a game engine editor's play button typically
 	// works. Gated on g_ActiveDemo, same pattern Undo/Redo/Find already use:
@@ -580,6 +607,7 @@ private:
 		{
 			if (ImGui::Button("Play"))
 				PlayMode::Play();
+			DrawGizmoModes();
 		}
 		else
 		{

@@ -266,6 +266,38 @@ private:
 	std::vector<glm::vec3> m_After;
 };
 
+// A rotate or scale gizmo drag: whole transforms, before and after, for
+// every entity it moved -- a group rotation changes positions as well as
+// rotations, so one field is not enough. One gesture, one Ctrl+Z. A
+// single-entity drag keeps that entity selected across Undo/Redo
+// (m_Entity, via the base class); a group one leaves selection alone, as
+// MultiMoveCommand does.
+class SetTransformsCommand : public EditorCommand
+{
+public:
+	SetTransformsCommand(std::vector<GS::EntityId> entities, std::vector<GS::TransformComponent> before,
+		std::vector<GS::TransformComponent> after)
+		: m_Entities(std::move(entities)), m_Before(std::move(before)), m_After(std::move(after))
+	{
+		if (m_Entities.size() == 1)
+			m_Entity = m_Entities[0];
+	}
+
+	void Redo() override { Apply(m_After); }
+	void Undo() override { Apply(m_Before); }
+private:
+	void Apply(const std::vector<GS::TransformComponent>& transforms)
+	{
+		for (size_t i = 0; i < m_Entities.size(); i++)
+			if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(EditorHistory::Resolve(m_Entities[i])))
+				*transform = transforms[i];
+	}
+
+	std::vector<GS::EntityId> m_Entities;
+	std::vector<GS::TransformComponent> m_Before;
+	std::vector<GS::TransformComponent> m_After;
+};
+
 // One field of one component, changed once. `Component` and `Field` are
 // deduced from the pointer-to-member passed in -- e.g.
 // EditFieldCommand<GS::TransformComponent, glm::vec3>(entity,
