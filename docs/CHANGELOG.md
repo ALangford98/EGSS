@@ -7,6 +7,49 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-13 (Rotate and scale gizmos; anti-aliasing in the editor and games)
+
+The spec is `docs/superpowers/specs/2026-10-13-gizmos-and-antialiasing-design.md`.
+
+**Gizmo:** Move, Rotate and Scale modes, switched with 1, 2 and 3 or cycled
+with T, and shown beside Play. Not W/E/R, because WASD and Q/E fly the
+camera.
+
+- **Rotate** has a ring per world axis. The rotation is composed as a world
+  turn and written back as Euler angles, picking the equivalent set nearest
+  the start.
+- **Scale** has handles along the entity's own axes, plus a uniform centre
+  handle.
+- **Ctrl snaps** rotation to 15° and scale to 0.1; each drag is one undo
+  step, and a tooltip shows the value.
+- **Visibility:** the gizmo now keeps a constant size on screen and draws
+  on top. A capture showed it had been invisible inside any object larger
+  than its handles, the old Move gizmo included.
+- **The math test (`GizmoMath.h`) failed at gimbal lock by 3.5e-4 rad.**
+  That is exactly `asin`'s conditioning near ±1 over one float step. Pitch
+  now comes from `atan2`, and the worst errors fell to 1.1e-5° (round trip)
+  and 2e-6 (matrix).
+
+**Anti-aliasing:** the editor's scene view and GSPlayer drew into an
+offscreen framebuffer with no MSAA, unlike the demos.
+
+- **Framebuffers take a sample count** and are resolved on `Unbind` or
+  before a pixel read. Entity-id picking reads through the resolve.
+- **It is a project setting**, default 4×, set under View > Anti-aliasing
+  and read by the player. `--antialiasing N` overrides it for one run.
+
+**Measured:**
+
+- **Off is unchanged:** at `--antialiasing 1`, every old capture, the web
+  capture included, is byte-identical.
+- **4× touches only edges:** every pixel that changed lies on an edge of
+  the unaliased frame (1,600 in the editor scene, 395 in Breakout), and no
+  interior pixel changed.
+- **Editor and player match:** editor Play and GSPlayer are byte-identical
+  to each other at 4×.
+- **The web build** differs from the editor by at most 1/255 on 12 edge
+  pixels: the browser's resolve rounds differently.
+
 ### 2026-10-13 (Project save/load reworked around the project)
 
 The owner couldn't get saving and loading to work. Reading the flow showed

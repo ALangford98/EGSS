@@ -37,6 +37,10 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-13 — Rotate/scale gizmos and anti-aliasing**: 1/2/3 or T
+  switch Move/Rotate/Scale; 4x MSAA in the editor view and exported games
+  (a project setting, View > Anti-aliasing; `--antialiasing 1` for
+  regression captures).
 - **2026-10-13 — Project save/load reworked** (project-centric): the
   editor reopens the last project or shows a Projects window; Ctrl+S;
   quit asks; asset paths project-relative (older projects migrate on
