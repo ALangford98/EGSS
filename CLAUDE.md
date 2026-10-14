@@ -185,6 +185,12 @@ verified. Three things are load-bearing and each was measured:
   given moment depends on how fast the machine ran.
 - `--hide-ui` drops the panels, which print frame times in milliseconds and so
   differ every run no matter how deterministic the simulation is.
+- `--antialiasing 1` for anything with dense meshes (terrain, a high-
+  resolution sphere). At the default 4x MSAA such a scene does not render
+  bit-for-bit the same from run to run on this machine's driver, though its
+  data is identical; small scenes (Breakout) happen to. Measured 2026-10-14.
+  It also turns off the editor and player's own anti-aliasing, so it gives
+  the pre-AA images the older baselines were taken with.
 
 That makes a captured frame a **regression test**: run it, hash the pixels,
 compare. `Framebuffer::ReadPixelRGBA` is still the right tool for checking one

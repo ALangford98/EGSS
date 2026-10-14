@@ -7,6 +7,70 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-14 (Tools panel in sections; players, NPCs, terrain on any primitive)
+
+The spec is `docs/superpowers/specs/2026-10-14-tools-characters-terrain-design.md`.
+
+**What changed:**
+
+- **Tools panel:** Shapes (with a new Capsule), Scene, Characters, Terrain
+  and Import sections. Buttons wrap at the panel's edge instead of
+  scrolling sideways, and new things are placed where the camera is
+  looking.
+- **Terrain on any primitive:** a resolution (the vertex count) plus 3D
+  fractal noise. Planes rise; other shapes push outward from their centre,
+  so they can't crack. The mesh is rebuilt from the stored numbers on every
+  load, and a static, level, square terrain plane collides as a heightfield
+  of the drawn surface.
+- **Players and NPCs:** upright capsules run by
+  `Runtime/CharacterController.h`, so they work in Play and in exported
+  games.
+  - The player: WASD, jump, sprint, and a follow camera.
+  - NPCs: idle, wander, follow or flee.
+- **Editor:** the undo commands share one `EntitySnapshot`, and adding or
+  removing a component is undoable.
+
+**The self-test (34 checks) found two real bugs:**
+
+- **The cylinder primitive was wound inward.** The cross product of its
+  edges points into the tube, so the culled editor showed its inside. Fixed
+  in its own commit. The demos leave culling off; their captures with
+  either winding differ only by the noise two runs of one build already
+  show.
+- **The follow camera was made inactive:** `CameraComponent{}` defaults to
+  inactive.
+
+**The player's measurements:**
+
+| Check | Measured | Expected |
+| --- | --- | --- |
+| Walking for 1 s | 5.000 m | 5 m |
+| Jump height | 1.1599 m | 1.1596 m (1.2 − v₀·dt/2) |
+| Feet above hills | within 1.2 cm | the noise surface |
+
+**NPC behaviour checked:**
+
+- **Follow** stops at 2 m.
+- **Flee** stops once it's 10 m away; the first flee check expected 5 m,
+  forgetting that limit.
+- **Wander** covers 78 m in a minute inside its 6 m radius, the same walk
+  twice.
+
+**Captures:** a world with terrain, a planet, a player and an NPC is
+byte-identical in editor Play, GSPlayer and the browser at step 150, with
+anti-aliasing off.
+
+**A trap for regression captures:**
+
+- At 4× MSAA, a dense mesh renders slightly differently from run to run on
+  this driver: 108 scattered pixels, one level each. Its generated data
+  hashes the same in both runs.
+- Bisected: the terrain-only scene varies, the cylinder-only one doesn't;
+  `--antialiasing 1` is reproducible and 4× isn't.
+- Physics3D and Ragdoll, which draw into the window's 4× buffer, show the
+  same noise.
+- CLAUDE.md now says to capture dense scenes with `--antialiasing 1`.
+
 ### 2026-10-13 (Rotate and scale gizmos; anti-aliasing in the editor and games)
 
 The spec is `docs/superpowers/specs/2026-10-13-gizmos-and-antialiasing-design.md`.

@@ -37,6 +37,11 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-14 — Tools panel, characters, terrain**: sectioned Tools that
+  wrap; Player/NPC (capsule controller in Runtime, works in exports);
+  terrain on any primitive with a vertex count, heightfield collision.
+  Fixed the cylinder's inward winding. Captures of dense scenes need
+  `--antialiasing 1` to be bit-reproducible.
 - **2026-10-13 — Rotate/scale gizmos and anti-aliasing**: 1/2/3 or T
   switch Move/Rotate/Scale; 4x MSAA in the editor view and exported games
   (a project setting, View > Anti-aliasing; `--antialiasing 1` for
