@@ -72,6 +72,13 @@ public:
 		m_SceneMaterial = GS::Material::Create(
 			GS::Renderer::GetShaderLibrary().Get("Physics3D"));
 
+		// The stumble's sliders reach the simulation, so a recording made
+		// while they move replays as itself.
+		RegisterParam("Step reach", &m_StumbleReach);
+		RegisterParam("Step time", &m_StumbleStepTime);
+		RegisterParam("Leg strength", &m_StumbleMaxSupport);
+		RegisterParam("Physical below", &m_StumbleEntrySpeed);
+
 		BuildScene();
 	}
 
@@ -146,6 +153,7 @@ public:
 	void OnDemoFixedUpdate(GS::Timestep fixedStep) override
 	{
 		MoveCamera(fixedStep);
+
 
 		if (m_PendingPush != 0.0f)
 		{
@@ -374,6 +382,39 @@ public:
 			GS::Renderer2D::EndScene();
 			GS::RenderCommand::SetDepthTest(true);
 		}
+
+		// Stumbling: the footprint the virtual leg may push from, the
+		// capture point it is judged by, and where the step is going.
+		if (m_ShowBalance && m_Mode == Mode::Stumbling)
+		{
+			GS::RenderCommand::SetDepthTest(false);
+			GS::Renderer2D::BeginScene(m_Camera);
+			const float y = m_StumbleGround + 0.02f;
+			for (size_t i = 0; i < m_StumbleFootprint.size(); i++)
+			{
+				const glm::vec2& a = m_StumbleFootprint[i];
+				const glm::vec2& b = m_StumbleFootprint[(i + 1) % m_StumbleFootprint.size()];
+				GS::Renderer2D::DrawLine({ a.x, y, a.y }, { b.x, y, b.y }, { 0.4f, 0.9f, 1.0f, 1.0f });
+			}
+			auto cross = [&](glm::vec2 at, glm::vec4 colour, float size)
+			{
+				GS::Renderer2D::DrawLine({ at.x - size, y, at.y }, { at.x + size, y, at.y }, colour);
+				GS::Renderer2D::DrawLine({ at.x, y, at.y - size }, { at.x, y, at.y + size }, colour);
+			};
+			glm::vec3 com = m_Balance.Com;
+			GS::Renderer2D::DrawLine(com, { com.x, y, com.z }, { 1.0f, 1.0f, 0.4f, 1.0f });
+			cross(m_Balance.ComGround, { 1.0f, 1.0f, 0.4f, 1.0f }, 0.06f);
+			cross(m_StumbleCapture, m_StumbleMargin >= 0.0f ? glm::vec4(0.4f, 1.0f, 0.5f, 1.0f)
+				: glm::vec4(1.0f, 0.35f, 0.3f, 1.0f), 0.09f);
+			if (m_StumbleSwing >= 0)
+				cross(m_StumbleTarget, { 1.0f, 0.6f, 0.1f, 1.0f }, 0.12f);
+			// The virtual leg itself, scaled 1 m per body weight.
+			glm::vec3 pelvis = m_World.GetBody(m_Pelvis).Position;
+			GS::Renderer2D::DrawLine(pelvis, pelvis - m_StumbleForce / std::max(m_BodyMass * 9.81f, 1.0f),
+				{ 0.8f, 0.5f, 1.0f, 1.0f });
+			GS::Renderer2D::EndScene();
+			GS::RenderCommand::SetDepthTest(true);
+		}
 	}
 
 	// --- What a demo reusing this rig overrides to change the scenery -------
@@ -426,8 +467,12 @@ public:
 		ImGui::TextColored(m_Mode == Mode::Controlled
 			? ImVec4(0.5f, 1.0f, 0.6f, 1.0f) : ImVec4(1.0f, 0.5f, 0.4f, 1.0f),
 			m_Mode == Mode::Controlled ? "CONTROLLED"
+				: m_Mode == Mode::Stumbling ? "STUMBLING"
 				: (m_Mode == Mode::GettingUp ? "GETTING UP" : "RAGDOLL (%s, %.1f s)"),
 			m_RagdollReason, m_RagdollTimer);
+		if (m_Mode == Mode::Stumbling)
+			ImGui::Text("  %d step%s, %.1f s, capture %+.2f m from the feet, leg %.0f%%",
+				m_StumbleSteps, m_StumbleSteps == 1 ? "" : "s", m_StumbleTimer, m_StumbleMargin, 100.0f * m_StumbleSupport);
 
 		ImGui::Text("WASD walk   shift run   space jump   arrows orbit   G ragdoll / get up");
 		ImGui::Text("X push   R reset   P pause   F free camera%s",
@@ -494,7 +539,7 @@ public:
 		// the right moment and aims at the right place; what it does not do is
 		// shift the weight onto the stance leg first, so lifting a foot throws
 		// the body as much as the step recovers.
-		ImGui::Checkbox("Stepping (worse)", &m_SteppingEnabled);
+		ImGui::Checkbox("Old stepping (worse)", &m_SteppingEnabled);
 		ImGui::SameLine();
 		ImGui::Checkbox("Show balance", &m_ShowBalance);
 
@@ -504,6 +549,22 @@ public:
 		ImGui::SliderFloat("Ankle pitch gain", &m_AnkleGain, 0.0f, 8.0f);
 		ImGui::SliderFloat("Ankle roll gain", &m_AnkleRollGain, 0.0f, 8.0f);
 		ImGui::SliderFloat("Push strength", &m_PushStrength, 10.0f, 400.0f);
+
+		// The physical stumble (Humanoid::UpdateStumble). Standing, a hit
+		// makes the whole body dynamic and he has to catch it with his feet.
+		// TRY: push at 60 with "Step to catch" off -- the ankles alone hold
+		// about 30 Ns -- then on, and watch the footprint grow to meet the
+		// red capture point.
+		ImGui::SeparatorText("Stumble");
+		ImGui::Checkbox("Physical stumble", &m_PhysicalStumble);
+		ImGui::SameLine();
+		ImGui::Checkbox("Step to catch", &m_SteppingCatch);
+		// TRY: take the reach down to 0.3 and he goes down at half the push;
+		// the step time up to 0.4 and the steps come too late, like August.
+		ImGui::SliderFloat("Step reach (m)", &m_StumbleReach, 0.2f, 0.9f);
+		ImGui::SliderFloat("Step time (s)", &m_StumbleStepTime, 0.12f, 0.5f);
+		ImGui::SliderFloat("Leg strength (body weights)", &m_StumbleMaxSupport, 1.0f, 3.0f);
+		ImGui::SliderFloat("Physical below (m/s)", &m_StumbleEntrySpeed, 0.0f, 5.0f);
 		// TRY: drop this towards 500 and the character falls over at the
 		// slightest contact; raise it past 10000 and nothing knocks them down.
 		// TRY: drop the reach or the step count and he becomes glass -- these
