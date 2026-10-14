@@ -169,6 +169,7 @@ public:
 		else
 		{
 			m_RagdollTimer += dt;
+			UpdateBrace(dt);
 		}
 
 		if (m_Mode == Mode::Ragdoll && m_BalanceEnabled)
@@ -465,12 +466,14 @@ public:
 				m_ThighLength = glm::length(hipAt - kneeWorld);
 				m_ShinLength = glm::length(kneeWorld - ankleWorld);
 
-				// Both feet start planted where they were built.
-				m_AnkleHeight = ankleWorld.y - m_World.GroundHeightBelow(
-					ankleWorld + glm::vec3(0.0f, 1.0f, 0.0f), m_Pelvis);
+				// Both feet start planted where they were built. Heights are
+				// from the rig's own soles (origin.y), not from whatever ground
+				// lies below: built in mid-air -- a Player placed above the
+				// floor in the editor, the demo's drop height -- the old
+				// measurement made him 5 m tall, and he stood on the air at
+				// that height for good.
+				m_AnkleHeight = ankleWorld.y - origin.y;
 				m_Planted[side] = ankleWorld;
-				m_Planted[side].y = m_World.GroundHeightBelow(
-					ankleWorld + glm::vec3(0.0f, 1.0f, 0.0f), m_Pelvis) + m_AnkleHeight;
 				m_SwingFrom[side] = m_Planted[side];
 				m_SwingTo[side] = m_Planted[side];
 				m_Swinging[side] = false;
@@ -496,13 +499,11 @@ public:
 		m_StandHeight = m_World.GetBody(m_Pelvis).Position.y;
 		// How far the pelvis rides above whatever it stands on, taken from the
 		// pose the rig was built in rather than written down twice.
-		m_StandClearance = m_StandHeight
-			- m_World.GroundHeightBelow(m_World.GetBody(m_Pelvis).Position, m_Pelvis);
+		m_StandClearance = m_StandHeight - origin.y;
 		m_RootAnchor = m_World.GetBody(m_Pelvis).Position;
 		m_Speed = 0.0f;
 		m_GaitPhase = 0.0f;
-		m_StandComHeight = CentreOfMass().y
-			- m_World.GroundHeightBelow(m_World.GetBody(m_Pelvis).Position, m_Pelvis);
+		m_StandComHeight = CentreOfMass().y - origin.y;
 		GoControlled();
 	}
 
@@ -1009,6 +1010,10 @@ public:
 		if (m_Mode == Mode::Ragdoll)
 			return;
 
+		// A stumble that is lost goes down with its arms out: falling from
+		// one, he knows which way he is going.
+		bool braced = m_Bracing && m_Mode == Mode::Stumbling;
+
 		m_Mode = Mode::Ragdoll;
 		m_RagdollReason = why;
 		m_RagdollTimer = 0.0f;
@@ -1031,6 +1036,57 @@ public:
 			joint.MotorStiffness = m_LimpStiffness;
 			joint.MotorMaxTorque = m_LimpTorque;
 		}
+
+		m_BraceTimer = 0.0f;
+		if (braced)
+		{
+			glm::vec3 velocity = CentreOfMassVelocity();
+			glm::vec2 flat(velocity.x, velocity.z);
+			if (glm::length(flat) > 0.05f)
+			{
+				m_BraceTimer = m_BraceTime;
+				m_BraceDirection = glm::vec3(flat.x, 0.0f, flat.y) / glm::length(flat);
+			}
+		}
+	}
+
+	// Bracing: Euphoria's "catch fall". For a moment after a lost stumble
+	// the arms keep their strength and reach for the ground where he is
+	// going -- a hand out ahead and below the shoulder -- so the hands land
+	// before the head does and take some of the fall. The rest of him is
+	// as limp as any ragdoll.
+	void UpdateBrace(float dt)
+	{
+		if (m_BraceTimer <= 0.0f)
+			return;
+		m_BraceTimer -= dt;
+		bool holding = m_BraceTimer > 0.0f;
+		for (int side = 0; side < 2; side++)
+		{
+			for (auto handle : { m_ShoulderJoint[side], m_ElbowJoint[side] })
+			{
+				GS::Joint3D& joint = m_World.GetJoint(handle);
+				joint.MotorStiffness = holding ? m_MotorStiffness : m_LimpStiffness;
+				joint.MotorMaxTorque = holding ? m_JointTorque[handle] : m_LimpTorque;
+			}
+			if (!holding)
+				continue;
+			glm::vec3 reach = glm::normalize(m_BraceDirection * m_BraceForward + glm::vec3(0.0f, -1.0f, 0.0f));
+			SolveArm(side, ShoulderWorld(side) + reach * (m_UpperArmLength + m_ForearmLength) * 0.95f);
+		}
+	}
+
+	glm::vec3 CentreOfMassVelocity() const
+	{
+		glm::vec3 momentum(0.0f);
+		float total = 0.0f;
+		for (GS::PhysicsWorld3D::BodyHandle handle : m_CharacterBodies)
+		{
+			const GS::RigidBody3D& body = m_World.GetBody(handle);
+			momentum += body.Velocity * body.GetMass();
+			total += body.GetMass();
+		}
+		return total > 0.0f ? momentum / total : glm::vec3(0.0f);
 	}
 
 	// Straight to standing, with no blend. Used when the scene is built and
@@ -1088,6 +1144,22 @@ public:
 	{
 		if (m_Mode == Mode::GettingUp)
 			return;
+
+		// Only from the ground. Asked in mid-air -- G pressed while falling
+		// off the demo's platform -- it used to hoist the body to standing
+		// height over nothing. Asked under his lowest body rather than the
+		// pelvis: falling feet first, the probe from the pelvis finds his own
+		// thighs and reads them as ground.
+		{
+			GS::PhysicsWorld3D::BodyHandle lowest = m_Pelvis;
+			for (GS::PhysicsWorld3D::BodyHandle handle : m_CharacterBodies)
+				if (m_World.GetBody(handle).Position.y < m_World.GetBody(lowest).Position.y)
+					lowest = handle;
+			const GS::RigidBody3D& body = m_World.GetBody(lowest);
+			float below = body.Position.y - m_World.GroundHeightBelow(body.Position, lowest, -1e9f);
+			if (below > m_GetUpMaxGap)
+				return;
+		}
 
 		m_Mode = Mode::GettingUp;
 		m_GetUpTimer = 0.0f;
@@ -1518,16 +1590,16 @@ public:
 		return foot.Position.y - foot.HalfExtents.y;
 	}
 
-	// Physically, only from standing (or a shuffle), on the ground. The
-	// stumble's aim is to come to rest, and from a walk or a run that means
-	// catching the whole of the speed, not just what the hit added: a 20 Ns
-	// bump at a 1.3 m/s walk is 1.6 m/s to stop, as hard as a 110 Ns shove
-	// from standing. Measured, every hit from 20 Ns up felled a running
-	// figure (64 of 64 trials), and walking ones kept 70% of 64 on their
-	// feet against 100% for the kinematic stagger. A person bumped mid-walk
-	// does not stop; he absorbs it and walks on, which needs the walk itself
-	// to be physical (editor_roadmap.md, Humanoid 2) -- until then, moving
-	// hits stay the kinematic stagger, which carries the walk on.
+	// Physically from standing or a walk, on the ground; a run keeps the
+	// kinematic stagger. Stopping a walk costs as much as a 110 Ns shove
+	// from standing, so a stumble from a walk does not try to stop: it
+	// carries the walk's velocity and steps to keep it (the b offset in
+	// UpdateStumble), and hands back to the gait once it is walking at it
+	// again. Measured, 4 trials each: 20 Ns 16/16 walk on, 40 Ns 14/16,
+	// 60-80 about half; a 1 Ns nudge is handed back after one or two steps
+	// at 1.14-1.52 m/s against the walk's 1.30. Running, the capture point
+	// is 1.3 m ahead as a matter of course and every physical hit from
+	// 20 Ns felled him (64 of 64), so a run stays kinematic.
 	bool StumblesPhysically() const
 	{
 		return m_PhysicalStumble && m_Speed <= m_StumbleEntrySpeed && m_Air == Air::Grounded;
@@ -1563,6 +1635,11 @@ public:
 		m_TouchMemory[0] = m_TouchMemory[1] = 0.0f;
 		m_StumbleGathering = false;
 		m_StaggerVelocity = glm::vec3(0.0f);
+
+		// The walk he was in, which the stumble keeps going rather than
+		// trying to stop: a person bumped mid-stride walks on.
+		glm::vec3 forward(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
+		m_StumbleCarry = m_Speed > 0.1f ? glm::vec2(forward.x, forward.z) * m_Speed : glm::vec2(0.0f);
 
 		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 		pelvis.Type = GS::BodyType::Dynamic;
@@ -1647,7 +1724,25 @@ public:
 			centre += point;
 		if (!footprint.empty())
 			centre /= (float)footprint.size();
-		glm::vec2 pressure = ClosestInHull(footprint, capture + m_StumbleCentring * (capture - centre));
+		// Walking on, the pressure stays in the middle of the footprint, as
+		// in an ordinary stride, and the steps keep up with a capture point
+		// that is meant to run ahead. Pushing from the point nearest the
+		// capture point -- the toes -- is the ankle's hardest brake; walking
+		// on with it, measured, he settled into a 0.45 m/s shuffle of 10 cm
+		// steps and never got back to his walk.
+		//
+		// Along the walk only. Across it the ankles still brake as they do
+		// standing: with the pressure in the middle both ways, a hit from the
+		// side swung his sideways speed +0.6, -0.6, +0.6 m/s from step to
+		// step and never settled.
+		bool walking = glm::length(m_StumbleCarry) > 0.1f;
+		glm::vec2 aim = capture + m_StumbleCentring * (capture - centre);
+		if (walking)
+		{
+			glm::vec2 along = glm::normalize(m_StumbleCarry);
+			aim = centre + glm::vec2(-along.y, along.x) * glm::dot(aim - centre, glm::vec2(-along.y, along.x));
+		}
+		glm::vec2 pressure = ClosestInHull(footprint, aim);
 		float margin = footprint.size() >= 3 ? SignedDistance(footprint, capture) : -1.0f;
 		m_StumbleMargin = margin;
 
@@ -1811,8 +1906,24 @@ public:
 			float remaining = std::max(m_StumbleStepTime - m_StumbleSwingTimer, 0.0f);
 			glm::vec2 landing = PredictCapture(capture, pressure, tau, remaining);
 			glm::vec2 travel = landing - pressure;
-			if (glm::length(travel) > 1e-4f)
+			if (glm::length(travel) > 1e-4f && !walking)
 				landing += glm::normalize(travel) * m_StumbleOvershoot;
+
+			// Walking on: land short of the capture point by the offset that
+			// keeps it moving. With the pressure at the stance foot and a
+			// step every T, the capture point runs from b ahead of the foot
+			// to b e^(T/tau); landing the next foot b behind that, a stride L
+			// on, repeats it exactly when b e^(T/tau) - L = b, so
+			//     b = L / (e^(T/tau) - 1),   L = v T.
+			// b = 0 is landing on the capture point, which stops him -- the
+			// standing stumble is the v = 0 case of the same rule.
+			if (walking)
+			{
+				float period = m_StumbleStepTime + m_StumbleSettle;
+				float stride = glm::length(m_StumbleCarry) * period;
+				float offset = stride / std::max(std::exp(period / tau) - 1.0f, 0.05f);
+				landing -= glm::normalize(m_StumbleCarry) * offset;
+			}
 			// A gathering foot goes beside the capture point, at a normal
 			// stance width, to stand on rather than to catch with.
 			if (m_StumbleGathering)
@@ -1902,7 +2013,10 @@ public:
 			GoRagdoll("lost his feet");
 			return;
 		}
-		if (m_StumbleSteps > m_StumbleMaxSteps || m_StumbleTimer > m_StumbleMaxTime)
+		// Walking on, steps are how he moves at all, so more of them are
+		// allowed before it counts as not catching it.
+		int maxSteps = walking ? 2 * m_StumbleMaxSteps : m_StumbleMaxSteps;
+		if (m_StumbleSteps > maxSteps || m_StumbleTimer > m_StumbleMaxTime)
 		{
 			GoRagdoll("could not catch it");
 			return;
@@ -1914,6 +2028,19 @@ public:
 		glm::vec2 horizontalVelocity(state.ComVelocity.x, state.ComVelocity.z);
 		bool calm = m_StumbleSwing < 0 && support[0] && support[1] && margin > m_StumbleCalmMargin
 			&& glm::length(horizontalVelocity) < m_StumbleCalmSpeed && tilt < glm::radians(8.0f);
+		if (walking)
+		{
+			// Caught, walking: a step has landed, both feet are down, and he
+			// is moving at the walk's own velocity again, upright -- then the
+			// gait takes him back without stopping.
+			calm = m_StumbleSwing < 0 && support[0] && support[1] && m_StumbleSteps > 0
+				&& glm::length(horizontalVelocity - m_StumbleCarry) < m_StumbleCalmWalk && tilt < glm::radians(10.0f);
+			if (calm)
+			{
+				EndStumble();
+				return;
+			}
+		}
 		m_StumbleCalm = calm ? m_StumbleCalm + dt : 0.0f;
 		if (m_StumbleCalm > m_StumbleCalmTime)
 			EndStumble();
@@ -1930,6 +2057,14 @@ public:
 		glm::vec3 planted[2] = { AnkleWorld(0), AnkleWorld(1) };
 		GoControlled();
 		pelvis.Velocity = glm::vec3(0.0f);
+		// Walking on at the speed he was walking, along the way he faces.
+		float carried = glm::length(m_StumbleCarry);
+		if (carried > 0.1f)
+		{
+			m_Facing = std::atan2(m_StumbleCarry.x, m_StumbleCarry.y);
+			m_Speed = carried;
+			m_LastSpeed = carried;
+		}
 		for (int side = 0; side < 2; side++)
 		{
 			m_Planted[side] = planted[side];
@@ -3181,7 +3316,15 @@ protected:
 	// kinematic stagger, for comparing the two.
 	bool m_PhysicalStumble = true;
 	bool m_SteppingCatch = true;          // off: the ankles alone, for measuring
-	float m_StumbleEntrySpeed = 0.6f;     // m/s; faster than this a hit staggers the old way
+	float m_StumbleEntrySpeed = 2.0f;     // m/s; faster than this (a run) a hit staggers the old way
+	glm::vec2 m_StumbleCarry = glm::vec2(0.0f);
+	float m_GetUpMaxGap = 0.3f;           // lowest body's centre above the ground, at most, to get up
+	bool m_Bracing = true;
+	float m_BraceTimer = 0.0f;
+	float m_BraceTime = 0.8f;             // s the arms stay strong after a lost stumble
+	float m_BraceForward = 1.0f;          // reach ahead per unit down: 1 is 45 degrees
+	glm::vec3 m_BraceDirection = glm::vec3(0.0f, 0.0f, 1.0f);   // the walk's velocity, kept through the stumble
+	float m_StumbleCalmWalk = 0.35f;      // m/s from the walk's velocity counts as caught
 	glm::vec3 m_HitPush = glm::vec3(0.0f);
 	glm::vec3 m_FootToAnkle = glm::vec3(0.0f, 0.05f, -0.03f);
 	float m_StandComHeight = 1.0f;        // measured at build

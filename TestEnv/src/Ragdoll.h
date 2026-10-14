@@ -559,6 +559,10 @@ public:
 		ImGui::Checkbox("Physical stumble", &m_PhysicalStumble);
 		ImGui::SameLine();
 		ImGui::Checkbox("Step to catch", &m_SteppingCatch);
+		ImGui::SameLine();
+		// TRY: push at 140 with this off and on -- limp, the head lands
+		// first at about 5 m/s; bracing, a hand does, and the head at 2.
+		ImGui::Checkbox("Brace", &m_Bracing);
 		// TRY: take the reach down to 0.3 and he goes down at half the push;
 		// the step time up to 0.4 and the steps come too late, like August.
 		ImGui::SliderFloat("Step reach (m)", &m_StumbleReach, 0.2f, 0.9f);
