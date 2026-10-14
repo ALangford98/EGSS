@@ -131,6 +131,11 @@ public:
 				body.Restitution = physics->Restitution;
 			}
 
+			// Set before the first step, so the launch is the body's state at
+			// t = 0 and not a kick part-way through it.
+			if (physics && body.Type == GS::BodyType::Dynamic)
+				body.Velocity = physics->LaunchVelocity;
+
 			GS::PhysicsWorld3D::BodyHandle handle = m_World.AddBody(body);
 			m_Bodies[id] = handle;
 			m_BodyOwners[handle] = id;

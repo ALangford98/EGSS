@@ -113,7 +113,10 @@ public:
 				(unsigned int)g_Viewport.Y, (unsigned int)g_Viewport.Width,
 				(unsigned int)g_Viewport.Height);
 
-		MoveCamera(ts);
+		KeepCameraThroughPlay();
+		// While a game camera drives the view, WASD belongs to the game.
+		if (&ActiveCamera() == &m_Camera)
+			MoveCamera(ts);
 		ResizeTarget();
 		SyncTerrainMeshes();
 		SyncMeshEditWorldPointBeforeGizmo();
@@ -138,6 +141,7 @@ public:
 			GS::Renderer2D::BeginScene(ActiveCamera());
 			DrawSelectionBox();
 			DrawCameraRays();
+			DrawLaunchArrows();
 			DrawLightGizmos();
 			DrawMeshEditOverlay();
 			GS::Renderer2D::EndScene();
@@ -678,6 +682,7 @@ public:
 		}
 
 		DrawTerrainInspector();
+		DrawPhysicsInspector();
 		DrawCharacterInspector();
 
 		ImGui::SeparatorText("Network");
@@ -1016,6 +1021,8 @@ private:
 							EditorHistory::Push(std::make_unique<EditFieldCommand<GS::PhysicsComponent, float>>(
 								entity, &GS::PhysicsComponent::Restitution, m_EditBeforeFloat, physics->Restitution));
 
+						DrawLaunchVelocityField(entity, *physics);
+
 						ImGui::Separator();
 						if (ImGui::MenuItem("Remove Physics"))
 							g_EditorScene.RemoveComponent<GS::PhysicsComponent>(entity);
@@ -1086,6 +1093,32 @@ private:
 		EntitySnapshot after = before;
 		edit(after);
 		EditorHistory::Push(std::make_unique<ReplaceEntityCommand>(m_Selected, before, after));
+	}
+
+	void DrawLaunchVelocityField(GS::EntityId entity, GS::PhysicsComponent& physics)
+	{
+		ImGui::SetNextItemWidth(180.0f);
+		ImGui::DragFloat3("Launch velocity", &physics.LaunchVelocity.x, 0.05f, -1000.0f, 1000.0f, "%.2f");
+		if (ImGui::IsItemActivated())
+			m_EditBeforeVec3 = physics.LaunchVelocity;
+		if (ImGui::IsItemDeactivatedAfterEdit())
+			EditorHistory::Push(std::make_unique<EditFieldCommand<GS::PhysicsComponent, glm::vec3>>(
+				entity, &GS::PhysicsComponent::LaunchVelocity, m_EditBeforeVec3, physics.LaunchVelocity));
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("m/s along the world axes, given to a dynamic body when Play starts.\n"
+				"The orange arrow in the view shows where it goes: one metre per 1 m/s.");
+	}
+
+	// The rest of physics lives under right-click > Advanced > Physics;
+	// the launch is here too because it is set per object, often, and
+	// read against the arrow in the view.
+	void DrawPhysicsInspector()
+	{
+		auto* physics = g_EditorScene.GetComponent<GS::PhysicsComponent>(m_Selected);
+		if (!physics || physics->Type != GS::BodyType::Dynamic)
+			return;
+		ImGui::SeparatorText("Physics");
+		DrawLaunchVelocityField(m_Selected, *physics);
 	}
 
 	void DrawTerrainInspector()
@@ -1512,6 +1545,33 @@ private:
 	// placed and then invisible. This is the whole fix: one line per camera
 	// entity, from its position along the direction it faces, so "which way
 	// is this camera looking" is answerable without opening the Inspector.
+	// Where each launched body will go: a line along the launch velocity,
+	// one metre per m/s, with a two-stroke head -- the same Renderer2D
+	// lines as the camera rays.
+	void DrawLaunchArrows()
+	{
+		auto& bodies = g_EditorScene.View<GS::PhysicsComponent>();
+		for (size_t i = 0; i < bodies.Size(); i++)
+		{
+			const GS::PhysicsComponent& physics = bodies.Components()[i];
+			if (physics.Type != GS::BodyType::Dynamic || physics.LaunchVelocity == glm::vec3(0.0f))
+				continue;
+			auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(bodies.Owner(i));
+			if (!transform)
+				continue;
+			glm::vec3 origin = transform->Position;
+			glm::vec3 tip = origin + physics.LaunchVelocity;
+			glm::vec3 along = glm::normalize(physics.LaunchVelocity);
+			glm::vec3 side = glm::cross(along, std::abs(along.y) < 0.9f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0));
+			side = glm::normalize(side);
+			float head = std::min(0.3f, 0.3f * glm::length(physics.LaunchVelocity));
+			glm::vec4 colour(1.0f, 0.55f, 0.1f, 1.0f);
+			GS::Renderer2D::DrawLine(origin, tip, colour);
+			GS::Renderer2D::DrawLine(tip, tip - along * head + side * head * 0.5f, colour);
+			GS::Renderer2D::DrawLine(tip, tip - along * head - side * head * 0.5f, colour);
+		}
+	}
+
 	void DrawCameraRays()
 	{
 		auto& cameras = g_EditorScene.View<GS::CameraComponent>();
@@ -2280,6 +2340,33 @@ private:
 		}
 	}
 
+	// The free-fly camera used to drift during Play: WASD drives the player
+	// and, read by MoveCamera too, flew the hidden editor camera along with
+	// it, so Stop came back to wherever that had wandered. Now it does not
+	// move while a game camera has the view, and Stop puts it back exactly
+	// where it was when Play was pressed -- the same place every time, even
+	// in a game with no camera of its own, where it is flown during Play.
+	void KeepCameraThroughPlay()
+	{
+		bool playing = PlayMode::IsPlaying();
+		if (playing && !m_WasPlaying)
+		{
+			m_CameraBeforePlay = m_Camera.GetPosition();
+			m_YawBeforePlay = m_Camera.GetYaw();
+			m_PitchBeforePlay = m_Camera.GetPitch();
+		}
+		else if (!playing && m_WasPlaying)
+		{
+			m_Camera.SetPosition(m_CameraBeforePlay);
+			m_Camera.SetRotation(m_YawBeforePlay, m_PitchBeforePlay);
+		}
+		m_WasPlaying = playing;
+		// The mouse is still tracked while playing, so the first look after
+		// Stop does not jump by everything it moved during Play.
+		if (playing && &ActiveCamera() != &m_Camera)
+			m_PreviousMouse = { GS::Input::GetMousePosition().first, GS::Input::GetMousePosition().second };
+	}
+
 	// Adapted from Cube3D's fly camera, not identical to it: the
 	// WantCaptureKeyboard guard below is new -- this view sits beside the
 	// Inspector's and Assets panel's text/numeric fields, and Cube3D never
@@ -2328,6 +2415,9 @@ private:
 
 private:
 	GS::PerspectiveCamera m_Camera;
+	bool m_WasPlaying = false;
+	glm::vec3 m_CameraBeforePlay{ 0.0f };
+	float m_YawBeforePlay = 0.0f, m_PitchBeforePlay = 0.0f;
 	// Reassigned every frame by ActiveCamera() while an active CameraComponent
 	// drives the view; its construction values here are never observed.
 	GS::PerspectiveCamera m_PlayCamera{ 45.0f, 16.0f / 9.0f, 0.1f, 1000.0f };

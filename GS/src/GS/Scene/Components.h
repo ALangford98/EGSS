@@ -164,6 +164,12 @@ namespace GS {
 		float Mass = 1.0f;
 		float Friction = 0.5f;
 		float Restitution = 0.0f;
+		// The velocity a dynamic body is given the moment Play starts, in
+		// m/s, world axes -- a throw, a push, a launch, set up in the
+		// editor. A velocity rather than a force or an impulse so that what
+		// is typed is what happens whatever the mass: 5 along x moves it at
+		// 5 m/s along x on the first step, a crate or a pebble.
+		glm::vec3 LaunchVelocity{ 0.0f };
 	};
 
 	// Terrain on a primitive shape: the shape rebuilt at Resolution, its

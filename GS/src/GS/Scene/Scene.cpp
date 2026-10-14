@@ -240,6 +240,10 @@ namespace GS {
 			{
 				out << "physics " << (int)physics->Type;
 				WriteFloats(out, { physics->Mass, physics->Friction, physics->Restitution });
+				// Only when set, so every scene without one saves exactly as
+				// it did before the field existed.
+				if (physics->LaunchVelocity != glm::vec3(0.0f))
+					WriteFloats(out, { physics->LaunchVelocity.x, physics->LaunchVelocity.y, physics->LaunchVelocity.z });
 				out << "\n";
 			}
 
@@ -393,6 +397,9 @@ namespace GS {
 				PhysicsComponent physics;
 				int type = (int)BodyType::Dynamic;
 				fields >> type >> physics.Mass >> physics.Friction >> physics.Restitution;
+				glm::vec3 launch;
+				if (fields >> launch.x >> launch.y >> launch.z)
+					physics.LaunchVelocity = launch;
 				physics.Type = (BodyType)type;
 				current.Add<PhysicsComponent>(physics);
 			}
