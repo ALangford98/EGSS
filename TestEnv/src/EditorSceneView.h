@@ -1146,6 +1146,22 @@ private:
 			});
 	}
 
+	template<typename Component>
+	void BodyCombo(int& body, const char* id)
+	{
+		static const char* kinds[] = { "Upright capsule (walks)", "Ball (rolls)", "Humanoid (active ragdoll)" };
+		static const char* tips[] = {
+			"Moves at a set speed, never tips over. Uses the entity's own mesh to look like.",
+			"A real sphere driven by torque: momentum, rolling down slopes, spinning as it goes.",
+			"The ragdoll from the Ragdoll demo: balances, walks, staggers, falls, gets up. Drawn as a mannequin." };
+		int value = body;
+		ImGui::SetNextItemWidth(220.0f);
+		if (ImGui::Combo((std::string("Body") + id).c_str(), &value, kinds, 3) && value != body)
+			EditorHistory::Push(std::make_unique<EditFieldCommand<Component, int>>(m_Selected, &Component::Body, body, value));
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", tips[std::clamp(body, 0, 2)]);
+	}
+
 	void DrawCharacterInspector()
 	{
 		auto* player = g_EditorScene.GetComponent<GS::PlayerComponent>(m_Selected);
@@ -1155,11 +1171,15 @@ private:
 			if (!g_EditorScene.HasComponent<GS::MeshComponent>(m_Selected))
 				return;
 			ImGui::SeparatorText("Character");
+			// A sphere is made a ball -- it rolls; anything else walks
+			// upright, keeping its own shape.
+			auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(m_Selected);
+			int body = mesh->SourcePath == "primitive:sphere" ? 1 : 0;
 			if (ImGui::Button("Make Player"))
-				ReplaceSelected([](EntitySnapshot& s) { s.Player = GS::PlayerComponent{}; });
+				ReplaceSelected([body](EntitySnapshot& s) { GS::PlayerComponent p; p.Body = body; s.Player = p; });
 			ImGui::SameLine();
 			if (ImGui::Button("Make NPC"))
-				ReplaceSelected([](EntitySnapshot& s) { s.Npc = GS::NpcComponent{}; });
+				ReplaceSelected([body](EntitySnapshot& s) { GS::NpcComponent n; n.Body = body; s.Npc = n; });
 			return;
 		}
 
@@ -1167,6 +1187,7 @@ private:
 		{
 			ImGui::SeparatorText("Player");
 			ImGui::TextDisabled("WASD move, Space jump, Shift sprint; right-drag or arrows orbit the camera.");
+			BodyCombo<GS::PlayerComponent>(player->Body, "##playerbody");
 			ImGui::DragFloat("Speed (m/s)", &player->Speed, 0.05f, 0.0f, 50.0f, "%.2f");
 			TrackEdit(&GS::PlayerComponent::Speed, player->Speed);
 			ImGui::DragFloat("Sprint x", &player->SprintMultiplier, 0.01f, 1.0f, 5.0f, "%.2f");
@@ -1195,6 +1216,7 @@ private:
 		if (npc)
 		{
 			ImGui::SeparatorText("NPC");
+			BodyCombo<GS::NpcComponent>(npc->Body, "##npcbody");
 			static const char* behaviours[] = { "Idle", "Wander", "Follow the player", "Flee the player" };
 			int behaviour = npc->Behaviour;
 			if (ImGui::Combo("Behaviour", &behaviour, behaviours, 4) && behaviour != npc->Behaviour)

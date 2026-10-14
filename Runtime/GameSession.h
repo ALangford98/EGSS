@@ -46,6 +46,16 @@ public:
 
 	bool IsRunning() const { return m_Running; }
 
+	// Entities the game made for itself (the follow camera), which an editor
+	// keeping the scene as Play left it should not keep.
+	std::vector<GS::EntityId> CreatedEntities() const
+	{
+		std::vector<GS::EntityId> created;
+		if (m_Characters.CreatedCamera())
+			created.push_back(m_Characters.CameraEntity());
+		return created;
+	}
+
 	// Builds every body, installs the physics backend, then prepares and
 	// starts every script. `dependencies`, when given, receives each
 	// interpreted script's resolved imports (the editor records them).
@@ -75,7 +85,7 @@ public:
 
 			GS::RigidBody3D body;
 			if (character)
-				body = CharacterController::MakeBody(*transform, physics);
+				body = CharacterController::MakeBody(*transform, physics, CharacterController::BodyOf(m_Scene, id));
 			else if (!MakeTerrainBody(id, *transform, *physics, body))
 			{
 				glm::vec3 halfExtents;

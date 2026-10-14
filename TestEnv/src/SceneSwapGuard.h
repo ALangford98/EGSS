@@ -16,6 +16,7 @@
 #include "EditorProject.h"
 #include "MaterialEditorPanel.h"
 #include "PlayMode.h"
+#include "EditorSettings.h"
 
 namespace SceneSwapGuard {
 
@@ -77,6 +78,79 @@ namespace SceneSwapGuard {
 		PlayMode::Stop();
 		ResetForNewScene();
 		g_SceneNeedsSave = g_SceneNeedsSave || unsaved;
+	}
+
+	// Ending Play, keeping the scene as the game left it or not. Either
+	// way the history is reset (Stop swaps the scene); kept changes, and
+	// edits made before Play, count as unsaved.
+	inline void FinishStop(bool keep)
+	{
+		if (!PlayMode::IsPlaying())
+			return;
+		bool unsaved = SceneIsDirty();
+		PlayMode::Stop(keep);
+		ResetForNewScene();
+		g_SceneNeedsSave = g_SceneNeedsSave || unsaved || keep;
+	}
+
+	// The Stop button: asks whether to keep what happened during Play,
+	// unless a "Don't ask again" answer is remembered. The game is held
+	// still while the question is up, so "as it is" means at the press.
+	inline bool s_StopQuestion = false;
+	inline bool s_StopQuestionRequested = false;
+	inline bool s_StopRemember = false;
+
+	inline const char* KeepSettingKey() { return "play.keep-changes"; }
+
+	inline void RequestStop()
+	{
+		std::string remembered = EditorSettings::Get(KeepSettingKey(), "ask");
+		if (remembered == "keep")
+			FinishStop(true);
+		else if (remembered == "discard")
+			FinishStop(false);
+		else
+		{
+			s_StopQuestion = true;
+			s_StopQuestionRequested = true;
+			s_StopRemember = false;
+		}
+	}
+
+	inline bool IsStopQuestionOpen() { return s_StopQuestion; }
+
+	inline void DrawStopQuestion()
+	{
+		if (s_StopQuestionRequested)
+		{
+			ImGui::OpenPopup("Stop Playing");
+			s_StopQuestionRequested = false;
+		}
+		if (!ImGui::BeginPopupModal("Stop Playing", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+			return;
+		ImGui::TextUnformatted("Keep the changes made during Play?");
+		ImGui::TextDisabled("Keep leaves the scene as it is now (unsaved). Discard puts it back as it was when Play started.");
+		ImGui::Checkbox("Don't ask again", &s_StopRemember);
+		auto answer = [](bool keep)
+		{
+			if (s_StopRemember)
+				EditorSettings::Set(KeepSettingKey(), keep ? "keep" : "discard");
+			s_StopQuestion = false;
+			ImGui::CloseCurrentPopup();
+			FinishStop(keep);
+		};
+		if (ImGui::Button("Keep"))
+			answer(true);
+		ImGui::SameLine();
+		if (ImGui::Button("Discard"))
+			answer(false);
+		ImGui::SameLine();
+		if (ImGui::Button("Keep Playing"))
+		{
+			s_StopQuestion = false;
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndPopup();
 	}
 
 	inline bool HasPendingAction() { return (bool)s_PendingAction; }

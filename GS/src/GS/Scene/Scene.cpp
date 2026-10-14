@@ -259,14 +259,14 @@ namespace GS {
 				out << "player";
 				WriteFloats(out, { player->Speed, player->SprintMultiplier, player->JumpHeight,
 					player->CameraDistance, player->CameraHeight });
-				out << " " << player->CameraMode << "\n";
+				out << " " << player->CameraMode << " " << player->Body << "\n";
 			}
 
 			if (NpcComponent* npc = self->GetComponent<NpcComponent>(entity))
 			{
 				out << "npc " << npc->Behaviour;
 				WriteFloats(out, { npc->Speed, npc->WanderRadius, npc->DetectRadius, npc->StopDistance });
-				out << "\n";
+				out << " " << npc->Body << "\n";
 			}
 		}
 
@@ -415,12 +415,18 @@ namespace GS {
 				PlayerComponent player;
 				fields >> player.Speed >> player.SprintMultiplier >> player.JumpHeight
 					>> player.CameraDistance >> player.CameraHeight >> player.CameraMode;
+				// Absent before bodies existed: such a file reads as the
+				// upright capsule it was made with.
+				if (!(fields >> player.Body))
+					player.Body = 0;
 				current.Add<PlayerComponent>(player);
 			}
 			else if (kind == "npc" && current)
 			{
 				NpcComponent npc;
 				fields >> npc.Behaviour >> npc.Speed >> npc.WanderRadius >> npc.DetectRadius >> npc.StopDistance;
+				if (!(fields >> npc.Body))
+					npc.Body = 0;
 				current.Add<NpcComponent>(npc);
 			}
 		}

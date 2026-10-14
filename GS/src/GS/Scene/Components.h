@@ -204,6 +204,7 @@ namespace GS {
 		float CameraDistance = 6.0f;   // third person: how far behind
 		float CameraHeight = 1.5f;     // above the character's centre
 		int CameraMode = 0;            // 0 third person, 1 first person, 2 leave the scene's camera alone
+		int Body = 0;                  // 0 upright capsule, 1 rolling ball, 2 humanoid (active ragdoll)
 	};
 
 	// A non-player character with a simple built-in behaviour, run by the
@@ -216,6 +217,7 @@ namespace GS {
 		float WanderRadius = 6.0f;     // around where it started
 		float DetectRadius = 10.0f;    // follow/flee: how near the player must be
 		float StopDistance = 2.0f;     // follow: how close it comes
+		int Body = 0;                  // as PlayerComponent::Body
 	};
 
 	// Opt-in networking. An entity with both of these has its

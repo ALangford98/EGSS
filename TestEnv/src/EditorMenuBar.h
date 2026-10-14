@@ -123,11 +123,15 @@ public:
 		DrawViewDialogs();
 		DrawFindPopup();
 		SceneSwapGuard::DrawUnsavedChangesModal();
+		SceneSwapGuard::DrawStopQuestion();
 	}
 
 	void OnFixedUpdate(GS::Timestep step) override
 	{
 		if (g_ActiveDemo != InvalidDemo)
+			return;
+		// Held still while Stop asks whether to keep the result.
+		if (SceneSwapGuard::IsStopQuestionOpen())
 			return;
 		PlayMode::OnFixedUpdate(step);
 	}
@@ -335,6 +339,14 @@ private:
 
 		if (ImGui::MenuItem("Find", "Ctrl+F", false, editorActive))
 			m_FindRequested = true;
+
+		ImGui::Separator();
+
+		std::string keep = EditorSettings::Get(SceneSwapGuard::KeepSettingKey(), "ask");
+		if (ImGui::MenuItem("Ask again about keeping Play changes", nullptr, false, keep != "ask"))
+			EditorSettings::Set(SceneSwapGuard::KeepSettingKey(), "");
+		if (keep != "ask" && ImGui::IsItemHovered())
+			ImGui::SetTooltip("Stop currently always %ss them.", keep.c_str());
 
 		ImGui::EndMenu();
 	}
@@ -612,9 +624,7 @@ private:
 		else
 		{
 			if (ImGui::Button("Stop"))
-			{
-				SceneSwapGuard::StopPlayKeepingUnsaved();
-			}
+				SceneSwapGuard::RequestStop();
 		}
 	}
 private:

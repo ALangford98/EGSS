@@ -37,7 +37,43 @@ public:
 		halfHeight = std::max(0.0f, transform.Scale.y - radius);
 	}
 
-	static GS::RigidBody3D MakeBody(const GS::TransformComponent& transform, const GS::PhysicsComponent* physics)
+	enum BodyKind { Upright = 0, Ball = 1, Humanoid = 2 };
+
+	static int BodyOf(GS::Scene& scene, GS::EntityId entity)
+	{
+		if (auto* player = scene.GetComponent<GS::PlayerComponent>(entity))
+			return player->Body;
+		if (auto* npc = scene.GetComponent<GS::NpcComponent>(entity))
+			return npc->Body;
+		return Upright;
+	}
+
+	// A ball that rolls: a real sphere, its inertia kept, gripping the
+	// ground so that turning it moves it. Radius from the largest scale --
+	// the sphere mesh is 1 across.
+	static GS::RigidBody3D MakeBall(const GS::TransformComponent& transform, const GS::PhysicsComponent* physics)
+	{
+		float radius = 0.5f * std::max(transform.Scale.x, std::max(transform.Scale.y, transform.Scale.z));
+		GS::RigidBody3D body = GS::RigidBody3D::MakeSphere(transform.Position, radius, physics ? physics->Mass : 10.0f);
+		body.Friction = 0.9f;
+		body.Restitution = physics ? physics->Restitution : 0.1f;
+		body.LinearDamping = 0.01f;
+		body.AngularDamping = 0.02f;
+		body.Orientation = glm::quat_cast(glm::mat3(
+			glm::rotate(glm::mat4(1.0f), glm::radians(transform.Rotation.x), glm::vec3(1, 0, 0)) *
+			glm::rotate(glm::mat4(1.0f), glm::radians(transform.Rotation.y), glm::vec3(0, 1, 0)) *
+			glm::rotate(glm::mat4(1.0f), glm::radians(transform.Rotation.z), glm::vec3(0, 0, 1))));
+		return body;
+	}
+
+	static GS::RigidBody3D MakeBody(const GS::TransformComponent& transform, const GS::PhysicsComponent* physics, int kind)
+	{
+		if (kind == Ball)
+			return MakeBall(transform, physics);
+		return MakeUpright(transform, physics);
+	}
+
+	static GS::RigidBody3D MakeUpright(const GS::TransformComponent& transform, const GS::PhysicsComponent* physics)
 	{
 		float radius, halfHeight;
 		CapsuleFor(transform, radius, halfHeight);
@@ -75,6 +111,7 @@ public:
 		m_Characters.clear();
 		m_Player = -1;
 		m_Camera = GS::InvalidEntity;
+		m_CreatedCamera = false;
 	}
 
 	// One character, its body already in the world.
@@ -87,6 +124,7 @@ public:
 		c.Home = transform ? transform->Position : glm::vec3(0.0f);
 		c.Facing = transform ? transform->Rotation.y : 0.0f;
 		c.IsPlayer = scene.GetComponent<GS::PlayerComponent>(entity) != nullptr;
+		c.Kind = BodyOf(scene, entity);
 		c.Index = (uint32_t)m_Characters.size();
 		m_Characters.push_back(c);
 		if (c.IsPlayer && m_Player < 0)
@@ -119,6 +157,7 @@ public:
 			component.Active = true;   // default-constructed cameras are not, and the renderer looks only through an active one
 			camera.Add<GS::CameraComponent>(component);
 			m_Camera = camera.GetId();
+			m_CreatedCamera = true;
 		}
 		// Behind the player, looking the way it faces, a little down.
 		m_Yaw = player.Facing;
@@ -145,7 +184,7 @@ public:
 			body.Awake = true;
 			body.SleepTimer = 0.0f;
 
-			float feet = body.Position.y - (body.HalfHeight + body.Radius);
+			float feet = body.Position.y - (c.Kind == Ball ? body.Radius : body.HalfHeight + body.Radius);
 			float groundHeight = 0.0f;
 			glm::vec3 groundNormal;
 			c.Grounded = world.GroundBelow(body.Position, groundHeight, groundNormal, c.Handle, -1e9f)
@@ -179,7 +218,13 @@ public:
 			}
 
 			float length = glm::length(wish);
-			glm::vec3 velocity = length > 1e-4f ? wish / std::max(1.0f, length) * speed : glm::vec3(0.0f);
+			glm::vec3 direction = length > 1e-4f ? wish / std::max(1.0f, length) : glm::vec3(0.0f);
+			if (c.Kind == Ball)
+			{
+				DriveBall(body, c.Grounded, direction, speed, std::abs(world.Gravity.y));
+				continue;
+			}
+			glm::vec3 velocity = direction * speed;
 			body.Velocity.x = velocity.x;
 			body.Velocity.z = velocity.z;
 			if (length > 1e-4f)
@@ -192,8 +237,9 @@ public:
 	// player's camera follows.
 	void AfterStep(GS::Scene& scene, GS::PhysicsWorld3D& world)
 	{
+		// A ball keeps the orientation physics gave it -- that is the roll.
 		for (Character& c : m_Characters)
-			if (scene.IsValid(c.Entity))
+			if (c.Kind != Ball && scene.IsValid(c.Entity))
 				if (auto* transform = scene.GetComponent<GS::TransformComponent>(c.Entity))
 					transform->Rotation = glm::vec3(0.0f, c.Facing, 0.0f);
 
@@ -218,6 +264,7 @@ public:
 	}
 
 	GS::EntityId CameraEntity() const { return m_Camera; }
+	bool CreatedCamera() const { return m_CreatedCamera; }
 
 private:
 	struct Character
@@ -226,6 +273,7 @@ private:
 		GS::PhysicsWorld3D::BodyHandle Handle = 0;
 		uint32_t Index = 0;
 		bool IsPlayer = false;
+		int Kind = Upright;
 		bool Grounded = false;
 		float Facing = 0.0f;           // degrees about y
 		glm::vec3 Home{ 0.0f };        // where it started: the centre of its wander
@@ -235,6 +283,41 @@ private:
 		float Walking = 0.0f;          // seconds spent on the current target
 		uint32_t Picks = 0;            // wander targets chosen so far: the random stream's position
 	};
+
+	// A ball is driven the way a ball is: by turning it. Rolling without
+	// slipping, a ball moving at v in direction d spins at v / r about
+	// up x d (v = w x (r up), and (up x d) x up = d), so the wished
+	// velocity becomes a wished spin, and torque pulls the spin towards it
+	// -- the ground's grip turns that into motion, slope and momentum
+	// included. Only the horizontal spin is driven: spin about up does not
+	// move a ball. Released, it is left alone: it rolls on.
+	//
+	// The torque is capped at what grip can carry, mu m g r: more than that
+	// would only spin the ball in place. In the air a small force steers.
+	void DriveBall(GS::RigidBody3D& body, bool grounded, const glm::vec3& direction, float speed, float gravity)
+	{
+		if (glm::length(direction) < 1e-4f)
+			return;
+		float mass = body.InverseMass > 0.0f ? 1.0f / body.InverseMass : 0.0f;
+		float r = body.Radius;
+		if (!grounded)
+		{
+			body.Force += direction * mass * 4.0f;
+			return;
+		}
+		glm::vec3 up(0.0f, 1.0f, 0.0f);
+		glm::vec3 wanted = glm::cross(up, direction) * (speed / r);
+		glm::vec3 spin = body.AngularVelocity;
+		glm::vec3 error = wanted - spin;
+		error.y = 0.0f;
+		float inertia = 0.4f * mass * r * r;
+		glm::vec3 torque = error * inertia * 10.0f;
+		float cap = body.Friction * mass * gravity * r;
+		float magnitude = glm::length(torque);
+		if (magnitude > cap)
+			torque *= cap / magnitude;
+		body.Torque += torque;
+	}
 
 	// The keyboard and mouse, as this step sees them. Skipped while an
 	// editor text field has the keyboard, as scripts' input is.
@@ -341,6 +424,7 @@ private:
 	std::vector<Character> m_Characters;
 	int m_Player = -1;                 // the first PlayerComponent: the one input drives and the camera follows
 	GS::EntityId m_Camera = GS::InvalidEntity;
+	bool m_CreatedCamera = false;
 	float m_Yaw = 0.0f, m_Pitch = -15.0f;
 	uint64_t m_Step = 0;
 

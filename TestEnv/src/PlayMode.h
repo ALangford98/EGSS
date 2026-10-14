@@ -124,13 +124,26 @@ namespace PlayMode {
 		WriteDependencyManifest(dependencies);
 	}
 
-	inline void Stop()
+	// keep: leave the scene as the game left it (minus what the game made
+	// for itself, like the follow camera) instead of reverting to the
+	// snapshot taken at Play. The caller decides whether that counts as an
+	// unsaved change -- it does, for the editor.
+	inline void Stop(bool keep = false)
 	{
 		if (!s_Session)
 			return;
 
+		std::vector<GS::EntityId> created = s_Session->CreatedEntities();
 		s_Session->Stop();
 		s_Session.reset();
+
+		if (keep)
+		{
+			for (GS::EntityId entity : created)
+				if (g_EditorScene.IsValid(entity))
+					g_EditorScene.DestroyEntity(entity);
+			return;
+		}
 
 		if (!g_EditorScene.Load(SnapshotPath()))
 			GS_ERROR("PlayMode::Stop: failed to revert scene from '{0}' -- scene may be in an unexpected state", SnapshotPath());
