@@ -28,6 +28,8 @@ namespace GS {
 			built = Mesh::CreatePlane();
 		else if (path == "primitive:cylinder")
 			built = Mesh::CreateCylinder();
+		else if (path == "primitive:capsule")
+			built = Mesh::CreateCapsule();
 		else
 			built = Mesh::Load(Assets::Resolve(path));   // the key stays the stored path
 

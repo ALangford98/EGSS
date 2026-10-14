@@ -129,6 +129,15 @@ namespace GS {
 		static Mesh* CreateSphere(float radius = 0.5f,
 			unsigned int segments = 32, unsigned int rings = 16);
 
+		// A capsule about y: a tube from -halfHeight to +halfHeight capped by
+		// hemispheres of `radius`, 2 * (halfHeight + radius) tall -- the
+		// shape of a character, and of the physics capsule that carries one.
+		// The defaults make it 1 wide and 2 tall.
+		static MeshData CreateCapsuleData(float radius = 0.5f, float halfHeight = 0.5f,
+			unsigned int segments = 32, unsigned int rings = 16);
+		static Mesh* CreateCapsule(float radius = 0.5f, float halfHeight = 0.5f,
+			unsigned int segments = 32, unsigned int rings = 16);
+
 		static MeshData CreateCylinderData(float radius = 0.5f, float halfHeight = 0.5f,
 			unsigned int segments = 24);
 		// A tube about the **y** axis, open at both ends, from -halfHeight to

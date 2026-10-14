@@ -41,6 +41,19 @@ namespace GS::Noise {
 	GS_API float Fbm(glm::vec2 p, glm::ivec2 period, int octaves, int lacunarity,
 		float gain, uint32_t seed);
 
+	// Gradient noise in three dimensions, not tiling: what displaces a
+	// shape's surface, which may be a sphere or a box and so cannot be
+	// sampled on a flat (x, y) grid without seams. Gradients are the 12
+	// cube-edge directions of Perlin's improved noise; the same quintic fade.
+	// Exactly 0 at every lattice point; within about [-1, 1].
+	GS_API float Perlin3(glm::vec3 p, uint32_t seed);
+
+	// Fbm of Perlin3, divided by the sum of the octave weights so the result
+	// stays within about [-1, 1] whatever the octave count -- a terrain's
+	// Height then means its height. Lacunarity 2. `ridged` folds each octave
+	// to 1 - |n| (squared), which turns rounded hills into sharp crests.
+	GS_API float Fbm3(glm::vec3 p, int octaves, float gain, uint32_t seed, bool ridged = false);
+
 	struct VoronoiResult
 	{
 		float F1 = 0.0f;       // distance to the nearest feature point

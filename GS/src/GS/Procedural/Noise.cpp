@@ -96,6 +96,60 @@ namespace GS::Noise {
 		return sum;
 	}
 
+	namespace {
+		inline float Gradient3(int x, int y, int z, uint32_t seed, const glm::vec3& d)
+		{
+			static const glm::vec3 directions[12] = {
+				{ 1, 1, 0 }, { -1, 1, 0 }, { 1, -1, 0 }, { -1, -1, 0 },
+				{ 1, 0, 1 }, { -1, 0, 1 }, { 1, 0, -1 }, { -1, 0, -1 },
+				{ 0, 1, 1 }, { 0, -1, 1 }, { 0, 1, -1 }, { 0, -1, -1 } };
+			uint32_t h = Hash((uint32_t)z ^ Hash(x, y, seed));
+			return glm::dot(directions[h % 12u], d);
+		}
+	}
+
+	float Perlin3(glm::vec3 p, uint32_t seed)
+	{
+		glm::vec3 cell = glm::floor(p);
+		glm::vec3 f = p - cell;
+		int x = (int)cell.x, y = (int)cell.y, z = (int)cell.z;
+
+		float n000 = Gradient3(x, y, z, seed, f);
+		float n100 = Gradient3(x + 1, y, z, seed, f - glm::vec3(1, 0, 0));
+		float n010 = Gradient3(x, y + 1, z, seed, f - glm::vec3(0, 1, 0));
+		float n110 = Gradient3(x + 1, y + 1, z, seed, f - glm::vec3(1, 1, 0));
+		float n001 = Gradient3(x, y, z + 1, seed, f - glm::vec3(0, 0, 1));
+		float n101 = Gradient3(x + 1, y, z + 1, seed, f - glm::vec3(1, 0, 1));
+		float n011 = Gradient3(x, y + 1, z + 1, seed, f - glm::vec3(0, 1, 1));
+		float n111 = Gradient3(x + 1, y + 1, z + 1, seed, f - glm::vec3(1, 1, 1));
+
+		float u = Fade(f.x), v = Fade(f.y), w = Fade(f.z);
+		return glm::mix(
+			glm::mix(glm::mix(n000, n100, u), glm::mix(n010, n110, u), v),
+			glm::mix(glm::mix(n001, n101, u), glm::mix(n011, n111, u), v), w);
+	}
+
+	float Fbm3(glm::vec3 p, int octaves, float gain, uint32_t seed, bool ridged)
+	{
+		float sum = 0.0f, weight = 0.0f, amplitude = 1.0f;
+		for (int i = 0; i < octaves; i++)
+		{
+			float n = Perlin3(p, seed + (uint32_t)i);
+			if (ridged)
+			{
+				// 1 - |n| peaks where the noise crosses zero, along lines;
+				// squared, the peaks sharpen. Mapped to [-1, 1] like the rest.
+				float r = 1.0f - std::abs(n);
+				n = r * r * 2.0f - 1.0f;
+			}
+			sum += amplitude * n;
+			weight += amplitude;
+			amplitude *= gain;
+			p *= 2.0f;
+		}
+		return weight > 0.0f ? sum / weight : 0.0f;
+	}
+
 	VoronoiResult Voronoi(glm::vec2 p, glm::ivec2 period, float jitter, uint32_t seed)
 	{
 		glm::vec2 cell = glm::floor(p);

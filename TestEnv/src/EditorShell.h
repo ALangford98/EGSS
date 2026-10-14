@@ -43,6 +43,7 @@
 #include "ScriptEngine.h"
 #include "TerminalPanel.h"
 #include "TextEditorPanel.h"
+#include "ToolsPanel.h"
 
 // Off with `--no-editor`, because a layout is a preference and somebody
 // debugging a single panel should not have to fight one.
@@ -271,45 +272,8 @@ public:
 		m_TextEditor.OnImGuiRender();
 		ImGui::PopStyleVar();
 
-		// Named "Tools" now -- scene save/open/new moved to the File menu
-		// (EditorMenuBar.h), and "Open as starting scene" moved there too,
-		// below. What is left here is exactly the entity-creation controls,
-		// which is what "Tools" means in a conventional editor layout.
-		ImGui::Begin("Tools");
-
-		ImGui::SeparatorText("Preset shapes");
-		// One button per MeshCache primitive key -- see MeshCache::Get. Each
-		// placed entity is immediately saveable, because its SourcePath is
-		// exactly the key the cache resolved it through.
-		struct Preset { const char* Label; const char* Path; };
-		static const Preset presets[] = {
-			{ "Cube", "primitive:cube" }, { "Sphere", "primitive:sphere" },
-			{ "Plane", "primitive:plane" }, { "Cylinder", "primitive:cylinder" }
-		};
-		for (const Preset& preset : presets)
-		{
-			if (ImGui::Button(preset.Label))
-				PlaceMesh(preset.Path, preset.Label);
-			ImGui::SameLine();
-		}
-		// Not a preset shape -- a camera has no mesh or SourcePath to resolve
-		// through MeshCache -- but it belongs beside them: both are "make a
-		// new entity and select it" buttons for things a scene is built from.
-		if (ImGui::Button("Camera"))
-			PlaceCamera();
-		ImGui::SameLine();
-		if (ImGui::Button("Light"))
-			PlaceLight();
-		ImGui::NewLine();
-
-		ImGui::SeparatorText("Import");
-		ImGui::TextDisabled(".obj only -- see the plan's note on why glTF stays in ModelDemo for now.");
-		ImGui::InputText("##importpath", m_ImportPath, sizeof(m_ImportPath));
-		ImGui::SameLine();
-		if (ImGui::Button("Import"))
-			PlaceMesh(m_ImportPath, "Imported");
-
-		ImGui::End();
+		// Everything that adds to the scene: ToolsPanel.h.
+		m_Tools.OnImGuiRender();
 
 		std::string clickedFile = m_FileTree.OnImGuiRender();
 		if (!clickedFile.empty())
@@ -347,52 +311,7 @@ public:
 	}
 
 private:
-	char m_ImportPath[256] = "assets/models/";
-
-	// Places a mesh -- imported or preset alike, both resolve through
-	// MeshCache -- at the origin, tags it, and selects it, so a placed
-	// object is immediately the thing the Inspector is showing.
-	void PlaceMesh(const std::string& path, const std::string& name)
-	{
-		std::shared_ptr<GS::Mesh> geometry = GS::MeshCache::Get(path);
-		if (!geometry)
-			return;
-
-		GS::MeshComponent mesh;
-		mesh.SourcePath = path;
-		mesh.Geometry = geometry;
-
-		GS::EntityId selection = EditorHistory::Push(
-			std::make_unique<PlaceEntityCommand>(name, GS::TransformComponent{}, mesh, std::nullopt));
-
-		if (g_EditorSceneView)
-			g_EditorSceneView->Select(selection);
-	}
-
-	// Places a default-constructed camera and selects it. Separate from
-	// PlaceMesh rather than an overload of it: a camera has no mesh and
-	// nothing to resolve through MeshCache, so the two have almost nothing
-	// in common besides "make an entity and select it".
-	void PlaceCamera()
-	{
-		GS::EntityId selection = EditorHistory::Push(std::make_unique<PlaceEntityCommand>(
-			"Camera", GS::TransformComponent{}, std::nullopt, GS::CameraComponent{}));
-
-		if (g_EditorSceneView)
-			g_EditorSceneView->Select(selection);
-	}
-
-	// Same shape as PlaceCamera -- no mesh, nothing to resolve through
-	// MeshCache -- with std::nullopt for the camera slot so the command's
-	// four-way constructor still reads as "everything this entity has".
-	void PlaceLight()
-	{
-		GS::EntityId selection = EditorHistory::Push(std::make_unique<PlaceEntityCommand>(
-			"Light", GS::TransformComponent{}, std::nullopt, std::nullopt, GS::LightComponent{}));
-
-		if (g_EditorSceneView)
-			g_EditorSceneView->Select(selection);
-	}
+	ToolsPanel m_Tools;
 
 	// Built once into `imgui.ini`. Every demo has a panel and only one of them
 	// is ever visible, so they all dock to the same slot on the left and the

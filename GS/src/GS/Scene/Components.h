@@ -166,6 +166,58 @@ namespace GS {
 		float Restitution = 0.0f;
 	};
 
+	// Terrain on a primitive shape: the shape rebuilt at Resolution, its
+	// surface pushed in and out by fractal noise -- a plane becomes hills, a
+	// sphere a small planet, a cube a rock. The mesh is generated
+	// (TerrainMesh), never stored: the scene file keeps these numbers and
+	// every load rebuilds the same surface from them.
+	//
+	// Units are the shape's own, before the entity's scale: the primitives
+	// are 1 across, so Height 0.1 on a plane scaled to 50 is 5 m of relief.
+	// Ints and floats rather than enums and uint32_t so the editor's undo
+	// (EditFieldCommand) takes every field as it is.
+	struct TerrainComponent
+	{
+		int Resolution = 64;       // subdivisions across the shape: the vertex count
+		float Height = 0.1f;       // displacement, in the shape's units
+		float Frequency = 3.0f;    // features across the shape
+		int Octaves = 5;           // layers of finer detail
+		float Roughness = 0.5f;    // how much each finer layer keeps (the fbm gain)
+		int Seed = 1;
+		bool Ridged = false;       // sharp crests instead of rounded hills
+
+		// What MeshComponent::Geometry was last built from. Not saved: the
+		// editor compares it each frame and rebuilds when an edit or an
+		// undo has changed the numbers.
+		std::string BuiltKey;
+	};
+
+	// The character a player controls in Play and in an exported game:
+	// WASD relative to the camera, Space to jump, Shift to sprint, and a
+	// camera that follows (orbit with right-drag or the arrow keys). Run by
+	// Runtime/CharacterController.h, which gives it an upright capsule body.
+	struct PlayerComponent
+	{
+		float Speed = 5.0f;            // metres per second, walking
+		float SprintMultiplier = 1.8f;
+		float JumpHeight = 1.2f;       // metres: the jump speed is derived from it and gravity
+		float CameraDistance = 6.0f;   // third person: how far behind
+		float CameraHeight = 1.5f;     // above the character's centre
+		int CameraMode = 0;            // 0 third person, 1 first person, 2 leave the scene's camera alone
+	};
+
+	// A non-player character with a simple built-in behaviour, run by the
+	// same controller as the player. Anything richer belongs in a script,
+	// which an NPC can carry as well.
+	struct NpcComponent
+	{
+		int Behaviour = 1;             // 0 idle, 1 wander, 2 follow the player, 3 flee the player
+		float Speed = 2.5f;
+		float WanderRadius = 6.0f;     // around where it started
+		float DetectRadius = 10.0f;    // follow/flee: how near the player must be
+		float StopDistance = 2.0f;     // follow: how close it comes
+	};
+
 	// Opt-in networking. An entity with both of these has its
 	// TransformComponent auto-replicated by the server to every client;
 	// anything else about it (score, health, "this ball bounced") travels

@@ -288,6 +288,54 @@ namespace GS {
 		return new Mesh(CreateSphereData(radius, segments, rings), "Sphere");
 	}
 
+	MeshData Mesh::CreateCapsuleData(float radius, float halfHeight, unsigned int segments, unsigned int rings)
+	{
+		if (segments < 3) segments = 3;
+		if (rings < 2) rings = 2;
+		unsigned int half = std::max(1u, rings / 2);
+
+		// A sphere's rows with the equator row twice -- once lifted to
+		// +halfHeight, once lowered to -halfHeight -- and the band between
+		// those two copies is the tube. Rows run top to bottom and are wound
+		// exactly as CreateSphereData's are.
+		std::vector<std::pair<float, float>> rows;
+		for (unsigned int r = 0; r <= half; r++)
+			rows.push_back({ glm::half_pi<float>() * (float)r / (float)half, halfHeight });
+		for (unsigned int r = 0; r <= half; r++)
+			rows.push_back({ glm::half_pi<float>() * (1.0f + (float)r / (float)half), -halfHeight });
+
+		MeshData data;
+		for (size_t r = 0; r < rows.size(); r++)
+		{
+			float phi = rows[r].first;
+			for (unsigned int s = 0; s <= segments; s++)
+			{
+				float u = (float)s / (float)segments, theta = u * glm::two_pi<float>();
+				glm::vec3 unit(std::sin(phi) * std::cos(theta), std::cos(phi), std::sin(phi) * std::sin(theta));
+				data.Vertices.push_back({ unit * radius + glm::vec3(0.0f, rows[r].second, 0.0f), unit,
+					{ u, 1.0f - (float)r / (float)(rows.size() - 1) } });
+			}
+		}
+		unsigned int stride = segments + 1;
+		for (unsigned int r = 0; r + 1 < (unsigned int)rows.size(); r++)
+			for (unsigned int s = 0; s < segments; s++)
+			{
+				unsigned int a = r * stride + s, b = a + stride;
+				if (r != 0)
+					data.Indices.insert(data.Indices.end(), { a, a + 1, b });
+				if (r + 2 != (unsigned int)rows.size())
+					data.Indices.insert(data.Indices.end(), { a + 1, b + 1, b });
+			}
+
+		data.RecalculateBounds();
+		return data;
+	}
+
+	Mesh* Mesh::CreateCapsule(float radius, float halfHeight, unsigned int segments, unsigned int rings)
+	{
+		return new Mesh(CreateCapsuleData(radius, halfHeight, segments, rings), "Capsule");
+	}
+
 	MeshData Mesh::CreateCylinderData(float radius, float halfHeight, unsigned int segments)
 	{
 		if (segments < 3) segments = 3;

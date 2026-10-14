@@ -15,8 +15,11 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/euler_angles.hpp>
 
+#include "CharacterController.h"
 #include "CompiledScriptRegistry.h"
 #include "ScriptEngine.h"
+
+#include <GS/Procedural/TerrainMesh.h>
 
 #include <filesystem>
 #include <fstream>
@@ -62,38 +65,51 @@ public:
 		// them in -- so two passes, bodies then scripts.
 		for (GS::EntityId id : m_Scene.GetEntities())
 		{
-			if (auto* transform = m_Scene.GetComponent<GS::TransformComponent>(id))
-				if (auto* physics = m_Scene.GetComponent<GS::PhysicsComponent>(id))
-				{
-					glm::vec3 halfExtents;
-					if (auto* mesh = m_Scene.GetComponent<GS::MeshComponent>(id); mesh && mesh->Geometry)
-						halfExtents = (mesh->Geometry->GetBoundsMax() - mesh->Geometry->GetBoundsMin()) * 0.5f * transform->Scale;
-					else
-						halfExtents = transform->Scale * 0.5f;
+			auto* transform = m_Scene.GetComponent<GS::TransformComponent>(id);
+			if (!transform)
+				continue;
+			auto* physics = m_Scene.GetComponent<GS::PhysicsComponent>(id);
+			bool character = m_Scene.HasComponent<GS::PlayerComponent>(id) || m_Scene.HasComponent<GS::NpcComponent>(id);
+			if (!physics && !character)
+				continue;
 
-					GS::RigidBody3D body = (physics->Type == GS::BodyType::Dynamic)
-						? GS::RigidBody3D::MakeBox(transform->Position, halfExtents, physics->Mass)
-						: GS::RigidBody3D::MakeStaticBox(transform->Position, halfExtents);
-					if (physics->Type == GS::BodyType::Kinematic)
-						body.Type = GS::BodyType::Kinematic;
+			GS::RigidBody3D body;
+			if (character)
+				body = CharacterController::MakeBody(*transform, physics);
+			else if (!MakeTerrainBody(id, *transform, *physics, body))
+			{
+				glm::vec3 halfExtents;
+				if (auto* mesh = m_Scene.GetComponent<GS::MeshComponent>(id); mesh && mesh->Geometry)
+					halfExtents = (mesh->Geometry->GetBoundsMax() - mesh->Geometry->GetBoundsMin()) * 0.5f * transform->Scale;
+				else
+					halfExtents = transform->Scale * 0.5f;
 
-					// Matches TransformComponent::GetTransform()'s own
-					// rotation composition (Rx * Ry * Rz, degrees) exactly,
-					// so a physics body starts at the same orientation the
-					// object was already rendering at.
-					body.Orientation = glm::quat_cast(glm::mat3(
-						glm::rotate(glm::mat4(1.0f), glm::radians(transform->Rotation.x), glm::vec3(1, 0, 0)) *
-						glm::rotate(glm::mat4(1.0f), glm::radians(transform->Rotation.y), glm::vec3(0, 1, 0)) *
-						glm::rotate(glm::mat4(1.0f), glm::radians(transform->Rotation.z), glm::vec3(0, 0, 1))));
-					body.Friction = physics->Friction;
-					body.Restitution = physics->Restitution;
+				body = (physics->Type == GS::BodyType::Dynamic)
+					? GS::RigidBody3D::MakeBox(transform->Position, halfExtents, physics->Mass)
+					: GS::RigidBody3D::MakeStaticBox(transform->Position, halfExtents);
+				if (physics->Type == GS::BodyType::Kinematic)
+					body.Type = GS::BodyType::Kinematic;
 
-					GS::PhysicsWorld3D::BodyHandle handle = m_World.AddBody(body);
-					m_Bodies[id] = handle;
-					m_BodyOwners[handle] = id;
-					m_LastSynced[id] = transform->Position;
-				}
+				// Matches TransformComponent::GetTransform()'s own
+				// rotation composition (Rx * Ry * Rz, degrees) exactly,
+				// so a physics body starts at the same orientation the
+				// object was already rendering at.
+				body.Orientation = glm::quat_cast(glm::mat3(
+					glm::rotate(glm::mat4(1.0f), glm::radians(transform->Rotation.x), glm::vec3(1, 0, 0)) *
+					glm::rotate(glm::mat4(1.0f), glm::radians(transform->Rotation.y), glm::vec3(0, 1, 0)) *
+					glm::rotate(glm::mat4(1.0f), glm::radians(transform->Rotation.z), glm::vec3(0, 0, 1))));
+				body.Friction = physics->Friction;
+				body.Restitution = physics->Restitution;
+			}
+
+			GS::PhysicsWorld3D::BodyHandle handle = m_World.AddBody(body);
+			m_Bodies[id] = handle;
+			m_BodyOwners[handle] = id;
+			m_LastSynced[id] = transform->Position;
+			if (character)
+				m_Characters.Add(m_Scene, id, handle);
 		}
+		m_Characters.Start(m_Scene);
 		GS::ScriptPhysics::SetBackend(&m_Backend);
 
 		for (GS::EntityId id : m_Scene.GetEntities())
@@ -170,6 +186,7 @@ public:
 		// up inside MakeCompiledScriptEntry's Create) already knows how to
 		// destroy the real T, so clear() alone is enough.
 		m_Compiled.clear();
+		m_Characters.Clear();
 
 		m_Running = false;
 	}
@@ -196,6 +213,7 @@ public:
 			body.SleepTimer = 0.0f;
 		}
 
+		m_Characters.BeforeStep(m_Scene, m_World, dt);
 		m_World.Step(dt);
 
 		for (auto& [id, handle] : m_Bodies)
@@ -215,6 +233,7 @@ public:
 			glm::extractEulerAngleXYZ(glm::mat4_cast(body.Orientation), x, y, z);
 			transform->Rotation = glm::degrees(glm::vec3(x, y, z));
 		}
+		m_Characters.AfterStep(m_Scene, m_World);
 
 		// scene.destroy() can remove any entity, including one with its own
 		// running script -- self-destruction, or another entity destroying
@@ -256,6 +275,43 @@ public:
 	}
 
 private:
+	// A static terrain plane collides as what it looks like: a heightfield
+	// sampled from the same displacement its mesh was built from, at the
+	// mesh's own vertices -- so the ground a character stands on is the
+	// ground drawn. Only for a plane that is level (a heightfield cannot be
+	// turned) and square (it has one extent); anything else falls back to
+	// its bounding box, which GameSession says so about.
+	bool MakeTerrainBody(GS::EntityId id, const GS::TransformComponent& transform, const GS::PhysicsComponent& physics,
+		GS::RigidBody3D& out)
+	{
+		auto* terrain = m_Scene.GetComponent<GS::TerrainComponent>(id);
+		auto* mesh = m_Scene.GetComponent<GS::MeshComponent>(id);
+		if (!terrain || !mesh || mesh->SourcePath != "primitive:plane")
+			return false;
+		if (physics.Type != GS::BodyType::Static || transform.Rotation != glm::vec3(0.0f)
+			|| std::abs(transform.Scale.x - transform.Scale.z) > 1e-4f * std::max(1.0f, transform.Scale.x))
+		{
+			GS_WARN("GameSession: terrain '{0}' collides as a box -- a terrain collider needs a static, unrotated plane "
+				"scaled the same in x and z", id);
+			return false;
+		}
+
+		int n = std::clamp(terrain->Resolution, 1, 512);
+		std::vector<float> heights((size_t)(n + 1) * (n + 1));
+		for (int k = 0; k <= n; k++)
+			for (int i = 0; i <= n; i++)
+			{
+				glm::vec3 local(-0.5f + (float)i / n, 0.0f, -0.5f + (float)k / n);
+				heights[(size_t)k * (n + 1) + i] = GS::TerrainMesh::Displacement(*terrain, local) * transform.Scale.y;
+			}
+		auto field = std::make_shared<GS::Heightfield3D>();
+		field->SetHeights(n + 1, transform.Scale.x, heights);
+		out = GS::RigidBody3D::MakeHeightfield(transform.Position, field);
+		out.Friction = physics.Friction;
+		out.Restitution = physics.Restitution;
+		return true;
+	}
+
 	struct CompiledInstance
 	{
 		const CompiledScriptEntry* Entry = nullptr;
@@ -360,4 +416,5 @@ private:
 	std::unordered_map<GS::EntityId, CompiledInstance> m_Compiled;
 
 	PhysicsBackend m_Backend{ *this };
+	CharacterController m_Characters;
 };

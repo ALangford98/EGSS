@@ -26,6 +26,9 @@
 #include "EntityGroups.h"
 #include "FileBrowserPopup.h"
 #include "GizmoMath.h"
+
+#include <GS/Procedural/TerrainMesh.h>
+#include <type_traits>
 #include "MaterialEditorPanel.h"
 #include "MaterialLibrary.h"
 #include "SceneRenderer.h"
@@ -75,6 +78,23 @@ public:
 	bool IsMeshEditing() const { return m_MeshEditActive; }
 
 	void Select(GS::EntityId entity) { m_Selected = entity; }
+	GS::EntityId Selected() const { return m_Selected; }
+
+	// Where the Tools panel puts something new: the ground (y = 0) where
+	// the camera is looking, when it is looking down at it within 30 m;
+	// otherwise 6 m straight ahead.
+	glm::vec3 PlacementPoint() const
+	{
+		glm::vec3 origin = m_Camera.GetPosition();
+		glm::vec3 forward = m_Camera.GetForward();
+		if (forward.y < -0.05f)
+		{
+			float distance = -origin.y / forward.y;
+			if (distance > 0.0f && distance < 30.0f)
+				return origin + forward * distance;
+		}
+		return origin + forward * 6.0f;
+	}
 	GS::EntityId GetSelected() const { return m_Selected; }
 
 	void OnUpdate(GS::Timestep ts) override
@@ -95,6 +115,7 @@ public:
 
 		MoveCamera(ts);
 		ResizeTarget();
+		SyncTerrainMeshes();
 		SyncMeshEditWorldPointBeforeGizmo();
 		UpdateGizmo();
 		SyncMeshEditWorldPointAfterGizmo();
@@ -656,6 +677,9 @@ public:
 					m_Selected, &GS::LightComponent::Enabled, m_EditBeforeBool, light->Enabled));
 		}
 
+		DrawTerrainInspector();
+		DrawCharacterInspector();
+
 		ImGui::SeparatorText("Network");
 		if (auto* identity = g_EditorScene.GetComponent<GS::NetworkIdentity>(m_Selected))
 		{
@@ -1007,8 +1031,208 @@ private:
 	// Shared by StartMeshEdit and ExportUvTemplate -- both need the same
 	// primitive-vs-file loading branch for a MeshComponent's current
 	// geometry.
+	// A terrain's mesh is generated, not loaded: rebuilt whenever the
+	// numbers it was built from (TerrainComponent::BuiltKey) are not the
+	// numbers it has -- after an Inspector edit, an Undo or Redo of one, or
+	// a Duplicate. Comparing a key a frame is far cheaper than rebuilding,
+	// and it is what keeps every path that changes a field honest without
+	// each having to remember. A shape terrain does not apply to (Edit
+	// Mesh's baked .obj) keeps the geometry it has.
+	void SyncTerrainMeshes()
+	{
+		auto& terrains = g_EditorScene.View<GS::TerrainComponent>();
+		for (size_t i = 0; i < terrains.Size(); i++)
+		{
+			GS::TerrainComponent& terrain = terrains.Components()[i];
+			auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(terrains.Owner(i));
+			if (!mesh || !GS::TerrainMesh::Supports(mesh->SourcePath))
+				continue;
+			std::string key = GS::TerrainMesh::Key(mesh->SourcePath, terrain);
+			if (key == terrain.BuiltKey)
+				continue;
+			mesh->Geometry = GS::TerrainMesh::Get(mesh->SourcePath, terrain);
+			terrain.BuiltKey = key;
+		}
+	}
+
+	// The "before" of an undoable Inspector edit, by the field's type.
+	template<typename Field>
+	Field& EditBefore()
+	{
+		if constexpr (std::is_same_v<Field, float>) return m_EditBeforeFloat;
+		else if constexpr (std::is_same_v<Field, int>) return m_EditBeforeInt;
+		else return m_EditBeforeBool;
+	}
+
+	// After a widget: one EditFieldCommand per completed edit, the same
+	// IsItemActivated / IsItemDeactivatedAfterEdit pair every field above
+	// spells out by hand.
+	template<typename Component, typename Field>
+	void TrackEdit(Field Component::*member, Field& value)
+	{
+		if (ImGui::IsItemActivated())
+			EditBefore<Field>() = value;
+		if (ImGui::IsItemDeactivatedAfterEdit())
+			EditorHistory::Push(std::make_unique<EditFieldCommand<Component, Field>>(
+				m_Selected, member, EditBefore<Field>(), value));
+	}
+
+	// Adding or removing a component as one undo step: the entity as it is,
+	// then as it will be.
+	template<typename Edit>
+	void ReplaceSelected(Edit edit)
+	{
+		EntitySnapshot before = EntitySnapshot::Capture(m_Selected);
+		EntitySnapshot after = before;
+		edit(after);
+		EditorHistory::Push(std::make_unique<ReplaceEntityCommand>(m_Selected, before, after));
+	}
+
+	void DrawTerrainInspector()
+	{
+		auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(m_Selected);
+		if (!mesh || !GS::TerrainMesh::Supports(mesh->SourcePath))
+			return;
+
+		ImGui::SeparatorText("Terrain");
+		auto* terrain = g_EditorScene.GetComponent<GS::TerrainComponent>(m_Selected);
+		if (!terrain)
+		{
+			if (ImGui::Button("Add Terrain"))
+				ReplaceSelected([&](EntitySnapshot& s)
+				{
+					GS::TerrainComponent t;
+					t.Resolution = mesh->SourcePath == "primitive:plane" ? 128 : 48;
+					s.Terrain = t;
+				});
+			ImGui::SameLine();
+			ImGui::TextDisabled("Noise relief on this shape, at a vertex count you choose.");
+			return;
+		}
+
+		ImGui::SliderInt("Resolution", &terrain->Resolution, 1, 512);
+		TrackEdit(&GS::TerrainComponent::Resolution, terrain->Resolution);
+		if (mesh->Geometry)
+			ImGui::TextDisabled("%zu vertices, %zu triangles", mesh->Geometry->GetVertexCount(), mesh->Geometry->GetTriangleCount());
+		ImGui::DragFloat("Height", &terrain->Height, 0.002f, -2.0f, 2.0f, "%.3f");
+		TrackEdit(&GS::TerrainComponent::Height, terrain->Height);
+		ImGui::DragFloat("Feature scale", &terrain->Frequency, 0.05f, 0.1f, 64.0f, "%.2f");
+		TrackEdit(&GS::TerrainComponent::Frequency, terrain->Frequency);
+		ImGui::SliderInt("Detail layers", &terrain->Octaves, 1, 10);
+		TrackEdit(&GS::TerrainComponent::Octaves, terrain->Octaves);
+		ImGui::SliderFloat("Roughness", &terrain->Roughness, 0.0f, 1.0f, "%.2f");
+		TrackEdit(&GS::TerrainComponent::Roughness, terrain->Roughness);
+		ImGui::DragInt("Seed", &terrain->Seed, 1.0f);
+		TrackEdit(&GS::TerrainComponent::Seed, terrain->Seed);
+		ImGui::Checkbox("Ridged", &terrain->Ridged);
+		TrackEdit(&GS::TerrainComponent::Ridged, terrain->Ridged);
+
+		// Whether it will be walkable, said where it is decided.
+		if (auto* physics = g_EditorScene.GetComponent<GS::PhysicsComponent>(m_Selected))
+		{
+			auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(m_Selected);
+			bool heightfield = mesh->SourcePath == "primitive:plane" && physics->Type == GS::BodyType::Static
+				&& transform && transform->Rotation == glm::vec3(0.0f)
+				&& std::abs(transform->Scale.x - transform->Scale.z) <= 1e-4f * std::max(1.0f, transform->Scale.x);
+			ImGui::TextDisabled(heightfield ? "Collides as its surface (a heightfield)."
+				: "Collides as its bounding box -- only a static, unrotated plane with equal x and z scale collides as its surface.");
+		}
+
+		if (ImGui::Button("Remove Terrain"))
+			ReplaceSelected([&](EntitySnapshot& s)
+			{
+				s.Terrain.reset();
+				s.Mesh->Geometry = GS::MeshCache::Get(s.Mesh->SourcePath);
+			});
+	}
+
+	void DrawCharacterInspector()
+	{
+		auto* player = g_EditorScene.GetComponent<GS::PlayerComponent>(m_Selected);
+		auto* npc = g_EditorScene.GetComponent<GS::NpcComponent>(m_Selected);
+		if (!player && !npc)
+		{
+			if (!g_EditorScene.HasComponent<GS::MeshComponent>(m_Selected))
+				return;
+			ImGui::SeparatorText("Character");
+			if (ImGui::Button("Make Player"))
+				ReplaceSelected([](EntitySnapshot& s) { s.Player = GS::PlayerComponent{}; });
+			ImGui::SameLine();
+			if (ImGui::Button("Make NPC"))
+				ReplaceSelected([](EntitySnapshot& s) { s.Npc = GS::NpcComponent{}; });
+			return;
+		}
+
+		if (player)
+		{
+			ImGui::SeparatorText("Player");
+			ImGui::TextDisabled("WASD move, Space jump, Shift sprint; right-drag or arrows orbit the camera.");
+			ImGui::DragFloat("Speed (m/s)", &player->Speed, 0.05f, 0.0f, 50.0f, "%.2f");
+			TrackEdit(&GS::PlayerComponent::Speed, player->Speed);
+			ImGui::DragFloat("Sprint x", &player->SprintMultiplier, 0.01f, 1.0f, 5.0f, "%.2f");
+			TrackEdit(&GS::PlayerComponent::SprintMultiplier, player->SprintMultiplier);
+			ImGui::DragFloat("Jump height (m)", &player->JumpHeight, 0.02f, 0.0f, 20.0f, "%.2f");
+			TrackEdit(&GS::PlayerComponent::JumpHeight, player->JumpHeight);
+			static const char* modes[] = { "Third person", "First person", "Scene camera (no follow)" };
+			int mode = player->CameraMode;
+			if (ImGui::Combo("Camera", &mode, modes, 3) && mode != player->CameraMode)
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::PlayerComponent, int>>(
+					m_Selected, &GS::PlayerComponent::CameraMode, player->CameraMode, mode));
+			if (player->CameraMode == 0)
+			{
+				ImGui::DragFloat("Camera distance", &player->CameraDistance, 0.05f, 0.5f, 100.0f, "%.2f");
+				TrackEdit(&GS::PlayerComponent::CameraDistance, player->CameraDistance);
+			}
+			if (player->CameraMode != 2)
+			{
+				ImGui::DragFloat("Camera height", &player->CameraHeight, 0.02f, -5.0f, 20.0f, "%.2f");
+				TrackEdit(&GS::PlayerComponent::CameraHeight, player->CameraHeight);
+			}
+			if (ImGui::Button("Remove Player"))
+				ReplaceSelected([](EntitySnapshot& s) { s.Player.reset(); });
+		}
+
+		if (npc)
+		{
+			ImGui::SeparatorText("NPC");
+			static const char* behaviours[] = { "Idle", "Wander", "Follow the player", "Flee the player" };
+			int behaviour = npc->Behaviour;
+			if (ImGui::Combo("Behaviour", &behaviour, behaviours, 4) && behaviour != npc->Behaviour)
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::NpcComponent, int>>(
+					m_Selected, &GS::NpcComponent::Behaviour, npc->Behaviour, behaviour));
+			ImGui::DragFloat("Speed (m/s)##npc", &npc->Speed, 0.05f, 0.0f, 50.0f, "%.2f");
+			TrackEdit(&GS::NpcComponent::Speed, npc->Speed);
+			if (npc->Behaviour == 1)
+			{
+				ImGui::DragFloat("Wander radius", &npc->WanderRadius, 0.1f, 0.0f, 500.0f, "%.1f");
+				TrackEdit(&GS::NpcComponent::WanderRadius, npc->WanderRadius);
+			}
+			if (npc->Behaviour >= 2)
+			{
+				ImGui::DragFloat("Notices within", &npc->DetectRadius, 0.1f, 0.0f, 500.0f, "%.1f");
+				TrackEdit(&GS::NpcComponent::DetectRadius, npc->DetectRadius);
+			}
+			if (npc->Behaviour == 2)
+			{
+				ImGui::DragFloat("Stops at", &npc->StopDistance, 0.05f, 0.0f, 100.0f, "%.2f");
+				TrackEdit(&GS::NpcComponent::StopDistance, npc->StopDistance);
+			}
+			if (ImGui::Button("Remove NPC"))
+				ReplaceSelected([](EntitySnapshot& s) { s.Npc.reset(); });
+		}
+	}
+
 	bool LoadMeshDataForExport(GS::MeshComponent* mesh, GS::MeshData& outData, std::string& error)
 	{
+		// A terrain's surface is the generated one: what is edited, or
+		// unwrapped, is what is seen -- baked into the .obj this writes.
+		if (auto* terrain = g_EditorScene.GetComponent<GS::TerrainComponent>(m_Selected);
+			terrain && g_EditorScene.GetComponent<GS::MeshComponent>(m_Selected) == mesh
+			&& GS::TerrainMesh::Supports(mesh->SourcePath))
+		{
+			outData = GS::TerrainMesh::BuildData(mesh->SourcePath, *terrain);
+			return true;
+		}
 		if (mesh->SourcePath.rfind("primitive:cube", 0) == 0)
 			outData = GS::Mesh::CreateCubeData();
 		else if (mesh->SourcePath.rfind("primitive:plane", 0) == 0)
@@ -1017,6 +1241,8 @@ private:
 			outData = GS::Mesh::CreateSphereData();
 		else if (mesh->SourcePath.rfind("primitive:cylinder", 0) == 0)
 			outData = GS::Mesh::CreateCylinderData();
+		else if (mesh->SourcePath.rfind("primitive:capsule", 0) == 0)
+			outData = GS::Mesh::CreateCapsuleData();
 		else
 			return GS::Mesh::LoadData(GS::Assets::Resolve(mesh->SourcePath), outData, error);
 		return true;
@@ -1279,7 +1505,7 @@ private:
 		}
 	}
 
-	// A placed Light entity has no mesh (PlaceLight's own comment: "nothing
+	// A placed Light entity has no mesh (ToolsPanel::PlaceLight: "nothing
 	// to resolve through MeshCache"), and until now had no gizmo either --
 	// it was genuinely invisible in the viewport once deselected. A small
 	// axis-aligned "plus" through its position, tinted by its own colour
@@ -1390,7 +1616,7 @@ private:
 	// the edited entity is deleted (Delete key, Inspector "Delete", an Undo
 	// past its own placement) while m_Selected still names it -- or m_Selected
 	// is reassigned out from under the session by one of Select()'s several
-	// other call sites (PlaceMesh/PlaceCamera/PlaceLight in EditorShell.h,
+	// other call sites (the Place* functions in ToolsPanel.h,
 	// Undo/Redo and "Find Entity" in EditorMenuBar.h) while the entity being
 	// edited is still perfectly valid. Either way, m_MeshEditSession no
 	// longer corresponds to what m_Selected/the Outliner/the viewport click
@@ -2133,6 +2359,7 @@ private:
 	glm::vec4 m_EditBeforeVec4{ 0.0f };
 	bool m_EditBeforeBool = false;
 	float m_EditBeforeFloat = 0.0f;
+	int m_EditBeforeInt = 0;
 	std::string m_EditBeforeString;
 
 	bool m_MeshEditActive = false;

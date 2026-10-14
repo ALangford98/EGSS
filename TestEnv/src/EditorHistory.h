@@ -59,6 +59,89 @@ protected:
 	GS::EntityId m_Entity = GS::InvalidEntity;
 };
 
+// Everything an entity is, as data: what Delete keeps to bring it back,
+// what Duplicate copies, what Place creates. One list of components, here,
+// rather than one in each command -- three copies had to be kept in step,
+// and a component missing from one came back from an Undo without it.
+struct EntitySnapshot
+{
+	std::string Name;
+	GS::TransformComponent Transform;
+	std::optional<GS::MeshComponent> Mesh;
+	std::optional<GS::CameraComponent> Camera;
+	std::optional<GS::ScriptComponent> Script;
+	std::optional<GS::LightComponent> Light;
+	std::optional<GS::PhysicsComponent> Physics;
+	std::optional<GS::GroupComponent> Group;
+	std::optional<GS::TerrainComponent> Terrain;
+	std::optional<GS::PlayerComponent> Player;
+	std::optional<GS::NpcComponent> Npc;
+
+	static EntitySnapshot Capture(GS::EntityId entity)
+	{
+		EntitySnapshot s;
+		if (auto* tag = g_EditorScene.GetComponent<GS::TagComponent>(entity)) s.Name = tag->Name;
+		if (auto* c = g_EditorScene.GetComponent<GS::TransformComponent>(entity)) s.Transform = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::MeshComponent>(entity)) s.Mesh = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::CameraComponent>(entity)) s.Camera = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::ScriptComponent>(entity)) s.Script = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::LightComponent>(entity)) s.Light = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::PhysicsComponent>(entity)) s.Physics = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::GroupComponent>(entity)) s.Group = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::TerrainComponent>(entity)) s.Terrain = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::PlayerComponent>(entity)) s.Player = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::NpcComponent>(entity)) s.Npc = *c;
+		return s;
+	}
+
+	// Makes an existing entity hold exactly these components (tag and
+	// transform aside): each present one set, each absent one removed. In
+	// place, so the entity keeps its id and its place in the scene.
+	void ApplyTo(GS::EntityId entity) const
+	{
+		if (!g_EditorScene.IsValid(entity))
+			return;
+		if (auto* c = g_EditorScene.GetComponent<GS::TransformComponent>(entity)) *c = Transform;
+		Set(entity, Mesh);
+		Set(entity, Camera);
+		Set(entity, Script);
+		Set(entity, Light);
+		Set(entity, Physics);
+		Set(entity, Group);
+		Set(entity, Terrain);
+		Set(entity, Player);
+		Set(entity, Npc);
+	}
+
+	template<typename Component>
+	static void Set(GS::EntityId entity, const std::optional<Component>& value)
+	{
+		Component* current = g_EditorScene.GetComponent<Component>(entity);
+		if (value && current)
+			*current = *value;
+		else if (value)
+			g_EditorScene.AddComponent<Component>(entity, *value);
+		else if (current)
+			g_EditorScene.RemoveComponent<Component>(entity);
+	}
+
+	GS::EntityId Create(const std::string& name) const
+	{
+		GS::Entity entity = g_EditorScene.CreateEntity(name);
+		*entity.Get<GS::TransformComponent>() = Transform;
+		if (Mesh) entity.Add<GS::MeshComponent>(*Mesh);
+		if (Camera) entity.Add<GS::CameraComponent>(*Camera);
+		if (Script) entity.Add<GS::ScriptComponent>(*Script);
+		if (Light) entity.Add<GS::LightComponent>(*Light);
+		if (Physics) entity.Add<GS::PhysicsComponent>(*Physics);
+		if (Group) entity.Add<GS::GroupComponent>(*Group);
+		if (Terrain) entity.Add<GS::TerrainComponent>(*Terrain);
+		if (Player) entity.Add<GS::PlayerComponent>(*Player);
+		if (Npc) entity.Add<GS::NpcComponent>(*Npc);
+		return entity.GetId();
+	}
+};
+
 // Creates an entity with the given components. Undo destroys it; Redo
 // creates it again. A fresh CreateEntity call every time rather than
 // reusing an id -- GS::Scene's ids are index+generation, and a destroyed
@@ -70,22 +153,19 @@ public:
 	PlaceEntityCommand(const std::string& name, const GS::TransformComponent& transform,
 		const std::optional<GS::MeshComponent>& mesh, const std::optional<GS::CameraComponent>& camera,
 		const std::optional<GS::LightComponent>& light = std::nullopt)
-		: m_Name(name), m_Transform(transform), m_Mesh(mesh), m_Camera(camera), m_Light(light)
 	{
+		m_Snapshot.Name = name;
+		m_Snapshot.Transform = transform;
+		m_Snapshot.Mesh = mesh;
+		m_Snapshot.Camera = camera;
+		m_Snapshot.Light = light;
 	}
 
-	void Redo() override
-	{
-		GS::Entity entity = g_EditorScene.CreateEntity(m_Name);
-		*entity.Get<GS::TransformComponent>() = m_Transform;
-		if (m_Mesh)
-			entity.Add<GS::MeshComponent>(*m_Mesh);
-		if (m_Camera)
-			entity.Add<GS::CameraComponent>(*m_Camera);
-		if (m_Light)
-			entity.Add<GS::LightComponent>(*m_Light);
-		m_Entity = entity.GetId();
-	}
+	// Any combination of components -- a player is a mesh, a player and a
+	// physics body; a terrain is a mesh, its terrain and a static body.
+	explicit PlaceEntityCommand(EntitySnapshot snapshot) : m_Snapshot(std::move(snapshot)) {}
+
+	void Redo() override { m_Entity = m_Snapshot.Create(m_Snapshot.Name); }
 
 	void Undo() override
 	{
@@ -94,11 +174,7 @@ public:
 			g_EditorScene.DestroyEntity(current);
 	}
 private:
-	std::string m_Name;
-	GS::TransformComponent m_Transform;
-	std::optional<GS::MeshComponent> m_Mesh;
-	std::optional<GS::CameraComponent> m_Camera;
-	std::optional<GS::LightComponent> m_Light;
+	EntitySnapshot m_Snapshot;
 };
 
 // The inverse of Place: captures an existing entity's data at construction,
@@ -106,26 +182,9 @@ private:
 class DeleteEntityCommand : public EditorCommand
 {
 public:
-	explicit DeleteEntityCommand(GS::EntityId entity)
+	explicit DeleteEntityCommand(GS::EntityId entity) : m_Snapshot(EntitySnapshot::Capture(entity))
 	{
 		m_Entity = entity;
-
-		if (auto* tag = g_EditorScene.GetComponent<GS::TagComponent>(entity))
-			m_Name = tag->Name;
-		if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(entity))
-			m_Transform = *transform;
-		if (auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(entity))
-			m_Mesh = *mesh;
-		if (auto* camera = g_EditorScene.GetComponent<GS::CameraComponent>(entity))
-			m_Camera = *camera;
-		if (auto* script = g_EditorScene.GetComponent<GS::ScriptComponent>(entity))
-			m_Script = *script;
-		if (auto* light = g_EditorScene.GetComponent<GS::LightComponent>(entity))
-			m_Light = *light;
-		if (auto* physics = g_EditorScene.GetComponent<GS::PhysicsComponent>(entity))
-			m_Physics = *physics;
-		if (auto* group = g_EditorScene.GetComponent<GS::GroupComponent>(entity))
-			m_Group = *group;
 	}
 
 	void Redo() override
@@ -138,22 +197,7 @@ public:
 	void Undo() override
 	{
 		GS::EntityId oldEntity = m_Entity;
-
-		GS::Entity entity = g_EditorScene.CreateEntity(m_Name);
-		*entity.Get<GS::TransformComponent>() = m_Transform;
-		if (m_Mesh)
-			entity.Add<GS::MeshComponent>(*m_Mesh);
-		if (m_Camera)
-			entity.Add<GS::CameraComponent>(*m_Camera);
-		if (m_Script)
-			entity.Add<GS::ScriptComponent>(*m_Script);
-		if (m_Light)
-			entity.Add<GS::LightComponent>(*m_Light);
-		if (m_Physics)
-			entity.Add<GS::PhysicsComponent>(*m_Physics);
-		if (m_Group)
-			entity.Add<GS::GroupComponent>(*m_Group);
-		m_Entity = entity.GetId();
+		m_Entity = m_Snapshot.Create(m_Snapshot.Name);
 
 		// Anything else on the stack that captured oldEntity (an
 		// EditFieldCommand pushed before this Delete, or the original
@@ -162,63 +206,41 @@ public:
 		EditorHistory::s_Remap[oldEntity] = m_Entity;
 	}
 private:
-	std::string m_Name;
-	GS::TransformComponent m_Transform;
-	std::optional<GS::MeshComponent> m_Mesh;
-	std::optional<GS::CameraComponent> m_Camera;
-	std::optional<GS::ScriptComponent> m_Script;
-	std::optional<GS::LightComponent> m_Light;
-	std::optional<GS::PhysicsComponent> m_Physics;
-	std::optional<GS::GroupComponent> m_Group;
+	EntitySnapshot m_Snapshot;
 };
 
-// The context menu's Duplicate: captures the source entity's components at
-// construction (the same set DeleteEntityCommand captures) and creates a new
-// entity from that snapshot. Shaped like PlaceEntityCommand rather than
-// DeleteEntityCommand's Undo -- this command *adds*, so Redo creates and
-// Undo destroys, with no s_Remap bookkeeping needed (nothing can reference
-// this entity before it has ever been created).
+// Adding or removing components on an entity, as one undo step: the whole
+// set before and after, applied in place. What Add Terrain, Make Player and
+// their Remove buttons push.
+class ReplaceEntityCommand : public EditorCommand
+{
+public:
+	ReplaceEntityCommand(GS::EntityId entity, EntitySnapshot before, EntitySnapshot after)
+		: m_Before(std::move(before)), m_After(std::move(after))
+	{
+		m_Entity = entity;
+	}
+
+	void Redo() override { m_After.ApplyTo(EditorHistory::Resolve(m_Entity)); }
+	void Undo() override { m_Before.ApplyTo(EditorHistory::Resolve(m_Entity)); }
+private:
+	EntitySnapshot m_Before, m_After;
+};
+
+// The context menu's Duplicate: a snapshot of the source, created as a new
+// entity. Shaped like PlaceEntityCommand rather than DeleteEntityCommand's
+// Undo -- this command *adds*, so Redo creates and Undo destroys, with no
+// s_Remap bookkeeping needed (nothing can reference this entity before it
+// has ever been created).
 class DuplicateEntityCommand : public EditorCommand
 {
 public:
-	explicit DuplicateEntityCommand(GS::EntityId source)
+	explicit DuplicateEntityCommand(GS::EntityId source) : m_Snapshot(EntitySnapshot::Capture(source))
 	{
-		if (auto* tag = g_EditorScene.GetComponent<GS::TagComponent>(source))
-			m_Name = tag->Name + " Copy";
-		if (auto* transform = g_EditorScene.GetComponent<GS::TransformComponent>(source))
-			m_Transform = *transform;
-		if (auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(source))
-			m_Mesh = *mesh;
-		if (auto* camera = g_EditorScene.GetComponent<GS::CameraComponent>(source))
-			m_Camera = *camera;
-		if (auto* script = g_EditorScene.GetComponent<GS::ScriptComponent>(source))
-			m_Script = *script;
-		if (auto* light = g_EditorScene.GetComponent<GS::LightComponent>(source))
-			m_Light = *light;
-		if (auto* physics = g_EditorScene.GetComponent<GS::PhysicsComponent>(source))
-			m_Physics = *physics;
-		if (auto* group = g_EditorScene.GetComponent<GS::GroupComponent>(source))
-			m_Group = *group;
+		m_Snapshot.Name += " Copy";
 	}
 
-	void Redo() override
-	{
-		GS::Entity entity = g_EditorScene.CreateEntity(m_Name);
-		*entity.Get<GS::TransformComponent>() = m_Transform;
-		if (m_Mesh)
-			entity.Add<GS::MeshComponent>(*m_Mesh);
-		if (m_Camera)
-			entity.Add<GS::CameraComponent>(*m_Camera);
-		if (m_Script)
-			entity.Add<GS::ScriptComponent>(*m_Script);
-		if (m_Light)
-			entity.Add<GS::LightComponent>(*m_Light);
-		if (m_Physics)
-			entity.Add<GS::PhysicsComponent>(*m_Physics);
-		if (m_Group)
-			entity.Add<GS::GroupComponent>(*m_Group);
-		m_Entity = entity.GetId();
-	}
+	void Redo() override { m_Entity = m_Snapshot.Create(m_Snapshot.Name); }
 
 	void Undo() override
 	{
@@ -227,14 +249,7 @@ public:
 			g_EditorScene.DestroyEntity(current);
 	}
 private:
-	std::string m_Name;
-	GS::TransformComponent m_Transform;
-	std::optional<GS::MeshComponent> m_Mesh;
-	std::optional<GS::CameraComponent> m_Camera;
-	std::optional<GS::ScriptComponent> m_Script;
-	std::optional<GS::LightComponent> m_Light;
-	std::optional<GS::PhysicsComponent> m_Physics;
-	std::optional<GS::GroupComponent> m_Group;
+	EntitySnapshot m_Snapshot;
 };
 
 // The multi-select gizmo's equivalent of EditFieldCommand<TransformComponent,

@@ -3,6 +3,7 @@
 
 #include "GS/Debug/Instrumentor.h"
 #include "GS/Renderer/MeshCache.h"
+#include "GS/Procedural/TerrainMesh.h"
 #include "GS/Log.h"
 #include <fstream>
 #include <sstream>
@@ -241,6 +242,32 @@ namespace GS {
 				WriteFloats(out, { physics->Mass, physics->Friction, physics->Restitution });
 				out << "\n";
 			}
+
+			// After the mesh line, which it modifies -- Load rebuilds the
+			// geometry when it reads this.
+			if (TerrainComponent* terrain = self->GetComponent<TerrainComponent>(entity))
+			{
+				out << "terrain " << terrain->Resolution;
+				WriteFloats(out, { terrain->Height, terrain->Frequency });
+				out << " " << terrain->Octaves;
+				WriteFloats(out, { terrain->Roughness });
+				out << " " << terrain->Seed << " " << (terrain->Ridged ? 1 : 0) << "\n";
+			}
+
+			if (PlayerComponent* player = self->GetComponent<PlayerComponent>(entity))
+			{
+				out << "player";
+				WriteFloats(out, { player->Speed, player->SprintMultiplier, player->JumpHeight,
+					player->CameraDistance, player->CameraHeight });
+				out << " " << player->CameraMode << "\n";
+			}
+
+			if (NpcComponent* npc = self->GetComponent<NpcComponent>(entity))
+			{
+				out << "npc " << npc->Behaviour;
+				WriteFloats(out, { npc->Speed, npc->WanderRadius, npc->DetectRadius, npc->StopDistance });
+				out << "\n";
+			}
 		}
 
 		return true;
@@ -368,6 +395,33 @@ namespace GS {
 				fields >> type >> physics.Mass >> physics.Friction >> physics.Restitution;
 				physics.Type = (BodyType)type;
 				current.Add<PhysicsComponent>(physics);
+			}
+			else if (kind == "terrain" && current)
+			{
+				TerrainComponent terrain;
+				int ridged = 0;
+				fields >> terrain.Resolution >> terrain.Height >> terrain.Frequency >> terrain.Octaves
+					>> terrain.Roughness >> terrain.Seed >> ridged;
+				terrain.Ridged = ridged != 0;
+				if (MeshComponent* mesh = current.Get<MeshComponent>())
+				{
+					mesh->Geometry = TerrainMesh::Get(mesh->SourcePath, terrain);
+					terrain.BuiltKey = TerrainMesh::Key(mesh->SourcePath, terrain);
+				}
+				current.Add<TerrainComponent>(terrain);
+			}
+			else if (kind == "player" && current)
+			{
+				PlayerComponent player;
+				fields >> player.Speed >> player.SprintMultiplier >> player.JumpHeight
+					>> player.CameraDistance >> player.CameraHeight >> player.CameraMode;
+				current.Add<PlayerComponent>(player);
+			}
+			else if (kind == "npc" && current)
+			{
+				NpcComponent npc;
+				fields >> npc.Behaviour >> npc.Speed >> npc.WanderRadius >> npc.DetectRadius >> npc.StopDistance;
+				current.Add<NpcComponent>(npc);
 			}
 		}
 
