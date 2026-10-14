@@ -330,9 +330,13 @@ namespace GS {
 
 			// Counter-clockwise seen from outside, matching the cube and the
 			// sphere. Getting this backwards is invisible until backface
-			// culling is switched on and the tube turns inside out.
-			data.Indices.insert(data.Indices.end(), { bottom, bottom + 1, top });
-			data.Indices.insert(data.Indices.end(), { bottom + 1, top + 1, top });
+			// culling is switched on and the tube turns inside out -- which
+			// it was, until the terrain self-test measured it: bottom to
+			// bottom + 1 runs +z at theta = 0 and bottom to top runs +y, and
+			// +z x +y is -x, *into* the tube. The editor culls back faces, so
+			// a placed Cylinder showed the inside of its far wall.
+			data.Indices.insert(data.Indices.end(), { bottom, top, bottom + 1 });
+			data.Indices.insert(data.Indices.end(), { bottom + 1, top, top + 1 });
 		}
 
 		data.RecalculateBounds();
