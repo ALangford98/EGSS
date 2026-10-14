@@ -17,6 +17,11 @@
 #include <GS.h>
 #include <GS/Procedural/Noise.h>
 
+#include "Humanoid.h"
+#include "Mannequin.h"
+
+#include <memory>
+
 #include <cmath>
 #include <unordered_map>
 #include <vector>
@@ -37,7 +42,7 @@ public:
 		halfHeight = std::max(0.0f, transform.Scale.y - radius);
 	}
 
-	enum BodyKind { Upright = 0, Ball = 1, Humanoid = 2 };
+	enum BodyKind { Upright = 0, Ball = 1, HumanoidBody = 2 };
 
 	static int BodyOf(GS::Scene& scene, GS::EntityId entity)
 	{
@@ -106,9 +111,60 @@ public:
 		return glm::degrees(std::atan2(-direction.x, -direction.z));
 	}
 
+	// A humanoid: the active-ragdoll rig built standing at the entity's
+	// position (the ground under its feet), facing its yaw. Its pelvis is
+	// what the rest of the controller follows -- the camera, an NPC
+	// chasing the player.
+	void AddHumanoid(GS::Scene& scene, GS::EntityId entity, GS::PhysicsWorld3D& world)
+	{
+		auto* transform = scene.GetComponent<GS::TransformComponent>(entity);
+		if (!transform)
+			return;
+		auto rig = std::make_unique<Humanoid>(world);
+		rig->Spawn(transform->Position, glm::radians(transform->Rotation.y));
+		Add(scene, entity, rig->PelvisBody());
+		Character& c = m_Characters.back();
+		c.Kind = HumanoidBody;
+		// The controller's yaw looks along (-sin, -cos); the rig faces
+		// (sin, cos) at its yaw -- half a turn apart, so the camera starts
+		// behind it.
+		c.Facing = transform->Rotation.y + 180.0f;
+		c.Rig = std::move(rig);
+	}
+
+	bool HasHumanoids() const
+	{
+		for (const Character& c : m_Characters)
+			if (c.Rig)
+				return true;
+		return false;
+	}
+
+	// Each running humanoid's bodies, as draw items.
+	void AppendDraws(GS::Scene& scene, const GS::PhysicsWorld3D& world, std::vector<ExtraDraw>& out) const
+	{
+		for (const Character& c : m_Characters)
+			if (c.Rig && scene.IsValid(c.Entity))
+			{
+				auto* mesh = scene.GetComponent<GS::MeshComponent>(c.Entity);
+				if (mesh && !mesh->Visible)
+					continue;
+				Mannequin::AppendLive(*c.Rig, world, Mannequin::ColourOf(scene, c.Entity), c.Entity, out);
+			}
+	}
+
+	bool IsRunning(GS::EntityId entity) const
+	{
+		for (const Character& c : m_Characters)
+			if (c.Entity == entity && c.Rig)
+				return true;
+		return false;
+	}
+
 	void Clear()
 	{
 		m_Characters.clear();
+
 		m_Player = -1;
 		m_Camera = GS::InvalidEntity;
 		m_CreatedCamera = false;
@@ -194,6 +250,12 @@ public:
 			float speed = 0.0f;
 			bool jump = false;
 
+			if (c.Rig)
+			{
+				DriveHumanoid(scene, world, c, havePlayer, playerPosition, dt);
+				continue;
+			}
+
 			if (c.IsPlayer && &c == &m_Characters[m_Player])
 			{
 				auto* settings = scene.GetComponent<GS::PlayerComponent>(c.Entity);
@@ -238,10 +300,24 @@ public:
 	void AfterStep(GS::Scene& scene, GS::PhysicsWorld3D& world)
 	{
 		// A ball keeps the orientation physics gave it -- that is the roll.
+		// A humanoid's entity stands where its feet are (its position is the
+		// ground under them, as when it was placed), facing as the rig does.
 		for (Character& c : m_Characters)
-			if (c.Kind != Ball && scene.IsValid(c.Entity))
-				if (auto* transform = scene.GetComponent<GS::TransformComponent>(c.Entity))
-					transform->Rotation = glm::vec3(0.0f, c.Facing, 0.0f);
+		{
+			if (!scene.IsValid(c.Entity))
+				continue;
+			auto* transform = scene.GetComponent<GS::TransformComponent>(c.Entity);
+			if (!transform)
+				continue;
+			if (c.Rig)
+			{
+				const GS::RigidBody3D& pelvis = world.GetBody(c.Rig->PelvisBody());
+				transform->Position = pelvis.Position - glm::vec3(0.0f, c.Rig->RestPelvisHeight(), 0.0f);
+				transform->Rotation = glm::vec3(0.0f, glm::degrees(c.Rig->FacingRadians()), 0.0f);
+			}
+			else if (c.Kind != Ball)
+				transform->Rotation = glm::vec3(0.0f, c.Facing, 0.0f);
+		}
 
 		if (m_Player < 0 || m_Camera == GS::InvalidEntity || !scene.IsValid(m_Camera))
 			return;
@@ -252,11 +328,16 @@ public:
 			return;
 
 		const GS::RigidBody3D& body = world.GetBody(player.Handle);
-		glm::vec3 target = body.Position + glm::vec3(0.0f, settings->CameraHeight, 0.0f);
+		// A capsule's position is its centre, 0.9 above its feet; a
+		// humanoid's handle is its pelvis. The camera aims at the same
+		// height over the feet either way.
+		glm::vec3 centre = player.Rig ? body.Position + glm::vec3(0.0f, 0.9f - player.Rig->RestPelvisHeight(), 0.0f) : body.Position;
+		glm::vec3 target = centre + glm::vec3(0.0f, settings->CameraHeight, 0.0f);
 		if (settings->CameraMode == 1)
 		{
 			// First person: at the top of the capsule, looking out.
-			camera->Position = body.Position + glm::vec3(0.0f, body.HalfHeight + body.Radius * 0.6f, 0.0f);
+			camera->Position = player.Rig ? world.GetBody(player.Rig->HeadBody()).Position
+				: body.Position + glm::vec3(0.0f, body.HalfHeight + body.Radius * 0.6f, 0.0f);
 		}
 		else
 			camera->Position = target - Forward(m_Pitch, m_Yaw) * settings->CameraDistance;
@@ -282,7 +363,56 @@ private:
 		float Wait = 0.0f;             // seconds to stand before the next wander
 		float Walking = 0.0f;          // seconds spent on the current target
 		uint32_t Picks = 0;            // wander targets chosen so far: the random stream's position
+		std::shared_ptr<Humanoid> Rig; // Body = Humanoid: the active ragdoll it is
 	};
+
+	// A humanoid is told what to do, and does it with its own legs: the
+	// same wish as any character, turned into the rig's controls -- a
+	// direction (the rig's yaw is (cos, sin) where ours is (-sin, -cos))
+	// and whether to go, run or jump. It falls when pushed past what it can
+	// catch; lying still on ground for two seconds, it gets up.
+	void DriveHumanoid(GS::Scene& scene, GS::PhysicsWorld3D& world, Character& c, bool havePlayer,
+		const glm::vec3& playerPosition, float dt)
+	{
+		Humanoid& rig = *c.Rig;
+		Humanoid::Control& control = rig.GetControl();
+		control = Humanoid::Control{};
+		const GS::RigidBody3D& pelvis = world.GetBody(rig.PelvisBody());
+
+		if (c.IsPlayer && m_Player >= 0 && &c == &m_Characters[m_Player])
+		{
+			float y = glm::radians(m_Yaw);
+			control.Yaw = glm::degrees(std::atan2(-std::cos(y), -std::sin(y)));
+			control.Forward = m_MoveInput.y > 0.0f;
+			control.Back = m_MoveInput.y < 0.0f;
+			control.Right = m_MoveInput.x > 0.0f;
+			control.Left = m_MoveInput.x < 0.0f;
+			control.Run = m_Sprint;
+			if (m_JumpPressed)
+				rig.RequestJump();
+		}
+		else if (auto* npc = scene.GetComponent<GS::NpcComponent>(c.Entity))
+		{
+			glm::vec3 wish = NpcWish(c, *npc, pelvis.Position, havePlayer, playerPosition, dt);
+			if (glm::length(wish) > 1e-4f)
+			{
+				control.Yaw = glm::degrees(std::atan2(wish.z, wish.x));
+				control.Forward = true;
+				control.Run = npc->Speed >= 3.0f;
+			}
+		}
+
+		if (rig.IsDown() && rig.TimeDown() > 2.0f && glm::length(pelvis.Velocity) < 0.3f)
+		{
+			float ground = 0.0f;
+			glm::vec3 normal;
+			if (world.GroundBelow(pelvis.Position, ground, normal, rig.PelvisBody(), -1e9f)
+				&& pelvis.Position.y - ground < 0.6f)
+				rig.GetUp();
+		}
+
+		rig.Update(dt);
+	}
 
 	// A ball is driven the way a ball is: by turning it. Rolling without
 	// slipping, a ball moving at v in direction d spins at v / r about

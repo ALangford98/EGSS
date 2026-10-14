@@ -16,6 +16,7 @@
 #include <glm/gtx/euler_angles.hpp>
 
 #include "CharacterController.h"
+#include "SceneRenderer.h"
 #include "CompiledScriptRegistry.h"
 #include "ScriptEngine.h"
 
@@ -45,6 +46,14 @@ public:
 	GameSession& operator=(const GameSession&) = delete;
 
 	bool IsRunning() const { return m_Running; }
+
+	// The running humanoids, as draw items for SceneRenderer.
+	void AppendCharacterDraws(std::vector<ExtraDraw>& out) const
+	{
+		m_Characters.AppendDraws(m_Scene, m_World, out);
+	}
+
+	bool IsRunningCharacter(GS::EntityId entity) const { return m_Characters.IsRunning(entity); }
 
 	// Entities the game made for itself (the follow camera), which an editor
 	// keeping the scene as Play left it should not keep.
@@ -82,6 +91,16 @@ public:
 			bool character = m_Scene.HasComponent<GS::PlayerComponent>(id) || m_Scene.HasComponent<GS::NpcComponent>(id);
 			if (!physics && !character)
 				continue;
+
+			// A humanoid is thirteen bodies and twelve joints, built by its
+			// own class into this world, not one body made here.
+			if (character && CharacterController::BodyOf(m_Scene, id) == CharacterController::HumanoidBody)
+			{
+				m_World.VelocityIterations = std::max(m_World.VelocityIterations, Humanoid::VelocityIterations);
+				m_World.PositionIterations = std::max(m_World.PositionIterations, Humanoid::PositionIterations);
+				m_Characters.AddHumanoid(m_Scene, id, m_World);
+				continue;
+			}
 
 			GS::RigidBody3D body;
 			if (character)
@@ -428,3 +447,27 @@ private:
 	PhysicsBackend m_Backend{ *this };
 	CharacterController m_Characters;
 };
+
+// Every humanoid in the scene as draw items: live bodies for those a running
+// session is driving, the rest pose for the others -- which, in the editor
+// outside Play, is all of them.
+inline void AppendHumanoidDraws(GS::Scene& scene, const GameSession* session, std::vector<ExtraDraw>& out)
+{
+	if (session)
+		session->AppendCharacterDraws(out);
+	auto addRest = [&](GS::EntityId entity)
+	{
+		if (!IsHumanoidEntity(scene, entity) || (session && session->IsRunningCharacter(entity)))
+			return;
+		auto* transform = scene.GetComponent<GS::TransformComponent>(entity);
+		auto* mesh = scene.GetComponent<GS::MeshComponent>(entity);
+		if (transform && (!mesh || mesh->Visible))
+			Mannequin::AppendRestPose(*transform, Mannequin::ColourOf(scene, entity), entity, out);
+	};
+	auto& players = scene.View<GS::PlayerComponent>();
+	for (size_t i = 0; i < players.Size(); i++)
+		addRest(players.Owner(i));
+	auto& npcs = scene.View<GS::NpcComponent>();
+	for (size_t i = 0; i < npcs.Size(); i++)
+		addRest(npcs.Owner(i));
+}

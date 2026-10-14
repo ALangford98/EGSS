@@ -1394,7 +1394,9 @@ private:
 
 	void RenderMeshes()
 	{
-		m_SceneRenderer.Render(g_EditorScene, ActiveCamera());
+		std::vector<ExtraDraw> humanoids;
+		AppendHumanoidDraws(g_EditorScene, PlayMode::s_Session.get(), humanoids);
+		m_SceneRenderer.Render(g_EditorScene, ActiveCamera(), &humanoids);
 	}
 
 	void ResizeTarget()
@@ -1471,6 +1473,13 @@ private:
 			glm::vec3 lo = mesh->Geometry->GetBoundsMin();
 			glm::vec3 hi = mesh->Geometry->GetBoundsMax();
 			glm::mat4 model = transform->GetTransform();
+			// A humanoid is its mannequin, standing on its position.
+			if (IsHumanoidEntity(g_EditorScene, entity))
+			{
+				Mannequin::RestBounds(lo, hi);
+				model = glm::translate(glm::mat4(1.0f), transform->Position)
+					* glm::rotate(glm::mat4(1.0f), glm::radians(transform->Rotation.y), glm::vec3(0, 1, 0));
+			}
 
 			glm::vec3 corner[8];
 			for (int i = 0; i < 8; i++)

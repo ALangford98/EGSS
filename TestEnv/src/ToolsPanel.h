@@ -52,7 +52,8 @@ public:
 		{
 			Flow flow({ "Player", "NPC" });
 			if (flow.Button("Player")) PlaceCharacter(true);
-			Tip("Played in Play and in an exported game: WASD to move, Space to jump, Shift to sprint;\n"
+			Tip("A humanoid that balances, walks, staggers, falls and gets up (Body in the Inspector for a capsule or ball).\n"
+				"Played in Play and in an exported game: WASD to move, Space to jump, Shift to run;\n"
 				"the camera follows -- right-drag or the arrow keys to orbit.\n"
 				"Needs ground to stand on: a terrain, or anything with a static physics body.");
 			if (flow.Button("NPC")) PlaceCharacter(false);
@@ -166,14 +167,16 @@ private:
 		SelectPlaced(EditorHistory::Push(std::make_unique<PlaceEntityCommand>(snapshot)));
 	}
 
-	// A capsule 0.8 wide and 1.8 tall -- a person -- standing on the ground
-	// at the placement point. Blue for the player, orange for NPCs, so the
-	// two read apart at a glance.
+	// A humanoid -- the active ragdoll -- standing on the ground at the
+	// placement point (a humanoid's position is the ground under its feet).
+	// Blue for the player, orange for NPCs, so the two read apart at a
+	// glance. The capsule mesh it carries is what it looks like if its Body
+	// is switched to the upright capsule.
 	void PlaceCharacter(bool player)
 	{
 		EntitySnapshot snapshot;
 		snapshot.Name = player ? (CountPlayers() == 0 ? "Player" : "Player 2") : "NPC";
-		snapshot.Transform.Position = PlacementPoint() + glm::vec3(0.0f, 0.95f, 0.0f);
+		snapshot.Transform.Position = PlacementPoint();
 		snapshot.Transform.Scale = glm::vec3(0.8f, 0.9f, 0.8f);
 		GS::MeshComponent mesh;
 		mesh.SourcePath = "primitive:capsule";
@@ -181,9 +184,17 @@ private:
 		mesh.Color = player ? glm::vec4(0.25f, 0.55f, 0.95f, 1.0f) : glm::vec4(0.95f, 0.55f, 0.2f, 1.0f);
 		snapshot.Mesh = mesh;
 		if (player)
-			snapshot.Player = GS::PlayerComponent{};
+		{
+			GS::PlayerComponent p;
+			p.Body = 2;
+			snapshot.Player = p;
+		}
 		else
-			snapshot.Npc = GS::NpcComponent{};
+		{
+			GS::NpcComponent n;
+			n.Body = 2;
+			snapshot.Npc = n;
+		}
 		SelectPlaced(EditorHistory::Push(std::make_unique<PlaceEntityCommand>(snapshot)));
 	}
 

@@ -140,7 +140,9 @@ namespace {
 			GS::RenderCommand::SetClearColor({ 0.10f, 0.11f, 0.13f, 1.0f });
 			GS::RenderCommand::Clear();
 			GS::RenderCommand::SetCullFace(GS::CullFace::Back);
-			m_Renderer.Render(m_Scene, *camera);
+			std::vector<ExtraDraw> humanoids;
+			AppendHumanoidDraws(m_Scene, m_Session.get(), humanoids);
+			m_Renderer.Render(m_Scene, *camera, &humanoids);
 			GS::RenderCommand::SetCullFace(GS::CullFace::None);
 			m_Framebuffer->Unbind();
 

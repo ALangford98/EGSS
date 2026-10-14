@@ -202,7 +202,7 @@ namespace GS {
 		float SprintMultiplier = 1.8f;
 		float JumpHeight = 1.2f;       // metres: the jump speed is derived from it and gravity
 		float CameraDistance = 6.0f;   // third person: how far behind
-		float CameraHeight = 1.5f;     // above the character's centre
+		float CameraHeight = 0.6f;     // above the character's centre: 1.5 m over the feet, about shoulder height
 		int CameraMode = 0;            // 0 third person, 1 first person, 2 leave the scene's camera alone
 		int Body = 0;                  // 0 upright capsule, 1 rolling ball, 2 humanoid (active ragdoll)
 	};

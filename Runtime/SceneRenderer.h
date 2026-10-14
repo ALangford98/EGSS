@@ -27,6 +27,27 @@ inline glm::vec3 ForwardFromRotation(const glm::vec3& rotationDegrees)
 	return glm::normalize(glm::vec3(rotation * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f)));
 }
 
+// Something drawn that is not an entity's own mesh -- a humanoid's
+// mannequin, one item per body. Lit like any mesh, and tagged with the
+// entity it belongs to, so clicking it in the editor selects that entity.
+struct ExtraDraw
+{
+	std::shared_ptr<GS::Mesh> Mesh;
+	glm::mat4 Model{ 1.0f };
+	glm::vec4 Color{ 1.0f };
+	GS::EntityId Entity = GS::InvalidEntity;
+};
+
+// Whether an entity is drawn as a humanoid mannequin rather than its mesh.
+inline bool IsHumanoidEntity(GS::Scene& scene, GS::EntityId entity)
+{
+	if (auto* player = scene.GetComponent<GS::PlayerComponent>(entity))
+		return player->Body == 2;
+	if (auto* npc = scene.GetComponent<GS::NpcComponent>(entity))
+		return npc->Body == 2;
+	return false;
+}
+
 class SceneRenderer
 {
 public:
@@ -235,7 +256,7 @@ public:
 		m_SceneMaterial->Set("u_AmbientStrength", AmbientStrength);
 	}
 
-	void Render(GS::Scene& scene, GS::PerspectiveCamera& camera)
+	void Render(GS::Scene& scene, GS::PerspectiveCamera& camera, const std::vector<ExtraDraw>* extra = nullptr)
 	{
 		GS::Renderer::BeginScene(camera);
 		UploadLights(scene, camera.GetPosition());
@@ -251,6 +272,10 @@ public:
 			GS::EntityId entity = meshes.Owner(i);
 			auto* transform = scene.GetComponent<GS::TransformComponent>(entity);
 			if (!transform)
+				continue;
+			// Its mannequin (in `extra`) is what a humanoid looks like; the
+			// mesh it carries is only what it would be with another body.
+			if (IsHumanoidEntity(scene, entity))
 				continue;
 
 			const std::vector<GS::Submesh>& submeshes = mesh.Geometry->GetSubmeshes();
@@ -292,10 +317,34 @@ public:
 			}
 		}
 
+		if (extra)
+		{
+			// One material instance per item, kept and reused frame to
+			// frame: the colour is per instance.
+			if (m_ExtraMaterials.size() < extra->size())
+				m_ExtraMaterials.resize(extra->size());
+			for (size_t i = 0; i < extra->size(); i++)
+			{
+				const ExtraDraw& item = (*extra)[i];
+				if (!item.Mesh)
+					continue;
+				if (!m_ExtraMaterials[i])
+					m_ExtraMaterials[i] = GS::Material::CreateInstance(m_SceneMaterial);
+				const std::shared_ptr<GS::Material>& material = m_ExtraMaterials[i];
+				material->Set("u_Color", item.Color);
+				material->Set("u_EntityID", item.Entity == GS::InvalidEntity ? -1 : (int)GS::EntityIds::Index(item.Entity));
+				material->Set("u_HasAlbedoMap", 0);
+				material->Set("u_HasNormalMap", 0);
+				material->Set("u_HasRoughnessMap", 0);
+				GS::Renderer::SubmitSubmesh(material, item.Mesh, 0, item.Model);
+			}
+		}
+
 		GS::Renderer::EndScene();
 	}
 
 private:
+	std::vector<std::shared_ptr<GS::Material>> m_ExtraMaterials;
 	std::shared_ptr<GS::Shader> m_Shader;
 	std::shared_ptr<GS::Material> m_SceneMaterial;
 };
