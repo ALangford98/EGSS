@@ -7,6 +7,63 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-14 (Keep Play changes; a rolling ball; the humanoid in games)
+
+The spec is `docs/superpowers/specs/2026-10-14-play-keep-ball-humanoid-design.md`.
+It answers three reports from the owner: Play-mode changes didn't save, a
+sphere player didn't roll, and they want a RAGE-style humanoid.
+
+**Keeping Play changes.** Stop now asks whether to keep the changes.
+- Keep leaves the scene as the game left it, marked unsaved, minus the
+  follow camera the game made for itself.
+- "Don't ask again" is stored per user.
+
+**Ball.** Characters now have a Body: an upright capsule, a ball, or a
+humanoid.
+- **The ball is a real sphere driven by torque.** The wished velocity
+  becomes a wished spin, v/r about up × d.
+- **Rolling down 15° from rest it accelerates at 1.822 m/s²,** against
+  (5/7)·g·sin 15° = 1.814 for a rolling solid sphere. Sliding would be
+  2.54.
+- **v and ωr agree to 0.5%,** and released it rolls on.
+
+**The humanoid.**
+- **The extraction.** The Ragdoll demo's 2,700-line rig and controllers
+  are now `Runtime/Humanoid.h`, split by script at top-level declarations.
+  - The demo and Map Building derive from it.
+  - Input comes in through a `Control` struct, filled where `DriveWalk`
+    used to poll it.
+- **Proof.** A hand-written 1,301-step recording (walk, run, jump, shove,
+  fall, two get-ups) dumped every body's state each step, and the dump is
+  **bit-identical** before and after the extraction.
+  - Two baseline runs were identical too: the physics is reproducible, and
+    the demo's run-to-run image noise is the MSAA.
+- **In games.** A Player or NPC with Body = Humanoid is the rig, drawn as a
+  mannequin of its own collision shapes, and the Tools panel now makes
+  humanoids by default.
+  - It stands still for 10 s and walks 5.06 m in 4 s, facing either way.
+  - An NPC set to follow walks over.
+  - Editor Play, GSPlayer and the browser are byte-identical.
+
+**Found while testing:**
+- **Get-up kept the stand height of where he last stood, which is fixed.**
+  Off a 2 m ledge he got up, was hoisted back to the ledge's height, read
+  the drop again and fell, over and over. The demo had shown it too:
+  Controlled at step 820, Ragdoll at 821.
+- **A crate on the head registers but fells no one; this one is open.**
+  It registers 6.9 kN, but `ImpactForce` keeps only the horizontal part of
+  a hit.
+- **Two false alarms, both in the measurement, kept as a warning:**
+  - The demo looked as if it changed after a test ran. The test's
+    `Input::SetPlaybackSnapshot(nullptr)` had detached the replay's input.
+    Bisected to that one call.
+  - A Map Building capture looked empty: the demo's short name is
+    `MapBuild`.
+
+**Next:** the research list (stepping that catches a fall, physical
+balance while walking, blows from above, bracing) is in
+`editor_roadmap.md`, under "Humanoid".
+
 ### 2026-10-14 (Tools panel in sections; players, NPCs, terrain on any primitive)
 
 The spec is `docs/superpowers/specs/2026-10-14-tools-characters-terrain-design.md`.

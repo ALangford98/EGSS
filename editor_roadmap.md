@@ -82,6 +82,42 @@ its own spec, in dependency order -- see
    items: the first Xcode build and device run; OpenGL ES is deprecated on
    iOS, so Metal (natively or via ANGLE) is the long-term answer.
 
+## Humanoid: RAGE / Euphoria-style physical character (owner priority, 2026-10-14)
+
+The owner wants GTA IV-style ragdoll behaviour: balancing, stumbling,
+catching yourself, falling realistically. Where it stands:
+
+- **The rig and its controllers** live in `Runtime/Humanoid.h`, extracted
+  from the Ragdoll demo bit-identically on 2026-10-14.
+  - The demo, Map Building and games (Player or NPC with Body = Humanoid)
+    all drive the one class.
+  - **Improve it in the demo**, where the tuning panel is; games get the
+    change automatically.
+  - **Check any change** with a recorded session and a per-step body dump.
+    `docs/CHANGELOG.md` 2026-10-14 says how. Images won't do: the demo isn't
+    reproducible at 4× MSAA.
+- **Working:**
+  - standing balance with the ankle strategy;
+  - the walk and run (kinematic root, physical limbs);
+  - jumping, stagger from horizontal hits;
+  - ragdoll mode, and get-up (now at the right height).
+- **Open, in the order I'd take them:**
+  1. **The step that catches a fall.** It doesn't widen the base; the
+     pelvis has outrun the foot before the swing starts. The proposed next
+     experiment is in the changelog (2026-08-09/10): one step, on a figure
+     held upright, that measurably extends the support polygon.
+  2. **Physical balance while walking.** In Controlled mode the root is
+     kinematic, so walking isn't balanced, only animated with physical
+     limbs. RAGE-like stumbling needs the walk to stay physical, or to hand
+     over to the stepping strategy when it is hit.
+  3. **Blows from above.** `ImpactForce` keeps only the horizontal part of
+     a hit. A 40 kg crate on the head registered 6.9 kN and did nothing.
+     Vertical load should buckle, crouch or fell.
+  4. **Bracing as it falls** (arms out, Euphoria's "catch fall"), and
+     falling in the direction it was hit.
+  5. **Get-up over nothing** hoists the body to the stand height in mid-air,
+     a quirk seen when walking off the demo's platform.
+
 ## Wishlist, easiest to hardest
 
 ### 1. ~~Right-click context menu~~ — done (2026-09-12)

@@ -37,6 +37,11 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-14 — Keep Play changes; ball body; humanoid in games**: Stop
+  asks whether to keep; Body = Ball rolls (5/7 g sin θ measured);
+  `Runtime/Humanoid.h` extracted bit-identically from the Ragdoll demo and
+  playable as Player/NPC (mannequin). **Live research thread:** RAGE-style
+  stumble/catch -- see editor_roadmap.md "Humanoid".
 - **2026-10-14 — Tools panel, characters, terrain**: sectioned Tools that
   wrap; Player/NPC (capsule controller in Runtime, works in exports);
   terrain on any primitive with a vertex count, heightfield collision.
