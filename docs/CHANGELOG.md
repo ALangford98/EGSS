@@ -7,6 +7,67 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-14 (walking on through a stumble, bracing, and a figure built in the air)
+
+Finishing the Humanoid list from the entry below.
+
+**Walking on.** A stumble that aims to stop can't catch a walk, so a
+stumble that starts mid-walk now carries the walk's velocity *v*.
+- **Where each step lands.** `b = L / (e^(T/τ) − 1)` short of where the
+  capture point will be, with `L = v·T`. With the pressure at the stance
+  foot, the capture point runs from *b* to *b·e^(T/τ)* ahead of it over a
+  step, so landing *b* behind it one stride on repeats the step exactly.
+  *b* = 0, landing on the capture point, is the standing stumble.
+- **Two measured corrections.**
+  - Along the walk, the pressure stays in the middle of the footprint.
+    From the toes, the ankle's hardest brake, he settled into a 0.45 m/s
+    shuffle.
+  - Across the walk, the ankles still brake; without that a side hit swung
+    the sideways speed ±0.6 m/s from step to step.
+- **Handing back.** He returns to the gait once he's moving at the walk's
+  velocity again.
+
+Measured, 4 trials each:
+
+| hit while walking | walks on |
+| --- | --- |
+| a 1 Ns nudge | 4/4, after 1–2 steps at 1.14–1.52 m/s (the walk is 1.30) |
+| 20 Ns | 16/16 |
+| 40 Ns | 14/16 |
+| 60–80 Ns | about half; the rest topple |
+| from behind, any size | all |
+
+Running stays the kinematic stagger.
+
+**Bracing.** A lost stumble keeps the arms strong for 0.8 s and reaches
+them for the ground along the fall, at 45° below the shoulder. Measured on
+140 Ns falls, 4 each way:
+
+| fall | limp | braced |
+| --- | --- | --- |
+| forward | head first, lands at 5.1 m/s | hand first, head at 2.1 m/s |
+| backward | head first, 4.8–5.1 m/s | hand first, head at 1.9–3.5 m/s |
+| sideways | hand first, head at 5.0 m/s | hand first, head at 3.3–3.8 m/s |
+
+For scale, a straight drop of the head's 1.74 m is 5.8 m/s.
+
+**Get-up over nothing** is refused unless his lowest body is within 0.3 m
+of the ground. That has to be probed under the lowest body: probed from
+the pelvis while falling feet first, it finds his own thighs.
+
+**A figure built in the air stood on it.** `BuildRagdoll` measured
+standing heights from the ground below the spawn point. Built 4 m up, he
+measured himself 5.09 m tall and stood there, and so would a Player placed
+above the floor in the editor. Heights now come from the rig's own soles:
+he's 1.09 m tall wherever he's built, and falls if built in the air. At
+the default height nothing changes; the standing sweep reproduces exactly.
+
+**Still open:**
+- **Loads from above.** The virtual leg carries 2 body weights, so a 40 kg
+  crate resting on him is carried. How much should crush him is a tuning
+  question.
+- **Running hits** are still kinematic.
+
 ### 2026-10-14 (a stumble that catches itself; the camera after Play; launching bodies)
 
 #### The step that widens the base

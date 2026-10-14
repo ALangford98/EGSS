@@ -37,12 +37,16 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-14 — Walking on through a stumble; bracing**: hits mid-walk are
+  physical and he walks on (capture-point step offset b = L/(e^(T/τ)−1));
+  lost stumbles brace (the head lands at 2 m/s, not 5); no get-up in
+  mid-air; stand heights from his own feet (built in the air, he falls).
+  Open: running hits, loads from above (editor_roadmap.md, Humanoid).
 - **2026-10-14 — The humanoid stumbles and catches itself**: a hit while
   standing is caught physically, by ankles and real steps, through a
   footprint-bounded virtual leg. It holds 80–100 Ns and falls beyond; the
   step widens the base, which fixes the August problem. Also: the editor
   camera returns after Play, and physics bodies get a launch velocity.
-  **Next on this thread:** the physical walk (editor_roadmap.md, Humanoid 1).
 - **2026-10-14 — Keep Play changes; ball body; humanoid in games**: Stop
   asks whether to keep; Body = Ball rolls (5/7 g sin θ measured);
   `Runtime/Humanoid.h` extracted bit-identically from the Ragdoll demo and

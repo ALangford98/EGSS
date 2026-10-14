@@ -96,31 +96,26 @@ catching yourself, falling realistically. Where it stands:
   - **Check any change** with a recorded session and a per-step body dump.
     `docs/CHANGELOG.md` 2026-10-14 says how. Images won't do: the demo isn't
     reproducible at 4× MSAA.
-- **Working:**
+- **Working (2026-10-14):**
   - standing balance with the ankle strategy;
-  - **the stumble** (2026-10-14): hit while standing, he catches it with
-    the ankles or one or more steps and walks on, or goes down. It holds
-    80–100 Ns. The steps widen the footprint, which answers the August
-    open problem. The demo draws the footprint, the capture point, the
-    step target and the virtual leg;
-  - the walk and run (kinematic root, physical limbs);
-  - jumping, and the kinematic stagger for hits while moving;
-  - ragdoll mode, and get-up (now at the right height).
-- **Open, in the order I'd take them:**
-  1. **Physical balance while walking.** Hits while moving still use the
-     kinematic stagger: a stumble that aims to *stop* can't catch a walk,
-     measured at 70% for walking hits and 0% for running. Next: make the
-     stumble's goal the walk's own velocity rather than rest (catch only
-     what the hit added), then hand back to the gait without stopping.
-  2. **Bracing as it falls** (arms out towards the fall, Euphoria's
-     "catch fall"). The stumble only puts the arms out to the sides.
-  3. **Blows from above.** A hit with a vertical part now does start a
-     stumble, and the impulse goes in whole. But the virtual leg holds up
-     to 2 body weights, and a 40 kg crate resting on him (1,089 N in all,
-     against 1,394) is inside that. So he would carry it, not buckle.
-     How much a load should crush is a tuning question; not measured yet.
-  4. **Get-up over nothing** hoists the body to the stand height in
-     mid-air, a quirk seen when walking off the demo's platform.
+  - **the stumble.** Hit while standing or walking, he catches it with
+    the ankles or real steps (and walks on, if walking), or goes down. It
+    holds 80–100 Ns standing; walking, 20 Ns always and 40 Ns 14/16;
+  - **bracing.** A lost stumble goes down with the hands out, and the head
+    lands at about 2 m/s instead of 5;
+  - the walk and run (kinematic root, physical limbs); hits while running
+    use the kinematic stagger;
+  - jumping, ragdoll mode, and get-up (only from the ground);
+  - built anywhere, he is his own height (built in the air, he falls).
+- **Open:**
+  1. **Running hits, physically.** The capture point runs 1.3 m ahead at
+     4 m/s; the walking rule (land *b* short) might extend to it with
+     shorter, quicker steps.
+  2. **Loads from above.** The virtual leg carries 2 body weights, so a
+     40 kg crate resting on him is held. How much should buckle him is a
+     tuning choice.
+  3. **Harder walking hits** (60–80 Ns): about half topple. The step reach
+     (0.6 m) is the likely limit; worth measuring before tuning.
 
 ## Wishlist, easiest to hardest
 
