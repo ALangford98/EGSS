@@ -1231,8 +1231,19 @@ public:
 			m_Swinging[side] = false;
 		}
 
+		// Standing again at the height it got up to -- the ground it lay on
+		// plus the clearance -- not the height it last stood at before it
+		// fell. GoControlled anchors the hips at m_StandHeight, and the fall
+		// check measures from it: left stale, a figure that fell off a ledge
+		// got up, was hoisted back to the ledge's height, read a drop it had
+		// already taken as a new one, and went down again the next step.
+		// (The Ragdoll demo showed it too: back to Controlled at step 820 of
+		// a recorded session, Ragdoll again at 821.)
 		if (t >= 1.0f)
+		{
+			m_StandHeight = m_GetUpTo.y;
 			GoControlled();
+		}
 	}
 
 	bool IsCharacter(unsigned int body) const
