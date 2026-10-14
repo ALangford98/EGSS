@@ -98,25 +98,29 @@ catching yourself, falling realistically. Where it stands:
     reproducible at 4× MSAA.
 - **Working:**
   - standing balance with the ankle strategy;
+  - **the stumble** (2026-10-14): hit while standing, he catches it with
+    the ankles or one or more steps and walks on, or goes down. It holds
+    80–100 Ns. The steps widen the footprint, which answers the August
+    open problem. The demo draws the footprint, the capture point, the
+    step target and the virtual leg;
   - the walk and run (kinematic root, physical limbs);
-  - jumping, stagger from horizontal hits;
+  - jumping, and the kinematic stagger for hits while moving;
   - ragdoll mode, and get-up (now at the right height).
 - **Open, in the order I'd take them:**
-  1. **The step that catches a fall.** It doesn't widen the base; the
-     pelvis has outrun the foot before the swing starts. The proposed next
-     experiment is in the changelog (2026-08-09/10): one step, on a figure
-     held upright, that measurably extends the support polygon.
-  2. **Physical balance while walking.** In Controlled mode the root is
-     kinematic, so walking isn't balanced, only animated with physical
-     limbs. RAGE-like stumbling needs the walk to stay physical, or to hand
-     over to the stepping strategy when it is hit.
-  3. **Blows from above.** `ImpactForce` keeps only the horizontal part of
-     a hit. A 40 kg crate on the head registered 6.9 kN and did nothing.
-     Vertical load should buckle, crouch or fell.
-  4. **Bracing as it falls** (arms out, Euphoria's "catch fall"), and
-     falling in the direction it was hit.
-  5. **Get-up over nothing** hoists the body to the stand height in mid-air,
-     a quirk seen when walking off the demo's platform.
+  1. **Physical balance while walking.** Hits while moving still use the
+     kinematic stagger: a stumble that aims to *stop* can't catch a walk,
+     measured at 70% for walking hits and 0% for running. Next: make the
+     stumble's goal the walk's own velocity rather than rest (catch only
+     what the hit added), then hand back to the gait without stopping.
+  2. **Bracing as it falls** (arms out towards the fall, Euphoria's
+     "catch fall"). The stumble only puts the arms out to the sides.
+  3. **Blows from above.** A hit with a vertical part now does start a
+     stumble, and the impulse goes in whole. But the virtual leg holds up
+     to 2 body weights, and a 40 kg crate resting on him (1,089 N in all,
+     against 1,394) is inside that. So he would carry it, not buckle.
+     How much a load should crush is a tuning question; not measured yet.
+  4. **Get-up over nothing** hoists the body to the stand height in
+     mid-air, a quirk seen when walking off the demo's platform.
 
 ## Wishlist, easiest to hardest
 

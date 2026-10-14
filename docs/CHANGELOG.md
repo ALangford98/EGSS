@@ -7,6 +7,117 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-14 (a stumble that catches itself; the camera after Play; launching bodies)
+
+#### The step that widens the base
+
+The open question since 2026-08-09 was why a step never caught a fall:
+seven controllers, and the footprint's reach towards the fall went
+**0.0019 m → 0.0000 m** across the step. The measured cause was that a
+leg carrying half the body weight cannot lift in time, so the body
+outran the swing ("the body outruns the leg").
+
+`Humanoid` gains a fourth mode, **Stumbling**. A hit while standing
+makes the pelvis dynamic, so the whole body moves as a body, and he has
+to catch it with his feet. The stance leg's job is done by a **virtual
+leg**: one force on the pelvis, bounded the way a leg is.
+
+- **From inside the footprint only.** The centre of pressure is the
+  capture point if the soles' hull holds it, else the hull's nearest
+  point. So it can do what an ankle does and nothing more, and a fall the
+  ankles can't hold needs a step.
+- **Along the inverted pendulum's line,** `F_xz = F_y (x − p) / h`, and
+  inside the friction cone.
+- **Only while a stance leg can reach the ground.** It fades out from 97%
+  of the leg's length to just past straight.
+
+With the weight off the swing foot, the step goes where the capture point
+*will be* when it lands, `ξ(T) = p + (ξ − p) e^(T/τ)`. The feet take
+turns, a dangling foot is gathered back, and once he is caught (capture
+point inside, still, upright) the walk takes over from where he stands.
+
+Measured over 4 trials per cell, standing, shoved at the chest, with the
+step on and off:
+
+| | ankles only | predicted (LIP, sole edge / τ) | with steps |
+| --- | --- | --- | --- |
+| forward | holds 30 Ns, falls 40 | 30 | 4/4 to 100 (one 3/4 at 60), falls 120 |
+| back | holds 20, falls 30 | 17 | 4/4 to 80, falls 120–140 |
+| sideways | holds 30–40 | 34 | 4/4 to 70–100, falls 120 |
+
+**The first step widens the base:** the reach goes from 0.14 m to
+0.24–0.59 m, larger for harder shoves.
+
+A crate thrown at 7 m/s through a real contact gives the graded result
+wanted: 5 and 10 kg stumble and recover in about 2 s; 20 and 40 kg floor
+him within 0.2 s.
+
+#### Five things measured on the way, each in the code where it applies
+
+- **Contact flicker.** A planted foot drops out of the manifold for
+  several steps as it settles. Counted as "not down", it broke the feet's
+  turn-taking and walked a forward shove out into the splits. A foot now
+  counts as down if its sole is within 1.5 cm of the ground below it.
+  Landing still needs a real contact, because the geometric test also
+  fires as a low swing skims the floor, and called one step landed half a
+  metre short.
+- **Resting on the edge.** Pushing from the capture point itself stopped
+  him leaning over one foot's edge, caught but not upright. Pushing from a
+  little beyond it, away from the footprint's middle (the capture-point
+  controller), brings him back to centre.
+- **A leg pushing past its own length.** With the fade 8% *past* straight,
+  a lunge's recovery lifted the stance foot 12 cm off the floor.
+- **Straight legs push nothing.** Faded at straight, the rig's
+  straight-legged stance got almost no support, so he crouches 8 cm while
+  recovering, more in a split stance.
+- **A crouch that only ratcheted.** "The crouch now plus however much
+  further" only ever went down. It's absolute now.
+
+**A force pulling the swing foot** (with its reaction on the pelvis) was
+tried and removed: it caught nothing more. **An impulse ledger confirmed
+the virtual leg isn't a cheat.** It removed about the shove's own momentum
+(for example 112 Ns of a 100 Ns forward shove), the rest going through
+foot friction.
+
+#### What it does not do yet
+
+**Moving hits keep the kinematic stagger.** The stumble's aim is to come
+to rest, so a 20 Ns bump while walking means stopping 1.6 m/s, as hard as
+a 110 Ns shove from standing.
+- Physical walking hits: 70% of 64 trials stayed up.
+- Physical running hits: 0 of 64.
+- The kinematic stagger: 64/64 for both.
+
+A person bumped mid-walk walks on, and that needs the walk itself to be
+physical (roadmap Humanoid 2). The arms only go out to the sides; there is
+no bracing on the way down yet.
+
+#### Also
+
+- **`m_BodyMass` was summed before the body list existed.** A rig's first
+  build had zero mass, so `Stagger` (which divides by it) did nothing. In
+  a game no hit ever staggered a humanoid; the Ragdoll demo had it until
+  its first Reset.
+- **The balance's centre of mass** now counts only the rig's bodies, not
+  every dynamic body in the world (in a game a crate counted).
+- **The editor camera after Play.** WASD drove the player and, read by the
+  fly camera as well, flew the hidden editor camera, so Stop came back to
+  wherever it had drifted. It now holds still while a game camera has the
+  view, and Stop restores the pose it had at Play.
+- **Launch velocity.** `PhysicsComponent::LaunchVelocity` (m/s, world
+  axes) starts a dynamic body moving when Play starts. It's set in the
+  Inspector's new Physics section, and an orange arrow in the view shows
+  it, 1 m per m/s. Saved only when set. Measured: launched at (3, 4, −2)
+  from 10 m up, after 1 s it was at (2.985, 9.010, −1.990) against the
+  projectile formula's (3, 9.095, −2). The gap is damping and the step's
+  `g·dt·t/2`.
+
+**Verification:** the four-direction sweep, the walking and running
+sweep, and the crate were temporary harnesses, now deleted. Two runs of a
+traced stumble are identical line for line. Demo captures can't check
+this, because `--antialiasing` reaches only the editor and player, not the
+demos' window. All configs and the web build compile.
+
 ### 2026-10-14 (Keep Play changes; a rolling ball; the humanoid in games)
 
 The spec is `docs/superpowers/specs/2026-10-14-play-keep-ball-humanoid-design.md`.
