@@ -37,6 +37,10 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-15 — Crash test demo**: File > Add Demo Scene > Crash Test,
+  then Play: a dummy, a launcher and crates, driven from an in-game
+  terminal (` opens it). New runtime pieces: GameConsole, LauncherComponent,
+  physics substeps for fast bodies, RigidBody3D::Enabled.
 - **2026-10-15 — Natural variation**: each humanoid walks its own way (seeded
   by entity), steps never land alike, and standing he breathes, shifts
   his weight and glances about. Deterministic: replays exact.

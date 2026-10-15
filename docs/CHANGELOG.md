@@ -7,6 +7,69 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-15 (crash test: a game terminal, a launcher, and a dummy to aim at)
+
+The owner asked for an in-editor demo of the physics: a launcher, its
+shape, size and speed set from "a nice little terminal" in the running
+game, not in the editor, firing at a ragdoll.
+
+**What was built:**
+- **A game console** (`Runtime/GameConsole.h`).
+  - ` toggles it.
+  - Commands are typed, with history and tab completion; echoed in
+    amber, results in green, errors in red.
+  - It runs on the next fixed step.
+  - It's part of the runtime, so the editor's Play, GSPlayer and a
+    TestEnv demo all draw it over their game view.
+- **A launcher** (`LauncherComponent`, `Runtime/Launcher.h`).
+  - It fires a ball or a box (size, mass, speed, spin) at a target's
+    aim height.
+  - The launch angle is the projectile equation's low root, so gravity
+    brings the shot onto the target.
+  - Commands: `fire [n]`, `auto`, `preset` (tennis ball to a car at
+    50 km/h) and the individual settings.
+  - Projectiles are a pool of 40, recycled.
+- **GameSession commands:** `reset` (`Humanoid::Respawn` stands a dummy
+  up again from its own bodies), `getup`, `sweep`, `slowmo`, `pause`,
+  `camera`.
+- **The Crash Test scene:** a demo whose `OnExportToScene` builds it,
+  for *File > Add Demo Scene*. It also runs as a TestEnv demo.
+
+**Two engine pieces it needed:**
+- **`RigidBody3D::Enabled`.** The world never removes a body, so retired
+  projectiles are switched off and their bodies reused.
+- **Physics substeps for fast bodies:** ⌈v·dt / 8 cm⌉ per fixed step,
+  at most 8.
+  - **Without them a bowling ball tunnelled.** At 13.8 m/s a 7 kg ball
+    moves 0.23 m a step, more than the dummy's 0.22 m chest. It entered,
+    the box–sphere normal flipped as its centre passed the middle, and it
+    left through his back at 7 m/s while he moved 6 cm.
+  - **With them it stops at his chest at 3.7 m/s and he goes over.** It
+    gave up 70 N·s, about 1 m/s for 71 kg, and he moved accordingly.
+  - **Hand check:** a free 71 kg body would leave the ball at 1.2 m/s;
+    the higher figure fits a hit high on a body still finding its feet.
+
+**Two bugs found by measuring:**
+- **Volleys outlived `auto off`.** Shots still queued kept firing after a
+  sweep (4 appeared). Clearing auto fire, sweeping or resetting now
+  empties the queue.
+- **A hint in every game.** The terminal's corner hint showed in every
+  exported game, and was the only difference between editor and GSPlayer
+  Breakout frames. It now shows only when a game sets a status line.
+  Those frames are byte-identical again.
+
+**Substeps change other games too.** Anything moving faster than
+4.8 m/s, such as the Breakout recreation's ball, now simulates in
+substeps. Editor and player still agree byte for byte; older captures of
+fast scenes will differ.
+
+**Also:** a sphere mesh with physics collides as a sphere; it was its
+bounding box.
+
+**Not done:** there's no Inspector UI for `LauncherComponent` (it's set
+from the terminal by design; the scene file holds its defaults), and
+scripts can't register terminal commands yet.
+
 ### 2026-10-15 (natural variation)
 
 The owner: "add some natural variation to the animations".
