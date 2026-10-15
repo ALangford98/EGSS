@@ -32,6 +32,7 @@
 #include "PumpDiagnostics.h"
 #include "TerrainLab.h"
 #include "NetworkDemo.h"
+#include "CrashTest.h"
 
 struct DemoEntry
 {
@@ -81,7 +82,8 @@ inline const DemoEntry s_Demos[] =
 	// any line above this one silently repoints every recording made before
 	// the move at a different scene.
 	{ "Engine",   "Terrain lab (9^3 chunks, every knob)", "TerrainLab", []() -> DemoLayer* { return new TerrainLab(); } },
-	{ "Engine",   "NetworkDemo (2-process replication + RPC)", "NetworkDemo", []() -> DemoLayer* { return new NetworkDemo(); } }
+	{ "Engine",   "NetworkDemo (2-process replication + RPC)", "NetworkDemo", []() -> DemoLayer* { return new NetworkDemo(); } },
+	{ "Engine",   "Crash test (launch things at a dummy)", "CrashTest", []() -> DemoLayer* { return new CrashTest(); }, true }
 };
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));
