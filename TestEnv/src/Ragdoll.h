@@ -154,7 +154,6 @@ public:
 	{
 		MoveCamera(fixedStep);
 
-
 		if (m_PendingPush != 0.0f)
 		{
 			Push(m_PendingPush);
@@ -578,6 +577,12 @@ public:
 		ImGui::SliderFloat("Recovery steps", &m_CatchSteps, 0.5f, 5.0f);
 		ImGui::Text("Can still catch %.2f m/s; carrying %.2f", CatchableSpeed(),
 			glm::length(m_StaggerVelocity));
+		// TRY: walk with this off -- the old feet, held by the leg motors
+		// alone, skate through every stance (0.17 m/s at a walk, 0.44 at a
+		// run) and trip on stairs. On, each foot goes where the gait puts it,
+		// heel to toe, and the legs between stay physical.
+		if (ImGui::Checkbox("Driven feet", &m_DriveFeet) && !m_DriveFeet)
+			UnpinFeet();
 		ImGui::SliderFloat("Walk speed", &m_WalkSpeed, 0.0f, 4.0f);
 		ImGui::SliderFloat("Run speed", &m_RunSpeed, 1.0f, 8.0f);
 		ImGui::SliderFloat("Jump height (m)", &m_JumpHeight, 0.1f, 1.5f);

@@ -443,16 +443,14 @@ private:
 		// constant-slope ramp, he walks up 40 degrees at a full 1.30 m/s with
 		// zero slip, where the box would have been sliding five degrees back.
 		//
-		// The real limit is that the hips may only rise at m_ClimbRate, so a
-		// *sustained* climb needs speed * tan(theta) <= m_ClimbRate. Measured
-		// against that: walking survives 42 deg and caps at 43, running
-		// survives 16 and caps at 17, both within a degree of the formula. Past
-		// it the hips fall behind, the pelvis sinks about a metre over ten
-		// seconds, and once it dips under the surface the ground probe finds
-		// nothing below it and he goes down.
-		ImGui::Text("Sustained climb: %.1f deg walking, %.1f deg running",
-			glm::degrees(std::atan(m_ClimbRate / std::max(m_WalkSpeed, 0.01f))),
-			glm::degrees(std::atan(m_ClimbRate / std::max(m_RunSpeed, 0.01f))));
+		// The limit used to be that the hips could only rise at a fixed
+		// m_ClimbRate (1.2 m/s), so a sustained climb needed speed * tan(theta)
+		// <= 1.2 -- measured at 42 deg walking and 16 running. Since
+		// 2026-10-15 the hips follow the ground on a spring, which has no
+		// such cap but lags a sustained climb by about 2 r / w + 0.08 r (r
+		// the climb rate); the steepest slope he now walks up has not been
+		// measured.
+		ImGui::TextDisabled("Hips follow the ground on a spring; no climb-rate cap");
 
 		rebuild |= ImGui::SliderFloat("Amplitude (m)", &m_Terrain.Amplitude, 1.0f, 30.0f);
 		rebuild |= ImGui::SliderFloat("Frequency", &m_Terrain.Frequency, 0.5f, 8.0f);
