@@ -201,6 +201,13 @@ namespace GS {
 		// A shin catching a stair riser there could only fight the joints,
 		// and tore the leg open by up to 48 cm on a flight of stairs.
 		bool IgnoreStatic = false;
+
+		// Off: not simulated, not collided with, not ground -- as good as
+		// removed, while its handle stays valid. The world never removes a
+		// body (handles are indices into it), so a game that keeps adding
+		// them -- a launcher's projectiles -- retires old ones this way and
+		// reuses them.
+		bool Enabled = true;
 		float SleepTimer = 0.0f;
 
 		void SetMass(float mass) { InverseMass = mass > 0.0f ? 1.0f / mass : 0.0f; }

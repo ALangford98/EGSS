@@ -1703,6 +1703,8 @@ namespace GS {
 		// a tool held inside a walking character.
 		if (a.IgnoreCollisionWith == (int)j || b.IgnoreCollisionWith == (int)i)
 			return;
+		if (!a.Enabled || !b.Enabled)
+			return;
 		if (a.NoCollideGroup != 0 && a.NoCollideGroup == b.NoCollideGroup)
 			return;
 		if ((a.IgnoreStatic && b.Type != BodyType::Dynamic) || (b.IgnoreStatic && a.Type != BodyType::Dynamic))
@@ -1887,6 +1889,8 @@ namespace GS {
 				continue;
 
 			const RigidBody3D& body = m_Bodies[i];
+			if (!body.Enabled)
+				continue;
 
 			// Only things that hold still are ground. A crate the character
 			// happens to be standing on is a fair question and a different
@@ -2770,7 +2774,7 @@ namespace GS {
 			// forces, no damping. Whatever velocity was set is the velocity
 			// they keep until it is set again.
 			if (body.Type == BodyType::Static || body.Type == BodyType::Kinematic
-				|| !body.Awake)
+				|| !body.Awake || !body.Enabled)
 			{
 				body.Force = glm::vec3(0.0f);
 				body.Torque = glm::vec3(0.0f);
@@ -2805,7 +2809,7 @@ namespace GS {
 		{
 			// Kinematic bodies are integrated here and nowhere else -- this is
 			// the whole difference between them and static ones.
-			if (body.Type == BodyType::Static || !body.Awake)
+			if (body.Type == BodyType::Static || !body.Awake || !body.Enabled)
 				continue;
 
 			body.Position += body.Velocity * dt;
