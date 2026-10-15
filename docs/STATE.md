@@ -37,6 +37,9 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-15 — Natural variation**: each humanoid walks its own way (seeded
+  by entity), steps never land alike, and standing he breathes, shifts
+  his weight and glances about. Deterministic: replays exact.
 - **2026-10-15 — The humanoid moves fluidly**: driven feet rolling heel to
   toe (planted feet no longer skate), pole-vector legs (no backwards
   knees), springs instead of rate limits (no jolts), a spring-mass run,

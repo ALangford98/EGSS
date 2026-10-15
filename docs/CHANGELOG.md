@@ -7,6 +7,56 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-15 (natural variation)
+
+The owner: "add some natural variation to the animations".
+
+**Two kinds of variation, both hashed from a seed:**
+- **The figure's character.** Speed, stride, stance width, arm swing,
+  elbow bend, lean, posture, bob, sway, turn rate and run lift are each
+  a few percent off the design, fixed per seed.
+- **What changes moment to moment:**
+  - each step lands a little off its mark;
+  - the stride breathes;
+  - each arm's swing wanders.
+
+  Standing still he breathes, shifts his weight between his feet (the hip
+  drops on the unloaded side and the shoulders counter it), and glances
+  about every 2–5 s.
+
+**Seeds:** a game seeds each humanoid by its entity; the demo has Seed
+and Variation, both registered params.
+
+**It's a hash, never a random-number generator with state.** That keeps
+recordings exact: the same seed twice gave identical trajectories, and
+seed 0 or Variation 0 reproduced the design bit for bit.
+
+**Measured over nine seeds,** walking:
+- **Speed** 1.28–1.37 m/s.
+- **Cadence** 2.02–2.38 steps/s.
+- **Step length** 0.56–0.64 m.
+- **Torso lean** 3.3–6.0°.
+
+All stayed healthy (joint gaps 2.4–2.6 cm, knees 4–46°, hip peaks
+3.1–3.7 m/s²). Runs, stairs and jumping walks were clean for three
+seeds.
+
+**Standing, 30 s:**
+- the hips drift 1.2–3.3 cm (before the drift was raised to 3.5 cm);
+- the head glances up to ±25°, 8–11 times;
+- the chest moves about 2°.
+
+**Two measurements disagreed with the code, and both times it was the
+measurement.**
+- **The harness's axes.** It read his sideways and pitch on the wrong
+  axes: he faces +z, not +x. Its first idle figures were all zero.
+- **The contact sheets.** They looked unchanged. A glance is invisible on
+  a sphere with no face, and the drift swells over seconds. A difference
+  image and a log of the demo's own build path confirmed the motion. The
+  idle was then raised to 3.5 cm of drift and 4.6° of hip drop (real
+  weight shifts run about 3–5 cm and 5°), and the glances got a head
+  tilt.
+
 ### 2026-10-15 (a walk that looks like walking)
 
 The owner: "the walking looks quite broken still". Looking first, then
