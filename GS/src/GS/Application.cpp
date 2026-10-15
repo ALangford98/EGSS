@@ -157,6 +157,13 @@ namespace GS {
 		if (!step.empty())
 			m_CaptureStep = std::strtoull(step.c_str(), nullptr, 10);
 
+		std::string every = valueOf("--capture-every");
+		if (!every.empty())
+			m_CaptureEvery = std::strtoull(every.c_str(), nullptr, 10);
+		std::string count = valueOf("--capture-count");
+		if (!count.empty())
+			m_CaptureCount = std::max(1ull, std::strtoull(count.c_str(), nullptr, 10));
+
 		std::string exitAfter = valueOf("--exit-after");
 		if (!exitAfter.empty())
 		{
@@ -233,8 +240,8 @@ namespace GS {
 			if (m_ExitAfterFrame == 0)
 			{
 				m_ExitAfterFrame = m_CaptureStep != 0
-					? m_CaptureStep + 600
-					: m_CaptureFrame + 1;
+					? m_CaptureStep + 600 + m_CaptureEvery * m_CaptureCount
+					: m_CaptureFrame + 1 + m_CaptureEvery * m_CaptureCount;
 			}
 
 			if (m_CaptureStep != 0)
@@ -450,8 +457,28 @@ namespace GS {
 
 			if (due)
 			{
-				CaptureFrame(m_CapturePath);
-				m_Captured = true;
+				if (m_CaptureEvery == 0)
+				{
+					CaptureFrame(m_CapturePath);
+					m_Captured = true;
+				}
+				else
+				{
+					// The sequence: numbered before the extension, the next
+					// one scheduled `every` steps (or frames) on.
+					std::string path = m_CapturePath;
+					size_t dot = path.find_last_of('.');
+					char index[16];
+					snprintf(index, sizeof index, "_%03llu", m_CapturesTaken);
+					path.insert(dot == std::string::npos ? path.size() : dot, index);
+					CaptureFrame(path);
+					m_CapturesTaken++;
+					if (m_CaptureStep != 0)
+						m_CaptureStep += m_CaptureEvery;
+					else
+						m_CaptureFrame += m_CaptureEvery;
+					m_Captured = m_CapturesTaken >= m_CaptureCount;
+				}
 			}
 		}
 
@@ -477,8 +504,9 @@ namespace GS {
 
 			m_PendingCapturePath.clear();
 
-			// The shot was the whole errand unless told otherwise.
-			if (!m_ExitAfterExplicit)
+			// The shot was the whole errand unless told otherwise -- or
+			// unless more of a sequence is still to come.
+			if (!m_ExitAfterExplicit && m_Captured)
 				m_ExitAfterFrame = m_FrameCount + 1;
 		}
 

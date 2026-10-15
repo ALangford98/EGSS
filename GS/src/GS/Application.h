@@ -176,6 +176,11 @@ namespace GS {
 		unsigned long long m_ExitAfterFrame = 0;
 		bool m_ExitAfterExplicit = false;
 		bool m_Captured = false;
+		// --capture-every / --capture-count: a sequence instead of one shot,
+		// for watching something move. Numbered name_000.png, name_001.png...
+		unsigned long long m_CaptureEvery = 0;
+		unsigned long long m_CaptureCount = 1;
+		unsigned long long m_CapturesTaken = 0;
 
 		unsigned long long m_StepCount = 0;
 
