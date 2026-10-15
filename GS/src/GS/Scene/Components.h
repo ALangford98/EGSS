@@ -230,6 +230,22 @@ namespace GS {
 	// TransformComponent auto-replicated by the server to every client;
 	// anything else about it (score, health, "this ball bounced") travels
 	// as a manual RPC instead -- see GS::Net::SendRPC.
+	// Fires a physics object at a target when the game asks -- the F key, or
+	// "fire" in the game console (Runtime/Launcher.h is the system). The
+	// launcher's own transform is where things leave from.
+	struct LauncherComponent
+	{
+		int Shape = 0;                 // 0 ball, 1 box
+		glm::vec3 Size{ 0.3f };        // a ball's diameter is x; a box's edges
+		float Mass = 5.0f;             // kg
+		float Speed = 15.0f;           // m/s, leaving the launcher
+		float Spin = 0.0f;             // rad/s, topspin about the sideways axis
+		float AimHeight = 1.3f;        // m above the target's origin -- its feet; 1.3 is the chest
+		bool Arc = true;               // aim high enough for gravity to bring it onto the target
+		glm::vec4 Color{ 0.95f, 0.55f, 0.15f, 1.0f };
+		std::string Target;            // the tag of what it aims at; empty: straight ahead
+	};
+
 	struct NetworkIdentity
 	{
 		uint32_t NetworkId = 0;   // assigned by the server when spawned

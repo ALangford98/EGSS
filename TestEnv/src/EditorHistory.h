@@ -76,6 +76,7 @@ struct EntitySnapshot
 	std::optional<GS::TerrainComponent> Terrain;
 	std::optional<GS::PlayerComponent> Player;
 	std::optional<GS::NpcComponent> Npc;
+	std::optional<GS::LauncherComponent> Launcher;
 
 	static EntitySnapshot Capture(GS::EntityId entity)
 	{
@@ -91,6 +92,7 @@ struct EntitySnapshot
 		if (auto* c = g_EditorScene.GetComponent<GS::TerrainComponent>(entity)) s.Terrain = *c;
 		if (auto* c = g_EditorScene.GetComponent<GS::PlayerComponent>(entity)) s.Player = *c;
 		if (auto* c = g_EditorScene.GetComponent<GS::NpcComponent>(entity)) s.Npc = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::LauncherComponent>(entity)) s.Launcher = *c;
 		return s;
 	}
 
@@ -138,6 +140,7 @@ struct EntitySnapshot
 		if (Terrain) entity.Add<GS::TerrainComponent>(*Terrain);
 		if (Player) entity.Add<GS::PlayerComponent>(*Player);
 		if (Npc) entity.Add<GS::NpcComponent>(*Npc);
+		if (Launcher) entity.Add<GS::LauncherComponent>(*Launcher);
 		return entity.GetId();
 	}
 };

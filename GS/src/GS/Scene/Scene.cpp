@@ -272,6 +272,18 @@ namespace GS {
 				WriteFloats(out, { npc->Speed, npc->WanderRadius, npc->DetectRadius, npc->StopDistance });
 				out << " " << npc->Body << "\n";
 			}
+
+			// The target's tag last, as the rest of the line: a tag may
+			// contain spaces.
+			if (LauncherComponent* launcher = self->GetComponent<LauncherComponent>(entity))
+			{
+				out << "launcher " << launcher->Shape;
+				WriteFloats(out, { launcher->Size.x, launcher->Size.y, launcher->Size.z, launcher->Mass,
+					launcher->Speed, launcher->Spin, launcher->AimHeight });
+				out << " " << (launcher->Arc ? 1 : 0);
+				WriteFloats(out, { launcher->Color.r, launcher->Color.g, launcher->Color.b, launcher->Color.a });
+				out << " " << launcher->Target << "\n";
+			}
 		}
 
 		return true;
@@ -435,6 +447,20 @@ namespace GS {
 				if (!(fields >> npc.Body))
 					npc.Body = 0;
 				current.Add<NpcComponent>(npc);
+			}
+			else if (kind == "launcher" && current)
+			{
+				LauncherComponent launcher;
+				int arc = 1;
+				fields >> launcher.Shape >> launcher.Size.x >> launcher.Size.y >> launcher.Size.z >> launcher.Mass
+					>> launcher.Speed >> launcher.Spin >> launcher.AimHeight >> arc
+					>> launcher.Color.r >> launcher.Color.g >> launcher.Color.b >> launcher.Color.a;
+				launcher.Arc = arc != 0;
+				std::string target;
+				std::getline(fields, target);
+				size_t from = target.find_first_not_of(' ');
+				launcher.Target = from == std::string::npos ? "" : target.substr(from);
+				current.Add<LauncherComponent>(launcher);
 			}
 		}
 

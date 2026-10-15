@@ -131,6 +131,7 @@ public:
 		// (sin, cos) at its yaw -- half a turn apart, so the camera starts
 		// behind it.
 		c.Facing = transform->Rotation.y + 180.0f;
+		c.StartYaw = glm::radians(transform->Rotation.y);
 		c.Rig = std::move(rig);
 	}
 
@@ -161,6 +162,32 @@ public:
 			if (c.Entity == entity && c.Rig)
 				return true;
 		return false;
+	}
+
+	// Every humanoid on its feet again, where and as it started.
+	int ResetHumanoids()
+	{
+		int count = 0;
+		for (Character& c : m_Characters)
+			if (c.Rig)
+			{
+				c.Rig->Respawn(c.Home, c.StartYaw);
+				count++;
+			}
+		return count;
+	}
+
+	// Every fallen humanoid getting up where it lies.
+	int GetUpHumanoids()
+	{
+		int count = 0;
+		for (Character& c : m_Characters)
+			if (c.Rig && c.Rig->IsDown())
+			{
+				c.Rig->GetUp();
+				count++;
+			}
+		return count;
 	}
 
 	void Clear()
@@ -366,6 +393,7 @@ private:
 		float Walking = 0.0f;          // seconds spent on the current target
 		uint32_t Picks = 0;            // wander targets chosen so far: the random stream's position
 		std::shared_ptr<Humanoid> Rig; // Body = Humanoid: the active ragdoll it is
+		float StartYaw = 0.0f;         // radians, the rig's own convention: what Respawn takes
 	};
 
 	// A humanoid is told what to do, and does it with its own legs: the

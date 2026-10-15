@@ -255,6 +255,16 @@ public:
 		if (!IsActive())
 			return;
 
+		// The game's own console, over the game's view while it plays.
+		// g_Viewport is in GL's bottom-up pixels; ImGui counts from the top.
+		if (PlayMode::IsPlaying() && g_Viewport.Valid())
+		{
+			float displayHeight = ImGui::GetIO().DisplaySize.y;
+			PlayMode::s_Session->DrawOverlay((float)g_Viewport.X,
+				displayHeight - (float)(g_Viewport.Y + g_Viewport.Height),
+				(float)g_Viewport.Width, (float)g_Viewport.Height);
+		}
+
 		DrawGizmoDragTooltip();
 
 		// An entity Ctrl-selected earlier can be deleted from under the

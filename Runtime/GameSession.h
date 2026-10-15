@@ -16,6 +16,8 @@
 #include <glm/gtx/euler_angles.hpp>
 
 #include "CharacterController.h"
+#include "GameConsole.h"
+#include "Launcher.h"
 #include "SceneRenderer.h"
 #include "CompiledScriptRegistry.h"
 #include "ScriptEngine.h"
@@ -62,8 +64,20 @@ public:
 		std::vector<GS::EntityId> created;
 		if (m_Characters.CreatedCamera())
 			created.push_back(m_Characters.CameraEntity());
+		for (GS::EntityId projectile : m_Launchers.Projectiles())
+			created.push_back(projectile);
 		return created;
 	}
+
+	// The game console, drawn by the host over the game's view, in ImGui's
+	// screen coordinates. Called inside the host's ImGui frame.
+	void DrawOverlay(float x, float y, float width, float height)
+	{
+		if (m_Running)
+			m_Console.Draw(x, y, width, height);
+	}
+
+	GameConsole& Console() { return m_Console; }
 
 	// Builds every body, installs the physics backend, then prepares and
 	// starts every script. `dependencies`, when given, receives each
@@ -113,9 +127,22 @@ public:
 				else
 					halfExtents = transform->Scale * 0.5f;
 
-				body = (physics->Type == GS::BodyType::Dynamic)
-					? GS::RigidBody3D::MakeBox(transform->Position, halfExtents, physics->Mass)
-					: GS::RigidBody3D::MakeStaticBox(transform->Position, halfExtents);
+				// A sphere collides as a sphere -- it used to be its bounding
+				// box, which does not roll -- when it is scaled evenly enough
+				// for one radius to describe it.
+				auto* sphereMesh = m_Scene.GetComponent<GS::MeshComponent>(id);
+				glm::vec3 scale = transform->Scale;
+				bool sphere = sphereMesh && sphereMesh->SourcePath == "primitive:sphere"
+					&& std::max({ scale.x, scale.y, scale.z }) <= 1.05f * std::min({ scale.x, scale.y, scale.z });
+				float radius = 0.5f * std::max({ scale.x, scale.y, scale.z });
+				if (sphere)
+					body = physics->Type == GS::BodyType::Dynamic
+						? GS::RigidBody3D::MakeSphere(transform->Position, radius, physics->Mass)
+						: GS::RigidBody3D::MakeStaticSphere(transform->Position, radius);
+				else
+					body = (physics->Type == GS::BodyType::Dynamic)
+						? GS::RigidBody3D::MakeBox(transform->Position, halfExtents, physics->Mass)
+						: GS::RigidBody3D::MakeStaticBox(transform->Position, halfExtents);
 				if (physics->Type == GS::BodyType::Kinematic)
 					body.Type = GS::BodyType::Kinematic;
 
@@ -144,6 +171,11 @@ public:
 				m_Characters.Add(m_Scene, id, handle);
 		}
 		m_Characters.Start(m_Scene);
+
+		m_Launchers.Start(m_LauncherHost);
+		RegisterCommands();
+		m_Launchers.RegisterCommands(m_Console);
+		m_TimeScale = 1.0f;
 		GS::ScriptPhysics::SetBackend(&m_Backend);
 
 		for (GS::EntityId id : m_Scene.GetEntities())
@@ -230,6 +262,16 @@ public:
 		if (!m_Running)
 			return;
 
+		// What was typed since the last step, then the launcher -- on the
+		// step, so a shot leaves at a step boundary like everything else.
+		// Slow motion is a shorter simulated step for the same real one.
+		m_Console.RunQueued();
+		float real = dt;
+		dt *= m_TimeScale;
+		m_Launchers.Step(dt, real, !GS::ImGuiLayer::WantsKeyboard());
+		if (dt <= 0.0f)
+			return;   // paused
+
 		// A transform that no longer matches what the last tick wrote was
 		// moved by something else -- a script's setPosition -- so the body
 		// is teleported there rather than the copy-back undoing the move.
@@ -247,8 +289,27 @@ public:
 			body.SleepTimer = 0.0f;
 		}
 
-		m_Characters.BeforeStep(m_Scene, m_World, dt);
-		m_World.Step(dt);
+		// Split when something is fast. A step moves a body v dt, and once
+		// that is more than the two things meeting are thick the contact is
+		// found too late: measured, a 7 kg ball at 13.8 m/s (0.23 m a step)
+		// entered the dummy's 0.22 m chest, the contact normal flipped as its
+		// centre passed the middle, and it was pushed out through his back at
+		// 7 m/s, his body hardly moved. So nothing moves more than
+		// m_MaxTravel in one substep; the characters run on every substep as
+		// a whole tick of their own, which is what their dt already means.
+		float fastest = 0.0f;
+		for (const GS::RigidBody3D& body : m_World.GetBodies())
+			if (body.Type == GS::BodyType::Dynamic && body.Enabled && body.Awake)
+				fastest = std::max(fastest, glm::length(body.Velocity));
+		int substeps = std::clamp((int)std::ceil(fastest * dt / m_MaxTravel), 1, 8);
+		float sub = dt / (float)substeps;
+		for (int i = 0; i < substeps; i++)
+		{
+			m_Characters.BeforeStep(m_Scene, m_World, sub);
+			m_World.Step(sub);
+			if (i + 1 < substeps)
+				m_Characters.AfterStep(m_Scene, m_World);
+		}
 
 		for (auto& [id, handle] : m_Bodies)
 		{
@@ -309,6 +370,113 @@ public:
 	}
 
 private:
+	// The session's own commands; the launcher adds its own.
+	void RegisterCommands()
+	{
+		GameConsole& c = m_Console;
+		c.ClearText();
+		c.Register("help", "", "this list", [this](const GameConsole::Args&) { m_Console.PrintHelp(); });
+		c.Register("clear", "", "empty the terminal", [this](const GameConsole::Args&) { m_Console.ClearText(); });
+		c.Register("reset", "", "everyone back on their feet where they started, projectiles gone", [this](const GameConsole::Args&)
+		{
+			int swept = m_Launchers.Sweep();
+			int stood = m_Characters.ResetHumanoids();
+			m_Console.Good("reset: " + std::to_string(stood) + " stood up, " + std::to_string(swept) + " projectiles cleared");
+		});
+		c.Register("getup", "", "the fallen get up where they lie", [this](const GameConsole::Args&)
+		{
+			int n = m_Characters.GetUpHumanoids();
+			m_Console.Good(n ? std::to_string(n) + " getting up" : "nobody is down");
+		});
+		c.Register("sweep", "", "clear away the projectiles", [this](const GameConsole::Args&)
+		{
+			m_Console.Good(std::to_string(m_Launchers.Sweep()) + " projectiles cleared");
+		});
+		c.Register("slowmo", "<factor>", "1 is real time, 0.25 a quarter speed, 0 paused", [this](const GameConsole::Args& a)
+		{
+			float f;
+			if (a.empty() || !m_Console.Number(a[0], f)) { m_Console.Bad("slowmo 0.25"); return; }
+			m_TimeScale = std::clamp(f, 0.0f, 2.0f);
+			m_Console.Good(m_TimeScale == 0.0f ? "paused -- slowmo 1 to go on" : "time at " + std::to_string((int)std::lround(m_TimeScale * 100.0f)) + "%");
+		});
+		c.Register("pause", "", "stop time, or start it again", [this](const GameConsole::Args&)
+		{
+			if (m_TimeScale > 0.0f) { m_PausedFrom = m_TimeScale; m_TimeScale = 0.0f; m_Console.Good("paused"); }
+			else { m_TimeScale = m_PausedFrom > 0.0f ? m_PausedFrom : 1.0f; m_Console.Good("running"); }
+		});
+		c.Register("camera", "[name]", "look through another camera; no name lists them", [this](const GameConsole::Args& a)
+		{
+			auto& cameras = m_Scene.View<GS::CameraComponent>();
+			std::string want;
+			for (const std::string& w : a)
+				want += (want.empty() ? "" : " ") + w;
+			if (want.empty())
+			{
+				m_Console.Print("cameras", GameConsole::Tone::Title);
+				for (size_t i = 0; i < cameras.Size(); i++)
+				{
+					auto* tag = m_Scene.GetComponent<GS::TagComponent>(cameras.Owner(i));
+					m_Console.Print(std::string("  ") + (tag ? tag->Name : "?") + (cameras.Components()[i].Active ? "   (on)" : ""));
+				}
+				return;
+			}
+			int found = -1;
+			for (size_t i = 0; i < cameras.Size(); i++)
+			{
+				auto* tag = m_Scene.GetComponent<GS::TagComponent>(cameras.Owner(i));
+				if (tag && GameConsole::Lower(tag->Name) == GameConsole::Lower(want))
+					found = (int)i;
+			}
+			if (found < 0) { m_Console.Bad("no camera '" + want + "' -- camera lists them"); return; }
+			for (size_t i = 0; i < cameras.Size(); i++)
+				cameras.Components()[i].Active = (int)i == found;
+			m_Console.Good("camera: " + want);
+		});
+		c.Print("GS game terminal -- type help", GameConsole::Tone::Title);
+		if (m_Launchers.Active())
+			c.Print("a launcher is ready: F fires it; try  preset car, fire  or  slowmo 0.25", GameConsole::Tone::Dim);
+	}
+
+	// What the launcher needs of the session: the world, and bodies made
+	// and switched off mid-game. Registered like any body, so its entity's
+	// transform follows it and scripts can ask about it.
+	struct SessionLauncherHost : LauncherHost
+	{
+		GameSession& Session;
+		explicit SessionLauncherHost(GameSession& session) : Session(session) {}
+		GS::Scene& HostScene() override { return Session.m_Scene; }
+		GS::PhysicsWorld3D& HostWorld() override { return Session.m_World; }
+		GS::PhysicsWorld3D::BodyHandle AttachBody(GS::EntityId entity, const GS::RigidBody3D& body, int reuse) override
+		{
+			GS::PhysicsWorld3D::BodyHandle handle;
+			if (reuse >= 0)
+			{
+				handle = (GS::PhysicsWorld3D::BodyHandle)reuse;
+				Session.m_World.GetBody(handle) = body;
+				Session.m_World.GetBody(handle).Enabled = true;
+			}
+			else
+				handle = Session.m_World.AddBody(body);
+			Session.m_Bodies[entity] = handle;
+			Session.m_BodyOwners[handle] = entity;
+			Session.m_LastSynced[entity] = body.Position;
+			return handle;
+		}
+		void RetireBody(GS::EntityId entity) override
+		{
+			auto found = Session.m_Bodies.find(entity);
+			if (found == Session.m_Bodies.end())
+				return;
+			GS::RigidBody3D& body = Session.m_World.GetBody(found->second);
+			body.Enabled = false;
+			body.Velocity = glm::vec3(0.0f);
+			body.AngularVelocity = glm::vec3(0.0f);
+			Session.m_BodyOwners.erase(found->second);
+			Session.m_LastSynced.erase(entity);
+			Session.m_Bodies.erase(found);
+		}
+	};
+
 	// A static terrain plane collides as what it looks like: a heightfield
 	// sampled from the same displacement its mesh was built from, at the
 	// mesh's own vertices -- so the ground a character stands on is the
@@ -451,6 +619,12 @@ private:
 
 	PhysicsBackend m_Backend{ *this };
 	CharacterController m_Characters;
+	GameConsole m_Console;
+	LauncherSystem m_Launchers;
+	SessionLauncherHost m_LauncherHost{ *this };
+	float m_TimeScale = 1.0f;
+	float m_PausedFrom = 1.0f;
+	float m_MaxTravel = 0.08f;   // m a body may move in one physics substep
 };
 
 // Every humanoid in the scene as draw items: live bodies for those a running

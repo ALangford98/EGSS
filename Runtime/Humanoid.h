@@ -109,6 +109,44 @@ public:
 		}
 	}
 
+	// Standing again at `origin`, facing `yaw`, in the pose it was built
+	// in -- whatever state it was in, fallen or flying. Its own bodies are
+	// moved back rather than a new rig built (Spawn adds thirteen bodies
+	// and twelve joints every time; the world never removes any).
+	void Respawn(const glm::vec3& origin, float yaw)
+	{
+		UnpinFeet();
+		m_BraceTimer = 0.0f;
+		glm::quat turn = glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+		for (size_t i = 0; i < m_CharacterBodies.size() && i < m_BuildPose.size(); i++)
+		{
+			GS::RigidBody3D& body = m_World.GetBody(m_CharacterBodies[i]);
+			body.Type = GS::BodyType::Dynamic;
+			body.Position = origin + turn * m_BuildPose[i].first;
+			body.PreviousPosition = body.Position;
+			body.Orientation = glm::normalize(turn * m_BuildPose[i].second);
+			body.PreviousOrientation = body.Orientation;
+			body.Velocity = glm::vec3(0.0f);
+			body.AngularVelocity = glm::vec3(0.0f);
+			body.Awake = true;
+			body.SleepTimer = 0.0f;
+			body.UpdateInertiaWorld();
+		}
+		m_Facing = yaw;
+		m_StandHeight = m_World.GetBody(m_Pelvis).Position.y;
+		for (int side = 0; side < 2; side++)
+		{
+			m_Planted[side] = AnkleWorld(side);
+			m_SwingFrom[side] = m_Planted[side];
+			m_SwingTo[side] = m_Planted[side];
+			m_Swinging[side] = false;
+			m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation = m_ShoulderRest[side];
+			m_World.GetJoint(m_ElbowJoint[side]).MotorTargetAngle = 0.0f;
+		}
+		m_Mode = Mode::Ragdoll;   // so GoControlled does the whole hand-back
+		GoControlled();
+	}
+
 	const std::vector<GS::PhysicsWorld3D::BodyHandle>& Bodies() const { return m_CharacterBodies; }
 	GS::PhysicsWorld3D::BodyHandle PelvisBody() const { return m_Pelvis; }
 	GS::PhysicsWorld3D::BodyHandle HeadBody() const { return m_Head; }
@@ -636,6 +674,11 @@ public:
 		m_BodyMass = 0.0f;
 		for (unsigned int body : m_CharacterBodies)
 			m_BodyMass += m_World.GetBody(body).GetMass();
+
+		// The build pose, relative to the feet, for Respawn.
+		m_BuildPose.clear();
+		for (unsigned int body : m_CharacterBodies)
+			m_BuildPose.push_back({ m_World.GetBody(body).Position - origin, m_World.GetBody(body).Orientation });
 
 		m_StandHeight = m_World.GetBody(m_Pelvis).Position.y;
 		// How far the pelvis rides above whatever it stands on, taken from the
@@ -4085,6 +4128,7 @@ protected:
 	glm::vec2 m_StepJitter[2] = {};   // this step's landing offset: along, across
 	GS::PhysicsWorld3D::JointHandle m_NeckJoint = {};
 	glm::quat m_NeckRest = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	std::vector<std::pair<glm::vec3, glm::quat>> m_BuildPose;   // each body, relative to the feet
 	float m_LandTime = 0.18f;
 	float m_TuckFraction = 0.72f;     // how far the tucked leg reaches down
 	bool m_JumpPending = false;       // pressed, waiting for a foot to push off
