@@ -7,6 +7,131 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-15 (a walk that looks like walking)
+
+The owner: "the walking looks quite broken still". Looking first, then
+measuring. Frames came from a new `--capture-every N --capture-count K`
+sequence capture and a contact sheet; the measuring was a temporary
+harness of 14 scenarios (stand; walk straight, circle, zigzag;
+start/stop; run straight, zigzag; walk↔run; strafe; a step; stairs;
+walking and standing jumps; backwards).
+
+#### What was wrong, in numbers
+
+- **Planted feet skated.** The legs hang between a kinematic pelvis and
+  feet held only by motors, so the hips dragged them: 0.52 m/s of a
+  1.3 m/s walk, 3.25 of a 4 m/s run (the 2026-08-10 entry already
+  measured 0.64). Standing, the feet never touched the floor.
+- **The hips lurched.** The bob was 7 cm peak to peak with a cusp,
+  peaking at 12 m/s²; running peaked at 44; starts, stops and turns had
+  one-step jolts of 10–16, walk↔run 55, a step up 72, a jump 560.
+- **The cause of the skating is geometry, worked by hand.** A foot lands
+  0.30 m ahead and the hips travel 0.744 m over a 62% stance, so it ends
+  0.44 m behind. A hip 0.85 m up is then 0.96 m from it, on a 0.90 m
+  leg. People make that reach by rolling over their toes; this foot
+  stayed flat.
+
+#### The feet: driven, rolling, and what it took
+
+- **Driven.** While he's under control each foot is kinematic and goes
+  exactly where the gait puts it. The thighs and shins stay physical
+  between the driven hips and feet.
+- **Rolling.** In stance the foot pivots about its heel while the hips
+  are behind it, lies flat under them, and pivots about its toe once
+  they've passed. Each is only as far as keeps the hip within 97% of
+  the leg.
+- **The swing.** It's eased, toe-down at lift-off and toe-up at landing.
+
+Two driven ends holding a physical leg turned out to be the hard part.
+Each fix below was found by a measurement:
+
+| what broke | measured | fix |
+| --- | --- | --- |
+| knees bent backwards in turns | −118° on the hinge itself | a pole-vector leg solve: thigh and shin get whole orientations, the hinge square to the hip–foot–pole plane (the shortest-arc aim left thigh twist to chance) |
+| legs torn open | up to 1.15 m | the legs don't collide with each other while driven: a driven foot is immovable, and its path crossed the other leg (new `RigidBody3D::NoCollideGroup`) |
+| shins caught on stair risers | 48 cm gaps | thigh and shin pass through scenery while driven (new `IgnoreStatic`); they still hit moving things |
+| the ankle's cone fought the knee | 8–14 cm | the ankle's cone and motor are off while the foot is driven |
+| foot targets the leg couldn't reach | ankle opened 39 cm | targets held inside the hip's 45° cone and the leg's length |
+| legs one step stale | hips 2–3 cm open, = v·dt | solved against where the hip will be at the end of the step |
+| his own feet read as ground | kinematic bodies count | ground probes ignore all his bodies (a new multi-ignore overload) |
+
+**Things measured that didn't work:**
+- **Standing with soft knees.** `m_Crouch`'s comment already records
+  that near full extension the knee thrashes (12°/mm). The fix was
+  clamping only past full length.
+- **Keeping the foot inside the ankle cone.** It made the slip worse
+  and didn't help the stumble.
+- **Feeding the stand height's rate forward.** It spiked to 358 m/s² at
+  each riser.
+
+**Results, on the same gait, motor feet → driven feet:**
+
+| | slip | worst joint gap |
+| --- | --- | --- |
+| walk | 0.17 → 0.035 m/s | 1.0 → 2.5 cm |
+| run | 0.44 → 0.11 m/s | 2.4 → 3.1 cm |
+| zigzag | 0.59 → 0.16 m/s | 6.1 → 4.6 cm |
+| stairs | 0.47 → 0.09 m/s, and no trips (20 shin "hits" before) | 16 → 5 cm |
+
+Knees stay between 3° and 122° everywhere, never backwards.
+
+#### No jolts
+
+- **The bob** has its dip worked out allowing for the toe roll: 5.1 →
+  2.7 cm. It peaks at 3 m/s², against 3.2 predicted for a sine of that
+  size at 2.17 steps/s.
+- **The run** is the spring-mass model. In stance the hips dip a half
+  sine of depth B = v·Tₛ/π, in flight they're ballistic, and the speeds
+  match where they meet (v = g·T_f/2). That's 3 cm and 6.6 m/s² at
+  4 m/s; measured, 10 at the peak.
+- **Speed, the walk↔run blend and the stand height** follow critically
+  damped springs, not rate limits. A rate limit switches its
+  acceleration on and off within one step, and everything scaled by it
+  kinks. The hips are never pulled down faster than g.
+- **The jump** crouches (eased), pushes off at a constant a = g·h/d
+  (38 m/s², about 4 g), flies, and lands absorbing,
+  d(t) = v·t·e^(−t/τ), continuous from the landing speed. The feet reach
+  for the ground on the way down.
+- **Turning** slows the more there is to turn, and the turn rate falls
+  with speed. Turning at full speed, the hips ran a 0.33 m circle.
+
+| peak pelvis acceleration | before | after |
+| --- | --- | --- |
+| walk | 12 m/s² | 3 m/s² |
+| start/stop | 12 m/s² | 4 m/s² |
+| walk↔run | 55 m/s² | 16 m/s² |
+| a step | 72 m/s² | 9 m/s² |
+| stairs | – | 17 m/s² (the drop off the top) |
+| standing jump | 560 m/s² | 46 m/s² (the landing's 2v/τ by design) |
+
+The harness's first pelvis figures (19 and 47 m/s²) were its own bug: it
+seeded its history at spawn, and one sample divided a 2 m jump by dt².
+
+**The run itself:**
+- The swing lifts 32 cm, peaking early, with a heel kick (it was 6 cm,
+  a lunge).
+- He lands 0.20 m ahead and lifts off 0.46 m behind.
+- Ground contact is 30% of the cycle.
+- The torso leans 12°.
+
+Twice I read the run's direction backwards from a side view. The
+torso-lean measurement settled it.
+
+#### The stumble, kept working
+
+- **A leg scraping fixed scenery isn't a hit.** On stairs it put him into
+  a stumble every time.
+- **Speed regulation while walking on.** In a walking stumble the ankles
+  now regulate *speed*: pressing at p = x − a·h/g asks the pendulum for
+  acceleration a, pulling towards the walk's velocity. With the new feet
+  a 20 Ns bump at a walk otherwise ran away to 3.5 m/s and toppled him.
+- **Walking shoves:** 20 Ns 16/16, 40 Ns 13/16, 60 Ns 12/16 (yesterday
+  16, 14 and about 8).
+- **Standing shoves are unchanged,** except a shove from the left at
+  80 Ns, now 0/4 (the motor feet give the same); see the roadmap.
+
+The Ragdoll demo has a **Driven feet** checkbox to compare by eye.
+
 ### 2026-10-14 (walking on through a stumble, bracing, and a figure built in the air)
 
 Finishing the Humanoid list from the entry below.

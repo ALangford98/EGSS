@@ -164,7 +164,12 @@ lost to that before the in-engine path existed. Now:
 ```sh
 ./TestEnv --demo Physics --capture shots/a.png --capture-frame 240
 ./TestEnv --demo Physics --lockstep --hide-ui --capture shots/a.png --capture-step 240
+./TestEnv --demo Ragdoll --lockstep --hide-ui --capture shots/w.png --capture-step 240 \
+    --capture-every 3 --capture-count 18     # w_000.png ... w_017.png: watch it move
 ```
+
+For motion, `--capture-every`/`--capture-count` write a numbered sequence;
+`montage` (ImageMagick) makes a contact sheet of it.
 
 **A capture or a replay opens no window.** `--capture` and `--play` mean nobody
 is watching, and a window that maps takes the keyboard off whatever the machine

@@ -96,26 +96,35 @@ catching yourself, falling realistically. Where it stands:
   - **Check any change** with a recorded session and a per-step body dump.
     `docs/CHANGELOG.md` 2026-10-14 says how. Images won't do: the demo isn't
     reproducible at 4× MSAA.
-- **Working (2026-10-14):**
+- **Working (2026-10-15):**
+  - **the walk and run:**
+    - driven feet that roll heel to toe;
+    - pole-vector legs;
+    - a spring-mass run;
+    - no jolts on starting, stopping, turning, steps, stairs or jumps.
+
+    Measured over 14 scenarios, see the changelog for 2026-10-15. Hips
+    and feet are driven; the thighs, shins, torso and arms are physical;
   - standing balance with the ankle strategy;
-  - **the stumble.** Hit while standing or walking, he catches it with
-    the ankles or real steps (and walks on, if walking), or goes down. It
-    holds 80–100 Ns standing; walking, 20 Ns always and 40 Ns 14/16;
-  - **bracing.** A lost stumble goes down with the hands out, and the head
-    lands at about 2 m/s instead of 5;
-  - the walk and run (kinematic root, physical limbs); hits while running
-    use the kinematic stagger;
-  - jumping, ragdoll mode, and get-up (only from the ground);
-  - built anywhere, he is his own height (built in the air, he falls).
+  - **the stumble.** Hit while standing or walking, he catches it with the
+    ankles or real steps (walking on, if walking), or goes down. It holds
+    80–100 Ns standing; walking, 20 Ns 16/16, 40 Ns 13/16, 60 Ns 12/16;
+  - **bracing.** A lost stumble goes down hands first;
+  - jumping (crouch, push, flight, absorbing landing), ragdoll, get-up
+    from the ground.
 - **Open:**
-  1. **Running hits, physically.** The capture point runs 1.3 m ahead at
-     4 m/s; the walking rule (land *b* short) might extend to it with
-     shorter, quicker steps.
-  2. **Loads from above.** The virtual leg carries 2 body weights, so a
-     40 kg crate resting on him is held. How much should buckle him is a
-     tuning choice.
-  3. **Harder walking hits** (60–80 Ns): about half topple. The step reach
-     (0.6 m) is the likely limit; worth measuring before tuning.
+  1. **Running hits, physically.** They still use the kinematic stagger.
+  2. **The steepest slope he walks up** since the hips' climb became a
+     spring (the old cap gave 42° walking). Not measured; needs a
+     heightfield ramp.
+  3. **A standing shove from the left at 80 Ns** catches 0/4, against
+     4/4 from the right. It's at the limit, and was 2–4/4 on 2026-10-14;
+     worth a look for an asymmetry.
+  4. **Loads from above.** A tuning choice: how much should buckle him.
+  5. **Joint gaps of 2.5–5 cm** between the driven ends while moving
+     (1 cm with motor feet). It's the price of keeping thigh and shin
+     physical. Stiffer leg motors or more solver iterations might close
+     it.
 
 ## Wishlist, easiest to hardest
 

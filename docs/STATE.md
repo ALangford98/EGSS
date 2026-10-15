@@ -37,6 +37,11 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-15 — The humanoid moves fluidly**: driven feet rolling heel to
+  toe (planted feet no longer skate), pole-vector legs (no backwards
+  knees), springs instead of rate limits (no jolts), a spring-mass run,
+  a phased jump; stairs and steps work. Plus `--capture-every` and
+  physics collision groups / `IgnoreStatic`.
 - **2026-10-14 — Walking on through a stumble; bracing**: hits mid-walk are
   physical and he walks on (capture-point step offset b = L/(e^(T/τ)−1));
   lost stumbles brace (the head lands at 2 m/s, not 5); no get-up in
