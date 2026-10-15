@@ -78,6 +78,8 @@ public:
 		RegisterParam("Step time", &m_StumbleStepTime);
 		RegisterParam("Leg strength", &m_StumbleMaxSupport);
 		RegisterParam("Physical below", &m_StumbleEntrySpeed);
+		RegisterParam("Variation", &m_Variation);
+		RegisterParam("Seed", &m_DemoSeed);
 
 		BuildScene();
 	}
@@ -106,6 +108,7 @@ public:
 
 		BuildGround();
 		BuildRagdoll(SpawnPoint());
+		SetSeed((uint32_t)m_DemoSeed);
 		m_CameraFocus = m_World.GetBody(m_Torso).Position;
 	}
 
@@ -583,6 +586,14 @@ public:
 		// heel to toe, and the legs between stay physical.
 		if (ImGui::Checkbox("Driven feet", &m_DriveFeet) && !m_DriveFeet)
 			UnpinFeet();
+
+		// TRY: R with different seeds -- each is a different walker: speed,
+		// stride, arm swing, posture. Stand still to see the breathing, the
+		// weight shifting between the feet and the glances. 0 is the design.
+		if (ImGui::SliderFloat("Variation", &m_Variation, 0.0f, 2.0f))
+			ApplyVariation();
+		if (ImGui::SliderInt("Seed (0: none)", &m_DemoSeed, 0, 50))
+			SetSeed((uint32_t)m_DemoSeed);
 		ImGui::SliderFloat("Walk speed", &m_WalkSpeed, 0.0f, 4.0f);
 		ImGui::SliderFloat("Run speed", &m_RunSpeed, 1.0f, 8.0f);
 		ImGui::SliderFloat("Jump height (m)", &m_JumpHeight, 0.1f, 1.5f);
@@ -630,6 +641,7 @@ protected:
 	bool m_Paused = false;
 	float m_PushStrength = 120.0f;
 	float m_DropHeight = 0.0f;
+	int m_DemoSeed = 1;
 	float m_PendingPush = 0.0f;
 	float m_CameraSpeed = 3.0f;
 

@@ -121,7 +121,9 @@ public:
 		if (!transform)
 			return;
 		auto rig = std::make_unique<Humanoid>(world);
-		rig->Spawn(transform->Position, glm::radians(transform->Rotation.y));
+		// Seeded by the entity, so every humanoid in a scene walks a little
+		// differently, and the same one the same way every time it is played.
+		rig->Spawn(transform->Position, glm::radians(transform->Rotation.y), (uint32_t)entity * 2654435761u + 1u);
 		Add(scene, entity, rig->PelvisBody());
 		Character& c = m_Characters.back();
 		c.Kind = HumanoidBody;

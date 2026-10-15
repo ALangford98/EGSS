@@ -88,9 +88,10 @@ public:
 	// every joint's frame is in its bodies' own spaces, so a rigid turn
 	// changes nothing between them -- and the controller re-anchored
 	// where it now stands.
-	void Spawn(const glm::vec3& origin, float yaw)
+	void Spawn(const glm::vec3& origin, float yaw, uint32_t seed = 1)
 	{
 		BuildRagdoll(origin);
+		SetSeed(seed);
 		if (std::abs(yaw) > 1e-6f)
 		{
 			glm::quat turn = glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -128,6 +129,7 @@ public:
 	// is falling. Call before the world steps.
 	void Update(float dt)
 	{
+		m_Clock += dt;
 		m_Balance = ComputeBalance();
 
 		if (m_Mode == Mode::Controlled)
@@ -181,6 +183,133 @@ public:
 			ApplyBalance(m_Balance);
 		}
 
+	}
+
+
+	// ---------------------------------------------------------------------
+	// Natural variation
+	// ---------------------------------------------------------------------
+	//
+	// Two figures built from the same numbers walk in lockstep, and one
+	// standing still is a statue. People differ from each other, and no one
+	// does the same thing twice. Both kinds are here:
+	//
+	//   * per figure, from its seed: walking speed, stride, stance width,
+	//     arm swing, posture, bob and sway each a few percent off the
+	//     design -- the character of the walk;
+	//   * per moment, from the seed and the clock: each step lands a little
+	//     differently, the stride breathes, and standing still he breathes,
+	//     shifts his weight between his feet and glances about.
+	//
+	// All of it is a function of the seed and the fixed-step clock -- a
+	// hash, never a random-number generator with state of its own -- so a
+	// recording replays exactly and a figure is the same figure every run.
+	// m_Variation scales it all; 0 is the design itself.
+
+	// A seed of 0 is no variation at all; the default is 1.
+	void SetSeed(uint32_t seed)
+	{
+		m_Seed = seed;
+		if (!m_DesignStored)
+		{
+			m_Design = { m_WalkSpeed, m_RunSpeed, m_StrideLength, m_StanceWidth, m_ArmSwing,
+				m_ElbowBend, m_LeanAmount, m_BobAmount, m_SwayAmount, m_TurnRate, m_RunFootLift };
+			m_DesignStored = true;
+		}
+		ApplyVariation();
+	}
+
+	void ApplyVariation()
+	{
+		float amount = m_Seed == 0 ? 0.0f : m_Variation;
+		auto vary = [&](int channel, float spread) { return 1.0f + amount * spread * Signed(m_Seed, (uint32_t)channel); };
+		const Design& d = m_Design;
+		m_WalkSpeed = d.WalkSpeed * vary(1, 0.08f);
+		m_RunSpeed = d.RunSpeed * vary(2, 0.06f);
+		m_StrideLength = d.StrideLength * vary(3, 0.06f);
+		m_StanceWidth = d.StanceWidth * vary(4, 0.15f);
+		m_ArmSwing = d.ArmSwing * vary(5, 0.25f);
+		m_ElbowBend = d.ElbowBend * vary(6, 0.20f);
+		m_LeanAmount = d.LeanAmount * vary(7, 0.30f);
+		m_BobAmount = d.BobAmount * vary(8, 0.40f);
+		m_SwayAmount = d.SwayAmount * vary(9, 0.30f);
+		m_TurnRate = d.TurnRate * vary(10, 0.10f);
+		m_RunFootLift = d.RunFootLift * vary(11, 0.12f);
+		// A posture: some stand a little forward, some a little back.
+		m_Posture = amount * 0.035f * Signed(m_Seed, 12u);
+		// Breathing between 3.5 and 5 seconds a breath.
+		m_BreathPeriod = 4.2f * (1.0f + amount * 0.18f * Signed(m_Seed, 13u));
+	}
+
+	// A hash of two numbers to [0, 1): the same pair, the same answer.
+	static float Hash01(uint32_t a, uint32_t b)
+	{
+		uint32_t h = a * 0x9E3779B1u ^ (b + 0x7F4A7C15u) * 0x85EBCA77u;
+		h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
+		return (h >> 8) * (1.0f / 16777216.0f);
+	}
+	static float Signed(uint32_t a, uint32_t b) { return 2.0f * Hash01(a, b) - 1.0f; }
+
+	// Smooth noise in [-1, 1] over time: a hashed value at each whole t,
+	// eased between. Channel picks an independent stream.
+	float Noise(float t, uint32_t channel) const
+	{
+		float whole = std::floor(t);
+		int32_t i = (int32_t)whole;
+		float f = t - whole;
+		float u = f * f * (3.0f - 2.0f * f);
+		float a = Signed(m_Seed * 977u + channel, (uint32_t)i);
+		float b = Signed(m_Seed * 977u + channel, (uint32_t)(i + 1));
+		return a + (b - a) * u;
+	}
+
+	float VariationAmount() const { return m_Seed == 0 ? 0.0f : m_Variation; }
+
+	// Standing: a breath in the chest, the weight drifting from one foot to
+	// the other, the head glancing about. Faded out as he walks -- except
+	// the glances, which stay, smaller. Returns the hips' sideways drift.
+	float Idle(float dt, float stride, const glm::vec3& right)
+	{
+		float amount = VariationAmount();
+		m_IdleWeight += ((1.0f - stride) - m_IdleWeight) * (1.0f - std::exp(-dt / 0.6f));
+		float idle = m_IdleWeight * amount;
+
+		// Breath: a degree or so of the chest rising and falling.
+		m_Breath = idle * 0.018f * std::sin(glm::two_pi<float>() * m_Clock / std::max(m_BreathPeriod, 1.0f));
+
+		// The head: holds a direction, then turns to a new one, every 2-5 s,
+		// easing over about a third of a second -- glances, not a wobble.
+		if (m_Clock >= m_NextGlance)
+		{
+			uint32_t n = m_GlanceCount++;
+			m_GlanceYaw = 0.45f * Signed(m_Seed * 31u + 7u, n);
+			m_GlancePitch = 0.12f * Signed(m_Seed * 31u + 8u, n) - 0.04f;
+			// A tilt goes with a glance; on a head with no face it is most of
+			// what shows of one.
+			m_GlanceTilt = 0.12f * Signed(m_Seed * 31u + 10u, n);
+			m_NextGlance = m_Clock + 2.0f + 3.0f * Hash01(m_Seed * 31u + 9u, n);
+		}
+		float reach = glm::mix(0.35f, 1.0f, m_IdleWeight) * amount;
+		float ease = 1.0f - std::exp(-dt / 0.3f);
+		m_HeadYaw += (m_GlanceYaw * reach - m_HeadYaw) * ease;
+		m_HeadPitch += (m_GlancePitch * reach - m_HeadPitch) * ease;
+		m_HeadTilt += (m_GlanceTilt * reach - m_HeadTilt) * ease;
+		m_World.GetJoint(m_NeckJoint).MotorTargetRotation = glm::normalize(
+			glm::angleAxis(m_HeadYaw, glm::vec3(0.0f, 1.0f, 0.0f))
+			* glm::angleAxis(m_HeadPitch, glm::vec3(1.0f, 0.0f, 0.0f))
+			* glm::angleAxis(m_HeadTilt, glm::vec3(0.0f, 0.0f, 1.0f)) * m_NeckRest);
+
+		// The weight shift: a slow drift of the hips over one foot and
+		// back, a few centimetres, on a 6-10 s swell. The drift alone barely
+		// shows; what the eye reads is the hip dropping on the unloaded side
+		// and the shoulders tilting back against it, so those go with it.
+		float shift = Noise(m_Clock / 7.0f, 21u);
+		m_IdleRoll = idle * 0.08f * shift;
+
+		// And the arms are never quite still.
+		for (int side = 0; side < 2; side++)
+			m_IdleArm[side] = idle * 0.08f * Noise(m_Clock / 3.1f, 51u + (uint32_t)side);
+		return idle * 0.035f * shift;
 	}
 
 	// A shove at the torso, as the demo's X key and a hit in a game: the
@@ -352,7 +481,8 @@ public:
 		m_SpineJoint = ball(m_Pelvis, m_Torso, { 0.0f, 1.18f, 0.0f },
 			{ 0.0f, 1.0f, 0.0f }, 25.0f, 35.0f, 260.0f);
 		m_SpineRest = m_World.GetJoint(m_SpineJoint).MotorTargetRotation;
-		ball(m_Torso, m_Head, { 0.0f, 1.62f, 0.0f }, { 0.0f, 1.0f, 0.0f }, 40.0f, 60.0f, 30.0f);
+		m_NeckJoint = ball(m_Torso, m_Head, { 0.0f, 1.62f, 0.0f }, { 0.0f, 1.0f, 0.0f }, 40.0f, 60.0f, 30.0f);
+		m_NeckRest = m_World.GetJoint(m_NeckJoint).MotorTargetRotation;
 
 		for (int side = 0; side < 2; side++)
 		{
@@ -2566,7 +2696,8 @@ public:
 		crouch += m_RecoverCrouch * glm::clamp(
 			glm::length(m_StaggerVelocity) / std::max(CatchableSpeed(), 0.01f), 0.0f, 1.0f);
 
-		glm::vec3 target = m_RootAnchor + sway;
+		glm::vec3 drift = right * Idle(dt, stride, right);
+		glm::vec3 target = m_RootAnchor + sway + drift;
 		target.y = m_StandHeight + bob + m_JumpOffset - crouch;
 
 		// The anchor is where the character would be with no gait on top; the
@@ -2597,7 +2728,7 @@ public:
 		float lean = (m_Speed / std::max(m_WalkSpeed, 0.01f)) * m_LeanAmount
 			+ std::atan(m_LeanAccel / 9.81f) * m_LeanFromAccel;
 
-		lean = glm::clamp(lean, -m_LeanBack, m_LeanForward);
+		lean = glm::clamp(lean + m_Posture, -m_LeanBack, m_LeanForward);
 
 		// **Positive tips the top of the body towards +z, which is the way the
 		// figure faces.** This was negated, so he leaned *backwards* the whole
@@ -2610,7 +2741,7 @@ public:
 		// about +z tips the top of the body towards -x, which is the same side
 		// the hips have just moved away from -- the trunk leans over the leg
 		// that is carrying.
-		glm::quat roll = glm::angleAxis(-m_RollAmount * m_Carry * stride,
+		glm::quat roll = glm::angleAxis(-m_RollAmount * m_Carry * stride - m_IdleRoll,
 			glm::vec3(0.0f, 0.0f, 1.0f));
 
 		pelvis.Orientation = glm::normalize(facing * pitch * roll);
@@ -2622,8 +2753,11 @@ public:
 		// N.m to carry it rigidly -- so leaning the pelvis alone moved the
 		// whole figure as one piece, which is not what a person does. The cone
 		// limit here is 25 deg, so the share has to stay well inside that.
+		// The breath lifts the chest: the spine eases back a touch on the
+		// in-breath.
 		m_World.GetJoint(m_SpineJoint).MotorTargetRotation = glm::normalize(
-			glm::angleAxis(lean * (1.0f - m_LeanPelvisShare), glm::vec3(1.0f, 0.0f, 0.0f))
+			glm::angleAxis(lean * (1.0f - m_LeanPelvisShare) - m_Breath, glm::vec3(1.0f, 0.0f, 0.0f))
+			* glm::angleAxis(0.7f * m_IdleRoll, glm::vec3(0.0f, 0.0f, 1.0f))
 			* m_SpineRest);
 
 		PlaceFeet(dt, forward, right, stride);
@@ -2643,11 +2777,13 @@ public:
 			float phase = m_GaitPhase + (side == 0 ? 0.0f : glm::pi<float>())
 				+ glm::pi<float>();
 
-			float swing = m_ArmSwing * (1.0f + m_RunBlend) * std::sin(phase) * stride;
+			// Each arm's swing wanders a little, and differently.
+			float wander = 1.0f + 0.12f * VariationAmount() * Noise(m_Clock / 1.7f, 41u + (uint32_t)side);
+			float swing = m_ArmSwing * wander * (1.0f + m_RunBlend) * std::sin(phase) * stride;
 
 			// About the shoulder's pitch axis, in the torso's frame, on top of
 			// the pose the rig was built in.
-			glm::quat turn = glm::angleAxis(swing, glm::vec3(1.0f, 0.0f, 0.0f));
+			glm::quat turn = glm::angleAxis(swing + m_IdleArm[side], glm::vec3(1.0f, 0.0f, 0.0f));
 			m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation =
 				glm::normalize(turn * m_ShoulderRest[side]);
 
@@ -2925,9 +3061,9 @@ public:
 			// down to 0.45 m to keep it reachable: 0.22 m steps at seven a
 			// second. A person walks at two.
 			glm::vec3 landing = m_RootAnchor
-				+ forward * FootReach(stride)
+				+ forward * (FootReach(stride) + m_StepJitter[side].x * stride)
 				+ m_StaggerVelocity * m_StaggerStep
-				+ right * (side == 0 ? -m_StanceWidth : m_StanceWidth);
+				+ right * ((side == 0 ? -m_StanceWidth : m_StanceWidth) + m_StepJitter[side].y);
 			// The ankle rides above the sole, so a target on the ground is a
 			// target with the foot buried in it.
 			landing.y = m_World.GroundHeightBelow(landing + glm::vec3(0.0f, 1.0f, 0.0f), m_CharacterBodies) + m_AnkleHeight;
@@ -2959,6 +3095,12 @@ public:
 
 			if (swinging && !m_Swinging[side])
 			{
+				// No two steps land alike: a few centimetres along and across,
+				// chosen as the foot lifts and held for the swing.
+				uint32_t n = m_StepCount[side]++;
+				float amount = VariationAmount();
+				m_StepJitter[side] = amount * glm::vec2(0.035f * Signed(m_Seed * 53u + (uint32_t)side, n),
+					0.015f * Signed(m_Seed * 59u + (uint32_t)side, n));
 				// Just left the ground: remember where from, and where to.
 				m_SwingFrom[side] = m_Planted[side];
 				m_SwingTo[side] = landing;
@@ -3077,7 +3219,10 @@ public:
 	// per cycle that a walk does, and most of the extra is flight, not reach.
 	float CurrentStride() const
 	{
-		return glm::mix(m_StrideLength, m_RunStride, m_RunBlend);
+		// The stride breathes a few percent, slowly, so the cadence is never
+		// a metronome.
+		float breathe = 1.0f + 0.03f * VariationAmount() * Noise(m_Clock / 2.5f, 31u);
+		return glm::mix(m_StrideLength, m_RunStride, m_RunBlend) * breathe;
 	}
 
 	// How far ahead of the body a foot lands. Capped, and the cap is the point:
@@ -3914,6 +4059,32 @@ protected:
 	float m_LandSpeed = 0.0f;         // m/s the hips landed at, absorbing
 	float m_LandClock = 0.0f;
 	float m_LandAbsorb = 0.12f;       // s: tau of the landing's give
+
+	// Variation (see SetSeed).
+	struct Design
+	{
+		float WalkSpeed = 0, RunSpeed = 0, StrideLength = 0, StanceWidth = 0, ArmSwing = 0,
+			ElbowBend = 0, LeanAmount = 0, BobAmount = 0, SwayAmount = 0, TurnRate = 0, RunFootLift = 0;
+	};
+	Design m_Design;
+	bool m_DesignStored = false;
+	uint32_t m_Seed = 1;
+	float m_Variation = 1.0f;         // 0 is the design exactly
+	float m_Clock = 0.0f;
+	float m_Posture = 0.0f;           // radians of standing lean, + forward
+	float m_BreathPeriod = 4.2f;
+	float m_Breath = 0.0f;
+	float m_IdleWeight = 1.0f;
+	float m_NextGlance = 1.0f;
+	uint32_t m_GlanceCount = 0;
+	float m_GlanceYaw = 0.0f, m_GlancePitch = 0.0f, m_GlanceTilt = 0.0f;
+	float m_HeadYaw = 0.0f, m_HeadPitch = 0.0f, m_HeadTilt = 0.0f;
+	float m_IdleRoll = 0.0f;           // radians the hips tilt with the weight shift
+	float m_IdleArm[2] = { 0.0f, 0.0f };
+	uint32_t m_StepCount[2] = { 0, 0 };
+	glm::vec2 m_StepJitter[2] = {};   // this step's landing offset: along, across
+	GS::PhysicsWorld3D::JointHandle m_NeckJoint = {};
+	glm::quat m_NeckRest = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 	float m_LandTime = 0.18f;
 	float m_TuckFraction = 0.72f;     // how far the tucked leg reaches down
 	bool m_JumpPending = false;       // pressed, waiting for a foot to push off
