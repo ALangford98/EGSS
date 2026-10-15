@@ -186,6 +186,21 @@ namespace GS {
 		// one pair. A mask system would be a component with no system -- see
 		// the note in CLAUDE.md -- until something needs more than a pair.
 		int IgnoreCollisionWith = -1;
+
+		// Bodies sharing a non-zero group never collide. What needed more
+		// than a pair: a humanoid's legs while its feet are driven. A driven
+		// foot is kinematic -- immovable to whatever it touches -- and in a
+		// sharp turn one foot's path crossed the other leg and shoved its
+		// shin aside however hard the joints pulled back, tearing the knee
+		// and ankle open by up to 45 cm.
+		int NoCollideGroup = 0;
+
+		// Passes through static and kinematic bodies, still hits dynamic ones.
+		// For a body whose path is already planned around the scenery: a
+		// humanoid's thigh and shin while both ends of the leg are driven.
+		// A shin catching a stair riser there could only fight the joints,
+		// and tore the leg open by up to 48 cm on a flight of stairs.
+		bool IgnoreStatic = false;
 		float SleepTimer = 0.0f;
 
 		void SetMass(float mass) { InverseMass = mass > 0.0f ? 1.0f / mass : 0.0f; }

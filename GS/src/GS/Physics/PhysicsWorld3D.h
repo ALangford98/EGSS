@@ -362,6 +362,14 @@ namespace GS {
 		bool GroundBelow(const glm::vec3& point, float& outHeight, glm::vec3& outNormal,
 			BodyHandle ignore = InvalidHandle, float floor = 0.0f) const;
 
+		// Ignoring several bodies: a jointed figure asking about the ground
+		// under itself, whose own kinematic parts -- a planted foot, a driven
+		// pelvis -- would otherwise read as something to stand on.
+		bool GroundBelow(const glm::vec3& point, float& outHeight, glm::vec3& outNormal,
+			const std::vector<BodyHandle>& ignore, float floor = 0.0f) const;
+		float GroundHeightBelow(const glm::vec3& point,
+			const std::vector<BodyHandle>& ignore, float floor = 0.0f) const;
+
 		// The worst anchor separation across every joint, in world units. The
 		// number to watch: sequential impulses do not solve a chain exactly,
 		// and this says by how much they are missing.

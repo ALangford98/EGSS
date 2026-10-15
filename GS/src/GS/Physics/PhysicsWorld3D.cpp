@@ -1703,6 +1703,10 @@ namespace GS {
 		// a tool held inside a walking character.
 		if (a.IgnoreCollisionWith == (int)j || b.IgnoreCollisionWith == (int)i)
 			return;
+		if (a.NoCollideGroup != 0 && a.NoCollideGroup == b.NoCollideGroup)
+			return;
+		if ((a.IgnoreStatic && b.Type != BodyType::Dynamic) || (b.IgnoreStatic && a.Type != BodyType::Dynamic))
+			return;
 
 		Contact3D contact;
 		if (!Collide(i, a, j, b, contact))
@@ -1859,13 +1863,27 @@ namespace GS {
 	bool PhysicsWorld3D::GroundBelow(const glm::vec3& point,
 		float& outHeight, glm::vec3& outNormal, BodyHandle ignore, float floor) const
 	{
+		return GroundBelow(point, outHeight, outNormal, std::vector<BodyHandle>{ ignore }, floor);
+	}
+
+	float PhysicsWorld3D::GroundHeightBelow(const glm::vec3& point,
+		const std::vector<BodyHandle>& ignore, float floor) const
+	{
+		float height = floor;
+		glm::vec3 normal(0.0f, 1.0f, 0.0f);
+		return GroundBelow(point, height, normal, ignore, floor) ? height : floor;
+	}
+
+	bool PhysicsWorld3D::GroundBelow(const glm::vec3& point,
+		float& outHeight, glm::vec3& outNormal, const std::vector<BodyHandle>& ignore, float floor) const
+	{
 		float best = floor;
 		glm::vec3 bestNormal(0.0f, 1.0f, 0.0f);
 		bool found = false;
 
 		for (unsigned int i = 0; i < m_Bodies.size(); i++)
 		{
-			if (i == ignore)
+			if (std::find(ignore.begin(), ignore.end(), i) != ignore.end())
 				continue;
 
 			const RigidBody3D& body = m_Bodies[i];
