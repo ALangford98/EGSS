@@ -7,6 +7,152 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-16 (the crash test hall: walk up and use things, a cannon HUD, game UI, a renderer worth showing)
+
+The owner asked for:
+- a camera to fly about;
+- an on-screen prompt to take control of the ragdoll and walk it;
+- the terminal as a physical computer on the cannon;
+- a cannon HUD with a crosshair, a trajectory line, a list of objects and
+  sliders;
+- high-fidelity models, lighting and a nicer room;
+- tools to build in-game UIs.
+
+Their choices: procedural models; a UI kit with `.gsui` layout files (the
+visual editor is a roadmap stretch goal); the renderer opt-in per scene.
+Spec: `docs/superpowers/specs/2026-10-15-crash-test-hall-design.md`.
+
+**Game UI kit** (`Runtime/GameUI.h`).
+- **Screens are JSON** (`ui/<name>.gsui` in the project, or built in).
+- **Widgets:** panel, label, button, slider (linear or log), list,
+  crosshair, prompt and bar.
+- **Layout:** nine anchors plus stretch, stacks, and points on a
+  1080-line screen scaled to the real one.
+- **The load-bearing idea:** UI never changes the game. A button or slider
+  *submits a game-console command*; what a widget shows is a named value
+  the game publishes (`{launcher.speed}`). The terminal, the HUD and a
+  script all change the game with the same words, on the fixed step.
+- **Two places to draw:**
+  - over the view (ImGui's foreground list);
+  - into a texture shown on a mesh (`ScreenComponent`). This uses
+    `ImGuiLayer::RenderDrawList`, which is ImGui's own renderer pointed at
+    a framebuffer, so the text and look are the same as on screen.
+- **Scripts get a `ui` global**: `show`, `hide`, `set`, `get` and
+  `command`.
+  - Through `GS::ScriptUI`, as physics goes through `ScriptPhysics`.
+  - In both the interpreter and the transpiler. The transpiled C++ was
+    syntax-checked against the engine.
+  - **Checked in GSPlayer:** a script showed its own screen, counted 60
+    steps, sent `preset car`, and read the launcher's preset back as
+    "car".
+
+**Modes** (`Runtime/GameModes.h`).
+- **Fly:** a `FlyCameraComponent` camera. WASD, Space/Ctrl, Shift, and the
+  right mouse button held to look. It runs on the fixed step, so it
+  replays.
+- **Interact:** walk up to anything with an `InteractableComponent` and
+  look at it (within its range and 30°); "[E] Take control" appears over
+  it. E runs its action, which is a console command, so a scene file says
+  what E does.
+- **Possess:** `CharacterController::Possess` makes an NPC the player.
+  - The camera keeps the direction it was looking.
+  - The follow camera pulls in when anything is behind the character. It
+    probes with five rays, because a single ray cleared the crates by
+    5 cm while they filled the view.
+- **Terminal:** the console drawn on the computer's screen in the world.
+  The camera eases up to it and the keyboard is the terminal's; Esc steps
+  back.
+- **Cannon:** the cursor is the aim.
+  - The cursor's ray meets the world (`PhysicsWorld3D::Raycast`, new,
+    against real collider shapes), and the barrel solves the projectile
+    equation to land on that spot.
+  - A dotted trajectory and an impact ring are drawn.
+  - The HUD has the object list (scroll wheel), sliders for size, mass,
+    speed and spin, fire/auto/arc buttons, and momentum and energy.
+
+**Procedural models** (`GS/Procedural/ModelBuilder`, `Prefabs`).
+- **Operations:** rounded boxes, lathe, tubes swept by parallel
+  transport, star-shaped extrusions, and the quartered discs of a
+  calibration target.
+- **Built-in models**, reached as `model:<name>` meshes:
+  - the crash-test dummy, one part per ragdoll body sized from its
+    collider (`NpcComponent::Look = 1`);
+  - the cannon in three moving parts, with its computer;
+  - crates, barriers, the impact wall, lamps, trusses, wall bays, columns,
+    the floor joints, the lane and the roof.
+- **Materials:** each submesh names a surface (colour, roughness, metal,
+  glow).
+
+**The full renderer, opt-in** (`EnvironmentComponent`).
+- **A sun with a shadow map:** 2048², following the camera and snapped
+  to whole texels, with 3×3 PCF, slope bias and a 2.5-texel normal
+  offset.
+- **Shading:** a sky gradient and sun disc; GGX, Smith and Schlick over
+  Lambert; a hemisphere ambient with sky reflections; height fog; ACES
+  tone mapping.
+- **A glowing surface is its own light.** A screen lit by the room had
+  greyed to illegible.
+- **A scene without an environment draws byte for byte as before.**
+  Breakout, captured from a build of the commit before this work and from
+  this one, in editor Play and in GSPlayer, gave four identical files.
+
+**The hall** (`TestEnv/src/CrashTest.h`): 30 × 40 m, sun through three
+skylights, seven lamps, the dummy on his mark, a second dummy wandering,
+the cannon with its computer, barriers along the lane, and the impact wall
+and crates. Add Demo Scene now also writes its screens (`ui/*.gsui`) into
+the project, so the HUD can be edited.
+
+**Measured:**
+- **Where the trajectory says a shot lands, against where it lands:**
+  - 2–3 cm and one step for a bowling ball, a tennis ball and a football.
+  - **The rest of the gap is radius.** The line is the centre's path, so a
+    0.109 m ball touches 9.5 cm early, and a car's nose touches when its
+    centre is 2.1 m (half its length) out.
+- **Bug: aiming from the pivot.** The barrel was solved from the pivot,
+  not the muzzle, so a car (whose shot starts 3.15 m along the barrel)
+  sailed over the dummy. It's now solved from the muzzle, iterated, and
+  the line meets the aim point (1.23 for an aim of 1.2).
+- **The shadow's tip:** 8.2 cm short of `2/tan 40°` for a 2 m post. The
+  normal offset predicts 7.3 cm / tan 40° = 8.7 cm, within 6 mm (one
+  texel is 2.9 cm).
+- **UI layout:** at 1920×1080 and 1280×720, all three test panels landed
+  on the hand-computed rectangles to 0.01 px (anchor, centre, a padded
+  stack).
+- **Editor Play and GSPlayer, on the hall: byte-identical** after two
+  fixes:
+  - **The text was in the host's font**, and the editor's is its own. The
+    UI now has DejaVu Sans (and Mono for the terminal) in an atlas of its
+    own.
+  - **The panel borders** sampled anti-aliased lines from the host's
+    atlas. They are now built as geometry.
+- **Exports:**
+  - A Linux export run from another directory gives the same frame.
+  - So does the Windows player under Wine.
+
+**Fixed along the way:**
+- **The Windows player had not linked since the first crash test.**
+  `GameConsole` calls ImGui, which GS.dll did not export. It now does
+  (`IMGUI_API` dllexport, dllimport in the player). Stale objects hid the
+  fix at first: the ImGui project's objects live in `GS/vendor/bin-int`.
+- **The game overlay ran only with panels on**, so `--hide-ui` captures
+  had no HUD. `Layer::OnGameOverlay` now runs under `--hide-ui` too.
+- **Typing never reached the hidden terminal input.** It was hidden at
+  style alpha 0, and ImGui skips the items of a window begun at alpha 0.
+  It now draws in transparent colours instead. A simulated `preset car`
+  plus Enter set the mass to 1200 kg.
+- **During Play the editor still selected on left click and opened its
+  menu on right click.** It no longer does: clicks are the game's.
+- **The exporter treated `model:` meshes as missing files.** It now
+  ships `ui/` and the UI fonts.
+
+**Not done:**
+- The visual `.gsui` editor (on the roadmap).
+- Point-light shadows and bloom (no HDR target).
+- Possessing by a recorded replay: walking is input-driven and replays,
+  but the cannon's cursor aim is per frame and is not recorded.
+- The Ragdoll demo does not reproduce run to run in either build. This
+  predates this work.
+
 ### 2026-10-15 (crash test: a game terminal, a launcher, and a dummy to aim at)
 
 The owner asked for an in-editor demo of the physics: a launcher, its

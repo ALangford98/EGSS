@@ -37,6 +37,14 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-16 — The crash test hall**:
+  - fly the camera, walk up to things and press E: take control of the
+    dummy, use the terminal on the cannon's computer, or operate the
+    cannon (cursor aim, trajectory line, HUD).
+  - New: the game UI kit (`.gsui` screens, `ui.*` in scripts), game modes,
+    procedural models (`model:`), and an opt-in renderer
+    (`EnvironmentComponent`).
+  - The Windows player links again.
 - **2026-10-15 — Crash test demo**: File > Add Demo Scene > Crash Test,
   then Play: a dummy, a launcher and crates, driven from an in-game
   terminal (` opens it). New runtime pieces: GameConsole, LauncherComponent,

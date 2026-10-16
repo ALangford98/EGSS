@@ -629,6 +629,37 @@ outlive the framebuffer.
 
 ---
 
+## A game's own screen: UI, modes, the full renderer
+
+A scene run as a game (`Runtime/GameSession.h`: the editor's Play, GSPlayer,
+an export) gets five things from components alone, with no code:
+
+- **`.gsui` screens** (`Runtime/GameUI.h`).
+  - JSON widget trees in the project's `ui/` folder.
+  - A screen shows values the game publishes (`{launcher.speed}`) and sends
+    game-console commands (`"command": "speed"`). So a screen can never
+    change the game behind the terminal's back.
+  - Scripts reach them through `ui.show/hide/set/get/command`.
+- **Screens in the world.** A `ScreenComponent` on a mesh draws a screen
+  (or `@terminal`, the console) into a texture on it, through
+  `ImGuiLayer::RenderDrawList`.
+- **Walking up to things** (`Runtime/GameModes.h`).
+  - A `FlyCameraComponent` camera flies.
+  - An `InteractableComponent` shows "[E] Prompt" in range and runs its
+    `Action` (a console command) on E. That's how `possess <npc>`,
+    `terminal` and `operate` are reached.
+- **Built-in models:** `"model:<name>"` as a `MeshComponent::SourcePath`
+  (`GS/Procedural/Prefabs.h` lists them). They're made in code with
+  `ModelBuilder`, and each submesh names its surface.
+- **The full renderer.** One `EnvironmentComponent` in a scene switches
+  `SceneRenderer` to sun shadows, sky, GGX, fog and tone mapping.
+  Without one, the plain shader runs unchanged.
+
+Anything a game draws with ImGui over itself goes in `Layer::OnGameOverlay`,
+not `OnImGuiRender`: it runs under `--hide-ui`, so captures include it.
+Use the game's own font (`GameUI::Font`) for text that must look the same in
+every host.
+
 ## Gotchas that will actually bite you
 
 - **New `.cpp` file? Re-run `./BuildProject.sh`** (or `./gs.py build`, which

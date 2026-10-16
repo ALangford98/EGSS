@@ -189,7 +189,9 @@ verified. Three things are load-bearing and each was measured:
   accumulator wall-clock time. Without it, how much has been simulated by a
   given moment depends on how fast the machine ran.
 - `--hide-ui` drops the panels, which print frame times in milliseconds and so
-  differ every run no matter how deterministic the simulation is.
+  differ every run no matter how deterministic the simulation is. A running
+  game's own HUD, prompts and screens (`Layer::OnGameOverlay`) still draw:
+  they are what a player sees.
 - `--antialiasing 1` for anything with dense meshes (terrain, a high-
   resolution sphere). At the default 4x MSAA such a scene does not render
   bit-for-bit the same from run to run on this machine's driver, though its

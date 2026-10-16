@@ -126,6 +126,26 @@ catching yourself, falling realistically. Where it stands:
      physical. Stiffer leg motors or more solver iterations might close
      it.
 
+## Game UI: a visual editor for `.gsui` screens (stretch goal, owner 2026-10-15)
+
+The game UI kit (`Runtime/GameUI.h`) is built.
+- Screens are JSON files in the project's `ui/` folder.
+- They are drawn over the game or onto meshes (`ScreenComponent`).
+- They are driven by values the game publishes and commands it
+  understands.
+
+What's left is editing them visually: an editor panel with the screen on a
+canvas, widgets placed and anchored by dragging, properties in a side panel,
+and Save to `.gsui`. The owner called it "a nice stretch goal but not
+necessary right now".
+
+What it needs:
+- **A preview.** `GameUI::Context::DrawScreen` draws into any ImDrawList,
+  so it can draw into an ImGui child window.
+- **Hit-testing.** Widgets keep their laid-out rectangles, so a widget can
+  be picked from where it was drawn.
+- **A writer.** `GameUI::Parse` exists; the reverse doesn't yet.
+
 ## Wishlist, easiest to hardest
 
 ### 1. ~~Right-click context menu~~ — done (2026-09-12)
