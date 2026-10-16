@@ -129,6 +129,19 @@ catching yourself, falling realistically. Where it stands:
   - speculative contacts in the physics, for the one-step penetration of
     a hard landing (20 cm at 7.7 m/s);
   - the climb's hang currently has the feet on the wall but not pushing.
+- **Cover** (asked for 2026-10-16). Builds on parkour's sensing (`Sense`
+  already knows a face's height and where it ends):
+  - take cover: up against a wall or a low wall, back or shoulder to
+    it, crouched behind low cover, standing at high cover;
+  - move along it, staying in cover; round a corner onto the next face;
+    across a gap to the next piece of cover;
+  - peek and lean out (over low cover, round a corner), and back;
+  - leave it: step out, or vault over low cover (the parkour vault);
+  - whether a spot is covered from a threat: rays from the threat to
+    the body's parts, the cannon being the hall's threat;
+  - for NPCs too: find cover from a threat and go to it.
+  - Needs from the owner: player only or NPCs too, and what the threat
+    is beyond the cannon -- there is no shooting in the engine yet.
 - **Open:**
   1. **Running hits, physically.** They still use the kinematic stagger.
   2. **The steepest slope he walks up** since the hips' climb became a
