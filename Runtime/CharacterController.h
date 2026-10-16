@@ -121,6 +121,17 @@ public:
 		if (!transform)
 			return;
 		auto rig = std::make_unique<Humanoid>(world);
+		// Its body and its walk, from whichever component made it a humanoid.
+		if (auto* npc = scene.GetComponent<GS::NpcComponent>(entity))
+		{
+			rig->SetPhysique(npc->Physique);
+			rig->SetGait(npc->Gait);
+		}
+		else if (auto* player = scene.GetComponent<GS::PlayerComponent>(entity))
+		{
+			rig->SetPhysique(player->Physique);
+			rig->SetGait(player->Gait);
+		}
 		// Seeded by the entity, so every humanoid in a scene walks a little
 		// differently, and the same one the same way every time it is played.
 		rig->Spawn(transform->Position, glm::radians(transform->Rotation.y), (uint32_t)entity * 2654435761u + 1u);
@@ -155,6 +166,15 @@ public:
 				Mannequin::AppendLive(*c.Rig, world, Mannequin::ColourOf(scene, c.Entity), c.Entity, out,
 					Mannequin::LookOf(scene, c.Entity));
 			}
+	}
+
+	// The rig an entity runs as, or null.
+	Humanoid* RigOf(GS::EntityId entity)
+	{
+		for (Character& c : m_Characters)
+			if (c.Entity == entity && c.Rig)
+				return c.Rig.get();
+		return nullptr;
 	}
 
 	bool IsRunning(GS::EntityId entity) const

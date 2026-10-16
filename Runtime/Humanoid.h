@@ -74,6 +74,19 @@ public:
 	Control& GetControl() { return m_Control; }
 	void RequestJump() { m_WantsJump = true; }
 
+	// The body to build: set before Spawn (it is what Spawn builds).
+	void SetPhysique(const GS::PhysiqueSettings& physique) { m_Physique = physique; }
+	const GS::PhysiqueSettings& GetPhysique() const { return m_Physique; }
+	// How it walks: takes effect at once, on top of the figure's own gait.
+	void SetGait(const GS::GaitSettings& gait)
+	{
+		m_Gait = gait;
+		m_GaitApplied = m_GaitApplied || !GaitIsNormal(gait);
+		if (m_DesignStored)
+			ApplyVariation();
+	}
+	const GS::GaitSettings& GetGait() const { return m_Gait; }
+
 	// --- For an owner that is a game rather than the demo ----------------
 
 	// What the rig needs of the world it lives in: a fifteen-link chain
@@ -175,6 +188,7 @@ public:
 	bool IsDown() const { return m_Mode == Mode::Ragdoll; }
 	// Hit while standing and catching it with its feet (UpdateStumble).
 	bool IsStumbling() const { return m_Mode == Mode::Stumbling; }
+	bool IsGettingUp() const { return m_Mode == Mode::GettingUp; }
 	float TimeDown() const { return m_RagdollTimer; }
 	void GetUp() { if (m_Mode == Mode::Ragdoll) BeginGetUp(); }
 	// The pelvis's height above the ground it was built standing on.
@@ -295,6 +309,33 @@ public:
 		m_Posture = amount * 0.035f * Signed(m_Seed, 12u);
 		// Breathing between 3.5 and 5 seconds a breath.
 		m_BreathPeriod = 4.2f * (1.0f + amount * 0.18f * Signed(m_Seed, 13u));
+
+		// The walking style, on top -- only once one has been asked for, so
+		// a rig that never has one keeps every member as it was tuned.
+		if (!m_GaitApplied)
+			return;
+		if (!m_StyleBaseStored)
+		{
+			m_StyleBase = { m_FootLift, m_RollAmount, m_Crouch };
+			m_StyleBaseStored = true;
+		}
+		const GS::GaitSettings& g = m_Gait;
+		float s = m_Proportions.Scale;
+		m_WalkSpeed *= g.Speed;
+		m_RunSpeed *= g.RunSpeed;
+		m_StrideLength *= g.Stride;
+		m_StanceWidth *= g.StanceWidth;
+		m_ArmSwing *= g.ArmSwing;
+		m_ElbowBend *= g.ElbowBend;
+		m_LeanAmount *= g.Lean;
+		m_BobAmount *= g.Bob;
+		m_SwayAmount *= g.Sway;
+		m_TurnRate *= g.Turn;
+		m_RunFootLift *= g.FootLift;
+		m_FootLift = m_StyleBase.FootLift * g.FootLift;
+		m_RollAmount = m_StyleBase.RollAmount * g.HipRoll;
+		m_Crouch = m_StyleBase.Crouch + g.Crouch * s;
+		m_Posture += g.Posture;
 	}
 
 	// A hash of two numbers to [0, 1): the same pair, the same answer.
@@ -350,9 +391,10 @@ public:
 		m_HeadYaw += (m_GlanceYaw * reach - m_HeadYaw) * ease;
 		m_HeadPitch += (m_GlancePitch * reach - m_HeadPitch) * ease;
 		m_HeadTilt += (m_GlanceTilt * reach - m_HeadTilt) * ease;
+		float headPitch = m_GaitApplied ? m_HeadPitch + m_Gait.HeadPitch : m_HeadPitch;
 		m_World.GetJoint(m_NeckJoint).MotorTargetRotation = glm::normalize(
 			glm::angleAxis(m_HeadYaw, glm::vec3(0.0f, 1.0f, 0.0f))
-			* glm::angleAxis(m_HeadPitch, glm::vec3(1.0f, 0.0f, 0.0f))
+			* glm::angleAxis(headPitch, glm::vec3(1.0f, 0.0f, 0.0f))
 			* glm::angleAxis(m_HeadTilt, glm::vec3(0.0f, 0.0f, 1.0f)) * m_NeckRest);
 
 		// The weight shift: a slow drift of the hips over one foot and
@@ -394,6 +436,203 @@ public:
 		m_World.ApplyImpulseAt(m_Torso, direction * strength, torso.Position);
 	}
 
+
+	// ---------------------------------------------------------------------
+	// The body: height, mass, proportions
+	// ---------------------------------------------------------------------
+	//
+	// The rig was laid out for one man, 1.86 m and 71.2 kg. A physique
+	// (GS::PhysiqueSettings) makes it anyone:
+	//
+	//   * **Height** scales every length -- bones, joint positions, the
+	//     controller's stride, foot lift, catch reach -- by s = h / 1.86.
+	//     Speeds and times go as sqrt(s): two people walking at the same
+	//     Froude number (v^2 / g L) are walking alike, and a pendulum's
+	//     period is sqrt(L / g).
+	//   * **Mass** against the mass the same figure would have scaled up
+	//     isometrically (71.2 s^3) gives the girth, g = sqrt(m / 71.2 s^3):
+	//     limbs and trunk widen by g, the belly a little more (g^1.25 front
+	//     to back). Joint strength goes as the weight times the lever,
+	//     (m / 71.2) s, so a heavy figure can carry itself and a light one is
+	//     not over-sprung.
+	//   * **Femininity** moves the proportions between the two templates
+	//     anthropometry gives: shoulders 10% narrower and hips 12% wider at
+	//     1, mass carried lower (pelvis and thighs heavier, chest and upper
+	//     arms lighter), a slightly smaller head.
+	//
+	// The default physique gives exactly the numbers that were here before,
+	// to the bit: every scale is a multiply by 1.0f and the masses are the
+	// old literals, so the Ragdoll demo and every recording are unchanged.
+	struct Proportions
+	{
+		float Scale = 1.0f, Girth = 1.0f, Strength = 1.0f;
+		glm::vec3 PelvisHalf{ 0.14f, 0.09f, 0.10f }, TorsoHalf{ 0.17f, 0.22f, 0.11f }, FootHalf{ 0.06f, 0.05f, 0.11f };
+		float HeadRadius = 0.12f;
+		float HipX = 0.10f, ShoulderX = 0.20f, ArmX = 0.22f;
+		float ThighRadius = 0.08f, ShinRadius = 0.07f;
+		float UpperArmRadius = 0.055f, UpperArmHalf = 0.12f, ForearmRadius = 0.05f, ForearmHalf = 0.11f;
+		float PelvisMass = 11.0f, TorsoMass = 24.0f, HeadMass = 5.0f, ThighMass = 7.5f, ShinMass = 3.3f, FootMass = 1.0f,
+			UpperArmMass = 2.2f, ForearmMass = 1.6f;
+	};
+
+	bool PhysiqueIsDefault() const { return m_Physique == GS::PhysiqueSettings{}; }
+	// The proportions it was built with: what a look is drawn to.
+	const Proportions& GetProportions() const { return m_Proportions; }
+
+	Proportions ComputeProportions() const
+	{
+		Proportions P;
+		if (PhysiqueIsDefault())
+			return P;
+		const GS::PhysiqueSettings& b = m_Physique;
+		float s = glm::clamp(b.Height, 0.9f, 2.4f) / 1.86f;
+		float f = glm::clamp(b.Femininity, 0.0f, 1.0f);
+		float mass = glm::clamp(b.Mass, 20.0f, 250.0f);
+		float g = glm::clamp(std::sqrt(mass / (71.2f * s * s * s)), 0.72f, 1.7f);
+		float belly = g >= 1.0f ? std::pow(g, 1.25f) : g;
+		float shoulders = 1.0f - 0.10f * f, hips = 1.0f + 0.12f * f;
+		P.Scale = s;
+		P.Girth = g;
+		P.Strength = (mass / 71.2f) * s;
+		P.PelvisHalf = { 0.14f * s * hips * g, 0.09f * s, 0.10f * s * belly };
+		P.TorsoHalf = { 0.17f * s * shoulders * g, 0.22f * s, 0.11f * s * belly };
+		P.FootHalf = glm::vec3(0.06f, 0.05f, 0.11f) * s * (1.0f - 0.05f * f);
+		P.HeadRadius = 0.12f * s * (1.0f - 0.04f * f);
+		P.ThighRadius = 0.08f * s * g * (1.0f + 0.06f * f);
+		P.ShinRadius = 0.07f * s * g;
+		P.UpperArmRadius = 0.055f * s * g * (1.0f - 0.05f * f);
+		P.ForearmRadius = 0.05f * s * g * (1.0f - 0.05f * f);
+		// Same joint positions, fatter capsules: the half-height gives up
+		// what the radius gains.
+		P.UpperArmHalf = std::max(0.02f, 0.12f * s - (P.UpperArmRadius - 0.055f * s));
+		P.ForearmHalf = std::max(0.02f, 0.11f * s - (P.ForearmRadius - 0.05f * s));
+		// Apart enough that bodies with no joint between them do not start
+		// inside each other: the thighs, and a forearm hanging by the hips.
+		P.HipX = std::max(0.10f * s * hips, P.ThighRadius * 1.08f);
+		P.ArmX = std::max(0.22f * s * shoulders, std::max(P.TorsoHalf.x * 0.95f, P.PelvisHalf.x + P.ForearmRadius + 0.012f * s));
+		P.ShoulderX = 0.20f * s * shoulders + (P.ArmX - 0.22f * s * shoulders);
+
+		// Segment masses: the old fractions, moved lower for a feminine build
+		// and onto the trunk and thighs for a heavier one, then normalised to
+		// the mass asked for.
+		struct Segment { float* Mass; float Feminine; float Girth; int Count; };
+		Segment segments[] = {
+			{ &P.PelvisMass, 0.15f, 0.40f, 1 }, { &P.TorsoMass, -0.08f, 0.50f, 1 }, { &P.HeadMass, 0.0f, 0.0f, 1 },
+			{ &P.ThighMass, 0.12f, 0.20f, 2 }, { &P.ShinMass, 0.0f, 0.05f, 2 }, { &P.FootMass, -0.05f, 0.0f, 2 },
+			{ &P.UpperArmMass, -0.12f, 0.10f, 2 }, { &P.ForearmMass, -0.10f, 0.0f, 2 } };
+		float total = 0.0f;
+		for (Segment& seg : segments)
+		{
+			*seg.Mass *= (1.0f + seg.Feminine * f) * (1.0f + seg.Girth * (g - 1.0f));
+			total += *seg.Mass * (float)seg.Count;
+		}
+		for (Segment& seg : segments)
+			*seg.Mass *= mass / total;
+		return P;
+	}
+
+	// The controller's lengths, speeds, times, forces and torques for the
+	// physique (see Proportions). Each member's value is captured the first
+	// time this runs and scaled from that every time after, so building again
+	// never compounds. Not at all for the default physique on a rig that has
+	// never had another: the Ragdoll demo tunes these members live.
+	void ApplyPhysiqueScale()
+	{
+		if (PhysiqueIsDefault() && !m_PhysiqueApplied)
+			return;
+		m_PhysiqueApplied = true;
+		enum Kind { Length, Speed, Time, Force, Torque, Stance };
+		if (m_Scaled.empty())
+		{
+			auto add = [&](float& member, Kind kind) { m_Scaled.push_back({ &member, member, (int)kind }); };
+			for (float* m : { &m_StrideLength, &m_RunStride, &m_FootLift, &m_RunFootLift, &m_RunHeelKick, &m_RunFootReach,
+				&m_MaxFootReach, &m_RollReach, &m_BobAmount, &m_SwayAmount, &m_JumpHeight, &m_JumpCrouchDepth, &m_MaxStepUp,
+				&m_CatchReach, &m_CatchReachSide, &m_RecoverCrouch, &m_StumbleStance, &m_StumbleFootGap, &m_StumbleReach,
+				&m_StumbleLift, &m_StumbleOvershoot, &m_StumbleSettle, &m_StumbleRestCrouch, &m_StumbleMaxCrouch, &m_StaggerStep,
+				&m_HandForward, &m_HandWidth, &m_HandHeight, &m_PushUpHeight, &m_GetUpShift, &m_KneelHeight, &m_GetUpFootLift,
+				&m_StumbleGiveUpHeight, &m_MaxStep, &m_MinStep, &m_StepTrigger, &m_StumbleTrigger, &m_JumpLegSplit,
+				&m_JumpLegSplitReach, &m_StumbleCalmMargin, &m_GetUpMaxGap, &m_FootToAnkle.x, &m_FootToAnkle.y, &m_FootToAnkle.z })
+				add(*m, Length);
+			for (float* m : { &m_WalkSpeed, &m_RunSpeed, &m_StumbleEntrySpeed, &m_StumbleCalmWalk, &m_StaggerSettle, &m_StumbleCalmSpeed })
+				add(*m, Speed);
+			for (float* m : { &m_GetUpTime, &m_StumbleStepTime, &m_StepDuration, &m_JumpCrouchTime, &m_LandAbsorb, &m_LandTime })
+				add(*m, Time);
+			add(m_StaggerThreshold, Force);
+			for (float* m : { &m_StumbleUprightGain, &m_StumbleUprightDamping, &m_StumbleMaxTorque, &m_LimpTorque })
+				add(*m, Torque);
+			add(m_StanceWidth, Stance);
+		}
+		Proportions P = ComputeProportions();
+		float s = P.Scale, root = std::sqrt(s), weight = glm::clamp(m_Physique.Mass, 20.0f, 250.0f) / 71.2f;
+		for (const ScaledMember& m : m_Scaled)
+		{
+			float factor = 1.0f;
+			switch (m.Kind)
+			{
+				case Length: factor = s; break;
+				case Speed: factor = root; break;
+				case Time: factor = root; break;
+				case Force: factor = weight; break;
+				case Torque: factor = weight * s; break;
+				case Stance: factor = P.HipX / 0.10f; break;   // feet under the hips, however wide they are
+			}
+			*m.Member = m.Base * factor;
+		}
+		// The walk's design is taken afresh from the scaled values.
+		m_DesignStored = false;
+	}
+
+	// ---------------------------------------------------------------------
+	// Walking styles
+	// ---------------------------------------------------------------------
+	//
+	// A style is the gait's every parameter at once (GS::GaitSettings), on
+	// top of the figure's own: scales of its tuned speed, stride, arm swing,
+	// bob, sway and hip roll; a posture and a head carriage; how far the
+	// knees stay bent; how regular the steps are; a wander for a drunk and a
+	// limp for an injured leg. The presets are starting points -- a
+	// character can carry any values.
+	static const std::vector<GS::GaitSettings>& GaitPresets()
+	{
+		static const std::vector<GS::GaitSettings> presets = []()
+		{
+			std::vector<GS::GaitSettings> list;
+			auto add = [&](const char* name, auto edit) { GS::GaitSettings g; g.Preset = name; edit(g); list.push_back(g); };
+			add("Normal", [](GS::GaitSettings&) {});
+			add("Brisk", [](GS::GaitSettings& g) { g.Speed = 1.25f; g.Stride = 1.1f; g.ArmSwing = 1.4f; g.ElbowBend = 1.7f; g.Lean = 1.4f; g.Jitter = 0.7f; });
+			add("Stroll", [](GS::GaitSettings& g) { g.Speed = 0.72f; g.Stride = 0.86f; g.ArmSwing = 0.65f; g.ElbowBend = 0.7f; g.Bob = 0.8f; g.Sway = 1.25f; g.Posture = -0.015f; g.Turn = 0.8f; });
+			add("Confident", [](GS::GaitSettings& g) { g.Speed = 0.95f; g.Stride = 1.06f; g.ArmSwing = 1.5f; g.ArmsOut = 0.09f; g.Sway = 1.6f; g.HipRoll = 1.4f; g.Posture = -0.035f; g.StanceWidth = 1.3f; g.HeadPitch = -0.05f; });
+			add("Feminine", [](GS::GaitSettings& g) { g.Speed = 0.95f; g.Stride = 0.94f; g.StanceWidth = 0.35f; g.HipRoll = 1.9f; g.Sway = 1.35f; g.ArmSwing = 0.85f; g.ElbowBend = 1.3f; g.Posture = -0.02f; });
+			add("March", [](GS::GaitSettings& g) { g.Speed = 1.1f; g.ArmSwing = 1.9f; g.ElbowBend = 0.15f; g.Posture = -0.03f; g.Sway = 0.5f; g.Bob = 0.7f; g.FootLift = 1.8f; g.Jitter = 0.15f; g.HeadPitch = -0.04f; });
+			add("Tired", [](GS::GaitSettings& g) { g.Speed = 0.62f; g.Stride = 0.78f; g.ArmSwing = 0.3f; g.ElbowBend = 0.4f; g.Posture = 0.09f; g.HeadPitch = 0.28f; g.Bob = 1.3f; g.FootLift = 0.5f; g.Jitter = 1.6f; g.RunSpeed = 0.8f; });
+			add("Elderly", [](GS::GaitSettings& g) { g.Speed = 0.52f; g.Stride = 0.62f; g.ArmSwing = 0.35f; g.ElbowBend = 1.4f; g.Posture = 0.13f; g.HeadPitch = 0.12f; g.Crouch = 0.035f; g.StanceWidth = 1.5f; g.FootLift = 0.55f; g.Turn = 0.55f; g.Jitter = 1.3f; g.RunSpeed = 0.55f; g.Sway = 1.3f; });
+			add("Sneak", [](GS::GaitSettings& g) { g.Speed = 0.55f; g.Stride = 0.92f; g.Crouch = 0.17f; g.Posture = 0.26f; g.ArmSwing = 0.25f; g.ElbowBend = 2.4f; g.FootLift = 1.4f; g.Bob = 0.35f; g.Sway = 0.6f; g.HeadPitch = -0.15f; });
+			add("Limp", [](GS::GaitSettings& g) { g.Speed = 0.6f; g.Stride = 0.82f; g.Limp = 1.0f; g.ArmSwing = 0.7f; g.Sway = 1.6f; g.RunSpeed = 0.6f; g.Jitter = 0.8f; });
+			add("Drunk", [](GS::GaitSettings& g) { g.Speed = 0.72f; g.Sway = 2.6f; g.HipRoll = 1.6f; g.Wander = 0.38f; g.Jitter = 3.5f; g.Posture = 0.05f; g.HeadPitch = 0.08f; g.StanceWidth = 1.8f; g.Turn = 0.7f; g.ArmsOut = 0.12f; g.ArmSwing = 1.2f; });
+			return list;
+		}();
+		return presets;
+	}
+
+	// The preset of that name, or Normal.
+	static GS::GaitSettings GaitPreset(const std::string& name)
+	{
+		for (const GS::GaitSettings& g : GaitPresets())
+			if (g.Preset == name)
+				return g;
+		return GaitPresets().front();
+	}
+
+	static bool GaitIsNormal(const GS::GaitSettings& g)
+	{
+		GS::GaitSettings normal;
+		const float* a = &g.Speed;
+		const float* b = &normal.Speed;
+		for (int i = 0; i < 19; i++)
+			if (a[i] != b[i])
+				return false;
+		return true;
+	}
 
 	// ---------------------------------------------------------------------
 	// The rig
@@ -442,13 +681,17 @@ public:
 			return m_World.AddBody(body);
 		};
 
-		const float hipX = 0.10f;
-		const float shoulderX = 0.20f;
+		ApplyPhysiqueScale();
+		const Proportions P = ComputeProportions();
+		m_Proportions = P;
+		const float s = P.Scale;
+		const float hipX = P.HipX;
+		const float shoulderX = P.ShoulderX;
 
 		// --- torso column -------------------------------------------------
-		m_Pelvis = box({ 0.0f, 1.09f, 0.0f }, { 0.14f, 0.09f, 0.10f }, 11.0f);
-		m_Torso  = box({ 0.0f, 1.40f, 0.0f }, { 0.17f, 0.22f, 0.11f }, 24.0f);
-		m_Head   = sphere({ 0.0f, 1.74f, 0.0f }, 0.12f, 5.0f);
+		m_Pelvis = box({ 0.0f, 1.09f * s, 0.0f }, P.PelvisHalf, P.PelvisMass);
+		m_Torso  = box({ 0.0f, 1.40f * s, 0.0f }, P.TorsoHalf, P.TorsoMass);
+		m_Head   = sphere({ 0.0f, 1.74f * s, 0.0f }, P.HeadRadius, P.HeadMass);
 
 		// --- legs -----------------------------------------------------------
 		//
@@ -461,8 +704,8 @@ public:
 		{
 			float sign = side == 0 ? -1.0f : 1.0f;
 
-			glm::vec3 hipAt(sign * hipX, 1.00f, 0.0f);
-			glm::vec3 ankleAt(sign * m_StanceWidth, 0.10f, 0.0f);
+			glm::vec3 hipAt(sign * hipX, 1.00f * s, 0.0f);
+			glm::vec3 ankleAt(sign * m_StanceWidth, 0.10f * s, 0.0f);
 
 			// The knee sits the same fraction along the leg as it did when the
 			// leg was vertical.
@@ -474,12 +717,12 @@ public:
 			glm::quat upperTurn = RotationBetween({ 0.0f, 1.0f, 0.0f }, glm::normalize(upperAxis));
 			glm::quat lowerTurn = RotationBetween({ 0.0f, 1.0f, 0.0f }, glm::normalize(lowerAxis));
 
-			m_UpperLeg[side] = capsule((hipAt + kneeAt) * 0.5f, 0.08f,
-				glm::length(upperAxis) * 0.5f - 0.08f, 7.5f);
-			m_LowerLeg[side] = capsule((kneeAt + ankleAt) * 0.5f, 0.07f,
-				glm::length(lowerAxis) * 0.5f - 0.07f, 3.3f);
-			m_Foot[side] = box({ sign * m_StanceWidth, 0.05f, 0.03f },
-				{ 0.06f, 0.05f, 0.11f }, 1.0f);
+			m_UpperLeg[side] = capsule((hipAt + kneeAt) * 0.5f, P.ThighRadius,
+				glm::length(upperAxis) * 0.5f - P.ThighRadius, P.ThighMass);
+			m_LowerLeg[side] = capsule((kneeAt + ankleAt) * 0.5f, P.ShinRadius,
+				glm::length(lowerAxis) * 0.5f - P.ShinRadius, P.ShinMass);
+			m_Foot[side] = box({ sign * m_StanceWidth, 0.05f * s, 0.03f * s },
+				P.FootHalf, P.FootMass);
 
 			m_World.GetBody(m_UpperLeg[side]).Orientation = upperTurn;
 			m_World.GetBody(m_UpperLeg[side]).UpdateInertiaWorld();
@@ -494,10 +737,10 @@ public:
 		for (int side = 0; side < 2; side++)
 		{
 			float x = side == 0 ? -shoulderX : shoulderX;
-			float armX = side == 0 ? -0.22f : 0.22f;
+			float armX = side == 0 ? -P.ArmX : P.ArmX;
 
-			m_UpperArm[side] = capsule({ armX, 1.375f, 0.0f }, 0.055f, 0.12f, 2.2f);
-			m_LowerArm[side] = capsule({ armX, 1.040f, 0.0f }, 0.050f, 0.11f, 1.6f);
+			m_UpperArm[side] = capsule({ armX, 1.375f * s, 0.0f }, P.UpperArmRadius, P.UpperArmHalf, P.UpperArmMass);
+			m_LowerArm[side] = capsule({ armX, 1.040f * s, 0.0f }, P.ForearmRadius, P.ForearmHalf, P.ForearmMass);
 			(void)x;
 		}
 
@@ -534,21 +777,22 @@ public:
 
 		// Spine and neck. The spine carries everything above it, so it is the
 		// strongest joint in the rig by a wide margin.
-		m_SpineJoint = ball(m_Pelvis, m_Torso, { 0.0f, 1.18f, 0.0f },
-			{ 0.0f, 1.0f, 0.0f }, 25.0f, 35.0f, 260.0f);
+		const float strength = P.Strength;
+		m_SpineJoint = ball(m_Pelvis, m_Torso, { 0.0f, 1.18f * s, 0.0f },
+			{ 0.0f, 1.0f, 0.0f }, 25.0f, 35.0f, 260.0f * strength);
 		m_SpineRest = m_World.GetJoint(m_SpineJoint).MotorTargetRotation;
-		m_NeckJoint = ball(m_Torso, m_Head, { 0.0f, 1.62f, 0.0f }, { 0.0f, 1.0f, 0.0f }, 40.0f, 60.0f, 30.0f);
+		m_NeckJoint = ball(m_Torso, m_Head, { 0.0f, 1.62f * s, 0.0f }, { 0.0f, 1.0f, 0.0f }, 40.0f, 60.0f, 30.0f * strength);
 		m_NeckRest = m_World.GetJoint(m_NeckJoint).MotorTargetRotation;
 
 		for (int side = 0; side < 2; side++)
 		{
 			float x = side == 0 ? -hipX : hipX;
-			float armX = side == 0 ? -0.22f : 0.22f;
+			float armX = side == 0 ? -P.ArmX : P.ArmX;
 			float shoulderSide = side == 0 ? -shoulderX : shoulderX;
 
 			// Hip, knee, ankle.
-			m_HipJoint[side] = ball(m_Pelvis, m_UpperLeg[side], { x, 1.00f, 0.0f },
-				{ 0.0f, 1.0f, 0.0f }, 55.0f, 25.0f, 220.0f);
+			m_HipJoint[side] = ball(m_Pelvis, m_UpperLeg[side], { x, 1.00f * s, 0.0f },
+				{ 0.0f, 1.0f, 0.0f }, 55.0f, 25.0f, 220.0f * strength);
 			// The pose the balance controller offsets from. Stored rather than
 			// assumed to be the identity, so the rig could be built in a
 			// crouch and the controller would still lean from there.
@@ -558,7 +802,7 @@ public:
 			// (+y up the bone, +z forward) -- identity for a leg built
 			// straight down, kept exact for one that is not.
 			{
-				glm::vec3 y = glm::normalize(glm::vec3(x, 1.00f, 0.0f) - m_KneeAt[side]);
+				glm::vec3 y = glm::normalize(glm::vec3(x, 1.00f * s, 0.0f) - m_KneeAt[side]);
 				glm::vec3 z = glm::vec3(0.0f, 0.0f, 1.0f) - y * y.z;
 				z = glm::normalize(z);
 				glm::quat frame = glm::normalize(glm::quat_cast(glm::mat3(glm::cross(y, z), y, z)));
@@ -574,7 +818,7 @@ public:
 				// heel backwards, which is what a knee does. Built the other
 				// way round it could *only* hyperextend, and the walk looked
 				// like it was bending its legs the wrong way because it was.
-				{ 1.0f, 0.0f, 0.0f }, 0.0f, 130.0f, 160.0f);
+				{ 1.0f, 0.0f, 0.0f }, 0.0f, 130.0f, 160.0f * strength);
 
 			// The ankle is a ball joint on a short leash, not a hinge.
 			//
@@ -585,20 +829,20 @@ public:
 			// lateral balance actually needs, and the twist range keeps the
 			// foot from spinning under the leg.
 			m_AnkleJoint[side] = ball(m_LowerLeg[side], m_Foot[side], m_AnkleAt[side],
-				{ 0.0f, 1.0f, 0.0f }, 35.0f, 15.0f, 140.0f);
+				{ 0.0f, 1.0f, 0.0f }, 35.0f, 15.0f, 140.0f * strength);
 			m_AnkleRest[side] = m_World.GetJoint(m_AnkleJoint[side]).MotorTargetRotation;
 
 			// Shoulder and elbow. Kept now, rather than created and
 			// forgotten -- the walk drives them.
 			m_ShoulderJoint[side] = ball(m_Torso, m_UpperArm[side],
-				{ shoulderSide, 1.55f, 0.0f }, { 0.0f, 1.0f, 0.0f }, 75.0f, 45.0f, 60.0f);
+				{ shoulderSide, 1.55f * s, 0.0f }, { 0.0f, 1.0f, 0.0f }, 75.0f, 45.0f, 60.0f * strength);
 			m_ShoulderRest[side] = m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation;
 
 			m_ElbowJoint[side] = hinge(m_UpperArm[side], m_LowerArm[side],
-				{ armX, 1.20f, 0.0f },
+				{ armX, 1.20f * s, 0.0f },
 				// And the elbow is the knee's mirror: the forearm swings
 				// forwards, so its range is the negative one.
-				{ 1.0f, 0.0f, 0.0f }, -140.0f, 0.0f, 35.0f);
+				{ 1.0f, 0.0f, 0.0f }, -140.0f, 0.0f, 35.0f * strength);
 		}
 
 		// The rig is built facing +z, so the heading has to say so. It did not:
@@ -627,7 +871,7 @@ public:
 			const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 			for (int side = 0; side < 2; side++)
 			{
-				glm::vec3 hipAt(side == 0 ? -0.10f : 0.10f, 1.00f, 0.0f);
+				glm::vec3 hipAt(side == 0 ? -hipX : hipX, 1.00f * s, 0.0f);
 				hipAt += origin;
 
 				m_HipLocal[side] = glm::conjugate(pelvis.Orientation) * (hipAt - pelvis.Position);
@@ -635,9 +879,9 @@ public:
 				// Same for the arm, measured off the pose it was built in, so
 				// the get-up's hand IK solves for the arm that exists.
 				const GS::RigidBody3D& torso = m_World.GetBody(m_Torso);
-				glm::vec3 shoulderAt(side == 0 ? -0.22f : 0.22f, 1.55f, 0.0f);
-				glm::vec3 elbowAt(side == 0 ? -0.22f : 0.22f, 1.20f, 0.0f);
-				glm::vec3 wristAt(side == 0 ? -0.22f : 0.22f, 0.88f, 0.0f);
+				glm::vec3 shoulderAt(side == 0 ? -P.ArmX : P.ArmX, 1.55f * s, 0.0f);
+				glm::vec3 elbowAt(side == 0 ? -P.ArmX : P.ArmX, 1.20f * s, 0.0f);
+				glm::vec3 wristAt(side == 0 ? -P.ArmX : P.ArmX, 0.88f * s, 0.0f);
 				shoulderAt += origin; elbowAt += origin; wristAt += origin;
 
 				m_ShoulderLocal[side] = glm::conjugate(torso.Orientation)
@@ -1373,6 +1617,12 @@ public:
 		m_Mode = Mode::GettingUp;
 		m_GetUpTimer = 0.0f;
 
+		if (m_NaturalGetUp)
+		{
+			PlanGetUp();
+			return;
+		}
+
 		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 		m_GetUpFrom = pelvis.Position;
 		m_GetUpFromOrientation = pelvis.Orientation;
@@ -1431,6 +1681,11 @@ public:
 	// the feet are collected underneath it, and only then straightens.
 	void UpdateGetUp(float dt)
 	{
+		if (m_NaturalGetUp)
+		{
+			UpdateNaturalGetUp(dt);
+			return;
+		}
 		m_GetUpTimer += dt;
 
 		float t = glm::clamp(m_GetUpTimer / m_GetUpTime, 0.0f, 1.0f);
@@ -1558,6 +1813,445 @@ public:
 		if (t >= 1.0f)
 		{
 			m_StandHeight = m_GetUpTo.y;
+			GoControlled();
+		}
+	}
+
+
+	// ---------------------------------------------------------------------
+	// Getting up, the way people do
+	// ---------------------------------------------------------------------
+	//
+	// The first get-up lifted the hips along three waypoints with the limbs
+	// trailing on their motors: it went up, but it floated, and from on his
+	// back he was spun over a fake roll. This one is choreographed from how a
+	// person actually gets off the floor, and at every moment something is
+	// carrying him -- hands, knees or feet on the ground, held there by IK
+	// against the floor they are touching:
+	//
+	//   face down   hands under the shoulders -> push up, chest first ->
+	//               knees drawn under the hips, onto all fours -> one foot
+	//               forward into a kneeling lunge, a hand on that knee ->
+	//               up over the front foot, the back foot stepping in.
+	//   face up     knees up and hands behind -> sit up onto the hands ->
+	//               turn over sideways onto hands and knees -> as above.
+	//
+	// It is a sequence of key poses, worked out once when he starts from
+	// where he lies and how long he is (so a short figure kneels lower):
+	// the pelvis's place and turn, the spine's bend, and for each hand and
+	// foot a target -- planted on the ground, hanging, or resting on a knee
+	// -- and for each knee which way it points. Between keys everything is
+	// eased; a hand or foot that has to move between two places on the
+	// ground is lifted on the way rather than dragged. The pelvis is still
+	// carried kinematically (as the walk carries it); the limbs are motors
+	// and contacts. m_NaturalGetUp off brings back the old one.
+	struct GetUpKey
+	{
+		float T = 0.0f;                 // fraction of the whole
+		glm::vec3 Pelvis{ 0.0f };
+		glm::quat Orientation{ 1.0f, 0.0f, 0.0f, 0.0f };
+		float Spine = 0.0f;             // radians of bend, + forward
+		int Hand[2] = { 0, 0 };         // 0 planted at HandAt, 1 hanging, 2 on the lead knee
+		glm::vec3 HandAt[2] = {};
+		glm::vec3 Foot[2] = {};         // ankle targets
+		glm::vec3 Pole[2] = { glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(0.0f, 0.0f, 1.0f) };
+		bool Kneeling[2] = { false, false };   // toes tucked (ankle at rest) rather than sole flat
+		float Heading = 0.0f;           // the facing a flat sole is turned to
+	};
+
+	// A pelvis turned so its head end points along `up` and its front
+	// along `front` (+x right, +y head, +z front, as built).
+	static glm::quat PelvisFacing(const glm::vec3& up, const glm::vec3& front)
+	{
+		glm::vec3 y = glm::normalize(up);
+		glm::vec3 z = glm::normalize(front - y * glm::dot(front, y));
+		return glm::normalize(glm::quat_cast(glm::mat3(glm::cross(y, z), y, z)));
+	}
+
+	glm::vec3 WristWorld(int side) const
+	{
+		const GS::RigidBody3D& forearm = m_World.GetBody(m_LowerArm[side]);
+		return forearm.Position + forearm.Orientation * glm::vec3(0.0f, -0.5f * m_ForearmLength, 0.0f);
+	}
+
+	glm::vec3 KneeWorld(int side) const
+	{
+		const GS::RigidBody3D& shin = m_World.GetBody(m_LowerLeg[side]);
+		return shin.Position + shin.Orientation * glm::vec3(0.0f, 0.5f * m_ShinLength, 0.0f);
+	}
+
+	void PlanGetUp()
+	{
+		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		const glm::vec3 up(0.0f, 1.0f, 0.0f);
+		float s = m_Proportions.Scale;
+		float g = m_World.GroundHeightBelow(pelvis.Position, m_CharacterBodies);
+		m_GetUpGround = g;
+		m_GetUpTimer = 0.0f;
+		m_GetUpKeys.clear();
+
+		glm::vec3 headward = pelvis.Orientation * glm::vec3(0.0f, 1.0f, 0.0f);
+		glm::vec3 front = pelvis.Orientation * glm::vec3(0.0f, 0.0f, 1.0f);
+		auto flat = [](glm::vec3 v, glm::vec3 fallback)
+		{
+			v.y = 0.0f;
+			return glm::length(v) > 0.05f ? glm::normalize(v) : fallback;
+		};
+		glm::vec3 fallback(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
+		bool supine = front.y > 0.35f;
+		m_GetUpSupine = supine;
+		m_GetUpFaceDown = !supine;
+		uint32_t n = m_GetUpCount++;
+		int lead = (int)((m_Seed + n) & 1u);   // which foot comes forward
+		m_GetUpLead = lead;
+
+		// The body's own measures.
+		float thigh = m_ThighLength, shin = m_ShinLength;
+		float arm = m_UpperArmLength + m_ForearmLength;
+		float hipX = std::fabs(m_HipLocal[0].x), hipDrop = -m_HipLocal[0].y;   // hip below the pelvis's centre
+		// Hips to shoulders: hip to pelvis centre, pelvis to torso centre as
+		// built, torso centre to the shoulder joint.
+		float trunk = glm::length(m_BuildPose.size() > 1 ? m_BuildPose[1].first - m_BuildPose[0].first : glm::vec3(0.0f, 0.31f * s, 0.0f))
+			+ m_ShoulderLocal[0].y + hipDrop;
+		float shoulderX = std::fabs(m_ShoulderLocal[0].x);
+		float handH = m_Proportions.ForearmRadius + 0.012f * s;   // a little over the floor, or the motors press the forearm into it
+		// A knee on the floor sits a shin's radius up. The ankle behind it
+		// does not: with the toes tucked the foot stands at about a right
+		// angle to the shin (the ankle's cone allows 35 degrees off that), so
+		// the ankle is a foot's length up and the shin slopes to it. Put at
+		// knee height, as it first was, the foot was driven 10 cm into the
+		// floor. Lying face down is the same: heels up, toes on the floor.
+		float kneelAnkle = m_Proportions.ShinRadius + 0.01f * s;
+		float tuckedAnkle = 1.9f * m_Proportions.FootHalf.z;
+		float lying = m_Proportions.PelvisHalf.z;
+		float stance = std::max(m_StanceWidth, hipX * 0.6f);
+
+		auto at = [&](const glm::vec3& origin, const glm::vec3& F, float along, float across, float height)
+		{
+			glm::vec3 right = glm::cross(up, F);
+			return glm::vec3(origin.x, g + height, origin.z) + F * along + right * across;
+		};
+
+		// The start: as he lies.
+		GetUpKey start;
+		start.T = 0.0f;
+		start.Pelvis = pelvis.Position;
+		start.Orientation = pelvis.Orientation;
+		for (int side = 0; side < 2; side++)
+		{
+			start.HandAt[side] = WristWorld(side);
+			start.Foot[side] = AnkleWorld(side);
+			start.Pole[side] = front;
+			start.Kneeling[side] = true;
+		}
+		glm::vec3 F = supine ? flat(-headward, fallback) : flat(headward, fallback);
+		start.Heading = std::atan2(F.x, F.z);
+		m_GetUpKeys.push_back(start);
+
+		// All fours, then the lunge and the rise, in a frame (O, F): shared
+		// by both, face up arriving at it after turning over.
+		auto sideSign = [](int side) { return side == 0 ? -1.0f : 1.0f; };
+		// All fours: knees under the hips, hands under the shoulders, arms
+		// all but straight. The trunk's tilt is what those two heights make
+		// of its length.
+		float foursHipH = thigh + kneelAnkle;
+		float foursTilt = std::asin(glm::clamp((handH + arm * 0.96f - foursHipH) / std::max(trunk, 0.1f), -0.6f, 0.6f));
+		auto allFours = [&](const glm::vec3& O, const glm::vec3& Fr, float handAlong, float t)
+		{
+			float tilt = foursTilt, hipH = foursHipH;
+			float hipAlong = handAlong - trunk * std::cos(tilt);
+			glm::vec3 U = Fr * std::cos(tilt) + up * std::sin(tilt);
+			glm::vec3 belly = -(up * std::cos(tilt) - Fr * std::sin(tilt));
+			GetUpKey fours;
+			fours.T = t;
+			fours.Orientation = PelvisFacing(U, belly);
+			fours.Pelvis = at(O, Fr, hipAlong, 0.0f, hipH) + U * hipDrop;
+			fours.Spine = 0.0f;
+			fours.Heading = std::atan2(Fr.x, Fr.z);
+			for (int side = 0; side < 2; side++)
+			{
+				fours.Hand[side] = 0;
+				fours.HandAt[side] = at(O, Fr, handAlong, sideSign(side) * (shoulderX + 0.03f * s), handH);
+				fours.Foot[side] = at(O, Fr, hipAlong - shin * 0.93f, sideSign(side) * hipX, tuckedAnkle);
+				fours.Pole[side] = glm::normalize(-up + Fr * 0.6f);
+				fours.Kneeling[side] = true;
+			}
+			return fours;
+		};
+
+		auto rise = [&](const glm::vec3& O, const glm::vec3& Fr, float tFours, float tLunge, float tStep, float handAlong, bool keepHands)
+		{
+			GetUpKey fours = allFours(O, Fr, handAlong, tFours);
+			m_GetUpKeys.push_back(fours);
+			float hipAlong = handAlong - trunk * std::cos(foursTilt);
+			float heading = fours.Heading;
+
+			// The lunge: the lead foot forward, flat, the back knee down,
+			// the trunk up over the front thigh, a hand on the front knee.
+			float footAlong = hipAlong + 0.48f * s;
+			GetUpKey lunge = fours;
+			lunge.T = tLunge;
+			float lean = glm::radians(18.0f);
+			glm::vec3 U2 = up * std::cos(lean) + Fr * std::sin(lean);
+			lunge.Orientation = PelvisFacing(U2, Fr * std::cos(lean) - up * std::sin(lean));
+			lunge.Pelvis = at(O, Fr, hipAlong + 0.10f * s, 0.0f, thigh + kneelAnkle + 0.02f * s) + U2 * hipDrop;
+			lunge.Spine = glm::radians(10.0f);
+			lunge.Foot[lead] = at(O, Fr, footAlong, sideSign(lead) * hipX * 1.1f, m_AnkleHeight);
+			lunge.Pole[lead] = Fr;
+			lunge.Kneeling[lead] = false;
+			lunge.Hand[lead] = 2;
+			lunge.Hand[1 - lead] = 1;
+			m_GetUpKeys.push_back(lunge);
+
+			// Rising, the back foot on its way in.
+			GetUpKey step = lunge;
+			step.T = tStep;
+			float lean3 = glm::radians(10.0f);
+			glm::vec3 U3 = up * std::cos(lean3) + Fr * std::sin(lean3);
+			step.Orientation = PelvisFacing(U3, Fr * std::cos(lean3) - up * std::sin(lean3));
+			step.Pelvis = at(O, Fr, footAlong - 0.08f * s, sideSign(lead) * 0.3f * hipX, 0.80f * m_StandClearance);
+			step.Spine = glm::radians(6.0f);
+			step.Foot[1 - lead] = at(O, Fr, footAlong - 0.18f * s, sideSign(1 - lead) * stance, m_AnkleHeight + 0.12f * s);
+			step.Pole[1 - lead] = Fr;
+			step.Kneeling[1 - lead] = false;
+			step.Hand[0] = step.Hand[1] = 1;
+			m_GetUpKeys.push_back(step);
+
+			// Standing, feet side by side under him.
+			GetUpKey stand = step;
+			stand.T = 1.0f;
+			stand.Orientation = PelvisFacing(up, Fr);
+			stand.Pelvis = at(O, Fr, footAlong, 0.0f, m_StandClearance);
+			stand.Spine = 0.0f;
+			for (int side = 0; side < 2; side++)
+			{
+				stand.Foot[side] = at(O, Fr, footAlong, sideSign(side) * stance, m_AnkleHeight);
+				stand.Pole[side] = Fr;
+				stand.Kneeling[side] = false;
+				stand.Hand[side] = 1;
+			}
+			m_GetUpKeys.push_back(stand);
+			(void)keepHands;
+		};
+
+		// Face down, from (O, F): F the way his head points.
+		auto prone = [&](const glm::vec3& O, const glm::vec3& F, float from)
+		{
+			auto remap = [&](float t) { return from + t * (1.0f - from); };
+			// Hands down beside the shoulders, legs out behind.
+			GetUpKey hands;
+			hands.T = remap(0.14f);
+			hands.Orientation = PelvisFacing(F, -up);
+			hands.Pelvis = at(O, F, 0.0f, 0.0f, lying);
+			hands.Heading = std::atan2(F.x, F.z);
+			float handAlong = trunk * 0.92f;
+			for (int side = 0; side < 2; side++)
+			{
+				hands.HandAt[side] = at(O, F, handAlong, sideSign(side) * (shoulderX + 0.07f * s), handH);
+				hands.Foot[side] = at(O, F, -(thigh + shin) * 0.97f, sideSign(side) * hipX, tuckedAnkle);
+				hands.Pole[side] = -up;
+				hands.Kneeling[side] = true;
+			}
+			m_GetUpKeys.push_back(hands);
+
+			// The push: chest up off the floor, hips still low.
+			GetUpKey push = hands;
+			push.T = remap(0.32f);
+			float lift = glm::radians(20.0f);
+			push.Orientation = PelvisFacing(F * std::cos(lift) + up * std::sin(lift), -(up * std::cos(lift) - F * std::sin(lift)));
+			push.Pelvis = at(O, F, -0.02f * s, 0.0f, lying + 0.07f * s);
+			push.Spine = -glm::radians(18.0f);
+			m_GetUpKeys.push_back(push);
+
+			rise(O, F, remap(0.55f), remap(0.76f), remap(0.88f), handAlong, true);
+		};
+
+		glm::vec3 H = flat(headward, fallback);
+		glm::vec3 O(pelvis.Position.x, g, pelvis.Position.z);
+		if (!supine)
+		{
+			m_GetUpKeys.back().Heading = std::atan2(H.x, H.z);
+			prone(O, H, 0.0f);
+			m_GetUpTime2 = 2.5f * std::sqrt(s);
+		}
+		else
+		{
+			// Face up he rolls onto his front first, about his own length,
+			// towards the lead side -- the legs go with the hips, so nothing
+			// crosses -- and gets up from there as from face down. (A sit-up
+			// and a turn over bent knees was tried first: the turn asks the
+			// hips for more than their 55 degree cones, and the knees flipped
+			// between solutions mid-turn.)
+			glm::quat onBack = PelvisFacing(H, up);
+			float roll = lead == 1 ? 1.0f : -1.0f;
+			glm::vec3 toward = glm::angleAxis(roll * glm::half_pi<float>(), H) * up;   // where his front faces half way
+			toward.y = 0.0f;
+			toward = glm::length(toward) > 1e-3f ? glm::normalize(toward) : glm::cross(up, H);
+			float travel = m_Proportions.PelvisHalf.x + m_Proportions.PelvisHalf.z;   // a quarter turn's worth of rolling
+			for (int k = 1; k <= 2; k++)
+			{
+				float angle = roll * glm::half_pi<float>() * (float)k;
+				GetUpKey key;
+				key.T = 0.13f * (float)k;
+				key.Orientation = glm::normalize(glm::angleAxis(angle, H) * onBack);
+				glm::vec3 centre = O + toward * (travel * (float)k);
+				float height = k == 1 ? m_Proportions.PelvisHalf.x : lying;
+				key.Pelvis = glm::vec3(centre.x, g + height, centre.z);
+				key.Heading = std::atan2(H.x, H.z);
+				glm::vec3 bodyRight = key.Orientation * glm::vec3(1.0f, 0.0f, 0.0f);
+				for (int side = 0; side < 2; side++)
+				{
+					glm::vec3 foot = key.Pelvis - H * (hipDrop + (thigh + shin) * 0.97f) + bodyRight * (sideSign(side) * hipX);
+					foot.y = std::max(foot.y, g + tuckedAnkle * 0.8f);
+					key.Foot[side] = foot;
+					key.Pole[side] = key.Orientation * glm::vec3(0.0f, 0.0f, 1.0f);
+					key.Kneeling[side] = true;
+					// Both hands reach the way he is rolling, near the shoulders.
+					key.HandAt[side] = at(centre, H, trunk * 0.85f, 0.0f, handH)
+						+ toward * (0.22f * s) + bodyRight * (sideSign(side) * 0.10f * s * (k == 2 ? 2.0f : 0.5f));
+					key.HandAt[side].y = g + handH;
+				}
+				m_GetUpKeys.push_back(key);
+			}
+			glm::vec3 O1 = O + toward * (2.0f * travel);
+			prone(O1, H, 0.26f);
+			m_GetUpTime2 = 3.2f * std::sqrt(s);
+		}
+
+		pelvis.Type = GS::BodyType::Kinematic;
+		pelvis.AngularVelocity = glm::vec3(0.0f);
+
+		// A hand under the shoulder of a body lying flat is the arm at right
+		// angles to the trunk, and a shoulder flexes far further than that --
+		// but the rig's cone is 75 degrees, kept tight for the walk and the
+		// fall. Opened while he gets up, closed again when he stands.
+		ShoulderCone(120.0f);
+	}
+
+	void ShoulderCone(float degrees)
+	{
+		// The angle only: SetConeTwistLimits would re-measure the rest pose
+		// from wherever the arm happens to be lying.
+		for (int side = 0; side < 2; side++)
+			m_World.GetJoint(m_ShoulderJoint[side]).ConeAngle = glm::radians(degrees);
+	}
+
+	void UpdateNaturalGetUp(float dt)
+	{
+		if (m_GetUpKeys.size() < 2)
+		{
+			GoControlled();
+			return;
+		}
+		m_GetUpTimer += dt;
+		float u = glm::clamp(m_GetUpTimer / std::max(m_GetUpTime2, 0.1f), 0.0f, 1.0f);
+		size_t i = 0;
+		while (i + 2 < m_GetUpKeys.size() && u >= m_GetUpKeys[i + 1].T)
+			i++;
+		const GetUpKey& a = m_GetUpKeys[i];
+		const GetUpKey& b = m_GetUpKeys[i + 1];
+		float w = glm::smoothstep(0.0f, 1.0f, glm::clamp((u - a.T) / std::max(b.T - a.T, 1e-4f), 0.0f, 1.0f));
+		const glm::vec3 up(0.0f, 1.0f, 0.0f);
+
+		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		glm::vec3 target = glm::mix(a.Pelvis, b.Pelvis, w);
+		glm::quat turn = glm::slerp(a.Orientation, b.Orientation, w);
+		// Never into the floor. The pelvis is carried, not simulated, so
+		// nothing else will stop it: between two keys a box turning on its
+		// edge reaches lower than either key's height allows for (5.5 cm in
+		// the roll, measured). Its lowest corner, for the turn it has now.
+		{
+			glm::mat3 r = glm::mat3_cast(turn);
+			const glm::vec3& half = m_Proportions.PelvisHalf;
+			float reach = std::fabs(r[0].y) * half.x + std::fabs(r[1].y) * half.y + std::fabs(r[2].y) * half.z;
+			target.y = std::max(target.y, m_GetUpGround + reach + 0.004f);
+		}
+		pelvis.Velocity = (target - pelvis.Position) / std::max(dt, 1e-4f);
+		pelvis.Orientation = turn;
+		pelvis.UpdateInertiaWorld();
+
+		// Strength back from limp over the first eighth.
+		float strength = glm::clamp(u / 0.12f, 0.0f, 1.0f);
+		for (auto handle : m_Joints)
+		{
+			GS::Joint3D& joint = m_World.GetJoint(handle);
+			joint.MotorStiffness = glm::mix(m_LimpStiffness, m_MotorStiffness, strength);
+			joint.MotorMaxTorque = glm::mix(m_LimpTorque, m_JointTorque[handle], strength);
+		}
+		for (int side = 0; side < 2; side++)
+			for (auto handle : { m_HipJoint[side], m_KneeJoint[side], m_AnkleJoint[side] })
+			{
+				GS::Joint3D& joint = m_World.GetJoint(handle);
+				joint.MotorStiffness = glm::mix(m_LimpStiffness, m_LegStiffness, strength);
+				joint.MotorMaxTorque = glm::mix(m_LimpTorque, m_JointTorque[handle] * m_LegTorqueScale, strength);
+				joint.MotorMaxSpeed = 30.0f;
+			}
+
+		m_World.GetJoint(m_SpineJoint).MotorTargetRotation =
+			glm::normalize(glm::angleAxis(glm::mix(a.Spine, b.Spine, w), glm::vec3(1.0f, 0.0f, 0.0f)) * m_SpineRest);
+		m_World.GetJoint(m_NeckJoint).MotorTargetRotation = m_NeckRest;
+
+		// A point moved between two places on the ground is carried over,
+		// not dragged: lifted by up to a fifth of the distance.
+		auto carry = [&](const glm::vec3& from, const glm::vec3& to, float t)
+		{
+			glm::vec3 p = glm::mix(from, to, t);
+			float d = glm::length(glm::vec2(to.x - from.x, to.z - from.z));
+			if (d > 0.08f * m_Proportions.Scale)
+				p.y += std::min(0.15f * m_Proportions.Scale, 0.2f * d) * std::sin(glm::pi<float>() * t);
+			return p;
+		};
+		auto hand = [&](const GetUpKey& k, int side)
+		{
+			switch (k.Hand[side])
+			{
+				case 1: return ShoulderWorld(side) + glm::vec3(0.0f, -0.95f * (m_UpperArmLength + m_ForearmLength), 0.0f)
+					+ glm::vec3(std::sin(k.Heading), 0.0f, std::cos(k.Heading)) * (0.04f * m_Proportions.Scale);
+				case 2: return KneeWorld(m_GetUpLead) + up * (0.06f * m_Proportions.Scale);
+				default: return k.HandAt[side];
+			}
+		};
+		for (int side = 0; side < 2; side++)
+		{
+			SolveArm(side, carry(hand(a, side), hand(b, side), w));
+
+			glm::vec3 ankle = carry(a.Foot[side], b.Foot[side], w);
+			glm::vec3 pole = glm::normalize(glm::mix(a.Pole[side], b.Pole[side], w) + glm::vec3(0.0f, 1e-3f, 0.0f));
+			SolveLegPole(side, HipWorld(side), ankle, pole);
+			bool kneeling = w < 0.5f ? a.Kneeling[side] : b.Kneeling[side];
+			if (kneeling)
+			{
+				// Toes tucked and soft: the floor decides the foot's angle.
+				// Held at its rest pose with the leg's full strength, the foot
+				// out-pushed the floor's contact and sank 8 cm into it.
+				GS::Joint3D& ankle = m_World.GetJoint(m_AnkleJoint[side]);
+				ankle.MotorTargetRotation = m_AnkleRest[side];
+				ankle.MotorStiffness = m_LimpStiffness * 2.0f;
+				ankle.MotorMaxTorque = m_LimpTorque * 2.0f;
+			}
+			else
+			{
+				// The sole flat on the ground, turned the way he will face.
+				const GS::RigidBody3D& shinBody = m_World.GetBody(m_LowerLeg[side]);
+				float heading = glm::mix(a.Heading, b.Heading, w);
+				m_World.GetJoint(m_AnkleJoint[side]).MotorTargetRotation = glm::normalize(
+					glm::conjugate(shinBody.Orientation) * glm::angleAxis(heading, up));
+			}
+			m_Planted[side] = ankle;
+			m_Swinging[side] = false;
+		}
+
+		if (u >= 1.0f)
+		{
+			const GetUpKey& last = m_GetUpKeys.back();
+			m_Facing = last.Heading;
+			for (int side = 0; side < 2; side++)
+			{
+				m_Planted[side] = last.Foot[side];
+				m_SwingFrom[side] = m_SwingTo[side] = last.Foot[side];
+			}
+			m_StandHeight = last.Pelvis.y;
+			ShoulderCone(75.0f);
 			GoControlled();
 		}
 	}
@@ -2357,6 +3051,11 @@ public:
 		if (wishLength > 0.0f)
 		{
 			float wanted = std::atan2(wish.x, wish.z);
+			// A drunk's wander: the heading he holds drifts either side of
+			// where he means to go, on a slow noise, more the faster he goes.
+			if (m_GaitApplied && m_Gait.Wander > 0.0f)
+				wanted += m_Gait.Wander * Noise(m_Clock / 1.6f, 61u)
+					* glm::clamp(m_Speed / std::max(m_WalkSpeed, 0.01f), 0.0f, 1.0f);
 			float error = wanted - m_Facing;
 			while (error >  glm::pi<float>()) error -= glm::two_pi<float>();
 			while (error < -glm::pi<float>()) error += glm::two_pi<float>();
@@ -2519,6 +3218,14 @@ public:
 			runBob -= needed;
 		}
 		float bob = glm::mix(walkBob, runBob, running);
+
+		// A limp: the hips drop while the bad leg (side 1) carries -- the
+		// leg is not straightened under the load -- and are hurried off it.
+		if (m_GaitApplied && m_Gait.Limp > 0.0f && CyclePosition(1) < m_Duty)
+		{
+			float t = CyclePosition(1) / std::max(m_Duty, 0.01f);
+			bob -= m_Gait.Limp * 0.045f * m_Proportions.Scale * std::sin(glm::pi<float>() * t) * stride;
+		}
 
 		glm::vec3 right(std::cos(m_Facing), 0.0f, -std::sin(m_Facing));
 		// Sway follows *which foot is carrying*, not the raw phase.
@@ -2845,6 +3552,10 @@ public:
 			// About the shoulder's pitch axis, in the torso's frame, on top of
 			// the pose the rig was built in.
 			glm::quat turn = glm::angleAxis(swing + m_IdleArm[side], glm::vec3(1.0f, 0.0f, 0.0f));
+			// Held away from the body (a swagger, a drunk's balance):
+			// about the torso's forward axis, outwards on each side.
+			if (m_GaitApplied && m_Gait.ArmsOut != 0.0f)
+				turn = turn * glm::angleAxis((side == 0 ? -1.0f : 1.0f) * m_Gait.ArmsOut, glm::vec3(0.0f, 0.0f, 1.0f));
 			m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation =
 				glm::normalize(turn * m_ShoulderRest[side]);
 
@@ -3162,6 +3873,16 @@ public:
 				float amount = VariationAmount();
 				m_StepJitter[side] = amount * glm::vec2(0.035f * Signed(m_Seed * 53u + (uint32_t)side, n),
 					0.015f * Signed(m_Seed * 59u + (uint32_t)side, n));
+				if (m_GaitApplied)
+				{
+					// The style: steps as regular as a march or as ragged as a
+					// drunk's, in proportion to the figure; a limp takes a
+					// short step onto the bad leg (side 1), sparing it.
+					float s = m_Proportions.Scale;
+					m_StepJitter[side] *= m_Gait.Jitter * s;
+					if (side == 1)
+						m_StepJitter[side].x -= m_Gait.Limp * 0.09f * s;
+				}
 				// Just left the ground: remember where from, and where to.
 				m_SwingFrom[side] = m_Planted[side];
 				m_SwingTo[side] = landing;
@@ -4121,6 +4842,15 @@ protected:
 	float m_LandClock = 0.0f;
 	float m_LandAbsorb = 0.12f;       // s: tau of the landing's give
 
+	// The body and its gait (see Proportions, GaitPresets).
+	GS::PhysiqueSettings m_Physique;
+	GS::GaitSettings m_Gait;
+	bool m_PhysiqueApplied = false;
+	bool m_GaitApplied = false;
+	Proportions m_Proportions;
+	struct ScaledMember { float* Member; float Base; int Kind; };
+	std::vector<ScaledMember> m_Scaled;
+
 	// Variation (see SetSeed).
 	struct Design
 	{
@@ -4129,6 +4859,9 @@ protected:
 	};
 	Design m_Design;
 	bool m_DesignStored = false;
+	struct StyleBase { float FootLift = 0, RollAmount = 0, Crouch = 0; };
+	StyleBase m_StyleBase;
+	bool m_StyleBaseStored = false;
 	uint32_t m_Seed = 1;
 	float m_Variation = 1.0f;         // 0 is the design exactly
 	float m_Clock = 0.0f;
@@ -4202,6 +4935,11 @@ protected:
 	float m_LegTorqueScale = 4.0f;         // how high the foot arcs over
 
 	// Getting up.
+	bool m_NaturalGetUp = true;       // the choreographed one (PlanGetUp); off, the old three-waypoint lift
+	std::vector<GetUpKey> m_GetUpKeys;
+	float m_GetUpTime2 = 2.5f;        // s, the choreography's length, set by PlanGetUp
+	int m_GetUpLead = 1;
+	uint32_t m_GetUpCount = 0;
 	float m_GetUpTime = 2.0f;         // three stages now
 	float m_GetUpHands = 0.38f;       // fraction spent getting up onto the hands
 	float m_GetUpGather = 0.72f;      // ...and by here the feet are under him

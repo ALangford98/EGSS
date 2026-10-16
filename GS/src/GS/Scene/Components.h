@@ -212,6 +212,39 @@ namespace GS {
 	// WASD relative to the camera, Space to jump, Shift to sprint, and a
 	// camera that follows (orbit with right-drag or the arrow keys). Run by
 	// Runtime/CharacterController.h, which gives it an upright capsule body.
+	// A humanoid's body: how tall, how heavy, and where between a
+	// masculine and a feminine build its proportions sit (shoulders against
+	// hips, where its mass is carried). Everything else -- bone lengths,
+	// segment masses, girth, joint strength, stride -- follows from these
+	// (Runtime/Humanoid.h). The defaults are the rig as it was tuned.
+	struct PhysiqueSettings
+	{
+		float Height = 1.86f;          // m, crown to sole
+		float Mass = 71.2f;            // kg
+		float Femininity = 0.0f;       // 0 masculine proportions, 1 feminine
+
+		bool operator==(const PhysiqueSettings& o) const { return Height == o.Height && Mass == o.Mass && Femininity == o.Femininity; }
+		bool operator!=(const PhysiqueSettings& o) const { return !(*this == o); }
+	};
+
+	// How a humanoid walks: a named preset (Runtime/Humanoid.h has them) and
+	// its every parameter, so a preset is a starting point to tune from.
+	// Scales are relative to the rig's own tuned gait (1 is unchanged);
+	// angles are radians; Crouch and Wander are metres.
+	struct GaitSettings
+	{
+		std::string Preset = "Normal";
+		float Speed = 1.0f, Stride = 1.0f, RunSpeed = 1.0f;
+		float ArmSwing = 1.0f, ElbowBend = 1.0f, ArmsOut = 0.0f;
+		float Lean = 1.0f, Posture = 0.0f, HeadPitch = 0.0f;
+		float Bob = 1.0f, Sway = 1.0f, HipRoll = 1.0f;
+		float StanceWidth = 1.0f, FootLift = 1.0f, Crouch = 0.0f;
+		float Jitter = 1.0f, Wander = 0.0f, Limp = 0.0f, Turn = 1.0f;
+	};
+	// Saved and read as nineteen floats from Speed on.
+	static_assert(offsetof(GaitSettings, Turn) - offsetof(GaitSettings, Speed) == 18 * sizeof(float),
+		"GaitSettings' numbers must be contiguous");
+
 	struct PlayerComponent
 	{
 		float Speed = 5.0f;            // metres per second, walking
@@ -222,6 +255,8 @@ namespace GS {
 		int CameraMode = 0;            // 0 third person, 1 first person, 2 leave the scene's camera alone
 		int Body = 0;                  // 0 upright capsule, 1 rolling ball, 2 humanoid (active ragdoll)
 		int Look = 0;                  // a humanoid's: 0 mannequin (its colliders), 1 crash-test dummy
+		PhysiqueSettings Physique;     // a humanoid's body
+		GaitSettings Gait;             // and how it walks
 	};
 
 	// A non-player character with a simple built-in behaviour, run by the
@@ -236,6 +271,8 @@ namespace GS {
 		float StopDistance = 2.0f;     // follow: how close it comes
 		int Body = 0;                  // as PlayerComponent::Body
 		int Look = 0;                  // as PlayerComponent::Look
+		PhysiqueSettings Physique;     // as PlayerComponent's
+		GaitSettings Gait;
 	};
 
 	// Opt-in networking. An entity with both of these has its

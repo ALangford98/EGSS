@@ -275,6 +275,36 @@ namespace GS {
 				out << "\n";
 			}
 
+			// A humanoid's body and gait, after its player/npc line, which
+			// they modify -- each only when not the default, so every scene
+			// without one saves exactly as it did.
+			auto writeBody = [&](const PhysiqueSettings& p, const GaitSettings& g)
+			{
+				if (p != PhysiqueSettings{})
+				{
+					out << "physique";
+					WriteFloats(out, { p.Height, p.Mass, p.Femininity });
+					out << "\n";
+				}
+				GaitSettings normal;
+				bool custom = g.Preset != normal.Preset;
+				const float* a = &g.Speed;
+				const float* b = &normal.Speed;
+				for (int i = 0; i < 19 && !custom; i++)
+					custom = a[i] != b[i];
+				if (custom)
+				{
+					// The nineteen numbers in GaitSettings' order, then the
+					// preset's name as the rest of the line.
+					out << "gait";
+					for (int i = 0; i < 19; i++)
+						WriteFloats(out, { a[i] });
+					out << " " << g.Preset << "\n";
+				}
+			};
+			if (PlayerComponent* player = self->GetComponent<PlayerComponent>(entity))
+				writeBody(player->Physique, player->Gait);
+
 			if (NpcComponent* npc = self->GetComponent<NpcComponent>(entity))
 			{
 				out << "npc " << npc->Behaviour;
@@ -283,6 +313,7 @@ namespace GS {
 				if (npc->Look != 0)
 					out << " " << npc->Look;
 				out << "\n";
+				writeBody(npc->Physique, npc->Gait);
 			}
 
 			// The target's tag last, as the rest of the line: a tag may
@@ -514,6 +545,23 @@ namespace GS {
 				size_t from = target.find_first_not_of(' ');
 				launcher.Target = from == std::string::npos ? "" : target.substr(from);
 				current.Add<LauncherComponent>(launcher);
+			}
+			else if ((kind == "physique" || kind == "gait") && current)
+			{
+				// Modifies the humanoid on the line before.
+				PhysiqueSettings* physique = nullptr;
+				GaitSettings* gait = nullptr;
+				if (NpcComponent* npc = current.Get<NpcComponent>()) { physique = &npc->Physique; gait = &npc->Gait; }
+				else if (PlayerComponent* player = current.Get<PlayerComponent>()) { physique = &player->Physique; gait = &player->Gait; }
+				if (physique && kind == "physique")
+					fields >> physique->Height >> physique->Mass >> physique->Femininity;
+				if (gait && kind == "gait")
+				{
+					float* a = &gait->Speed;
+					for (int i = 0; i < 19; i++)
+						fields >> a[i];
+					std::getline(fields >> std::ws, gait->Preset);
+				}
 			}
 			else if (kind == "flycamera" && current)
 			{
