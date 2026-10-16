@@ -108,6 +108,16 @@ namespace GS {
 		// (Runtime/MaterialLibrary.h), the same relationship SourcePath
 		// has with MeshCache.
 		std::string MaterialPath;
+
+		// How the surface takes light under an EnvironmentComponent's shading
+		// (GGX): roughness 0 a mirror, 1 chalk; metallic 0 a dielectric (4%
+		// reflectance, coloured diffuse), 1 a metal (coloured reflection, no
+		// diffuse); emission adds Color times this, unlit -- a lamp's panel, a
+		// screen. Ignored by the plain shader, so a scene without an
+		// environment looks exactly as it did; saved only when not default.
+		float Roughness = 0.5f;
+		float Metallic = 0.0f;
+		float Emission = 0.0f;
 	};
 
 	struct LightComponent
@@ -211,6 +221,7 @@ namespace GS {
 		float CameraHeight = 0.6f;     // above the character's centre: 1.5 m over the feet, about shoulder height
 		int CameraMode = 0;            // 0 third person, 1 first person, 2 leave the scene's camera alone
 		int Body = 0;                  // 0 upright capsule, 1 rolling ball, 2 humanoid (active ragdoll)
+		int Look = 0;                  // a humanoid's: 0 mannequin (its colliders), 1 crash-test dummy
 	};
 
 	// A non-player character with a simple built-in behaviour, run by the
@@ -224,6 +235,7 @@ namespace GS {
 		float DetectRadius = 10.0f;    // follow/flee: how near the player must be
 		float StopDistance = 2.0f;     // follow: how close it comes
 		int Body = 0;                  // as PlayerComponent::Body
+		int Look = 0;                  // as PlayerComponent::Look
 	};
 
 	// Opt-in networking. An entity with both of these has its
@@ -244,6 +256,69 @@ namespace GS {
 		bool Arc = true;               // aim high enough for gravity to bring it onto the target
 		glm::vec4 Color{ 0.95f, 0.55f, 0.15f, 1.0f };
 		std::string Target;            // the tag of what it aims at; empty: straight ahead
+
+		// Aimed by hand -- a player operating it -- instead of at Target:
+		// yaw about up from +z, pitch above level, in degrees. Not saved:
+		// it is where somebody left the barrel, not part of the scene.
+		bool Manual = false;
+		float AimYaw = 0.0f;
+		float AimPitch = 8.0f;
+	};
+
+	// A camera that flies while nothing else drives it: WASD, Space/Ctrl up
+	// and down, Shift faster, the right mouse button held to look. Run by
+	// GameSession on the fixed step, so it records and replays.
+	struct FlyCameraComponent
+	{
+		float Speed = 6.0f;            // m/s; Shift triples it
+		float LookSpeed = 0.2f;        // degrees per pixel of mouse travel
+	};
+
+	// Something the player can walk up to and use. Near enough (Range, from
+	// the viewer -- the fly camera, or the body being controlled) and looked
+	// at (within 30 degrees), the game shows "[E] Prompt" over it; E runs
+	// Action, a game-console command -- "possess Dummy", "terminal",
+	// "operate" -- so what pressing E does is data, in the same language the
+	// terminal speaks.
+	struct InteractableComponent
+	{
+		std::string Prompt = "Use";
+		std::string Action;
+		float Range = 2.5f;            // m
+	};
+
+	// A game UI screen (Runtime/GameUI.h, a .gsui file) drawn into a texture
+	// and shown on this entity's mesh -- a monitor, a sign. "@terminal" is
+	// the game console itself. The texture is the running game's, never
+	// saved.
+	struct ScreenComponent
+	{
+		std::string Screen;
+		int Width = 1024, Height = 640; // texture pixels
+		float Emission = 1.0f;         // how much it glows: a screen lights itself
+		std::shared_ptr<Texture2D> Texture;
+	};
+
+	// Opt-in to the full renderer for a scene: a sun with shadows, a sky,
+	// hemisphere ambient, fog, physically based shading and tone mapping.
+	// Without one a scene draws exactly as it always has -- the older
+	// captures stay byte-identical, which is the reason it is opt-in.
+	struct EnvironmentComponent
+	{
+		float SunAzimuth = 35.0f;      // degrees about up, from +z towards +x: where the sun is
+		float SunElevation = 50.0f;    // degrees above the horizon
+		glm::vec3 SunColor{ 1.0f, 0.95f, 0.88f };
+		float SunIntensity = 3.0f;
+		glm::vec3 SkyColor{ 0.36f, 0.55f, 0.85f };      // zenith
+		glm::vec3 HorizonColor{ 0.78f, 0.84f, 0.9f };
+		glm::vec3 GroundColor{ 0.32f, 0.3f, 0.28f };    // what lights from below
+		float AmbientIntensity = 0.6f;
+		float FogDensity = 0.012f;     // per metre, at height 0
+		float FogFalloff = 0.15f;      // per metre: thinner going up
+		float Exposure = 1.0f;
+		bool Shadows = true;
+		float ShadowExtent = 30.0f;    // m: half-width of what the sun's shadow map covers
+		float PointLightScale = 1.0f;  // the scene's point lights, scaled into this exposure
 	};
 
 	struct NetworkIdentity

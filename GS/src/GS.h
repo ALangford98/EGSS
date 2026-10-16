@@ -74,6 +74,7 @@
 #include "GS/Procedural/MaterialGraphSerializer.h"
 #include "GS/Procedural/MaterialExport.h"
 #include "GS/Scripting/ScriptPhysics.h"
+#include "GS/Scripting/ScriptUI.h"
 #include "GS/Renderer/UvTemplateWriter.h"
 #include "GS/Renderer/MtlLoader.h"
 #include "GS/Renderer/GltfLoader.h"

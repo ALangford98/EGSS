@@ -77,6 +77,10 @@ struct EntitySnapshot
 	std::optional<GS::PlayerComponent> Player;
 	std::optional<GS::NpcComponent> Npc;
 	std::optional<GS::LauncherComponent> Launcher;
+	std::optional<GS::FlyCameraComponent> FlyCamera;
+	std::optional<GS::InteractableComponent> Interactable;
+	std::optional<GS::ScreenComponent> Screen;
+	std::optional<GS::EnvironmentComponent> Environment;
 
 	static EntitySnapshot Capture(GS::EntityId entity)
 	{
@@ -93,6 +97,10 @@ struct EntitySnapshot
 		if (auto* c = g_EditorScene.GetComponent<GS::PlayerComponent>(entity)) s.Player = *c;
 		if (auto* c = g_EditorScene.GetComponent<GS::NpcComponent>(entity)) s.Npc = *c;
 		if (auto* c = g_EditorScene.GetComponent<GS::LauncherComponent>(entity)) s.Launcher = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::FlyCameraComponent>(entity)) s.FlyCamera = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::InteractableComponent>(entity)) s.Interactable = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::ScreenComponent>(entity)) s.Screen = *c;
+		if (auto* c = g_EditorScene.GetComponent<GS::EnvironmentComponent>(entity)) s.Environment = *c;
 		return s;
 	}
 
@@ -141,6 +149,10 @@ struct EntitySnapshot
 		if (Player) entity.Add<GS::PlayerComponent>(*Player);
 		if (Npc) entity.Add<GS::NpcComponent>(*Npc);
 		if (Launcher) entity.Add<GS::LauncherComponent>(*Launcher);
+		if (FlyCamera) entity.Add<GS::FlyCameraComponent>(*FlyCamera);
+		if (Interactable) entity.Add<GS::InteractableComponent>(*Interactable);
+		if (Screen) entity.Add<GS::ScreenComponent>(*Screen);
+		if (Environment) entity.Add<GS::EnvironmentComponent>(*Environment);
 		return entity.GetId();
 	}
 };

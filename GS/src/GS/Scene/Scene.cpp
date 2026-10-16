@@ -201,6 +201,12 @@ namespace GS {
 					// not know instead of misreading the mesh line.
 					if (!mesh->MaterialPath.empty())
 						out << "material " << mesh->MaterialPath << "\n";
+					if (mesh->Roughness != 0.5f || mesh->Metallic != 0.0f || mesh->Emission != 0.0f)
+					{
+						out << "surface";
+						WriteFloats(out, { mesh->Roughness, mesh->Metallic, mesh->Emission });
+						out << "\n";
+					}
 				}
 			}
 
@@ -263,14 +269,20 @@ namespace GS {
 				out << "player";
 				WriteFloats(out, { player->Speed, player->SprintMultiplier, player->JumpHeight,
 					player->CameraDistance, player->CameraHeight });
-				out << " " << player->CameraMode << " " << player->Body << "\n";
+				out << " " << player->CameraMode << " " << player->Body;
+				if (player->Look != 0)
+					out << " " << player->Look;
+				out << "\n";
 			}
 
 			if (NpcComponent* npc = self->GetComponent<NpcComponent>(entity))
 			{
 				out << "npc " << npc->Behaviour;
 				WriteFloats(out, { npc->Speed, npc->WanderRadius, npc->DetectRadius, npc->StopDistance });
-				out << " " << npc->Body << "\n";
+				out << " " << npc->Body;
+				if (npc->Look != 0)
+					out << " " << npc->Look;
+				out << "\n";
 			}
 
 			// The target's tag last, as the rest of the line: a tag may
@@ -283,6 +295,38 @@ namespace GS {
 				out << " " << (launcher->Arc ? 1 : 0);
 				WriteFloats(out, { launcher->Color.r, launcher->Color.g, launcher->Color.b, launcher->Color.a });
 				out << " " << launcher->Target << "\n";
+			}
+
+			if (FlyCameraComponent* fly = self->GetComponent<FlyCameraComponent>(entity))
+			{
+				out << "flycamera";
+				WriteFloats(out, { fly->Speed, fly->LookSpeed });
+				out << "\n";
+			}
+
+			// Action and prompt last, split by '|': either may hold spaces.
+			if (InteractableComponent* interact = self->GetComponent<InteractableComponent>(entity))
+			{
+				out << "interact";
+				WriteFloats(out, { interact->Range });
+				out << " " << interact->Action << "|" << interact->Prompt << "\n";
+			}
+
+			if (ScreenComponent* screen = self->GetComponent<ScreenComponent>(entity))
+			{
+				out << "screen " << screen->Width << " " << screen->Height;
+				WriteFloats(out, { screen->Emission });
+				out << " " << screen->Screen << "\n";
+			}
+
+			if (EnvironmentComponent* e = self->GetComponent<EnvironmentComponent>(entity))
+			{
+				out << "environment";
+				WriteFloats(out, { e->SunAzimuth, e->SunElevation, e->SunColor.r, e->SunColor.g, e->SunColor.b, e->SunIntensity,
+					e->SkyColor.r, e->SkyColor.g, e->SkyColor.b, e->HorizonColor.r, e->HorizonColor.g, e->HorizonColor.b,
+					e->GroundColor.r, e->GroundColor.g, e->GroundColor.b, e->AmbientIntensity, e->FogDensity, e->FogFalloff,
+					e->Exposure, e->ShadowExtent, e->PointLightScale });
+				out << " " << (e->Shadows ? 1 : 0) << "\n";
 			}
 		}
 
@@ -374,6 +418,11 @@ namespace GS {
 				if (MeshComponent* mesh = current.Get<MeshComponent>())
 					mesh->MaterialPath = path;
 			}
+			else if (kind == "surface" && current)
+			{
+				if (MeshComponent* mesh = current.Get<MeshComponent>())
+					fields >> mesh->Roughness >> mesh->Metallic >> mesh->Emission;
+			}
 			else if (kind == "camera" && current)
 			{
 				CameraComponent camera;
@@ -438,6 +487,8 @@ namespace GS {
 				// upright capsule it was made with.
 				if (!(fields >> player.Body))
 					player.Body = 0;
+				if (!(fields >> player.Look))
+					player.Look = 0;
 				current.Add<PlayerComponent>(player);
 			}
 			else if (kind == "npc" && current)
@@ -446,6 +497,8 @@ namespace GS {
 				fields >> npc.Behaviour >> npc.Speed >> npc.WanderRadius >> npc.DetectRadius >> npc.StopDistance;
 				if (!(fields >> npc.Body))
 					npc.Body = 0;
+				if (!(fields >> npc.Look))
+					npc.Look = 0;
 				current.Add<NpcComponent>(npc);
 			}
 			else if (kind == "launcher" && current)
@@ -461,6 +514,41 @@ namespace GS {
 				size_t from = target.find_first_not_of(' ');
 				launcher.Target = from == std::string::npos ? "" : target.substr(from);
 				current.Add<LauncherComponent>(launcher);
+			}
+			else if (kind == "flycamera" && current)
+			{
+				FlyCameraComponent fly;
+				fields >> fly.Speed >> fly.LookSpeed;
+				current.Add<FlyCameraComponent>(fly);
+			}
+			else if (kind == "interact" && current)
+			{
+				InteractableComponent interact;
+				fields >> interact.Range;
+				std::string rest;
+				std::getline(fields >> std::ws, rest);
+				size_t bar = rest.find('|');
+				interact.Action = rest.substr(0, bar);
+				interact.Prompt = bar == std::string::npos ? "Use" : rest.substr(bar + 1);
+				current.Add<InteractableComponent>(interact);
+			}
+			else if (kind == "screen" && current)
+			{
+				ScreenComponent screen;
+				fields >> screen.Width >> screen.Height >> screen.Emission;
+				std::getline(fields >> std::ws, screen.Screen);
+				current.Add<ScreenComponent>(screen);
+			}
+			else if (kind == "environment" && current)
+			{
+				EnvironmentComponent e;
+				int shadows = 1;
+				fields >> e.SunAzimuth >> e.SunElevation >> e.SunColor.r >> e.SunColor.g >> e.SunColor.b >> e.SunIntensity
+					>> e.SkyColor.r >> e.SkyColor.g >> e.SkyColor.b >> e.HorizonColor.r >> e.HorizonColor.g >> e.HorizonColor.b
+					>> e.GroundColor.r >> e.GroundColor.g >> e.GroundColor.b >> e.AmbientIntensity >> e.FogDensity >> e.FogFalloff
+					>> e.Exposure >> e.ShadowExtent >> e.PointLightScale >> shadows;
+				e.Shadows = shadows != 0;
+				current.Add<EnvironmentComponent>(e);
 			}
 		}
 
