@@ -37,6 +37,9 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-16 — Controls**: View > Controls rebinds the game's actions
+  per project (`controls.txt`, `GS::InputMap`); prompts, hints and
+  `.gsui` screens follow; scripts get `input.isActionDown`.
 - **2026-10-16 — The crash test hall**:
   - fly the camera, walk up to things and press E: take control of the
     dummy, use the terminal on the cannon's computer, or operate the

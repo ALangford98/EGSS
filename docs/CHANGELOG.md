@@ -7,6 +7,62 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-16 (controls: a rebindable input map and a Controls panel)
+
+The owner asked for "a panel for controls" in the editor. Of the three
+options they chose a rebindable input map, over a reference list.
+
+**`GS::InputMap`** (engine, `GS/InputMap.h`):
+- **Named actions,** each bound to keys and mouse buttons:
+  - moving: forward, back, left, right, jump, down, sprint;
+  - the camera: look, and the turn keys;
+  - using things: interact, cancel, shoot, fire, terminal.
+- **The runtime reads actions, not keys:** `CharacterController`, the fly
+  camera, `GameModes`, the launcher, and the terminal's toggle and close.
+  So do the on-screen words:
+  - the `[E]` prompt;
+  - the hints;
+  - the terminal's header;
+  - `{keys.<action>}` in any `.gsui` screen.
+
+  Rebind Interact to F and every prompt says F.
+- **Saved per project** in `controls.txt`, and shipped by an export.
+  - An action the file leaves out keeps its default, so older projects
+    are unchanged.
+  - A game with default controls behaves exactly as before. Breakout in
+    GSPlayer still captures byte-identical to the build from before the
+    crash test hall.
+- **Scripts** get `input.isActionDown("jump")` in both the interpreter and
+  the transpiler.
+- **Replays:** every key and mouse button is in the recorded input, so a
+  rebound action replays as itself.
+
+**The Controls panel** (`TestEnv/src/ControlsPanel.h`; View > Controls,
+tabbed beside the Terminal):
+- Every action by group, with its bindings. Click a binding to rebind it
+  by pressing the key. A mouse button is bound by clicking it on the
+  highlighted button.
+- `+` adds a binding, `x` removes one, and Reset appears where an action
+  differs from its default. A binding shared by two actions shows in amber
+  with the other's name.
+- Edits apply at once, mid-Play included, and are saved into the
+  project.
+- While it listens it takes the keyboard, so the key pressed is not also
+  an editor shortcut.
+- Below, the editor's own shortcuts, read-only.
+
+**Verified:**
+- **Names:** every bindable key and button's long and short names parse
+  back to it (195 checks; the short keypad names failed at first and were
+  fixed).
+- **Files:** a saved map loads back identical.
+- **In a game:** a project file binding Fire to G shows "G fire" in the
+  running game's hints.
+- **Builds:** all three configs, the Windows and the web player.
+
+**Not checked:** rebinding by an actual key press in the panel. Its keys
+are polled from GLFW, which a scripted test can't press.
+
 ### 2026-10-16 (the crash test hall: walk up and use things, a cannon HUD, game UI, a renderer worth showing)
 
 The owner asked for:

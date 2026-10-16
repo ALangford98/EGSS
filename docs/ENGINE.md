@@ -655,6 +655,10 @@ an export) gets five things from components alone, with no code:
   `SceneRenderer` to sun shadows, sky, GGX, fog and tone mapping.
   Without one, the plain shader runs unchanged.
 
+**Controls are actions.** Read `GS::InputMap::Active().Down("jump")`, not a
+key: the project's `controls.txt` (the editor's Controls panel) decides the
+key, and `Keys("jump")` names it for a prompt.
+
 Anything a game draws with ImGui over itself goes in `Layer::OnGameOverlay`,
 not `OnImGuiRender`: it runs under `--hide-ui`, so captures include it.
 Use the game's own font (`GameUI::Font`) for text that must look the same in
