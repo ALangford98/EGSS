@@ -151,6 +151,24 @@ public:
 	GS::PhysicsWorld3D::BodyHandle PelvisBody() const { return m_Pelvis; }
 	GS::PhysicsWorld3D::BodyHandle HeadBody() const { return m_Head; }
 	bool IsFoot(GS::PhysicsWorld3D::BodyHandle handle) const { return handle == m_Foot[0] || handle == m_Foot[1]; }
+
+	// Which part of him a body is, for drawing a look over it.
+	enum class Part { Pelvis, Torso, Head, Thigh, Shin, Foot, UpperArm, Forearm, Other };
+	Part PartOf(GS::PhysicsWorld3D::BodyHandle handle) const
+	{
+		if (handle == m_Pelvis) return Part::Pelvis;
+		if (handle == m_Torso) return Part::Torso;
+		if (handle == m_Head) return Part::Head;
+		for (int side = 0; side < 2; side++)
+		{
+			if (handle == m_UpperLeg[side]) return Part::Thigh;
+			if (handle == m_LowerLeg[side]) return Part::Shin;
+			if (handle == m_Foot[side]) return Part::Foot;
+			if (handle == m_UpperArm[side]) return Part::UpperArm;
+			if (handle == m_LowerArm[side]) return Part::Forearm;
+		}
+		return Part::Other;
+	}
 	float FacingRadians() const { return m_Facing; }
 	// Down: a ragdoll, no longer driven -- fallen, shoved too hard, or
 	// dropped with nothing under it.

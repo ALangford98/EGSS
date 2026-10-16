@@ -26,6 +26,9 @@
 #include <glm/gtx/euler_angles.hpp>
 
 #include "GameConsole.h"
+#include "GameUI.h"
+
+#include <GS/Procedural/Prefabs.h>
 
 #include <cstdio>
 #include <string>
@@ -82,10 +85,162 @@ public:
 		m_Host = &host;
 		m_Shots.clear();
 		m_Launcher = GS::InvalidEntity;
+		m_Yoke = GS::InvalidEntity;
+		m_Preset = "custom";
 		GS::Scene& scene = host.HostScene();
 		auto& launchers = scene.View<GS::LauncherComponent>();
 		if (launchers.Size() > 0)
 			m_Launcher = launchers.Owner(0);
+		// A launcher drawn as the cannon's barrel fires from its muzzle, and
+		// turns its yoke -- the entity named "<launcher> Yoke" -- with it.
+		if (Active())
+		{
+			auto* mesh = scene.GetComponent<GS::MeshComponent>(m_Launcher);
+			m_Muzzle = mesh && mesh->SourcePath == "model:cannon.barrel" ? GS::Prefabs::CannonMuzzle : 0.45f;
+			auto* tag = scene.GetComponent<GS::TagComponent>(m_Launcher);
+			if (tag)
+				m_Yoke = Find(tag->Name + " Yoke");
+			if (GS::LauncherComponent* s = Settings())
+			{
+				glm::vec3 from, direction;
+				bool far;
+				if (Aim(from, direction, far))
+				{
+					s->AimYaw = glm::degrees(std::atan2(direction.x, direction.z));
+					s->AimPitch = glm::degrees(std::asin(glm::clamp(direction.y, -1.0f, 1.0f)));
+				}
+			}
+		}
+	}
+
+	// The values a HUD shows, published here every step, and the lists it
+	// picks from. Null for none.
+	void AttachUI(GameUI::Context* ui)
+	{
+		m_UI = ui;
+		if (!ui)
+			return;
+		std::vector<std::string> names, details;
+		for (const Preset& p : Presets())
+		{
+			names.push_back(p.Name);
+			details.push_back(Format(p.Mass) + " kg");
+		}
+		ui->SetList("presets", names);
+		ui->SetList("presets.detail", details);
+	}
+
+	// One shot, queued like the F key.
+	void Fire() { m_Volley++; }
+
+	GS::EntityId LauncherEntity() const { return m_Launcher; }
+
+	// The pitch (radians) that lands a shot on `point`, turned to `yaw`.
+	// The shot leaves from the muzzle, not the pivot -- a car-sized box
+	// starts three metres out along the barrel -- and where the muzzle is
+	// depends on the pitch, so the projectile equation is solved from where
+	// the last guess put it, a few times over; it settles in two or three.
+	// With Arc on it is the low root of
+	//     tan(theta) = (v^2 - sqrt(v^4 - g (g x^2 + 2 y v^2))) / (g x)
+	// and false, at 45 degrees -- the longest reach -- when there is none.
+	bool SolvePitch(const glm::vec3& pivot, float yaw, const glm::vec3& point, const GS::LauncherComponent& s, float& pitch) const
+	{
+		float reach = 0.5f * std::max({ s.Size.x, s.Size.y, s.Size.z }) + m_Muzzle;
+		const float g = 9.81f;
+		float v = s.Speed;
+		bool reachable = true;
+		pitch = 0.0f;
+		for (int i = 0; i < 4; i++)
+		{
+			glm::vec3 direction(std::sin(yaw) * std::cos(pitch), std::sin(pitch), std::cos(yaw) * std::cos(pitch));
+			glm::vec3 to = point - (pivot + direction * reach);
+			float x = glm::length(glm::vec2(to.x, to.z)), y = to.y;
+			if (x < 1e-3f)
+				break;
+			if (!s.Arc)
+			{
+				pitch = std::atan2(y, x);
+				continue;
+			}
+			float root = v * v * v * v - g * (g * x * x + 2.0f * y * v * v);
+			reachable = root >= 0.0f;
+			pitch = reachable ? std::atan((v * v - std::sqrt(root)) / (g * x)) : glm::radians(45.0f);
+		}
+		pitch = glm::clamp(pitch, glm::radians(-20.0f), glm::radians(70.0f));
+		return reachable;
+	}
+
+	// Turns the barrel to hit `point`: the yaw towards it and, with Arc on,
+	// the low ballistic solution at the set speed -- the angle of Aim(),
+	// solved for a point rather than a target. Out of reach, 45 degrees and
+	// OutOfRange() says so.
+	void AimAt(const glm::vec3& point)
+	{
+		GS::LauncherComponent* s = Settings();
+		auto* transform = m_Host ? m_Host->HostScene().GetComponent<GS::TransformComponent>(m_Launcher) : nullptr;
+		if (!s || !transform)
+			return;
+		s->Manual = true;
+		// Kept, so a change of speed re-solves the angle for the same spot.
+		m_AimPoint = point;
+		m_HasAimPoint = true;
+		glm::vec3 to = point - transform->Position;
+		if (glm::length(glm::vec2(to.x, to.z)) < 0.2f)
+			return;
+		s->AimYaw = glm::degrees(std::atan2(to.x, to.z));
+		float pitch = 0.0f;
+		m_OutOfRange = !SolvePitch(transform->Position, glm::radians(s->AimYaw), point, *s, pitch);
+		s->AimPitch = glm::degrees(pitch);
+		s->AimPitch = std::clamp(s->AimPitch, -20.0f, 70.0f);
+	}
+
+	bool OutOfRange() const { return m_OutOfRange; }
+
+	// The path the next shot will fly -- the projectile equation from the
+	// muzzle at the set speed, gravity only -- cut where it first meets
+	// something, which `hit` and `normal` report. Points every `step`
+	// seconds; nothing in the world moves while it is asked.
+	std::vector<glm::vec3> Trajectory(bool& didHit, glm::vec3& hit, glm::vec3& normal, float& flightTime) const
+	{
+		std::vector<glm::vec3> path;
+		didHit = false;
+		flightTime = 0.0f;
+		glm::vec3 from, direction;
+		bool far;
+		GS::LauncherComponent* s = const_cast<LauncherSystem*>(this)->Settings();
+		if (!s || !const_cast<LauncherSystem*>(this)->Aim(from, direction, far))
+			return path;
+		float reach = 0.5f * std::max({ s->Size.x, s->Size.y, s->Size.z });
+		glm::vec3 p = from + direction * (reach + m_Muzzle);
+		glm::vec3 v = direction * s->Speed;
+		const glm::vec3 g(0.0f, -9.81f, 0.0f);
+		const GS::PhysicsWorld3D& world = m_Host->HostWorld();
+		std::vector<GS::PhysicsWorld3D::BodyHandle> ignore;
+		for (const Shot& shot : m_Shots)
+			ignore.push_back(shot.Body);
+		path.push_back(p);
+		const float step = 1.0f / 60.0f;
+		for (int i = 0; i < 360; i++)
+		{
+			glm::vec3 next = p + v * step + 0.5f * g * step * step;
+			GS::PhysicsWorld3D::RayHit ray = world.Raycast(p, next - p, glm::length(next - p), ignore);
+			if (ray.Hit)
+			{
+				path.push_back(ray.Point);
+				didHit = true;
+				hit = ray.Point;
+				normal = ray.Normal;
+				flightTime += step * ray.Distance / std::max(1e-6f, glm::length(next - p));
+				break;
+			}
+			v += g * step;
+			p = next;
+			flightTime += step;
+			path.push_back(p);
+			if (p.y < -5.0f)
+				break;
+		}
+		return path;
 	}
 
 	bool Active() const { return m_Host && m_Host->HostScene().IsValid(m_Launcher); }
@@ -173,7 +328,8 @@ public:
 		console.Register("arc", "on|off", "aim for gravity, or fire straight at the aim point", [this](const GameConsole::Args& a)
 		{
 			if (a.empty()) { m_Console->Bad("arc on, or arc off"); return; }
-			Settings()->Arc = GameConsole::Lower(a[0]) == "on";
+			std::string w = GameConsole::Lower(a[0]);
+			Settings()->Arc = w == "toggle" ? !Settings()->Arc : w == "on";
 			PrintSettings();
 		});
 		console.Register("target", "<name>", "aim at another entity, by its name", [this](const GameConsole::Args& a)
@@ -189,7 +345,9 @@ public:
 		console.Register("auto", "<shots per second>|off", "keep firing", [this](const GameConsole::Args& a)
 		{
 			float rate = 0.0f;
-			if (!a.empty() && GameConsole::Lower(a[0]) != "off" && !m_Console->Number(a[0], rate))
+			if (!a.empty() && GameConsole::Lower(a[0]) == "toggle")
+				rate = m_AutoRate > 0.0f ? 0.0f : 2.0f;
+			else if (!a.empty() && GameConsole::Lower(a[0]) != "off" && !m_Console->Number(a[0], rate))
 				return;
 			m_AutoRate = std::clamp(rate, 0.0f, 20.0f);
 			if (m_AutoRate == 0.0f)
@@ -216,6 +374,8 @@ public:
 					s->Color = p.Color;
 					if (p.Aim >= 0.0f)
 						s->AimHeight = p.Aim;
+					m_Preset = p.Name;
+					m_PresetAbout = p.About;
 					m_Console->Good(std::string("loaded ") + p.About);
 					PrintSettings();
 					return;
@@ -223,6 +383,33 @@ public:
 			m_Console->Bad("no preset '" + a[0] + "' -- preset lists them");
 		});
 		console.Register("status", "", "what the launcher is set to", [this](const GameConsole::Args&) { PrintSettings(); });
+		console.Register("resize", "<metres>", "scale what it fires so its longest side is this", [this](const GameConsole::Args& a)
+		{
+			float d;
+			if (a.empty() || !m_Console->Number(a[0], d)) { m_Console->Bad("resize 0.5"); return; }
+			GS::LauncherComponent* s = Settings();
+			float longest = std::max({ s->Size.x, s->Size.y, s->Size.z });
+			s->Size = glm::clamp(s->Size * (std::clamp(d, 0.02f, 6.0f) / std::max(longest, 1e-4f)), glm::vec3(0.02f), glm::vec3(6.0f));
+			PrintSettings();
+		});
+		console.Register("aimat", "<x> <y> <z>", "turn the barrel to land a shot on that point", [this](const GameConsole::Args& a)
+		{
+			float x, y, z;
+			if (a.size() != 3 || !m_Console->Number(a[0], x) || !m_Console->Number(a[1], y) || !m_Console->Number(a[2], z))
+			{
+				m_Console->Bad("aimat 0 1.3 0");
+				return;
+			}
+			AimAt(glm::vec3(x, y, z));
+		});
+		console.Register("manual", "on|off", "aim by hand (the cannon's controls), or back at the target", [this](const GameConsole::Args& a)
+		{
+			if (a.empty()) { m_Console->Bad("manual on, or manual off"); return; }
+			Settings()->Manual = GameConsole::Lower(a[0]) == "on";
+			if (!Settings()->Manual)
+				m_HasAimPoint = false;
+			m_Console->Good(Settings()->Manual ? "aimed by hand" : "aimed at " + (Settings()->Target.empty() ? std::string("nothing") : Settings()->Target));
+		});
 	}
 
 	// Projectiles off and gone.
@@ -271,8 +458,14 @@ public:
 		}
 		(void)real;
 
+		// Aimed by hand at a spot: the angle that lands there depends on
+		// the speed and the arc, either of which may just have changed.
+		if (GS::LauncherComponent* s = Settings(); s && s->Manual && m_HasAimPoint)
+			AimAt(m_AimPoint);
+
 		AimLauncherMesh();
 		UpdateStatus();
+		Publish();
 	}
 
 private:
@@ -314,6 +507,14 @@ private:
 		from = transform->Position;
 		outOfRange = false;
 
+		if (s->Manual)
+		{
+			float yaw = glm::radians(s->AimYaw), pitch = glm::radians(s->AimPitch);
+			direction = glm::vec3(std::sin(yaw) * std::cos(pitch), std::sin(pitch), std::cos(yaw) * std::cos(pitch));
+			outOfRange = m_OutOfRange;
+			return true;
+		}
+
 		GS::EntityId target = s->Target.empty() ? GS::InvalidEntity : Find(s->Target);
 		auto* targetTransform = target != GS::InvalidEntity ? scene.GetComponent<GS::TransformComponent>(target) : nullptr;
 		if (!targetTransform)
@@ -324,32 +525,17 @@ private:
 			return true;
 		}
 
-		glm::vec3 to = targetTransform->Position + glm::vec3(0.0f, s->AimHeight, 0.0f) - from;
-		glm::vec2 flat(to.x, to.z);
-		float x = glm::length(flat);
-		if (x < 1e-3f)
+		glm::vec3 point = targetTransform->Position + glm::vec3(0.0f, s->AimHeight, 0.0f);
+		glm::vec3 to = point - from;
+		if (glm::length(glm::vec2(to.x, to.z)) < 1e-3f)
 		{
 			direction = glm::normalize(to);
 			return true;
 		}
-		glm::vec2 across = flat / x;
-		if (!s->Arc)
-		{
-			direction = glm::normalize(to);
-			return true;
-		}
-
-		const float g = 9.81f;
-		float v = s->Speed, y = to.y;
-		float root = v * v * v * v - g * (g * x * x + 2.0f * y * v * v);
-		float angle;
-		if (root < 0.0f)
-		{
-			angle = glm::radians(45.0f);
-			outOfRange = true;
-		}
-		else
-			angle = std::atan((v * v - std::sqrt(root)) / (g * x));
+		float yaw = std::atan2(to.x, to.z);
+		float angle = 0.0f;
+		outOfRange = !SolvePitch(from, yaw, point, *s, angle);
+		glm::vec2 across(std::sin(yaw), std::cos(yaw));
 		direction = glm::vec3(across.x * std::cos(angle), std::sin(angle), across.y * std::cos(angle));
 		return true;
 	}
@@ -364,7 +550,7 @@ private:
 
 		// Clear of the launcher's own mesh before it is a body at all.
 		float reach = 0.5f * std::max({ s->Size.x, s->Size.y, s->Size.z });
-		glm::vec3 at = from + direction * (reach + 0.45f);
+		glm::vec3 at = from + direction * (reach + m_Muzzle);
 
 		// Turned to face where it is going, so a beam flies end-on.
 		float yaw = std::atan2(direction.x, direction.z);
@@ -380,6 +566,9 @@ private:
 		body.UpdateInertiaWorld();
 		body.Friction = 0.6f;
 		body.Restitution = 0.15f;
+		// No drag in flight: the trajectory line is the projectile equation,
+		// and a shot should land where it says.
+		body.LinearDamping = 0.0f;
 		body.Velocity = direction * s->Speed;
 		glm::vec3 sideways = glm::cross(direction, glm::vec3(0.0f, 1.0f, 0.0f));
 		if (glm::length(sideways) > 1e-4f)
@@ -448,7 +637,7 @@ private:
 		GS::Scene& scene = m_Host->HostScene();
 		auto* transform = scene.GetComponent<GS::TransformComponent>(m_Launcher);
 		GS::LauncherComponent* s = Settings();
-		if (!transform || !s || s->Target.empty() || !Aim(from, direction, outOfRange))
+		if (!transform || !s || (s->Target.empty() && !s->Manual) || !Aim(from, direction, outOfRange))
 			return;
 		float yaw = std::atan2(direction.x, direction.z);
 		float pitch = std::asin(glm::clamp(direction.y, -1.0f, 1.0f));
@@ -457,6 +646,41 @@ private:
 		float x, y, z;
 		glm::extractEulerAngleXYZ(glm::mat4_cast(facing), x, y, z);
 		transform->Rotation = glm::degrees(glm::vec3(x, y, z));
+		// The yoke turns about up only.
+		if (auto* yoke = m_Yoke != GS::InvalidEntity ? scene.GetComponent<GS::TransformComponent>(m_Yoke) : nullptr)
+			yoke->Rotation = glm::vec3(0.0f, glm::degrees(yaw), 0.0f);
+	}
+
+	void Publish()
+	{
+		GS::LauncherComponent* s = Settings();
+		if (!m_UI || !s)
+			return;
+		GameUI::Context& ui = *m_UI;
+		ui.Set("launcher.preset", m_Preset);
+		ui.Set("launcher.shape", s->Shape == 0 ? "ball" : "box");
+		ui.Set("launcher.size", std::max({ s->Size.x, s->Size.y, s->Size.z }));
+		ui.Set("launcher.mass", s->Mass);
+		ui.Set("launcher.speed", s->Speed);
+		ui.Set("launcher.spin", s->Spin);
+		ui.Set("launcher.kmh", Format(s->Speed * 3.6f));
+		ui.Set("launcher.momentum", Format(s->Mass * s->Speed));
+		ui.Set("launcher.energy", FormatEnergy(0.5f * s->Mass * s->Speed * s->Speed));
+		ui.Set("launcher.auto", m_AutoRate > 0.0f ? "1" : "0");
+		ui.Set("launcher.arc", s->Arc ? "1" : "0");
+		ui.Set("launcher.shots", (float)m_Shots.size());
+		ui.Set("launcher.about", m_PresetAbout);
+		ui.Set("launcher.dims", s->Shape == 0 ? Format(s->Size.x) + " m ball"
+			: Format(s->Size.x) + " x " + Format(s->Size.y) + " x " + Format(s->Size.z) + " m box");
+		ui.Set("launcher.pitch", Format(s->AimPitch));
+		ui.Set("launcher.yaw", Format(s->AimYaw));
+	}
+
+	static std::string FormatEnergy(float joules)
+	{
+		if (joules >= 1e6f) return Format(joules / 1e6f) + " MJ";
+		if (joules >= 1e3f) return Format(joules / 1e3f) + " kJ";
+		return Format(joules) + " J";
 	}
 
 	void UpdateStatus()
@@ -475,6 +699,13 @@ private:
 		GS::LauncherComponent* s = Settings();
 		if (!s || !m_Console)
 			return;
+		// Anything changed by hand is no longer the preset it came from.
+		for (const Preset& p : Presets())
+			if (p.Name == m_Preset && (p.Shape != s->Shape || p.Size != s->Size || p.Mass != s->Mass || p.Speed != s->Speed))
+			{
+				m_Preset = "custom";
+				m_PresetAbout = "your own";
+			}
 		m_Console->Print("launcher", GameConsole::Tone::Title);
 		m_Console->Print(std::string("  shape   ") + (s->Shape == 0 ? "ball" : "box"));
 		m_Console->Print("  size    " + (s->Shape == 0 ? Format(s->Size.x) + " m across"
@@ -490,6 +721,13 @@ private:
 	LauncherHost* m_Host = nullptr;
 	GameConsole* m_Console = nullptr;
 	GS::EntityId m_Launcher = GS::InvalidEntity;
+	GS::EntityId m_Yoke = GS::InvalidEntity;
+	GameUI::Context* m_UI = nullptr;
+	float m_Muzzle = 0.45f;            // m from the pivot to where a shot leaves
+	bool m_OutOfRange = false;
+	glm::vec3 m_AimPoint{ 0.0f };
+	bool m_HasAimPoint = false;
+	std::string m_Preset = "custom", m_PresetAbout = "your own";
 	std::vector<Shot> m_Shots;
 	std::vector<int> m_Free;          // retired bodies waiting to be reused
 	int m_MaxShots = 40;

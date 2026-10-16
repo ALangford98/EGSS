@@ -14,6 +14,7 @@
 #include "Humanoid.h"
 #include "SceneRenderer.h"
 
+#include <cstdio>
 #include <vector>
 
 namespace Mannequin {
@@ -21,6 +22,45 @@ namespace Mannequin {
 	inline glm::vec4 Shade(const glm::vec4& colour, float factor)
 	{
 		return glm::vec4(glm::clamp(glm::vec3(colour) * factor, 0.0f, 1.0f), colour.a);
+	}
+
+	// The crash-test dummy's part over one body (GS/Procedural/Prefabs):
+	// the model whose frame is the body's, sized from its collider.
+	inline std::shared_ptr<GS::Mesh> DummyPart(Humanoid::Part part, const GS::RigidBody3D& body)
+	{
+		auto limb = [&](const char* kind)
+		{
+			char key[96];
+			std::snprintf(key, sizeof key, "model:dummy.limb:%s:%.3f:%.3f", kind, body.Radius, body.HalfHeight);
+			return GS::MeshCache::Get(key);
+		};
+		switch (part)
+		{
+			case Humanoid::Part::Head: return GS::MeshCache::Get("model:dummy.head");
+			case Humanoid::Part::Torso: return GS::MeshCache::Get("model:dummy.torso");
+			case Humanoid::Part::Pelvis: return GS::MeshCache::Get("model:dummy.pelvis");
+			case Humanoid::Part::Foot: return GS::MeshCache::Get("model:dummy.foot");
+			case Humanoid::Part::Thigh: return limb("thigh");
+			case Humanoid::Part::Shin: return limb("shin");
+			case Humanoid::Part::UpperArm: return limb("upperarm");
+			case Humanoid::Part::Forearm: return limb("forearm");
+			default: return nullptr;
+		}
+	}
+
+	inline void AppendDummy(Humanoid::Part part, const GS::RigidBody3D& body, const glm::vec3& position, const glm::quat& orientation,
+		const glm::vec4& colour, GS::EntityId entity, std::vector<ExtraDraw>& out)
+	{
+		std::shared_ptr<GS::Mesh> mesh = DummyPart(part, body);
+		if (!mesh)
+			return;
+		ExtraDraw item;
+		item.Mesh = mesh;
+		item.Model = glm::translate(glm::mat4(1.0f), position) * glm::mat4_cast(orientation);
+		item.Color = colour;
+		item.Entity = entity;
+		item.AllSubmeshes = true;
+		out.push_back(item);
 	}
 
 	// One body's shape at a pose, as draw items.
@@ -71,6 +111,7 @@ namespace Mannequin {
 	{
 		GS::RigidBody3D Body;
 		glm::vec4 Shade{ 1.0f };   // multiplier: head, feet
+		Humanoid::Part Part = Humanoid::Part::Other;
 	};
 
 	inline const std::vector<RestBody>& RestPose()
@@ -87,6 +128,7 @@ namespace Mannequin {
 				rest.Body = world.GetBody(handle);
 				float factor = handle == rig.HeadBody() ? 1.45f : rig.IsFoot(handle) ? 0.55f : 1.0f;
 				rest.Shade = glm::vec4(factor, factor, factor, 1.0f);
+				rest.Part = rig.PartOf(handle);
 				bodies.push_back(rest);
 			}
 			return bodies;
@@ -115,22 +157,40 @@ namespace Mannequin {
 	// The rest pose standing where `transform` says -- its position is the
 	// ground under the feet, its yaw the way the figure faces.
 	inline void AppendRestPose(const GS::TransformComponent& transform, const glm::vec4& colour, GS::EntityId entity,
-		std::vector<ExtraDraw>& out)
+		std::vector<ExtraDraw>& out, int look = 0)
 	{
 		glm::quat turn = glm::angleAxis(glm::radians(transform.Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
 		for (const RestBody& rest : RestPose())
-			AppendBody(rest.Body, transform.Position + turn * rest.Body.Position, turn * rest.Body.Orientation,
-				Shade(colour, rest.Shade.x), entity, out);
+		{
+			glm::vec3 at = transform.Position + turn * rest.Body.Position;
+			glm::quat facing = turn * rest.Body.Orientation;
+			if (look == 1)
+				AppendDummy(rest.Part, rest.Body, at, facing, colour, entity, out);
+			else
+				AppendBody(rest.Body, at, facing, Shade(colour, rest.Shade.x), entity, out);
+		}
 	}
 
 	inline void AppendLive(const Humanoid& rig, const GS::PhysicsWorld3D& world, const glm::vec4& colour,
-		GS::EntityId entity, std::vector<ExtraDraw>& out)
+		GS::EntityId entity, std::vector<ExtraDraw>& out, int look = 0)
 	{
 		for (GS::PhysicsWorld3D::BodyHandle handle : rig.Bodies())
 		{
 			const GS::RigidBody3D& body = world.GetBody(handle);
-			AppendBody(body, body.Position, body.Orientation, PartColour(rig, handle, colour), entity, out);
+			if (look == 1)
+				AppendDummy(rig.PartOf(handle), body, body.Position, body.Orientation, colour, entity, out);
+			else
+				AppendBody(body, body.Position, body.Orientation, PartColour(rig, handle, colour), entity, out);
 		}
+	}
+
+	inline int LookOf(GS::Scene& scene, GS::EntityId entity)
+	{
+		if (auto* player = scene.GetComponent<GS::PlayerComponent>(entity))
+			return player->Look;
+		if (auto* npc = scene.GetComponent<GS::NpcComponent>(entity))
+			return npc->Look;
+		return 0;
 	}
 
 	inline glm::vec4 ColourOf(GS::Scene& scene, GS::EntityId entity)

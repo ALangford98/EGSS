@@ -17,6 +17,8 @@
 
 #include "CharacterController.h"
 #include "GameConsole.h"
+#include "GameModes.h"
+#include "GameUI.h"
 #include "Launcher.h"
 #include "SceneRenderer.h"
 #include "CompiledScriptRegistry.h"
@@ -49,10 +51,13 @@ public:
 
 	bool IsRunning() const { return m_Running; }
 
-	// The running humanoids, as draw items for SceneRenderer.
+	// The running humanoids, as draw items for SceneRenderer -- and what
+	// the game draws that is not an entity: the cannon's trajectory.
 	void AppendCharacterDraws(std::vector<ExtraDraw>& out) const
 	{
 		m_Characters.AppendDraws(m_Scene, m_World, out);
+		if (m_Running)
+			m_Modes.AppendDraws(out);
 	}
 
 	bool IsRunningCharacter(GS::EntityId entity) const { return m_Characters.IsRunning(entity); }
@@ -73,11 +78,18 @@ public:
 	// screen coordinates. Called inside the host's ImGui frame.
 	void DrawOverlay(float x, float y, float width, float height)
 	{
-		if (m_Running)
-			m_Console.Draw(x, y, width, height);
+		if (!m_Running)
+			return;
+		m_Modes.Frame(x, y, width, height);
+		m_Console.Draw(x, y, width, height);
+		GS::ImGuiLayer::UploadTextures();
 	}
 
 	GameConsole& Console() { return m_Console; }
+	GameModes& Modes() { return m_Modes; }
+	LauncherSystem& Launchers() { return m_Launchers; }
+	GS::PhysicsWorld3D& World() { return m_World; }
+	GameUI::Context& UI() { return m_Modes.UI(); }
 
 	// Builds every body, installs the physics backend, then prepares and
 	// starts every script. `dependencies`, when given, receives each
@@ -175,8 +187,10 @@ public:
 		m_Launchers.Start(m_LauncherHost);
 		RegisterCommands();
 		m_Launchers.RegisterCommands(m_Console);
+		m_Modes.Start();
 		m_TimeScale = 1.0f;
 		GS::ScriptPhysics::SetBackend(&m_Backend);
+		GS::ScriptUI::SetBackend(&m_UIBackend);
 
 		for (GS::EntityId id : m_Scene.GetEntities())
 		{
@@ -243,6 +257,8 @@ public:
 			return;
 
 		GS::ScriptPhysics::SetBackend(nullptr);
+		GS::ScriptUI::SetBackend(nullptr);
+		m_Modes.Stop();
 
 		for (auto& pair : m_Prepared)
 			m_Engine.ReleasePreparedScript(pair.second);
@@ -268,7 +284,10 @@ public:
 		m_Console.RunQueued();
 		float real = dt;
 		dt *= m_TimeScale;
-		m_Launchers.Step(dt, real, !GS::ImGuiLayer::WantsKeyboard());
+		// The camera, the modes and walking up to things go at real speed:
+		// slow motion slows the world, not the person watching it.
+		m_Modes.Step(real);
+		m_Launchers.Step(dt, real, !GS::ImGuiLayer::WantsKeyboard() && m_Modes.KeyboardFree());
 		if (dt <= 0.0f)
 			return;   // paused
 
@@ -617,10 +636,23 @@ private:
 	std::unordered_map<GS::EntityId, ScriptEngine::PreparedScript> m_Prepared;
 	std::unordered_map<GS::EntityId, CompiledInstance> m_Compiled;
 
+	// Scripts' ui.show/hide/set/get/command, through GS::ScriptUI.
+	struct UIBackend : GS::ScriptUI::Backend
+	{
+		GameSession& Session;
+		explicit UIBackend(GameSession& session) : Session(session) {}
+		void Show(const std::string& screen, bool shown) override { Session.UI().Show(screen, shown); }
+		void Set(const std::string& name, const std::string& value) override { Session.UI().Set(name, value); }
+		std::string Get(const std::string& name) override { return Session.UI().Get(name); }
+		void Command(const std::string& line) override { Session.m_Console.Submit(line, false); }
+	};
+
 	PhysicsBackend m_Backend{ *this };
+	UIBackend m_UIBackend{ *this };
 	CharacterController m_Characters;
 	GameConsole m_Console;
 	LauncherSystem m_Launchers;
+	GameModes m_Modes{ m_Scene, m_World, m_Characters, m_Launchers, m_Console };
 	SessionLauncherHost m_LauncherHost{ *this };
 	float m_TimeScale = 1.0f;
 	float m_PausedFrom = 1.0f;
@@ -641,7 +673,7 @@ inline void AppendHumanoidDraws(GS::Scene& scene, const GameSession* session, st
 		auto* transform = scene.GetComponent<GS::TransformComponent>(entity);
 		auto* mesh = scene.GetComponent<GS::MeshComponent>(entity);
 		if (transform && (!mesh || mesh->Visible))
-			Mannequin::AppendRestPose(*transform, Mannequin::ColourOf(scene, entity), entity, out);
+			Mannequin::AppendRestPose(*transform, Mannequin::ColourOf(scene, entity), entity, out, Mannequin::LookOf(scene, entity));
 	};
 	auto& players = scene.View<GS::PlayerComponent>();
 	for (size_t i = 0; i < players.Size(); i++)

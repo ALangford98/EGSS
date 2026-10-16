@@ -152,7 +152,8 @@ public:
 				auto* mesh = scene.GetComponent<GS::MeshComponent>(c.Entity);
 				if (mesh && !mesh->Visible)
 					continue;
-				Mannequin::AppendLive(*c.Rig, world, Mannequin::ColourOf(scene, c.Entity), c.Entity, out);
+				Mannequin::AppendLive(*c.Rig, world, Mannequin::ColourOf(scene, c.Entity), c.Entity, out,
+					Mannequin::LookOf(scene, c.Entity));
 			}
 	}
 
@@ -197,6 +198,9 @@ public:
 		m_Player = -1;
 		m_Camera = GS::InvalidEntity;
 		m_CreatedCamera = false;
+		m_Possessing = false;
+		m_HeldPlayer = -1;
+		m_HeldCamera = GS::InvalidEntity;
 	}
 
 	// One character, its body already in the world.
@@ -285,11 +289,9 @@ public:
 				continue;
 			}
 
-			if (c.IsPlayer && &c == &m_Characters[m_Player])
+			if (IsControlled(c))
 			{
-				auto* settings = scene.GetComponent<GS::PlayerComponent>(c.Entity);
-				if (!settings)
-					continue;
+				const GS::PlayerComponent* settings = SettingsOf(scene, c);
 				// Relative to where the camera looks, flattened.
 				glm::vec3 forward(-std::sin(glm::radians(m_Yaw)), 0.0f, -std::cos(glm::radians(m_Yaw)));
 				glm::vec3 right(std::cos(glm::radians(m_Yaw)), 0.0f, -std::sin(glm::radians(m_Yaw)));
@@ -351,9 +353,9 @@ public:
 		if (m_Player < 0 || m_Camera == GS::InvalidEntity || !scene.IsValid(m_Camera))
 			return;
 		Character& player = m_Characters[m_Player];
-		auto* settings = scene.GetComponent<GS::PlayerComponent>(player.Entity);
+		const GS::PlayerComponent* settings = SettingsOf(scene, player);
 		auto* camera = scene.GetComponent<GS::TransformComponent>(m_Camera);
-		if (!settings || !camera || !scene.IsValid(player.Entity))
+		if (!settings || !camera || !scene.IsValid(player.Entity) || settings->CameraMode == 2)
 			return;
 
 		const GS::RigidBody3D& body = world.GetBody(player.Handle);
@@ -369,12 +371,109 @@ public:
 				: body.Position + glm::vec3(0.0f, body.HalfHeight + body.Radius * 0.6f, 0.0f);
 		}
 		else
-			camera->Position = target - Forward(m_Pitch, m_Yaw) * settings->CameraDistance;
+		{
+			// Pulled in when something is between the character and where
+			// the camera would be -- a wall, the crates behind the dummy's
+			// mark -- so it is never looking out from inside a box.
+			glm::vec3 back = -Forward(m_Pitch, m_Yaw);
+			float distance = settings->CameraDistance;
+			std::vector<GS::PhysicsWorld3D::BodyHandle> own = player.Rig ? player.Rig->Bodies()
+				: std::vector<GS::PhysicsWorld3D::BodyHandle>{ player.Handle };
+			// Five rays, the line and four 0.25 m off it: the view is a
+			// cone, not a line, and a crate the centre ray clears by 5 cm
+			// still fills the picture.
+			glm::vec3 side = glm::normalize(glm::cross(back, glm::vec3(0.0f, 1.0f, 0.0f)));
+			glm::vec3 lift = glm::cross(side, back);
+			for (glm::vec3 offset : { glm::vec3(0.0f), side * 0.25f, -side * 0.25f, lift * 0.25f, -lift * 0.25f })
+			{
+				GS::PhysicsWorld3D::RayHit hit = world.Raycast(target + offset, back, distance + 0.3f, own);
+				if (hit.Hit)
+					distance = std::max(0.4f, hit.Distance - 0.3f);
+			}
+			camera->Position = target + back * distance;
+		}
 		camera->Rotation = glm::vec3(m_Pitch, m_Yaw, 0.0f);
 	}
 
 	GS::EntityId CameraEntity() const { return m_Camera; }
 	bool CreatedCamera() const { return m_CreatedCamera; }
+
+	// Taking control of a character the game did not start with one of --
+	// walking up to the crash-test dummy and becoming him. Input drives it
+	// as it would a player, and `camera` follows it from behind; Release
+	// hands it back to its own behaviour and gives the camera back
+	// unmoved. False for an entity that is not a character here.
+	bool Possess(GS::Scene& scene, GS::EntityId entity, GS::EntityId camera, const GS::PhysicsWorld3D& world)
+	{
+		for (size_t i = 0; i < m_Characters.size(); i++)
+			if (m_Characters[i].Entity == entity && scene.IsValid(entity))
+			{
+				if (!m_Possessing)
+				{
+					m_HeldPlayer = m_Player;
+					m_HeldCamera = m_Camera;
+				}
+				m_Possessing = true;
+				m_Player = (int)i;
+				m_Camera = camera;
+				// The camera keeps looking the way it was -- walking up to him
+				// from the front and pressing E does not swing the view round
+				// -- and W walks him away from it, as a player is walked. A
+				// camera's rotation (pitch, yaw, 0) is exactly this
+				// controller's (m_Pitch, m_Yaw); see Forward.
+				Character& c = m_Characters[i];
+				if (auto* view = scene.GetComponent<GS::TransformComponent>(camera))
+				{
+					m_Yaw = view->Rotation.y;
+					m_Pitch = glm::clamp(view->Rotation.x, -60.0f, 20.0f);
+				}
+				else
+				{
+					// Behind him: the rig's facing is an entity yaw (it faces
+					// (sin f, cos f)) and the camera looks along (-sin y, -cos y),
+					// half a turn apart, as AddHumanoid says.
+					m_Yaw = c.Rig ? glm::degrees(c.Rig->FacingRadians()) + 180.0f : c.Facing;
+					m_Pitch = -12.0f;
+				}
+				m_MouseKnown = false;
+				(void)world;
+				return true;
+			}
+		return false;
+	}
+
+	void Release()
+	{
+		if (!m_Possessing)
+			return;
+		m_Possessing = false;
+		m_Player = m_HeldPlayer;
+		m_Camera = m_HeldCamera;
+	}
+
+	bool IsPossessing() const { return m_Possessing; }
+	GS::EntityId Controlled() const
+	{
+		return m_Player >= 0 ? m_Characters[(size_t)m_Player].Entity : GS::InvalidEntity;
+	}
+
+	// Where the controlled character is -- its centre, about chest height
+	// for a humanoid -- for asking what it is standing near.
+	bool ControlledPosition(const GS::PhysicsWorld3D& world, glm::vec3& out) const
+	{
+		if (m_Player < 0)
+			return false;
+		const Character& c = m_Characters[(size_t)m_Player];
+		out = world.GetBody(c.Handle).Position;
+		return true;
+	}
+
+	// The controller's yaw (degrees), for facing the camera's way.
+	float Yaw() const { return m_Yaw; }
+
+	// Off while the keyboard belongs to something else in the game -- the
+	// terminal, the cannon's controls.
+	void SetInputEnabled(bool enabled) { m_InputEnabled = enabled; }
 
 private:
 	struct Character
@@ -396,6 +495,28 @@ private:
 		float StartYaw = 0.0f;         // radians, the rig's own convention: what Respawn takes
 	};
 
+	bool IsControlled(const Character& c) const
+	{
+		return m_Player >= 0 && &c == &m_Characters[(size_t)m_Player];
+	}
+
+	// The controlled character's settings: its own PlayerComponent, or, for
+	// one taken over, a closer camera that suits standing behind a person.
+	const GS::PlayerComponent* SettingsOf(GS::Scene& scene, const Character& c) const
+	{
+		if (auto* settings = scene.GetComponent<GS::PlayerComponent>(c.Entity))
+			return settings;
+		static const GS::PlayerComponent possessed = []()
+		{
+			GS::PlayerComponent p;
+			p.Speed = 4.0f;
+			p.CameraDistance = 3.4f;
+			p.CameraHeight = 0.55f;
+			return p;
+		}();
+		return &possessed;
+	}
+
 	// A humanoid is told what to do, and does it with its own legs: the
 	// same wish as any character, turned into the rig's controls -- a
 	// direction (the rig's yaw is (cos, sin) where ours is (-sin, -cos))
@@ -409,7 +530,7 @@ private:
 		control = Humanoid::Control{};
 		const GS::RigidBody3D& pelvis = world.GetBody(rig.PelvisBody());
 
-		if (c.IsPlayer && m_Player >= 0 && &c == &m_Characters[m_Player])
+		if (IsControlled(c))
 		{
 			float y = glm::radians(m_Yaw);
 			control.Yaw = glm::degrees(std::atan2(-std::cos(y), -std::sin(y)));
@@ -487,7 +608,7 @@ private:
 		m_Sprint = false;
 		bool jumpDown = false;
 
-		if (!GS::ImGuiLayer::WantsKeyboard())
+		if (!GS::ImGuiLayer::WantsKeyboard() && m_InputEnabled)
 		{
 			if (GS::Input::IsKeyPressed(GS_KEY_W)) m_MoveInput.y += 1.0f;
 			if (GS::Input::IsKeyPressed(GS_KEY_S)) m_MoveInput.y -= 1.0f;
@@ -510,7 +631,7 @@ private:
 		// Right-drag orbits. The difference between this step's pointer and
 		// the last one's, so it is the same however the frames fell.
 		glm::vec2 mouse(GS::Input::GetMouseX(), GS::Input::GetMouseY());
-		if (GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_RIGHT) && m_MouseKnown)
+		if (GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_RIGHT) && m_MouseKnown && m_InputEnabled)
 		{
 			glm::vec2 delta = mouse - m_LastMouse;
 			m_Yaw -= delta.x * 0.25f;
@@ -593,4 +714,9 @@ private:
 	bool m_JumpPressed = false, m_JumpWasDown = false;
 	glm::vec2 m_LastMouse{ 0.0f };
 	bool m_MouseKnown = false;
+	bool m_InputEnabled = true;
+
+	bool m_Possessing = false;
+	int m_HeldPlayer = -1;             // who m_Player was before a possession
+	GS::EntityId m_HeldCamera = GS::InvalidEntity;
 };

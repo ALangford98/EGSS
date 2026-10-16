@@ -11,7 +11,9 @@
 // PrepareEntityScript additionally get a native `entity` (position/
 // rotation/scale), `input` (isKeyDown, isPointerDown, pointerX/Y), and `scene` (findByTag/spawn/
 // destroy) binding, passed in as function parameters rather than globals
-// so two entities running the same script source never share state.
+// so two entities running the same script source never share state. The
+// game's UI is the one global besides console: `ui` (show/hide a screen,
+// set/get a value it shows, command -- GS::ScriptUI).
 
 #include <GS.h>
 #include <quickjs.h>
@@ -1362,6 +1364,15 @@ private:
 		JS_SetPropertyStr(m_Context, consoleObj, "error", JS_NewCFunction(m_Context, NativeConsoleLog, "error", 1));
 		JS_SetPropertyStr(m_Context, consoleObj, "warn", JS_NewCFunction(m_Context, NativeConsoleLog, "warn", 1));
 		JS_SetPropertyStr(m_Context, global, "console", consoleObj);
+		// The game's UI (GS::ScriptUI): a global like console, since it is
+		// the game's one UI rather than anything an entity owns.
+		JSValue uiObj = JS_NewObject(m_Context);
+		JS_SetPropertyStr(m_Context, uiObj, "show", JS_NewCFunction(m_Context, Native_UIShow, "show", 1));
+		JS_SetPropertyStr(m_Context, uiObj, "hide", JS_NewCFunction(m_Context, Native_UIHide, "hide", 1));
+		JS_SetPropertyStr(m_Context, uiObj, "set", JS_NewCFunction(m_Context, Native_UISet, "set", 2));
+		JS_SetPropertyStr(m_Context, uiObj, "get", JS_NewCFunction(m_Context, Native_UIGet, "get", 1));
+		JS_SetPropertyStr(m_Context, uiObj, "command", JS_NewCFunction(m_Context, Native_UICommand, "command", 1));
+		JS_SetPropertyStr(m_Context, global, "ui", uiObj);
 		JS_FreeValue(m_Context, global);
 
 		// Created only here, past every failure path above -- m_InputObject
@@ -1433,6 +1444,51 @@ private:
 	{
 		ScriptEngine* self = (ScriptEngine*)opaque;
 		return std::chrono::steady_clock::now() > self->m_Deadline ? 1 : 0;
+	}
+
+	static std::string ArgString(JSContext* ctx, int argc, JSValueConst* argv, int index)
+	{
+		if (index >= argc)
+			return std::string();
+		const char* text = JS_ToCString(ctx, argv[index]);
+		std::string out = text ? text : "";
+		if (text)
+			JS_FreeCString(ctx, text);
+		return out;
+	}
+
+	static JSValue Native_UIShow(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+	{
+		GS::ScriptUI::Show(ArgString(ctx, argc, argv, 0), true);
+		return JS_UNDEFINED;
+	}
+	static JSValue Native_UIHide(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+	{
+		GS::ScriptUI::Hide(ArgString(ctx, argc, argv, 0));
+		return JS_UNDEFINED;
+	}
+	static JSValue Native_UISet(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+	{
+		// A number goes through the same "%g" as the compiled path's
+		// Set(name, double), so the two print a value alike.
+		if (argc >= 2 && JS_IsNumber(argv[1]))
+		{
+			double value = 0.0;
+			JS_ToFloat64(ctx, &value, argv[1]);
+			GS::ScriptUI::Set(ArgString(ctx, argc, argv, 0), value);
+		}
+		else
+			GS::ScriptUI::Set(ArgString(ctx, argc, argv, 0), ArgString(ctx, argc, argv, 1));
+		return JS_UNDEFINED;
+	}
+	static JSValue Native_UIGet(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+	{
+		return JS_NewString(ctx, GS::ScriptUI::Get(ArgString(ctx, argc, argv, 0)).c_str());
+	}
+	static JSValue Native_UICommand(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+	{
+		GS::ScriptUI::Command(ArgString(ctx, argc, argv, 0));
+		return JS_UNDEFINED;
 	}
 
 	static JSValue NativeConsoleLog(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv)
@@ -1859,6 +1915,16 @@ private:
 							return "scene.DestroyEntity((" + emitExpr(args[0]) + ").GetId())";
 						}
 						fail(node, "unsupported scene.* call '" + member + "' (scene.spawn isn't implemented in the transpiler yet)");
+					}
+
+					if (isNamed(obj, "ui")) {
+						var uiCalls = { show: 1, hide: 1, set: 2, get: 1, command: 1 };
+						if (!uiCalls.hasOwnProperty(member)) fail(node, "unsupported ui.* call '" + member + "'");
+						if (args.length !== uiCalls[member]) fail(node, "ui." + member + " needs " + uiCalls[member] + " argument(s)");
+						var uiName = { show: "Show", hide: "Hide", set: "Set", get: "Get", command: "Command" }[member];
+						if (member === "set")
+							return "GS::ScriptUI::Set(std::string(" + emitExpr(args[0]) + "), " + emitExpr(args[1]) + ")";
+						return "GS::ScriptUI::" + uiName + "(std::string(" + emitExpr(args[0]) + "))";
 					}
 
 					if (isNamed(obj, "console")) {
