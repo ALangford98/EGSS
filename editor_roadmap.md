@@ -124,11 +124,17 @@ catching yourself, falling realistically. Where it stands:
 - **Next for parkour**, toward the "flowing" the owner asked for:
   - ~~moves into moves~~ -- done 2026-10-16: each move hands straight to
     the next once he is on his feet; a vault off an edge rolls;
-  - wall run and wall jump; a speed vault (one hand, legs to the side);
-    hanging and shimmying along a ledge; dropping to a hang;
-  - speculative contacts in the physics, for the one-step penetration of
-    a hard landing (20 cm at 7.7 m/s);
-  - the climb's hang currently has the feet on the wall but not pushing.
+  - ~~wall run and wall jump; a speed vault; hanging and shimmying along
+    a ledge; dropping to a hang; feet pushing in the climb~~ -- done
+    2026-10-16;
+  - speculative contacts were tried for the deep steps of a hard landing
+    and did not help: the hips are carried, and a carried body wins over
+    contacts through the joints. **Hips driven by forces** (a dynamic
+    pelvis following its path through a strong spring) is the fix, and
+    would also let a heavy landing actually load the legs;
+  - next: a wall run that turns a corner; a cat leap (jump to a hang on
+    a wall ahead); hanging round a corner; a tic-tac (one step off a wall
+    to change direction); precision jumps between narrow tops.
 - **Cover** (asked for 2026-10-16). Builds on parkour's sensing (`Sense`
   already knows a face's height and where it ends):
   - take cover: up against a wall or a low wall, back or shoulder to

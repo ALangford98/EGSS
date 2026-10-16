@@ -7,6 +7,75 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-16 (parkour: wall run and wall jump, the speed vault, hanging and shimmying, dropping to a hang)
+
+The owner: "keep going down the list". The roadmap's parkour list, in order.
+
+**Wall run and wall jump.** Running, jump, with a wall alongside taller
+than he is that goes on at least a metre (`SenseSideWall`: rays either
+side at chest height, one higher, then along it): onto the wall, a few
+steps on it, the body tipped 24 degrees away so the legs reach it. Up the
+wall he is a projectile under 55% of g -- the rest carried by friction at
+the feet -- so a 2.6 m/s take-off rises v^2 / 2g' = 0.626 m; measured
+0.63. Jump again and he kicks off at 45 degrees, out and on; at the run's
+end or where the wall stops he comes off along it. Both go through the
+drop (`PlanDrop` takes a launch speed now), so the landing absorbs or
+rolls. Fifteen runs over five bodies, three courses: on their feet.
+
+**The speed vault.** Fast (over 0.75 of the run speed) at something no
+higher than his waist and thin: one hand on the top, the body rolled 40
+degrees on its side, legs out together past the hand -- round the wall
+rather than over it, so the hips need 0.36 m over the top instead of
+0.55 and keep 98% of the speed. The first try rolled the wrong way: the
+hand's side came up and the legs swept low, 10-14 cm into the rail; the
+sign fixed, 4-7 cm.
+
+**Hanging.** A jump to a ledge he cannot reach standing (the climb class
+now goes to 2.6 m in his scale -- a 0.5 m jump above the 2.1 his hands
+reach) catches the edge; if forward is not held he hangs there
+(`UpdateHang`): hands on the edge, body below, feet braced on the wall
+with the knees out from it. Left and right go along it hand over hand --
+a hand that has fallen behind where it should be moves, lifted, while the
+other holds -- and stop where the edge does (`EdgeAt`). Forward or jump
+climbs from the hang (the climb from its pull); back lets go into the
+drop. The keys are his while he hangs, not the camera's: camera-relative,
+back climbed after he had dropped to a hang facing the way he came.
+
+**Dropping to a hang.** Walking -- not running -- off an edge more than
+2 m high, he crouches at it, turns, lowers himself over it, feet out over
+the edge before they go down (carried straight, they went through the
+corner) and hands on it, into the hang. Running off, he drops and rolls
+as before.
+
+Two things found by the numbers:
+
+- *The hands were not on the edge.* Hanging, the wrists sat 19-25 cm
+  under the targets: an arm straight up is 180 degrees from hanging at
+  the side, and the moves opened the shoulder to 120. Opened to 170 for
+  moves; the wrists are now 1 cm over the top.
+- *Knees into the wall.* The hang's knees bent towards the wall and went
+  into it (a shin 24 cm); turned out from it, as a climber hangs, 10-15.
+
+Also: arms against scenery no longer count as a blow (legs already did
+not). Braking at a wall the swinging arms hit it and stumbled him along it.
+
+**Speculative contacts, tried and taken out.** A body flagged speculative
+was tested fattened by how far it could go in the step, a gap found that
+way allowed to close and no more. Turned on for the limbs during moves:
+no better -- median and deep steps unchanged, some cases worse (a head 50
+cm in once). The deep steps are not tunnelling: the hips are carried
+kinematically, and when they come down faster than the legs can fold,
+the joints, attached to an infinite mass, win over the contact. Hips
+driven by forces rather than a path is the fix, and a larger change.
+
+Measured: 70 runs, 14 courses (single moves, chains of the earlier entry
+excepted, wall runs, rails, hangs) over five bodies: 70 on their feet.
+Limb contacts median 5.3 cm, 90th percentile 10, worst 25 (one step);
+30 steps over 8 cm in all. Open-ground walk identical to the last commit.
+
+In the crash test hall's yard: a 3.5 m Run Wall down the west side and a
+2.35 m High Ledge in the north-west corner.
+
 ### 2026-10-16 (parkour: one move into the next)
 
 Each move used to end in the walk, and the next began from it. Now each
