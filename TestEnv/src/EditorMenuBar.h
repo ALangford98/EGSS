@@ -512,6 +512,8 @@ private:
 			ImGui::SetWindowFocus("Appearance");
 		if (ImGui::MenuItem("Material"))
 			ImGui::SetWindowFocus("Material");
+		if (ImGui::MenuItem("Controls"))
+			ImGui::SetWindowFocus("Controls");
 
 		ImGui::Separator();
 

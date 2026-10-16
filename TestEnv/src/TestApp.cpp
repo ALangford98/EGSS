@@ -31,6 +31,7 @@
 #include "ProfilerPanel.h"
 #include "AppearancePanel.h"
 #include "ScenesPanel.h"
+#include "ControlsPanel.h"
 #include "NetworkPanel.h"
 #include "AudioRaceStress.h"
 #include "PlayMode.h"
@@ -85,6 +86,7 @@ public:
 		PushLayer(new ProfilerPanel());
 		PushLayer(new AppearancePanel());
 		PushLayer(new ScenesPanel());
+		PushLayer(new ControlsPanel());
 		PushLayer(new NetworkPanel());
 		// Inert without --audio-stress. Pushed unconditionally so
 		// `./gs.py sanitize --thread` can turn it on from the command line --

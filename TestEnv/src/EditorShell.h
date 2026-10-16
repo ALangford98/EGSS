@@ -384,6 +384,7 @@ private:
 		ImGui::DockBuilderDockWindow("Build Output", bottom);
 		ImGui::DockBuilderDockWindow("Appearance", bottom);
 		ImGui::DockBuilderDockWindow("Network", bottom);
+		ImGui::DockBuilderDockWindow("Controls", bottom);
 
 		ImGui::DockBuilderDockWindow("Files", left);
 		ImGui::DockBuilderDockWindow("Outliner", left);
