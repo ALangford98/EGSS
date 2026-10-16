@@ -288,6 +288,19 @@ namespace CrashTestScene
 		// lowers him into a hang too; running off it, he drops and rolls.
 		Static(Box(scene, "Run Wall", { -12.6f, 1.75f, 6.0f }, { 0.4f, 3.5f, 8.0f }, { 0.55f, 0.57f, 0.6f, 1.0f }, 0.7f));
 		Static(Box(scene, "High Ledge", { -4.8f, 1.175f, 18.5f }, { 2.6f, 2.35f, 1.2f }, concrete, 0.7f));
+		// Run the wall north and the Corner Wall across its end turns him
+		// onto it; the Slant Wall, met at an angle running, is a tic-tac;
+		// the pillars (a step up to them) are for standing precision jumps.
+		// A run and a jump two metres short of the High Ledge is a cat leap.
+		Static(Box(scene, "Corner Wall", { -11.3f, 1.75f, 10.2f }, { 2.2f, 3.5f, 0.4f }, { 0.55f, 0.57f, 0.6f, 1.0f }, 0.7f));
+		{
+			GS::Entity slant = Box(scene, "Slant Wall", { -4.8f, 1.75f, 14.0f }, { 3.0f, 3.5f, 0.4f }, { 0.55f, 0.57f, 0.6f, 1.0f }, 0.7f);
+			slant.Get<GS::TransformComponent>()->Rotation = { 0.0f, 50.0f, 0.0f };
+			Static(slant);
+		}
+		Static(Box(scene, "Pillar Step", { -10.0f, 0.25f, -13.6f }, { 1.0f, 0.5f, 1.0f }, concrete, 0.7f));
+		for (float z : { -12.0f, -10.4f, -8.8f })
+			Static(Box(scene, "Pillar", { -10.0f, 0.5f, z }, { 0.5f, 1.0f, 0.5f }, painted, 0.6f));
 		Dummy(scene, "Runner Dummy", { yardX, 0.0f, 0.0f }, 0.0f, { 0.15f, 0.75f, 0.45f, 1.0f }, 0);
 
 		// The cannon, 11 m down the lane, firing back along -z: its base
