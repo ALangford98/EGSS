@@ -142,9 +142,13 @@ catching yourself, falling realistically. Where it stands:
     solver (32 velocity iterations 5.6 / 10.2 / 37, 64 worse, position
     iterations no change). The depth left is case by case -- a target, a
     landing -- which is how every fix so far was found;
-  - next: a wall run that turns a corner; a cat leap (jump to a hang on
-    a wall ahead); hanging round a corner; a tic-tac (one step off a wall
-    to change direction); precision jumps between narrow tops.
+  - ~~a wall run round a corner; the cat leap; hanging round a corner;
+    the tic-tac; precision jumps~~ -- done 2026-10-16;
+  - next: balancing along a beam or a wall top (narrow footing, arms
+    out); swinging on a bar; climbing a ladder or a pipe; a wall climb up
+    a face with holds; sliding under a low gap; a dive roll over
+    something; hanging round an inside corner; the moves for NPCs (an
+    NPC choosing a route through them).
 - **Cover** (asked for 2026-10-16). Builds on parkour's sensing (`Sense`
   already knows a face's height and where it ends):
   - take cover: up against a wall or a low wall, back or shoulder to

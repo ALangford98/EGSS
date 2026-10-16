@@ -7,6 +7,64 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-16 (parkour: corner wall runs, the cat leap, hanging round corners, the tic-tac, precision jumps; what did not help the depth)
+
+"Carry on" -- down the roadmap list.
+
+**First, the limb depth, three ways, none of which helped** (70 runs,
+limb depth median / 90th percentile / steps over 8 cm; carried hips as
+they are: 6.0 / 13.6 cm / 36):
+
+- *Hips driven by forces*: a dynamic pelvis set each step to the velocity
+  that reaches its path, gravity taken off in advance, its mass scaled up
+  against the limbs. x1 8.5 / 16.4 / 99, x4 6.8 / 17.8 / 62, x12 9.7 /
+  22.9 / 111, x40 11.2 / 27.4 / 191 -- the stiffer it holds the path the
+  worse; the velocity reset each step pumps the chain.
+- *Stronger legs during moves*: torque x2 6.5 / 11.2 / 36, x4 7.3 / 16.2 /
+  93; speed cap 60 rad/s 7.1 / 16.7 / 50; stiffness x2 8.2 / 14.1 / 75.
+- *Solver iterations*: 32 velocity 5.6 / 10.2 / 37, 64 worse and one fall;
+  position iterations change nothing.
+
+All taken out. Every fix so far was a particular target or landing found
+by tracing the deepest contact, and that is what is left.
+
+**The moves:**
+
+- *A wall run round an inside corner.* A wall across the way ahead
+  (looked for 0.75 m plus 0.15 s of speed on) takes him onto it, turned
+  away from the one he was on, with the speed up he had. Twice at most.
+  The look-ahead began at a flat 0.75 m and the run was over before the
+  corner came into it.
+- *The cat leap.* Running at a ledge he can climb but is too far from
+  -- sensing now looks 2.8 m ahead in his scale -- jump is a leap to the
+  hang: off one foot, a projectile to where the hands meet the edge with
+  the arms straight, feet first to the wall, into the hang. Up to 0.8 m
+  of rise and 2.6 m off. Over a gap too.
+- *Hanging round an outside corner.* Shimmying to the end of an edge
+  whose wall turns, he goes round onto the next face (found by looking
+  back from past the end). The feet first went straight across, through
+  the corner, and stuck 40 cm inside; now they swing out round it.
+- *The tic-tac.* Running at a wall met at a slant (between 25 and 90% of
+  square on) that is too tall to get over, jump: a foot on it at hip
+  height, and off it mirrored in the wall at 85% of the speed, up, into
+  the drop's landing.
+- *The precision jump.* Standing or walking at a gap with a top beyond it
+  within half a metre or so of his height: a two-footed jump whose apex
+  clears both by 0.3 m, landed feet together and stuck, no step -- on the
+  top's middle if it is narrow.
+
+Measured: 105 runs, 21 courses (all the earlier ones and seven new) over
+five bodies: 105 on their feet. Limb depth median 5.7 cm, p90 9.6, worst
+24.6; 51 steps over 8 cm in all. Each new move does what it should for
+every body that can (the corner run needs the corner within its run --
+the smallest body's run is over first; the cat leap refuses past its
+reach, rightly). Ten precision jumps, onto a 0.5 m pillar 1.5 m off and
+onto one 0.4 m higher: all stuck on its middle. Open-ground walk
+identical to the last commit.
+
+In the hall's yard: a Corner Wall across the north end of the Run Wall,
+a Slant Wall at 50 degrees, and three pillars with a step up to them.
+
 ### 2026-10-16 (parkour: wall run and wall jump, the speed vault, hanging and shimmying, dropping to a hang)
 
 The owner: "keep going down the list". The roadmap's parkour list, in order.

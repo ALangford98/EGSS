@@ -37,6 +37,9 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-16 — More parkour**: corner wall runs, cat leap, hanging
+  round corners, tic-tac, precision jumps. Force-driven hips, stronger
+  legs and more solver iterations measured against limb depth: no help.
 - **2026-10-16 — Wall runs, speed vault, hanging**: wall run and wall
   jump, the one-handed speed vault, hanging (shimmy, climb up, let go)
   and dropping to a hang off a high edge. Yard: Run Wall, High Ledge.
