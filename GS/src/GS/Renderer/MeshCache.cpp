@@ -1,6 +1,7 @@
 #include "gspch.h"
 #include "GS/Renderer/MeshCache.h"
 #include "GS/Assets.h"
+#include "GS/Procedural/Prefabs.h"
 
 namespace GS {
 
@@ -30,6 +31,13 @@ namespace GS {
 			built = Mesh::CreateCylinder();
 		else if (path == "primitive:capsule")
 			built = Mesh::CreateCapsule();
+		else if (path.rfind("model:", 0) == 0)
+		{
+			// The engine's own models, built in code (GS/Procedural/Prefabs).
+			MeshData data;
+			if (Prefabs::Build(path.substr(6), data))
+				built = new Mesh(data, path);
+		}
 		else
 			built = Mesh::Load(Assets::Resolve(path));   // the key stays the stored path
 
