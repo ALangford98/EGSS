@@ -129,6 +129,15 @@ public:
 	// running against.
 	virtual void OnExportToScene(GS::Scene& scene) { (void)scene; }
 
+	// A running game's overlay (Layer::OnGameOverlay), for a demo that is one.
+	virtual void OnDemoGameOverlay() {}
+
+	// Files the scene needs beside it in the project -- its UI screens --
+	// written when it is added to one. `projectPath` is the project's
+	// folder. Nothing that is already there is overwritten: it may have
+	// been edited.
+	virtual void OnExportFiles(const std::string& projectPath) { (void)projectPath; }
+
 	// --- Layer, sealed ----------------------------------------------------
 	// OnAttach is deliberately *not* guarded: assets have to be built whether
 	// or not this demo is showing. Anything continuous -- a looping sound, a
@@ -194,6 +203,12 @@ public:
 			GS::RenderCommand::SetViewport(0, 0, window.GetWidth(),
 				window.GetHeight());
 		}
+	}
+
+	void OnGameOverlay() final
+	{
+		if (IsActive())
+			OnDemoGameOverlay();
 	}
 
 	void OnImGuiRender() final

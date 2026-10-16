@@ -1,138 +1,332 @@
 #pragma once
 
-// Crash test: a humanoid crash-test dummy, a launcher aimed at him, and a
-// stack of crates behind him -- a scene to show the physics off in. What
-// the launcher fires (a ball or a box, its size, mass and speed) is set
-// from the game's terminal while it runs (` opens it; help lists the
-// commands), not in the editor, so the demo is driven from inside the game.
+// Crash test: a laboratory hall with a crash-test dummy standing on his mark,
+// a cannon aimed at him with its computer beside it, and things to land in.
+// Fly the camera about (WASD, hold the right mouse button to look), walk up
+// to things and press E:
 //
-// It is a scene, not a demo with code of its own: everything that happens
-// is the runtime's -- GameSession, the humanoid, LauncherComponent and the
-// game console -- so it plays the same in the editor (File > Add Demo
-// Scene > Crash Test, then Play), in an exported game, and here, where
-// this layer simply runs a GameSession on the same scene.
+//   the dummy     take control of him and walk him about (E lets go)
+//   the computer  the game terminal, on its screen (Esc steps back)
+//   the cannon    its controls: aim with the mouse along the trajectory
+//                 line, pick an object and set its size, mass and speed
+//                 on the HUD, click to fire
+//
+// It is a scene, not a demo with code of its own: everything that happens is
+// the runtime's -- GameSession, GameModes, the humanoid, the launcher, the
+// game UI and its screens -- so it plays the same in the editor (File > Add
+// Demo Scene > Crash Test, then Play), in an exported game, and here, where
+// this layer simply runs a GameSession on the same scene. Its look is the
+// engine's own models (GS/Procedural/Prefabs) under an EnvironmentComponent:
+// sun through the skylights, shadows, and the hall's own lamps.
 
 #include <GS.h>
 #include <imgui.h>
 
 #include "Demo.h"
+#include "GameModes.h"
 #include "GameSession.h"
 #include "PlayMode.h"
 #include "SceneRenderer.h"
 
+#include <GS/Procedural/Prefabs.h>
+
+#include <filesystem>
+#include <fstream>
 #include <memory>
 
 namespace CrashTestScene
 {
 	// The rotation (degrees, as TransformComponent holds it) of a camera at
-	// `from` looking at `to`. SceneRenderer looks along Rx Ry Rz (0, 0, -1)
-	// = (-sin b, cos b sin a, -cos b cos a) for rotation (a, b, 0), so
-	// b = asin(-dx) and a = atan2(dy, -dz).
+	// `from` looking at `to`.
 	inline glm::vec3 Look(const glm::vec3& from, const glm::vec3& to)
 	{
-		glm::vec3 d = glm::normalize(to - from);
-		float b = std::asin(glm::clamp(-d.x, -1.0f, 1.0f));
-		float a = std::atan2(d.y, -d.z);
-		return glm::degrees(glm::vec3(a, b, 0.0f));
+		return RotationLookingAlong(to - from);
 	}
 
-	inline GS::Entity Box(GS::Scene& scene, const char* name, const glm::vec3& at, const glm::vec3& size,
-		const glm::vec4& colour)
+	inline GS::Entity Mesh(GS::Scene& scene, const char* name, const char* source, const glm::vec3& at,
+		const glm::vec3& rotation = glm::vec3(0.0f), const glm::vec3& scale = glm::vec3(1.0f),
+		const glm::vec4& colour = glm::vec4(1.0f))
 	{
 		GS::Entity entity = scene.CreateEntity(name);
 		GS::TransformComponent* transform = entity.Get<GS::TransformComponent>();
 		transform->Position = at;
-		transform->Scale = size;
+		transform->Rotation = rotation;
+		transform->Scale = scale;
 		GS::MeshComponent mesh;
-		mesh.SourcePath = "primitive:cube";
+		mesh.SourcePath = source;
 		mesh.Geometry = GS::MeshCache::Get(mesh.SourcePath);
 		mesh.Color = colour;
 		entity.Add<GS::MeshComponent>(mesh);
 		return entity;
 	}
 
-	inline void Camera(GS::Scene& scene, const char* name, const glm::vec3& at, const glm::vec3& lookAt, bool active)
+	inline GS::Entity Box(GS::Scene& scene, const char* name, const glm::vec3& at, const glm::vec3& size,
+		const glm::vec4& colour, float roughness = 0.5f, float metallic = 0.0f)
+	{
+		GS::Entity entity = Mesh(scene, name, "primitive:cube", at, glm::vec3(0.0f), size, colour);
+		GS::MeshComponent* mesh = entity.Get<GS::MeshComponent>();
+		mesh->Roughness = roughness;
+		mesh->Metallic = metallic;
+		return entity;
+	}
+
+	inline void Static(GS::Entity entity, float friction = 0.8f)
+	{
+		GS::PhysicsComponent body;
+		body.Type = GS::BodyType::Static;
+		body.Friction = friction;
+		entity.Add<GS::PhysicsComponent>(body);
+	}
+
+	// A collider with nothing drawn: walls, the cannon's footprint.
+	inline void Collider(GS::Scene& scene, const char* name, const glm::vec3& at, const glm::vec3& size)
+	{
+		GS::Entity entity = Box(scene, name, at, size, glm::vec4(1.0f));
+		entity.Get<GS::MeshComponent>()->Visible = false;
+		Static(entity);
+	}
+
+	inline void Interact(GS::Entity entity, const char* action, const char* prompt, float range)
+	{
+		GS::InteractableComponent interact;
+		interact.Action = action;
+		interact.Prompt = prompt;
+		interact.Range = range;
+		entity.Add<GS::InteractableComponent>(interact);
+	}
+
+	inline void Camera(GS::Scene& scene, const char* name, const glm::vec3& at, const glm::vec3& lookAt, bool active, bool fly = false)
 	{
 		GS::Entity entity = scene.CreateEntity(name);
 		GS::TransformComponent* transform = entity.Get<GS::TransformComponent>();
 		transform->Position = at;
 		transform->Rotation = Look(at, lookAt);
 		GS::CameraComponent camera;
-		camera.Fov = 50.0f;
+		camera.Fov = 55.0f;
 		camera.Active = active;
 		entity.Add<GS::CameraComponent>(camera);
+		if (fly)
+			entity.Add<GS::FlyCameraComponent>(GS::FlyCameraComponent{});
 	}
 
-	inline void Light(GS::Scene& scene, const char* name, const glm::vec3& at, const glm::vec4& colour)
+	inline void Light(GS::Scene& scene, const char* name, const glm::vec3& at, const glm::vec4& colour, float radius)
 	{
 		GS::Entity entity = scene.CreateEntity(name);
 		entity.Get<GS::TransformComponent>()->Position = at;
 		GS::LightComponent light;
 		light.Color = colour;
-		light.Radius = 30.0f;
+		light.Radius = radius;
 		entity.Add<GS::LightComponent>(light);
 	}
 
+	inline GS::Entity Dummy(GS::Scene& scene, const char* name, const glm::vec3& at, float yaw, const glm::vec4& colour, int behaviour)
+	{
+		GS::Entity dummy = Mesh(scene, name, "primitive:cube", at, glm::vec3(0.0f, yaw, 0.0f), glm::vec3(1.0f), colour);
+		GS::NpcComponent npc;
+		npc.Behaviour = behaviour;
+		npc.Body = 2;        // humanoid
+		npc.Look = 1;        // the crash-test dummy over his colliders
+		npc.Speed = 1.2f;
+		npc.WanderRadius = 2.5f;
+		dummy.Add<GS::NpcComponent>(npc);
+		Interact(dummy, (std::string("possess ") + name).c_str(), "Take control", 3.5f);
+		return dummy;
+	}
+
+	// The hall is 30 m across (x), 40 m long (z) and 7.5 m to the roof. The
+	// dummy stands on his mark at the origin facing +z, down the lane to
+	// the cannon 11 m away; behind him an impact wall and crates.
 	inline void Build(GS::Scene& scene)
 	{
-		// The floor: a slab whose top is y = 0. (A plane has no thickness,
-		// and a body built from its bounds would be a box of none.)
-		GS::Entity ground = Box(scene, "Ground", { 0.0f, -0.5f, 2.0f }, { 40.0f, 1.0f, 40.0f }, { 0.30f, 0.33f, 0.38f, 1.0f });
-		GS::PhysicsComponent floor;
-		floor.Type = GS::BodyType::Static;
-		floor.Friction = 0.8f;
-		ground.Add<GS::PhysicsComponent>(floor);
+		const float halfX = 15.0f, backZ = -18.0f, frontZ = 22.0f, roofY = 7.6f;
+		const float midZ = (backZ + frontZ) * 0.5f, halfZ = (frontZ - backZ) * 0.5f;
 
-		// The test lane, painted on: no body.
-		Box(scene, "Lane", { 0.0f, 0.005f, 5.5f }, { 2.6f, 0.01f, 13.0f }, { 0.42f, 0.45f, 0.50f, 1.0f });
-		for (int k = 0; k < 6; k++)
-			Box(scene, "Lane Mark", { 0.0f, 0.012f, 1.0f + 2.0f * k }, { 0.12f, 0.01f, 0.8f }, { 0.95f, 0.8f, 0.2f, 1.0f });
+		// The look: sun through the skylights, an interior's dim ambient,
+		// a little haze.
+		GS::Entity environment = scene.CreateEntity("Environment");
+		GS::EnvironmentComponent env;
+		env.SunAzimuth = 28.0f;
+		env.SunElevation = 57.0f;
+		env.SunIntensity = 3.6f;
+		env.SunColor = { 1.0f, 0.93f, 0.82f };
+		// A pale sky: inside, the ambient is light off walls and floor as
+		// much as off the sky, and a saturated blue tints everything in shade.
+		env.SkyColor = { 0.56f, 0.66f, 0.8f };
+		env.HorizonColor = { 0.8f, 0.8f, 0.78f };
+		env.GroundColor = { 0.42f, 0.39f, 0.35f };
+		env.AmbientIntensity = 0.4f;
+		env.FogDensity = 0.006f;
+		env.FogFalloff = 0.12f;
+		env.Exposure = 1.1f;
+		env.ShadowExtent = 22.0f;
+		env.PointLightScale = 1.0f;
+		environment.Add<GS::EnvironmentComponent>(env);
 
-		// The dummy: a humanoid NPC that stands still, in crash-test yellow.
-		GS::Entity dummy = scene.CreateEntity("Dummy");
-		GS::MeshComponent dummyColour;
-		dummyColour.SourcePath = "primitive:cube";
-		dummyColour.Geometry = GS::MeshCache::Get(dummyColour.SourcePath);
-		dummyColour.Color = { 0.98f, 0.82f, 0.12f, 1.0f };
-		dummy.Add<GS::MeshComponent>(dummyColour);
-		GS::NpcComponent npc;
-		npc.Behaviour = 0;   // idle
-		npc.Body = 2;        // humanoid
-		dummy.Add<GS::NpcComponent>(npc);
+		// The floor: a slab whose top is y = 0, polished concrete with
+		// saw-cut joints, and the painted test lane.
+		GS::Entity floor = Box(scene, "Floor", { 0.0f, -0.5f, midZ }, { 2.0f * halfX, 1.0f, 2.0f * halfZ },
+			{ 0.47f, 0.48f, 0.49f, 1.0f }, 0.38f);
+		Static(floor);
+		Mesh(scene, "Floor Joints", "model:floorgrid", { 0.0f, 0.0f, midZ });
+		Mesh(scene, "Lane", "model:lane", { 0.0f, 0.0f, 0.0f });
 
-		// The launcher, eleven metres down the lane, aimed at his chest.
-		Box(scene, "Launcher Stand", { 0.0f, 0.5f, 11.0f }, { 0.5f, 1.0f, 0.5f }, { 0.25f, 0.27f, 0.30f, 1.0f });
-		GS::Entity launcher = Box(scene, "Launcher", { 0.0f, 1.25f, 11.0f }, { 0.32f, 0.32f, 0.9f }, { 0.75f, 0.2f, 0.15f, 1.0f });
-		GS::LauncherComponent fire;
-		fire.Target = "Dummy";
-		launcher.Add<GS::LauncherComponent>(fire);
+		// Walls: bays of panel, and colliders behind them.
+		for (int k = 0; k < 8; k++)
+		{
+			float x = -halfX + 2.0f + 4.0f * k;
+			Mesh(scene, "Wall", "model:wallpanel", { x, 0.0f, backZ }, { 0.0f, 0.0f, 0.0f });
+			Mesh(scene, "Wall", "model:wallpanel", { x, 0.0f, frontZ }, { 0.0f, 180.0f, 0.0f });
+		}
+		for (int k = 0; k < 10; k++)
+		{
+			float z = backZ + 2.0f + 4.0f * k;
+			Mesh(scene, "Wall", "model:wallpanel", { -halfX, 0.0f, z }, { 0.0f, 90.0f, 0.0f });
+			Mesh(scene, "Wall", "model:wallpanel", { halfX, 0.0f, z }, { 0.0f, -90.0f, 0.0f });
+		}
+		// The band between the wall bays and the roof.
+		Box(scene, "Wall Top", { 0.0f, 6.8f, backZ - 0.05f }, { 2.0f * halfX, 1.6f, 0.2f }, { 0.22f, 0.25f, 0.3f, 1.0f });
+		Box(scene, "Wall Top", { 0.0f, 6.8f, frontZ + 0.05f }, { 2.0f * halfX, 1.6f, 0.2f }, { 0.22f, 0.25f, 0.3f, 1.0f });
+		Box(scene, "Wall Top", { -halfX - 0.05f, 6.8f, midZ }, { 0.2f, 1.6f, 2.0f * halfZ }, { 0.22f, 0.25f, 0.3f, 1.0f });
+		Box(scene, "Wall Top", { halfX + 0.05f, 6.8f, midZ }, { 0.2f, 1.6f, 2.0f * halfZ }, { 0.22f, 0.25f, 0.3f, 1.0f });
+		Collider(scene, "Wall Collider", { 0.0f, 3.5f, backZ - 0.3f }, { 2.0f * halfX, 7.0f, 0.4f });
+		Collider(scene, "Wall Collider", { 0.0f, 3.5f, frontZ + 0.3f }, { 2.0f * halfX, 7.0f, 0.4f });
+		Collider(scene, "Wall Collider", { -halfX - 0.3f, 3.5f, midZ }, { 0.4f, 7.0f, 2.0f * halfZ });
+		Collider(scene, "Wall Collider", { halfX + 0.3f, 3.5f, midZ }, { 0.4f, 7.0f, 2.0f * halfZ });
 
-		// Crates behind him to land in: a pyramid of 0.6 m boxes.
+		// Columns along the side walls, trusses across, the roof with its
+		// three skylights, and lamps hung from the trusses.
+		for (float z = backZ + 4.0f; z < frontZ - 1.0f; z += 8.0f)
+		{
+			Mesh(scene, "Column", "model:pillar", { -halfX + 0.35f, 0.0f, z }, { 0.0f, 90.0f, 0.0f });
+			Mesh(scene, "Column", "model:pillar", { halfX - 0.35f, 0.0f, z }, { 0.0f, 90.0f, 0.0f });
+			for (float x : { -10.0f, 0.0f, 10.0f })
+				Mesh(scene, "Truss", "model:truss", { x, roofY - 0.6f, z });
+			for (float x : { -3.5f, 3.5f, -10.5f, 10.5f })
+				Mesh(scene, "Lamp", "model:lightpanel", { x, roofY - 1.75f, z }, { 0.0f, 90.0f, 0.0f });
+		}
+		Mesh(scene, "Roof", "model:roof", { 0.0f, roofY, midZ });
+
+		// The hall's own lights: over the mark, over the cannon, and fills.
+		const glm::vec4 lamp(1.0f, 0.93f, 0.82f, 1.0f);
+		Light(scene, "Lamp Light", { 0.0f, 5.6f, 0.5f }, lamp * 1.2f, 14.0f);
+		Light(scene, "Lamp Light", { 0.0f, 5.6f, 11.0f }, lamp, 13.0f);
+		Light(scene, "Lamp Light", { -4.0f, 5.6f, -6.0f }, lamp * 0.8f, 13.0f);
+		Light(scene, "Lamp Light", { 6.0f, 5.6f, 5.0f }, lamp * 0.7f, 13.0f);
+		Light(scene, "Lamp Light", { -7.0f, 5.6f, 8.0f }, lamp * 0.7f, 13.0f);
+		Light(scene, "Lamp Light", { 4.0f, 5.6f, -12.0f }, lamp * 0.7f, 13.0f);
+		Light(scene, "Lamp Light", { 0.0f, 5.6f, 18.0f }, lamp * 0.6f, 13.0f);
+
+		// The dummy on his mark, and a second one ambling about by the wall.
+		Dummy(scene, "Dummy", { 0.0f, 0.0f, 0.0f }, 0.0f, { 0.98f, 0.8f, 0.1f, 1.0f }, 0);
+		Dummy(scene, "Test Dummy B", { -6.5f, 0.0f, -3.0f }, 60.0f, { 0.95f, 0.42f, 0.12f, 1.0f }, 1);
+
+		// The impact wall behind him, crates to land in, barriers along the
+		// lane, and a stack of crates for scenery.
+		GS::Entity pad = Mesh(scene, "Impact Wall", "model:padwall", { 0.0f, 1.22f, -4.6f });
+		Static(pad);
 		for (int row = 0; row < 3; row++)
 			for (int k = 0; k < 3 - row; k++)
 			{
 				float x = (k - 0.5f * (2 - row)) * 0.62f;
-				GS::Entity crate = Box(scene, "Crate", { x, 0.3f + row * 0.6f, -2.2f }, glm::vec3(0.6f), { 0.66f, 0.47f, 0.26f, 1.0f });
+				GS::Entity crate = Mesh(scene, "Crate", "model:crate", { x, 0.3f + row * 0.6f, -2.2f }, glm::vec3(0.0f), glm::vec3(0.6f));
 				GS::PhysicsComponent body;
 				body.Mass = 15.0f;
 				body.Friction = 0.7f;
 				crate.Add<GS::PhysicsComponent>(body);
 			}
+		for (float z : { 3.0f, 5.2f, 7.4f })
+			for (float x : { -2.6f, 2.6f })
+				Static(Mesh(scene, "Barrier", "model:barrier", { x, 0.4f, z }, { 0.0f, 90.0f, 0.0f }));
+		const glm::vec3 stacks[] = { { 9.5f, 0.0f, -10.0f }, { 10.6f, 0.0f, -10.4f }, { 10.0f, 0.0f, -9.0f }, { -10.5f, 0.0f, 12.0f } };
+		for (const glm::vec3& at : stacks)
+		{
+			GS::Entity crate = Mesh(scene, "Crate", "model:crate", at + glm::vec3(0.0f, 0.5f, 0.0f), { 0.0f, at.x * 7.0f, 0.0f });
+			GS::PhysicsComponent body;
+			body.Mass = 40.0f;
+			crate.Add<GS::PhysicsComponent>(body);
+		}
 
-		// A wall off to the side, for a dummy knocked sideways.
-		GS::Entity wall = Box(scene, "Wall", { -3.4f, 1.0f, -0.5f }, { 0.4f, 2.0f, 6.0f }, { 0.55f, 0.56f, 0.6f, 1.0f });
-		GS::PhysicsComponent wallBody;
-		wallBody.Type = GS::BodyType::Static;
-		wall.Add<GS::PhysicsComponent>(wallBody);
+		// The cannon, 11 m down the lane, firing back along -z: its base
+		// (with the computer), the yoke that turns, the barrel that tips --
+		// the barrel is the launcher -- and the computer's screen.
+		const glm::vec3 pivot(0.0f, 1.25f, 11.0f);
+		Mesh(scene, "Cannon", "model:cannon.base", pivot, { 0.0f, 180.0f, 0.0f });
+		Mesh(scene, "Launcher Yoke", "model:cannon.yoke", pivot, { 0.0f, 180.0f, 0.0f });
+		GS::Entity launcher = Mesh(scene, "Launcher", "model:cannon.barrel", pivot, { 0.0f, 180.0f, 0.0f });
+		GS::LauncherComponent fire;
+		fire.Target = "Dummy";
+		launcher.Add<GS::LauncherComponent>(fire);
+		Interact(launcher, "operate", "Operate the cannon", 3.2f);
+		Collider(scene, "Cannon Collider", { pivot.x, 0.06f, pivot.z }, { 1.6f, 0.12f, 1.6f });
+		Collider(scene, "Cannon Collider", { pivot.x, 0.45f, pivot.z }, { 0.6f, 0.8f, 0.6f });
 
-		Light(scene, "Light", { 2.0f, 6.0f, 2.0f }, { 1.4f, 1.35f, 1.25f, 1.0f });
-		Light(scene, "Light Lane", { -2.0f, 6.0f, 9.0f }, { 1.1f, 1.1f, 1.15f, 1.0f });
-		Light(scene, "Light Back", { -3.0f, 5.0f, -4.0f }, { 0.9f, 0.95f, 1.1f, 1.0f });
+		glm::vec3 centre, facing;
+		glm::vec2 half;
+		GS::Prefabs::CannonScreen(centre, half, facing);
+		// The base is turned half round: its (x, z) are the world's (-x, -z).
+		glm::vec3 local = centre - glm::vec3(0.0f, pivot.y, 0.0f);
+		glm::vec3 screenAt = pivot + glm::vec3(-local.x, local.y, -local.z);
+		GS::Entity screen = Mesh(scene, "Terminal Screen", "model:screen", screenAt, { -10.0f, 0.0f, 0.0f },
+			glm::vec3(2.0f * half.x, 2.0f * half.y, 1.0f));
+		GS::ScreenComponent terminal;
+		terminal.Screen = "@terminal";
+		terminal.Width = 1024;
+		terminal.Height = 640;
+		terminal.Emission = 2.2f;
+		screen.Add<GS::ScreenComponent>(terminal);
+		Interact(screen, "terminal", "Use the terminal", 2.6f);
 
-		Camera(scene, "Side", { 7.5f, 1.8f, 1.5f }, { 0.0f, 1.0f, 0.8f }, true);
-		Camera(scene, "Behind Launcher", { 0.9f, 2.3f, 14.5f }, { 0.0f, 1.0f, 0.0f }, false);
-		Camera(scene, "Wide", { 9.0f, 6.5f, 11.0f }, { 0.0f, 0.5f, 2.5f }, false);
+		// The lab's sign over the impact wall: a .gsui screen.
+		GS::Entity sign = Mesh(scene, "Sign", "model:screen", { 0.0f, 4.6f, backZ + 0.16f }, glm::vec3(0.0f), { 9.0f, 2.25f, 1.0f });
+		GS::ScreenComponent signScreen;
+		signScreen.Screen = "crashlab-sign";
+		signScreen.Width = 1600;
+		signScreen.Height = 400;
+		signScreen.Emission = 1.1f;
+		sign.Add<GS::ScreenComponent>(signScreen);
+
+		// Cameras: the one you fly (the view), and fixed ones -- "camera"
+		// in the terminal lists them.
+		Camera(scene, "Fly", { 6.8f, 2.6f, 15.5f }, { 0.0f, 1.0f, 3.0f }, true, true);
+		Camera(scene, "Side", { 7.5f, 1.8f, 1.5f }, { 0.0f, 1.0f, 0.8f }, false);
+		Camera(scene, "Behind Launcher", { 0.9f, 2.4f, 14.8f }, { 0.0f, 1.0f, 0.0f }, false);
+		Camera(scene, "Wide", { 12.0f, 6.0f, 16.0f }, { 0.0f, 0.5f, 2.5f }, false);
 		Camera(scene, "Close", { 2.6f, 1.4f, 2.4f }, { 0.0f, 1.1f, 0.0f }, false);
+	}
+
+	// The sign: a .gsui screen like any HUD, drawn into a texture.
+	inline const char* SignScreen()
+	{
+		return R"json({
+			"theme": { "accent": "#ffc21a", "text": "#f2f4f6", "dim": "#9aa4ae" },
+			"root": { "type": "panel", "style": "clear", "stretch": "both", "padding": 0, "children": [
+				{ "type": "panel", "stretch": "both", "pos": [24, 24], "padding": 0 },
+				{ "type": "panel", "anchor": "center", "layout": "vertical", "style": "clear", "padding": 0, "gap": 10, "children": [
+					{ "type": "label", "text": "CRASH TEST LAB", "style": "big", "fontSize": 150, "align": "center" },
+					{ "type": "label", "text": "BAY 1  //  HIGH ENERGY IMPACT  //  KEEP CLEAR", "fontSize": 82,
+					  "style": "accent", "align": "center" } ] }
+			] } })json";
+	}
+
+	// The screens this scene uses, into a project's ui/ folder, unless it
+	// already has them (they may have been edited).
+	inline void WriteScreens(const std::string& projectPath)
+	{
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		fs::path ui = fs::path(projectPath) / "ui";
+		fs::create_directories(ui, ec);
+		auto write = [&](const char* name, const char* text)
+		{
+			fs::path file = ui / name;
+			if (fs::exists(file))
+				return;
+			std::ofstream out(file, std::ios::binary);
+			out << text << "\n";
+		};
+		write("crashlab-sign.gsui", SignScreen());
+		write("cannon.gsui", GameModes::CannonScreen());
+		write("hud.gsui", GameModes::HudScreen());
 	}
 }
 
@@ -154,6 +348,8 @@ public:
 		CrashTestScene::Build(*m_Scene);
 		m_Session = std::make_unique<GameSession>(*m_Scene, PlayMode::s_ScriptEngine);
 		m_Session->Start();
+		// Here there is no project to hold ui/crashlab-sign.gsui.
+		m_Session->UI().RegisterBuiltin("crashlab-sign", CrashTestScene::SignScreen());
 	}
 
 	void OnDemoDeactivated() override
@@ -172,6 +368,7 @@ public:
 	{
 		if (!m_Session)
 			return;
+
 		ViewportRect view = DemoViewport();
 		GS::RenderCommand::SetViewport((unsigned int)view.X, (unsigned int)view.Y, (unsigned int)view.Width, (unsigned int)view.Height);
 		GS::RenderCommand::SetClearColor({ 0.52f, 0.62f, 0.74f, 1.0f });
@@ -191,7 +388,7 @@ public:
 		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 	}
 
-	void OnDemoImGui() override
+	void OnDemoGameOverlay() override
 	{
 		if (!m_Session)
 			return;
@@ -205,7 +402,13 @@ public:
 		CrashTestScene::Build(scene);
 	}
 
+	void OnExportFiles(const std::string& projectPath) override
+	{
+		CrashTestScene::WriteScreens(projectPath);
+	}
+
 	GameSession* Session() { return m_Session.get(); }
+	GS::Scene* Scene() { return m_Scene.get(); }
 
 private:
 	ViewportRect DemoViewport() const

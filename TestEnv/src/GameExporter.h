@@ -275,7 +275,10 @@ namespace GameExporter {
 						std::string path, rest;
 						fields >> path;
 						rest = RestOfLine(fields);
-						if (path.rfind("primitive:", 0) != 0)
+						// Built-in meshes -- primitives, and the engine's own
+						// models (model:cannon.base) -- are made by the player,
+						// not loaded: nothing to ship.
+						if (path.rfind("primitive:", 0) != 0 && path.rfind("model:", 0) != 0)
 						{
 							fs::path source;
 							if (!Locate(path, source))
@@ -452,6 +455,37 @@ namespace GameExporter {
 			}
 		fs::copy_file(project / ProjectManifestFilename(), package / "game" / ProjectManifestFilename(),
 			fs::copy_options::overwrite_existing, ec);
+
+		// The game's UI screens (Runtime/GameUI.h). No scene names them --
+		// a screen is asked for by name while the game runs -- so the whole
+		// ui/ folder goes, as it is.
+		if (fs::is_directory(project / "ui"))
+		{
+			fs::create_directories(package / "game" / "ui", ec);
+			fs::copy(project / "ui", package / "game" / "ui", fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+			if (ec)
+			{
+				result.Error = "could not copy the project's ui folder: " + ec.message();
+				return result;
+			}
+		}
+
+		// The game UI's fonts (GameUI::Font), unless the project has its own:
+		// the player has no editor assets to borrow them from. 1.1 MB.
+		{
+			fs::path fonts = fs::path("assets") / "fonts";   // the editor runs from its binary folder
+			fs::create_directories(package / "game" / "fonts", ec);
+			for (const char* file : { "DejaVuSans.ttf", "DejaVuSansMono.ttf", "DejaVuSansMono-LICENSE.txt" })
+				if (!fs::exists(project / "fonts" / file))
+					fs::copy_file(fonts / file, package / "game" / "fonts" / file, fs::copy_options::overwrite_existing, ec);
+				else
+					fs::copy_file(project / "fonts" / file, package / "game" / "fonts" / file, fs::copy_options::overwrite_existing, ec);
+			if (ec)
+			{
+				result.Error = "could not copy the game UI's fonts: " + ec.message();
+				return result;
+			}
+		}
 
 		// This project's compiled-script registry, and the player built
 		// against it.

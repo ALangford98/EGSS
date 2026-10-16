@@ -233,6 +233,7 @@ private:
 						if (ok)
 						{
 							s_DemoInstances[i]->OnExportToScene(g_EditorScene);
+							s_DemoInstances[i]->OnExportFiles(g_EditorProjectPath);
 							ok = SaveEditorScene(error);
 						}
 						if (!ok)

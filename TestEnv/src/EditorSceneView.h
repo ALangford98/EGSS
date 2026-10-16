@@ -190,6 +190,12 @@ public:
 
 		dispatcher.Dispatch<GS::MouseButtonPressedEvent>([this](GS::MouseButtonPressedEvent& e)
 		{
+			// While a game plays, its clicks are the game's: the left button
+			// fires a cannon, the right one looks about, and neither should
+			// select what is under it or open the editor's menu.
+			if (PlayMode::IsPlaying())
+				return false;
+
 			// A click on a hovered gizmo handle must grab it, not change the
 			// selection -- checking m_HoverAxis rather than m_DragAxis is what
 			// distinguishes the two, since m_DragAxis is not set until
@@ -250,20 +256,26 @@ public:
 		});
 	}
 
+	// The game's own HUD, prompts and console, over the game's view while
+	// it plays -- under --hide-ui too, where the view is the whole window.
+	// g_Viewport is in GL's bottom-up pixels; ImGui counts from the top.
+	void OnGameOverlay() override
+	{
+		if (!IsActive() || !PlayMode::IsPlaying())
+			return;
+		ImGuiIO& io = ImGui::GetIO();
+		if (g_Viewport.Valid())
+			PlayMode::s_Session->DrawOverlay((float)g_Viewport.X,
+				io.DisplaySize.y - (float)(g_Viewport.Y + g_Viewport.Height),
+				(float)g_Viewport.Width, (float)g_Viewport.Height);
+		else
+			PlayMode::s_Session->DrawOverlay(0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y);
+	}
+
 	void OnImGuiRender() override
 	{
 		if (!IsActive())
 			return;
-
-		// The game's own console, over the game's view while it plays.
-		// g_Viewport is in GL's bottom-up pixels; ImGui counts from the top.
-		if (PlayMode::IsPlaying() && g_Viewport.Valid())
-		{
-			float displayHeight = ImGui::GetIO().DisplaySize.y;
-			PlayMode::s_Session->DrawOverlay((float)g_Viewport.X,
-				displayHeight - (float)(g_Viewport.Y + g_Viewport.Height),
-				(float)g_Viewport.Width, (float)g_Viewport.Height);
-		}
 
 		DrawGizmoDragTooltip();
 
@@ -694,6 +706,7 @@ public:
 		DrawTerrainInspector();
 		DrawPhysicsInspector();
 		DrawCharacterInspector();
+		DrawGameInspector();
 
 		ImGui::SeparatorText("Network");
 		if (auto* identity = g_EditorScene.GetComponent<GS::NetworkIdentity>(m_Selected))
@@ -1078,6 +1091,9 @@ private:
 	{
 		if constexpr (std::is_same_v<Field, float>) return m_EditBeforeFloat;
 		else if constexpr (std::is_same_v<Field, int>) return m_EditBeforeInt;
+		else if constexpr (std::is_same_v<Field, glm::vec3>) return m_EditBeforeVec3;
+		else if constexpr (std::is_same_v<Field, glm::vec4>) return m_EditBeforeVec4;
+		else if constexpr (std::is_same_v<Field, std::string>) return m_EditBeforeString;
 		else return m_EditBeforeBool;
 	}
 
@@ -1285,6 +1301,154 @@ private:
 			if (ImGui::Button("Remove NPC"))
 				ReplaceSelected([](EntitySnapshot& s) { s.Npc.reset(); });
 		}
+	}
+
+	// A text field over a std::string, with one undo step per edit.
+	template<typename Component>
+	void TextField(const char* label, std::string Component::*member, std::string& value)
+	{
+		char buffer[256];
+		std::snprintf(buffer, sizeof buffer, "%s", value.c_str());
+		bool changed = ImGui::InputText(label, buffer, sizeof buffer);
+		if (ImGui::IsItemActivated())
+			m_EditBeforeString = value;
+		if (changed)
+			value = buffer;
+		if (ImGui::IsItemDeactivatedAfterEdit())
+			EditorHistory::Push(std::make_unique<EditFieldCommand<Component, std::string>>(m_Selected, member, m_EditBeforeString, value));
+	}
+
+	// What the game shows and how the player gets about: a humanoid's look,
+	// a surface under the full renderer, the scene's environment, a fly
+	// camera, something to walk up to and use, a UI screen on a mesh.
+	void DrawGameInspector()
+	{
+		auto* mesh = g_EditorScene.GetComponent<GS::MeshComponent>(m_Selected);
+		auto* player = g_EditorScene.GetComponent<GS::PlayerComponent>(m_Selected);
+		auto* npc = g_EditorScene.GetComponent<GS::NpcComponent>(m_Selected);
+
+		static const char* looks[] = { "Mannequin (its colliders)", "Crash-test dummy" };
+		if (player && player->Body == 2)
+		{
+			int look = std::clamp(player->Look, 0, 1);
+			if (ImGui::Combo("Look##player", &look, looks, 2) && look != player->Look)
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::PlayerComponent, int>>(m_Selected, &GS::PlayerComponent::Look, player->Look, look));
+		}
+		if (npc && npc->Body == 2)
+		{
+			int look = std::clamp(npc->Look, 0, 1);
+			if (ImGui::Combo("Look##npc", &look, looks, 2) && look != npc->Look)
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::NpcComponent, int>>(m_Selected, &GS::NpcComponent::Look, npc->Look, look));
+		}
+
+		if (mesh && !player && !npc)
+		{
+			ImGui::SeparatorText("Surface");
+			ImGui::TextDisabled("Used under an Environment (the full renderer).");
+			ImGui::SliderFloat("Roughness", &mesh->Roughness, 0.0f, 1.0f, "%.2f");
+			TrackEdit(&GS::MeshComponent::Roughness, mesh->Roughness);
+			ImGui::SliderFloat("Metallic", &mesh->Metallic, 0.0f, 1.0f, "%.2f");
+			TrackEdit(&GS::MeshComponent::Metallic, mesh->Metallic);
+			ImGui::DragFloat("Glow", &mesh->Emission, 0.02f, 0.0f, 20.0f, "%.2f");
+			TrackEdit(&GS::MeshComponent::Emission, mesh->Emission);
+		}
+
+		if (auto* env = g_EditorScene.GetComponent<GS::EnvironmentComponent>(m_Selected))
+		{
+			ImGui::SeparatorText("Environment");
+			ImGui::TextDisabled("Sun, shadows, sky, fog: the scene draws with the full renderer.");
+			ImGui::DragFloat("Sun azimuth", &env->SunAzimuth, 0.5f, -360.0f, 360.0f, "%.1f deg");
+			TrackEdit(&GS::EnvironmentComponent::SunAzimuth, env->SunAzimuth);
+			ImGui::DragFloat("Sun elevation", &env->SunElevation, 0.25f, -10.0f, 90.0f, "%.1f deg");
+			TrackEdit(&GS::EnvironmentComponent::SunElevation, env->SunElevation);
+			ImGui::ColorEdit3("Sun colour", &env->SunColor.x);
+			TrackEdit(&GS::EnvironmentComponent::SunColor, env->SunColor);
+			ImGui::DragFloat("Sun strength", &env->SunIntensity, 0.02f, 0.0f, 20.0f, "%.2f");
+			TrackEdit(&GS::EnvironmentComponent::SunIntensity, env->SunIntensity);
+			ImGui::ColorEdit3("Sky", &env->SkyColor.x);
+			TrackEdit(&GS::EnvironmentComponent::SkyColor, env->SkyColor);
+			ImGui::ColorEdit3("Horizon", &env->HorizonColor.x);
+			TrackEdit(&GS::EnvironmentComponent::HorizonColor, env->HorizonColor);
+			ImGui::ColorEdit3("Ground", &env->GroundColor.x);
+			TrackEdit(&GS::EnvironmentComponent::GroundColor, env->GroundColor);
+			ImGui::DragFloat("Ambient", &env->AmbientIntensity, 0.01f, 0.0f, 5.0f, "%.2f");
+			TrackEdit(&GS::EnvironmentComponent::AmbientIntensity, env->AmbientIntensity);
+			ImGui::DragFloat("Fog", &env->FogDensity, 0.0005f, 0.0f, 0.5f, "%.4f /m");
+			TrackEdit(&GS::EnvironmentComponent::FogDensity, env->FogDensity);
+			ImGui::DragFloat("Fog falloff", &env->FogFalloff, 0.005f, 0.0f, 2.0f, "%.3f /m");
+			TrackEdit(&GS::EnvironmentComponent::FogFalloff, env->FogFalloff);
+			ImGui::DragFloat("Exposure", &env->Exposure, 0.01f, 0.05f, 10.0f, "%.2f");
+			TrackEdit(&GS::EnvironmentComponent::Exposure, env->Exposure);
+			ImGui::DragFloat("Lamps", &env->PointLightScale, 0.01f, 0.0f, 10.0f, "%.2f x");
+			TrackEdit(&GS::EnvironmentComponent::PointLightScale, env->PointLightScale);
+			bool shadows = env->Shadows;
+			if (ImGui::Checkbox("Shadows", &shadows))
+				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::EnvironmentComponent, bool>>(m_Selected, &GS::EnvironmentComponent::Shadows, env->Shadows, shadows));
+			ImGui::DragFloat("Shadow reach (m)", &env->ShadowExtent, 0.25f, 2.0f, 200.0f, "%.1f");
+			TrackEdit(&GS::EnvironmentComponent::ShadowExtent, env->ShadowExtent);
+			if (ImGui::Button("Remove Environment"))
+				ReplaceSelected([](EntitySnapshot& s) { s.Environment.reset(); });
+		}
+
+		if (auto* interact = g_EditorScene.GetComponent<GS::InteractableComponent>(m_Selected))
+		{
+			ImGui::SeparatorText("Interactable");
+			ImGui::TextDisabled("Walked up to and looked at, [E] runs the action -- a game-console command.");
+			TextField<GS::InteractableComponent>("Prompt", &GS::InteractableComponent::Prompt, interact->Prompt);
+			TextField<GS::InteractableComponent>("Action", &GS::InteractableComponent::Action, interact->Action);
+			ImGui::DragFloat("Range (m)", &interact->Range, 0.05f, 0.1f, 50.0f, "%.2f");
+			TrackEdit(&GS::InteractableComponent::Range, interact->Range);
+			if (ImGui::Button("Remove Interactable"))
+				ReplaceSelected([](EntitySnapshot& s) { s.Interactable.reset(); });
+		}
+
+		if (auto* screen = g_EditorScene.GetComponent<GS::ScreenComponent>(m_Selected))
+		{
+			ImGui::SeparatorText("Screen");
+			ImGui::TextDisabled("A game UI screen (ui/<name>.gsui) drawn on this mesh; @terminal is the game console.");
+			TextField<GS::ScreenComponent>("Screen", &GS::ScreenComponent::Screen, screen->Screen);
+			ImGui::DragInt("Width (px)", &screen->Width, 4.0f, 16, 4096);
+			TrackEdit(&GS::ScreenComponent::Width, screen->Width);
+			ImGui::DragInt("Height (px)", &screen->Height, 4.0f, 16, 4096);
+			TrackEdit(&GS::ScreenComponent::Height, screen->Height);
+			ImGui::DragFloat("Glow##screen", &screen->Emission, 0.02f, 0.0f, 10.0f, "%.2f");
+			TrackEdit(&GS::ScreenComponent::Emission, screen->Emission);
+			if (ImGui::Button("Remove Screen"))
+				ReplaceSelected([](EntitySnapshot& s) { s.Screen.reset(); });
+		}
+
+		if (auto* fly = g_EditorScene.GetComponent<GS::FlyCameraComponent>(m_Selected))
+		{
+			ImGui::SeparatorText("Fly Camera");
+			ImGui::TextDisabled("Flown in Play when nobody is a player: WASD, Space/Ctrl, Shift, right mouse to look.");
+			ImGui::DragFloat("Speed (m/s)##fly", &fly->Speed, 0.05f, 0.1f, 100.0f, "%.2f");
+			TrackEdit(&GS::FlyCameraComponent::Speed, fly->Speed);
+			ImGui::DragFloat("Look (deg/px)", &fly->LookSpeed, 0.005f, 0.01f, 2.0f, "%.3f");
+			TrackEdit(&GS::FlyCameraComponent::LookSpeed, fly->LookSpeed);
+			if (ImGui::Button("Remove Fly Camera"))
+				ReplaceSelected([](EntitySnapshot& s) { s.FlyCamera.reset(); });
+		}
+
+		// What may be added here that is not here yet.
+		bool any = false;
+		auto add = [&](const char* label, auto apply)
+		{
+			if (!any)
+				ImGui::SeparatorText("Add");
+			else
+				ImGui::SameLine();
+			any = true;
+			if (ImGui::SmallButton(label))
+				ReplaceSelected(apply);
+		};
+		if (!g_EditorScene.HasComponent<GS::InteractableComponent>(m_Selected))
+			add("Interactable", [](EntitySnapshot& s) { s.Interactable = GS::InteractableComponent{}; });
+		if (mesh && !g_EditorScene.HasComponent<GS::ScreenComponent>(m_Selected))
+			add("Screen", [](EntitySnapshot& s) { GS::ScreenComponent c; c.Screen = "hud"; s.Screen = c; });
+		if (g_EditorScene.HasComponent<GS::CameraComponent>(m_Selected) && !g_EditorScene.HasComponent<GS::FlyCameraComponent>(m_Selected))
+			add("Fly Camera", [](EntitySnapshot& s) { s.FlyCamera = GS::FlyCameraComponent{}; });
+		if (g_EditorScene.View<GS::EnvironmentComponent>().Size() == 0)
+			add("Environment", [](EntitySnapshot& s) { s.Environment = GS::EnvironmentComponent{}; });
 	}
 
 	bool LoadMeshDataForExport(GS::MeshComponent* mesh, GS::MeshData& outData, std::string& error)
