@@ -36,10 +36,15 @@ namespace GS {
 		double EndGpuTimerMs() override;
 
 		unsigned int GetMaxTextureSlots() const override { return m_MaxTextureSlots; }
+
+		void PushTarget() override;
+		void PopTarget() override;
 	private:
 		glm::vec4 m_ClearColor = glm::vec4(0.0f);
 		// Queried once in Init rather than per call: glGet round-trips to the
 		// driver, and this cannot change for the life of the context.
+		struct Target { int Framebuffer; int Viewport[4]; };
+		std::vector<Target> m_Targets;
 		unsigned int m_MaxTextureSlots = 16;
 
 		// Lazily created on first use rather than in Init, since most runs

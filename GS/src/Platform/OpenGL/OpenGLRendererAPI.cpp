@@ -329,4 +329,23 @@ namespace GS {
 #endif
 	}
 
+
+	void OpenGLRendererAPI::PushTarget()
+	{
+		Target target;
+		glGetIntegerv(GL_FRAMEBUFFER_BINDING, &target.Framebuffer);
+		glGetIntegerv(GL_VIEWPORT, target.Viewport);
+		m_Targets.push_back(target);
+	}
+
+	void OpenGLRendererAPI::PopTarget()
+	{
+		if (m_Targets.empty())
+			return;
+		Target target = m_Targets.back();
+		m_Targets.pop_back();
+		glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)target.Framebuffer);
+		glViewport(target.Viewport[0], target.Viewport[1], target.Viewport[2], target.Viewport[3]);
+	}
+
 }

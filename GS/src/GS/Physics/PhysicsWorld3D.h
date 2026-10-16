@@ -370,6 +370,24 @@ namespace GS {
 		float GroundHeightBelow(const glm::vec3& point,
 			const std::vector<BodyHandle>& ignore, float floor = 0.0f) const;
 
+		// What a ray met first: which body, where, the surface's normal (facing
+		// back along the ray) and how far. Against each collider's actual
+		// shape -- sphere, box (in its own frame, so a turned box is a turned
+		// box), capsule, heightfield -- unlike GroundBelow's bounds, because
+		// the question here is "what will this hit", asked of things in
+		// flight: a ball's bounding box is not where a trajectory stops.
+		// Switched-off bodies and those in `ignore` are passed through.
+		struct RayHit
+		{
+			bool Hit = false;
+			BodyHandle Body = InvalidHandle;
+			glm::vec3 Point{ 0.0f };
+			glm::vec3 Normal{ 0.0f, 1.0f, 0.0f };
+			float Distance = 0.0f;
+		};
+		RayHit Raycast(const glm::vec3& origin, const glm::vec3& direction, float maxDistance,
+			const std::vector<BodyHandle>& ignore = {}) const;
+
 		// The worst anchor separation across every joint, in world units. The
 		// number to watch: sequential impulses do not solve a chain exactly,
 		// and this says by how much they are missing.

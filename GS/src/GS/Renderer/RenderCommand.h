@@ -116,6 +116,9 @@ namespace GS {
 		}
 
 		// Valid only after Init. See RendererAPI.
+		inline static void PushTarget() { s_RendererAPI->PushTarget(); }
+		inline static void PopTarget() { s_RendererAPI->PopTarget(); }
+
 		inline static unsigned int GetMaxTextureSlots()
 		{
 			return s_RendererAPI->GetMaxTextureSlots();

@@ -1876,6 +1876,149 @@ namespace GS {
 		return GroundBelow(point, height, normal, ignore, floor) ? height : floor;
 	}
 
+
+	// Ray against a sphere: |o + t d - c|^2 = r^2 with |d| = 1, the near root.
+	// A ray starting inside reports nothing -- what it is inside of is not
+	// what it is about to hit.
+	static bool RaySphere(const glm::vec3& o, const glm::vec3& d, const glm::vec3& c, float r, float& t)
+	{
+		glm::vec3 m = o - c;
+		float b = glm::dot(m, d);
+		float k = glm::dot(m, m) - r * r;
+		if (k <= 0.0f)
+			return false;
+		float disc = b * b - k;
+		if (disc < 0.0f || b > 0.0f)
+			return false;
+		t = -b - std::sqrt(disc);
+		return t >= 0.0f;
+	}
+
+	PhysicsWorld3D::RayHit PhysicsWorld3D::Raycast(const glm::vec3& origin, const glm::vec3& direction, float maxDistance,
+		const std::vector<BodyHandle>& ignore) const
+	{
+		RayHit best;
+		float length = glm::length(direction);
+		if (length < 1e-8f)
+			return best;
+		glm::vec3 d = direction / length;
+		float nearest = maxDistance;
+
+		auto offer = [&](BodyHandle handle, float t, const glm::vec3& normal)
+		{
+			if (t < 0.0f || t >= nearest)
+				return;
+			nearest = t;
+			best.Hit = true;
+			best.Body = handle;
+			best.Distance = t;
+			best.Point = origin + d * t;
+			best.Normal = glm::dot(normal, d) > 0.0f ? -normal : normal;
+		};
+
+		for (unsigned int i = 0; i < m_Bodies.size(); i++)
+		{
+			const RigidBody3D& body = m_Bodies[i];
+			if (!body.Enabled || std::find(ignore.begin(), ignore.end(), i) != ignore.end())
+				continue;
+
+			switch (body.Shape)
+			{
+				case ColliderShape3D::Sphere:
+				{
+					float t;
+					if (RaySphere(origin, d, body.Position, body.Radius, t))
+						offer(i, t, glm::normalize(origin + d * t - body.Position));
+					break;
+				}
+				case ColliderShape3D::Box:
+				{
+					// Into the box's own frame, where it is an AABB, and the
+					// normal back out.
+					glm::quat inverse = glm::inverse(body.Orientation);
+					glm::vec3 lo = inverse * (origin - body.Position);
+					glm::vec3 ld = inverse * d;
+					float enter = 0.0f, leave = nearest;
+					int axis = -1;
+					float sign = 1.0f;
+					bool miss = false;
+					for (int a = 0; a < 3 && !miss; a++)
+					{
+						if (std::abs(ld[a]) < 1e-9f)
+						{
+							if (std::abs(lo[a]) > body.HalfExtents[a])
+								miss = true;
+							continue;
+						}
+						float t1 = (-body.HalfExtents[a] - lo[a]) / ld[a];
+						float t2 = (body.HalfExtents[a] - lo[a]) / ld[a];
+						float s = -1.0f;
+						if (t1 > t2) { std::swap(t1, t2); s = 1.0f; }
+						if (t1 > enter) { enter = t1; axis = a; sign = s; }
+						leave = std::min(leave, t2);
+						if (enter > leave)
+							miss = true;
+					}
+					if (!miss && axis >= 0)
+					{
+						glm::vec3 n(0.0f);
+						n[axis] = sign;
+						offer(i, enter, body.Orientation * n);
+					}
+					break;
+				}
+				case ColliderShape3D::Capsule:
+				{
+					// The swept sphere: the infinite cylinder about the
+					// segment, kept where the closest point lies on it, then
+					// the two end spheres.
+					glm::vec3 axisDir = body.Orientation * glm::vec3(0.0f, 1.0f, 0.0f);
+					glm::vec3 a = body.Position - axisDir * body.HalfHeight;
+					float h = 2.0f * body.HalfHeight;
+					glm::vec3 m = origin - a;
+					glm::vec3 dPerp = d - axisDir * glm::dot(d, axisDir);
+					glm::vec3 mPerp = m - axisDir * glm::dot(m, axisDir);
+					float A = glm::dot(dPerp, dPerp), B = glm::dot(dPerp, mPerp), C = glm::dot(mPerp, mPerp) - body.Radius * body.Radius;
+					if (A > 1e-9f && C > 0.0f)
+					{
+						float disc = B * B - A * C;
+						if (disc >= 0.0f)
+						{
+							float t = (-B - std::sqrt(disc)) / A;
+							float along = glm::dot(m + d * t, axisDir);
+							if (t >= 0.0f && along >= 0.0f && along <= h)
+							{
+								glm::vec3 p = origin + d * t;
+								offer(i, t, glm::normalize(p - (a + axisDir * along)));
+							}
+						}
+					}
+					for (float end : { 0.0f, h })
+					{
+						float t;
+						glm::vec3 c = a + axisDir * end;
+						if (RaySphere(origin, d, c, body.Radius, t))
+							offer(i, t, glm::normalize(origin + d * t - c));
+					}
+					break;
+				}
+				case ColliderShape3D::Heightfield:
+				{
+					if (!body.Field)
+						break;
+					float t;
+					glm::vec3 point, normal;
+					if (body.Field->Raycast(origin - body.Position, d, nearest, t, point, normal))
+						offer(i, t, normal);
+					break;
+				}
+				default:
+					break;
+			}
+		}
+		return best;
+	}
+
 	bool PhysicsWorld3D::GroundBelow(const glm::vec3& point,
 		float& outHeight, glm::vec3& outNormal, const std::vector<BodyHandle>& ignore, float floor) const
 	{

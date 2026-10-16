@@ -84,6 +84,9 @@ namespace GS {
 		// A colour attachment's texture handle, for handing to ImGui.
 		virtual unsigned int GetColorAttachmentRendererID(unsigned int index = 0) const = 0;
 
+		// The depth attachment's texture: a shadow map is read back as one.
+		virtual unsigned int GetDepthAttachmentRendererID() const = 0;
+
 		virtual const FramebufferSpecification& GetSpecification() const = 0;
 
 		static Framebuffer* Create(const FramebufferSpecification& spec);

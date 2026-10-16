@@ -193,6 +193,13 @@ namespace GS {
 		// it is a driver query, and there is no context to ask before then.
 		virtual unsigned int GetMaxTextureSlots() const = 0;
 
+		// The bound draw target and viewport, saved and put back: for drawing
+		// into a texture (a shadow map, a game screen) from inside a frame
+		// that is already drawing into someone else's target -- the editor's
+		// own framebuffer, which the code drawing a monitor knows nothing of.
+		virtual void PushTarget() = 0;
+		virtual void PopTarget() = 0;
+
 		inline static API GetAPI() { return s_API; }
 	private:
 		static API s_API;

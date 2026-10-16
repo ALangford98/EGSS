@@ -27,6 +27,8 @@ namespace GS {
 			return m_ColorAttachments[index];
 		}
 
+		unsigned int GetDepthAttachmentRendererID() const override { return m_DepthAttachment; }
+
 		const FramebufferSpecification& GetSpecification() const override { return m_Specification; }
 	private:
 		// Tears down any existing attachments and builds them from the current
