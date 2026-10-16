@@ -30,6 +30,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -2474,7 +2475,7 @@ public:
 		else if (height < m_MaxStepUp * 1.05f)
 			o.Type = Obstacle::None;   // a step: the walk takes it
 		else if (o.Depth <= 0.75f * s && height <= 1.15f * s)
-			o.Type = o.Beyond > o.Ground - 1.5f * s ? Obstacle::Vault : Obstacle::Wall;
+			o.Type = o.Beyond > o.Ground - 4.5f * s ? Obstacle::Vault : Obstacle::Wall;   // a drop beyond is landed, or rolled
 		else if (height <= 0.80f * s)
 			o.Type = Obstacle::StepOn;
 		else
@@ -2496,23 +2497,9 @@ public:
 		float s = m_Proportions.Scale;
 		glm::vec3 n(o.Normal.x, 0.0f, o.Normal.z);
 		float facing = glm::length(n) > 1e-4f ? -glm::dot(forward, glm::normalize(n)) : 0.0f;
-
-		bool jump = m_WantsJump || m_JumpPending;
-		bool running = m_RunBlend > 0.5f && m_Speed > 0.6f * m_RunSpeed;
-		bool square = facing > 0.75f && m_Air == Air::Grounded && glm::length(m_StaggerVelocity) < 0.1f;
-		if (square && o.Type == Obstacle::Vault && o.Distance <= 0.55f * s + 0.22f * m_Speed && (jump || running))
-		{
-			PlanVault(o);
+		bool running = m_Control.Enabled && m_Control.Run && m_RunBlend > 0.5f;
+		if (TryMove(o, forward))
 			return true;
-		}
-		if (square && jump && (o.Type == Obstacle::StepOn || o.Type == Obstacle::Climb) && o.Distance <= 0.80f * s + 0.15f * m_Speed)
-		{
-			if (o.Type == Obstacle::StepOn)
-				PlanStepOn(o);
-			else
-				PlanClimb(o);
-			return true;
-		}
 
 		// Coming at it, he slows so as to stop short of it: no faster than
 		// v = sqrt(2 a d) for the distance left, at about 6 m/s^2 -- a hard
@@ -2543,6 +2530,37 @@ public:
 				m_SpeedRate = std::min(m_SpeedRate, 0.0f);
 			}
 			m_Blocked = glm::normalize(n);
+		}
+		return false;
+	}
+
+	// Whether `o` starts a move now, and if so starts it: a vault when jump
+	// is asked for or he is running at it, a step on or a climb on a jump,
+	// each only in reach and roughly square on. From the walk, and from the
+	// end of another move -- which is how one runs into the next.
+	bool TryMove(const Obstacle& o, const glm::vec3& forward)
+	{
+		float s = m_Proportions.Scale;
+		glm::vec3 n(o.Normal.x, 0.0f, o.Normal.z);
+		float facing = glm::length(n) > 1e-4f ? -glm::dot(forward, glm::normalize(n)) : 0.0f;
+		bool jump = m_WantsJump || m_JumpPending;
+		// Running is the wish to, not the speed: landing from a drop right
+		// in front of a wall leaves him nearly still, and asking for speed
+		// as well had him stand at it, run held, for good.
+		bool running = m_Control.Enabled && m_Control.Run && m_RunBlend > 0.5f;
+		bool square = facing > 0.75f && m_Air == Air::Grounded && glm::length(m_StaggerVelocity) < 0.1f;
+		if (square && o.Type == Obstacle::Vault && o.Distance <= 0.55f * s + 0.22f * m_Speed && (jump || running))
+		{
+			PlanVault(o);
+			return true;
+		}
+		if (square && jump && (o.Type == Obstacle::StepOn || o.Type == Obstacle::Climb) && o.Distance <= 0.80f * s + 0.15f * m_Speed)
+		{
+			if (o.Type == Obstacle::StepOn)
+				PlanStepOn(o);
+			else
+				PlanClimb(o);
+			return true;
 		}
 		return false;
 	}
@@ -2667,8 +2685,12 @@ public:
 	// Common to every move once it is planned: the keys' seconds become
 	// fractions, the feet are let go of (the walk pins them), and the mode
 	// is the move's.
-	void BeginMove(Move kind, float total, float exitSpeed)
+	// `chainFrom` is when, in seconds, he is on his feet enough for the next
+	// move to start from here rather than from the walk.
+	void BeginMove(Move kind, float total, float exitSpeed, float chainFrom)
 	{
+		m_ChainFrom = chainFrom;
+		m_Air = Air::Grounded;
 		for (GetUpKey& key : m_GetUpKeys)
 			key.T = glm::clamp(key.T / std::max(total, 1e-3f), 0.0f, 1.0f);
 		m_GetUpKeys.back().T = 1.0f;
@@ -2712,6 +2734,25 @@ public:
 	static float SideSign(int side) { return side == 0 ? -1.0f : 1.0f; }
 	int NextLead() { return (int)((m_Seed + m_GetUpCount++) & 1u); }
 
+	// How far he could go along F from a point on the ground before
+	// something fixed is in the way, at shin and chest height -- up to 4 m.
+	// A roll is a body moving on the floor, carried, and it went straight
+	// through a wall 2 m past a drop: asked before choosing one now.
+	float RoomAhead(const glm::vec3& ground, const glm::vec3& F) const
+	{
+		float s = m_Proportions.Scale, room = 4.0f * s;
+		for (float h : { 0.30f, 0.90f })
+		{
+			GS::PhysicsWorld3D::RayHit hit = m_World.Raycast(ground + glm::vec3(0.0f, h * s, 0.0f), F, room, m_CharacterBodies);
+			if (hit.Hit && hit.Normal.y < 0.6f && m_World.GetBody(hit.Body).Type == GS::BodyType::Static)
+				room = std::min(room, hit.Distance);
+		}
+		return room;
+	}
+	// What a roll covers, crouch to standing: about a turn round a body
+	// 0.4 m high, and the steps either side.
+	float RollRoom() const { return 3.0f * m_Proportions.Scale; }
+
 	// --- the vault ------------------------------------------------------
 	//
 	// Up to the wall, a dip, and off the ground on both feet half a metre
@@ -2749,23 +2790,29 @@ public:
 		// walk the heels came down onto the far edge, 12 cm into it.
 		float tClear = (o.Distance + o.Depth + 0.24f * s - takeoff) / std::max(vx, 0.1f);
 		float land = takeoff + X;
-		float tB = 0.30f * rs;
+		// Landing: past about 4.5 m/s down (a vault onto lower ground) the
+		// absorb goes as deep as v^2 / 2a at 3 g asks, and past the roll's
+		// speed, with room ahead, he rolls out of it as from a drop.
+		float impact = 9.81f * tDown;
+		bool roll = impact >= m_RollSpeed * rs && RoomAhead(fr.At(land, 0.0f, gl), fr.F) > RollRoom();
+		float depth = glm::clamp(impact * impact / (2.0f * 3.0f * 9.81f), 0.04f * s, 0.40f * s);
+		bool deep = impact > 4.5f;
+		float tLow = deep ? 2.0f * depth / impact : 0.0f;
+		float tB = deep ? tLow + 0.40f * rs : 0.30f * rs;
 		float total = tA + tF + tB;
-
 		std::vector<Way> ways;
 		ways.push_back({ 0.0f, fr.O, m_World.GetBody(m_Pelvis).Orientation });
 		ways.push_back({ tA, fr.At(takeoff, 0.0f, yA), fr.Lean(22.0f), true });
 		ways.push_back({ tA + tF, fr.At(land, 0.0f, yL), fr.Lean(6.0f) });
-		ways.push_back({ total, fr.At(land + 0.75f * vx * tB, 0.0f, gl + stand - 0.04f * s), fr.Lean(8.0f) });
-		// The hips' orientation over the top is a key of its own: the flight
-		// is one ballistic way, so its tilt is put in after.
-		BuildTrack(ways, fr.F * m_Speed, fr.F * (0.95f * vx));
-		// Arriving at the take-off already going up at the launch speed: the
-		// Hermite into it was built from the neighbours, which knew nothing
-		// of the jump.
-		RetimeIntoLaunch(0, ways, LaunchVelocity(ways[1], ways[2]));
-		TiltTrack(tA, tA + tF, fr.Lean(22.0f), fr.Lean(38.0f), fr.Lean(6.0f), tUp / tF);
-
+		auto shape = [&]()
+		{
+			// Arriving at the take-off already going up at the launch speed:
+			// the Hermite into it was built from the neighbours, which knew
+			// nothing of the jump. The hips' tilt over the top is put in
+			// after, the flight being one ballistic way.
+			RetimeIntoLaunch(0, ways, LaunchVelocity(ways[1], ways[2]));
+			TiltTrack(tA, tA + tF, fr.Lean(22.0f), fr.Lean(38.0f), fr.Lean(6.0f), tUp / tF);
+		};
 		m_GetUpKeys.clear();
 		GetUpKey now = KeyNow();
 		m_GetUpKeys.push_back(now);
@@ -2824,12 +2871,25 @@ public:
 			down.Foot[side].y = gl + m_AnkleHeight;
 		m_GetUpKeys.push_back(down);
 
+		if (roll)
+		{
+			Frame lf = fr;
+			lf.O = fr.At(land, 0.0f, yL);
+			PlanRoll(ways, tA + tF, lf, vx, lead, gl, fr.F * m_Speed, shape);
+			return;
+		}
+		if (deep)
+			ways.push_back({ tA + tF + tLow, fr.At(land + 0.5f * vx * tLow, 0.0f, gl + stand - depth), fr.Lean(10.0f + 50.0f * depth / s) });
+		ways.push_back({ total, fr.At(land + 0.5f * vx * tLow + 0.75f * vx * (tB - tLow), 0.0f, gl + stand - 0.04f * s), fr.Lean(8.0f) });
+		BuildTrack(ways, fr.F * m_Speed, fr.F * (0.95f * vx));
+		shape();
+
 		GetUpKey away = down;
 		away.T = total;
 		away.Spine = glm::radians(4.0f);
 		m_GetUpKeys.push_back(away);
 
-		BeginMove(Move::Vault, total, 0.95f * vx);
+		BeginMove(Move::Vault, total, 0.95f * vx, tA + tF);
 	}
 
 	// Re-run the segment into way `i + 1` with the arrival velocity the
@@ -2936,7 +2996,7 @@ public:
 		stood.Spine = 0.0f;
 		m_GetUpKeys.push_back(stood);
 
-		BeginMove(Move::StepOn, total, exit);
+		BeginMove(Move::StepOn, total, exit, t2);
 	}
 
 	// --- climbing up ----------------------------------------------------
@@ -3093,7 +3153,7 @@ public:
 		stood.Spine = 0.0f;
 		m_GetUpKeys.push_back(stood);
 
-		BeginMove(Move::Climb, total, 0.0f);
+		BeginMove(Move::Climb, total, 0.0f, tRise);
 	}
 
 	// --- dropping, landing, rolling -------------------------------------
@@ -3170,7 +3230,7 @@ public:
 		m_GetUpKeys.push_back(touch);
 
 		float horizontal = glm::length(vh);
-		if (impact < m_RollSpeed * rs)
+		if (impact < m_RollSpeed * rs || RoomAhead(glm::vec3(L.x, gl, L.z), fr.F) < RollRoom())
 		{
 			// Absorbed: as deep as v^2 / 2a for a stopping deceleration of
 			// about 3 g, kept within a deep crouch.
@@ -3178,8 +3238,15 @@ public:
 			float tDown = 2.0f * depth / std::max(impact, 0.5f);
 			float tUp = 0.40f * rs;
 			float exit = 0.8f * horizontal;
-			ways.push_back({ T + tDown, lf.At(horizontal * tDown * 0.5f, 0.0f, gl + stand - depth), lf.Lean(10.0f + 50.0f * depth / s) });
-			ways.push_back({ T + tDown + tUp, lf.At(horizontal * tDown * 0.5f + exit * tUp * 0.6f, 0.0f, gl + stand - 0.02f * s), lf.Lean(6.0f) });
+			// Carried on only as far as there is room: landing just short of
+			// a wall, the absorb's 1.5 m of travel took the hips through it.
+			float room = std::max(RoomAhead(glm::vec3(L.x, gl, L.z), fr.F) - 0.40f * s, 0.0f);
+			float sink = std::min(horizontal * tDown * 0.5f, room);
+			float on = std::min(exit * tUp * 0.6f, room - sink);
+			if (on < exit * tUp * 0.6f)
+				exit *= on / std::max(exit * tUp * 0.6f, 1e-3f);
+			ways.push_back({ T + tDown, lf.At(sink, 0.0f, gl + stand - depth), lf.Lean(10.0f + 50.0f * depth / s) });
+			ways.push_back({ T + tDown + tUp, lf.At(sink + on, 0.0f, gl + stand - 0.02f * s), lf.Lean(6.0f) });
 			BuildTrack(ways, vh + up * vy, fr.F * exit);
 			GetUpKey low = touch;
 			low.T = T + tDown;
@@ -3202,11 +3269,11 @@ public:
 			stood.Hand[0] = stood.Hand[1] = 1;
 			stood.Spine = 0.0f;
 			m_GetUpKeys.push_back(stood);
-			BeginMove(Move::Drop, T + tDown + tUp, exit);
+			BeginMove(Move::Drop, T + tDown + tUp, exit, T + tDown);
 			return true;
 		}
 
-		PlanRoll(ways, T, lf, horizontal, vy - 9.81f * T, lead, gl);
+		PlanRoll(ways, T, lf, horizontal, lead, gl, vh + up * vy);
 		return true;
 	}
 
@@ -3241,7 +3308,11 @@ public:
 		return lowest;
 	}
 
-	void PlanRoll(std::vector<Way>& ways, float T, const Frame& lf, float horizontal, float vyLand, int lead, float gl)
+	// From landing at T (the ways and keys up to it already laid down by the
+	// drop or the vault), the crouch, the roll, and up. `shape` adjusts the
+	// track once built, for the move that led here.
+	void PlanRoll(std::vector<Way>& ways, float T, const Frame& lf, float horizontal, int lead, float gl,
+		const glm::vec3& velocityIn, const std::function<void()>& shape = {})
 	{
 		const Measures M = BodyMeasures();
 		const glm::vec3 up(0.0f, 1.0f, 0.0f);
@@ -3278,7 +3349,9 @@ public:
 		float exit = std::max(0.85f * horizontal, 1.4f * rs);
 		float endAlong = along + exit * tS * 0.5f;
 		ways.push_back({ T + tC + tR + tS, lf.At(endAlong, 0.0f, gl + stand - 0.03f * s), lf.Lean(8.0f) });
-		BuildTrack(ways, lf.F * horizontal + up * vyLand, lf.F * exit);
+		BuildTrack(ways, velocityIn, lf.F * exit);
+		if (shape)
+			shape();
 		// The roll's ways are dense, so their tangents came out of the
 		// neighbours; nothing to retime.
 
@@ -3330,7 +3403,7 @@ public:
 		stood.Spine = 0.0f;
 		m_GetUpKeys.push_back(stood);
 
-		BeginMove(Move::Roll, T + tC + tR + tS, exit);
+		BeginMove(Move::Roll, T + tC + tR + tS, exit, T + tC + 0.92f * tR);
 	}
 
 	void UpdateMove(float dt)
@@ -3372,6 +3445,23 @@ public:
 		const GetUpKey& kb = m_GetUpKeys[i + 1];
 		float kw = glm::smoothstep(0.0f, 1.0f, glm::clamp((u - ka.T) / std::max(kb.T - ka.T, 1e-4f), 0.0f, 1.0f));
 		DriveKeyLimbs(ka, kb, kw, -1e9f);
+
+		// Into the next one with no walking step between: once he is on his
+		// feet again, a wall or a ledge in reach starts its move from here,
+		// at the speed the hips have now, with the limbs where they are.
+		if (m_Parkour && m_MoveTimer >= m_ChainFrom && m_MoveTimer < m_MoveTime)
+		{
+			glm::vec3 F(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
+			float speedBefore = m_Speed;
+			m_Speed = std::max(glm::dot(pelvis.Velocity, F), 0.0f);
+			m_Ahead = Sense(F);
+			if (m_Ahead.Type != Obstacle::None && TryMove(m_Ahead, F))
+			{
+				m_Chained++;
+				return;
+			}
+			m_Speed = speedBefore;
+		}
 
 		if (m_MoveTimer >= m_MoveTime)
 			FinishMove();
@@ -6151,6 +6241,8 @@ protected:
 	size_t m_TrackIndex = 0;
 	Move m_Move = Move::None;
 	float m_MoveTime = 1.0f, m_MoveTimer = 0.0f, m_MoveExit = 0.0f, m_MoveGrace = 0.0f;
+	float m_ChainFrom = 1.0f;
+	uint32_t m_Chained = 0;            // moves started straight from another, for the panel
 	float m_RollSpeed = 6.5f;          // m/s down at landing, scaled by sqrt(s), past which he rolls (about a 2.2 m drop)
 	bool m_ConesStored = false;
 	float m_HipConeBuilt[2] = { 0.0f, 0.0f }, m_SpineCone = 0.0f;
