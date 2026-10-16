@@ -9,7 +9,7 @@
 // access is exposed to scripts. console.log is still the only I/O surface
 // for RunScript's free-standing scripts; per-entity scripts prepared via
 // PrepareEntityScript additionally get a native `entity` (position/
-// rotation/scale), `input` (isKeyDown, isPointerDown, pointerX/Y), and `scene` (findByTag/spawn/
+// rotation/scale), `input` (isKeyDown, isActionDown, isPointerDown, pointerX/Y), and `scene` (findByTag/spawn/
 // destroy) binding, passed in as function parameters rather than globals
 // so two entities running the same script source never share state. The
 // game's UI is the one global besides console: `ui` (show/hide a screen,
@@ -868,6 +868,18 @@ private:
 		return JS_NewBool(ctx, GS::Input::IsKeyPressed(keycode));
 	}
 
+	// A control by its action (GS::InputMap: the project's Controls), so a
+	// script reads "jump" and the player decides which key that is.
+	static JSValue Native_IsActionDown(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+	{
+		if (GS::ImGuiLayer::WantsKeyboard() || argc < 1)
+			return JS_NewBool(ctx, false);
+		const char* name = JS_ToCString(ctx, argv[0]);
+		bool down = GS::InputMap::Active().Down(name ? name : "");
+		JS_FreeCString(ctx, name);
+		return JS_NewBool(ctx, down);
+	}
+
 	// The pointer is the mouse or a finger (GS::Input::IsPointerDown). Over
 	// a panel it reads as up, so pressing an editor button is not also a tap
 	// in the game; the transpiler emits the same guard, so a compiled script
@@ -1386,6 +1398,7 @@ private:
 		// left for it to leak against.
 		m_InputObject = JS_NewObject(m_Context);
 		JS_SetPropertyStr(m_Context, m_InputObject, "isKeyDown", JS_NewCFunction(m_Context, Native_IsKeyDown, "isKeyDown", 1));
+		JS_SetPropertyStr(m_Context, m_InputObject, "isActionDown", JS_NewCFunction(m_Context, Native_IsActionDown, "isActionDown", 1));
 		JS_SetPropertyStr(m_Context, m_InputObject, "isPointerDown", JS_NewCFunction(m_Context, Native_IsPointerDown, "isPointerDown", 0));
 		JS_SetPropertyStr(m_Context, m_InputObject, "pointerX", JS_NewCFunction(m_Context, Native_PointerX, "pointerX", 0));
 		JS_SetPropertyStr(m_Context, m_InputObject, "pointerY", JS_NewCFunction(m_Context, Native_PointerY, "pointerY", 0));
@@ -1883,6 +1896,10 @@ private:
 							var macro = keyNameToMacro(args[0].text);
 							if (!macro) fail(node, "unrecognized key name '" + args[0].text + "'");
 							return "GS::Input::IsKeyPressed(" + macro + ")";
+						}
+						if (member === "isActionDown") {
+							if (args.length !== 1) fail(node, "input.isActionDown needs exactly 1 argument, an action's name");
+							return "(!GS::ImGuiLayer::WantsKeyboard() && GS::InputMap::Active().Down(std::string(" + emitExpr(args[0]) + ")))";
 						}
 						var pointer = {
 							isPointerDown: "(!GS::ImGuiLayer::WantsMouse() && GS::Input::IsPointerDown())",

@@ -610,19 +610,21 @@ private:
 
 		if (!GS::ImGuiLayer::WantsKeyboard() && m_InputEnabled)
 		{
-			if (GS::Input::IsKeyPressed(GS_KEY_W)) m_MoveInput.y += 1.0f;
-			if (GS::Input::IsKeyPressed(GS_KEY_S)) m_MoveInput.y -= 1.0f;
-			if (GS::Input::IsKeyPressed(GS_KEY_D)) m_MoveInput.x += 1.0f;
-			if (GS::Input::IsKeyPressed(GS_KEY_A)) m_MoveInput.x -= 1.0f;
-			m_Sprint = GS::Input::IsKeyPressed(GS_KEY_LEFT_SHIFT) || GS::Input::IsKeyPressed(GS_KEY_RIGHT_SHIFT);
-			jumpDown = GS::Input::IsKeyPressed(GS_KEY_SPACE);
+			// By action, not key: the project's Controls (GS::InputMap).
+			const GS::InputMap& map = GS::InputMap::Active();
+			if (map.Down("forward")) m_MoveInput.y += 1.0f;
+			if (map.Down("back")) m_MoveInput.y -= 1.0f;
+			if (map.Down("right")) m_MoveInput.x += 1.0f;
+			if (map.Down("left")) m_MoveInput.x -= 1.0f;
+			m_Sprint = map.Down("sprint");
+			jumpDown = map.Down("jump");
 
-			// The arrow keys turn the camera, 90 degrees a second.
+			// The turn keys turn the camera, 90 degrees a second.
 			const float turn = 90.0f * dt;
-			if (GS::Input::IsKeyPressed(GS_KEY_LEFT)) m_Yaw += turn;
-			if (GS::Input::IsKeyPressed(GS_KEY_RIGHT)) m_Yaw -= turn;
-			if (GS::Input::IsKeyPressed(GS_KEY_UP)) m_Pitch += turn;
-			if (GS::Input::IsKeyPressed(GS_KEY_DOWN)) m_Pitch -= turn;
+			if (map.Down("turnleft")) m_Yaw += turn;
+			if (map.Down("turnright")) m_Yaw -= turn;
+			if (map.Down("turnup")) m_Pitch += turn;
+			if (map.Down("turndown")) m_Pitch -= turn;
 		}
 		// A jump on the press, not while held: holding Space does not bounce.
 		m_JumpPressed = jumpDown && !m_JumpWasDown;
@@ -631,7 +633,7 @@ private:
 		// Right-drag orbits. The difference between this step's pointer and
 		// the last one's, so it is the same however the frames fell.
 		glm::vec2 mouse(GS::Input::GetMouseX(), GS::Input::GetMouseY());
-		if (GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_RIGHT) && m_MouseKnown && m_InputEnabled)
+		if (GS::InputMap::Active().Down("look") && m_MouseKnown && m_InputEnabled)
 		{
 			glm::vec2 delta = mouse - m_LastMouse;
 			m_Yaw -= delta.x * 0.25f;

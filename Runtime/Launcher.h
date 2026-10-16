@@ -260,7 +260,7 @@ public:
 		if (!Active())
 			return;
 
-		console.Register("fire", "[count]", "launch one, or a volley (F does it too)", [this](const GameConsole::Args& a)
+		console.Register("fire", "[count]", "launch one, or a volley (the Fire control does it too)", [this](const GameConsole::Args& a)
 		{
 			float n = 1.0f;
 			if (!a.empty() && !m_Console->Number(a[0], n))
@@ -433,7 +433,7 @@ public:
 		if (!Active())
 			return;
 
-		bool fireKey = keyboardFree && GS::Input::IsKeyPressed(GS_KEY_F);
+		bool fireKey = keyboardFree && GS::InputMap::Active().Down("fire");
 		if (fireKey && !m_FireKeyWas)
 			m_Volley++;
 		m_FireKeyWas = fireKey;
@@ -691,7 +691,7 @@ private:
 		std::string shape = s->Shape == 0 ? "ball " + Format(s->Size.x) + " m"
 			: "box " + Format(s->Size.x) + " x " + Format(s->Size.y) + " x " + Format(s->Size.z) + " m";
 		m_Console->SetStatus(shape + "  " + Format(s->Mass) + " kg  " + Format(s->Speed) + " m/s"
-			+ (s->Target.empty() ? std::string() : "  at " + s->Target) + "      F  fire");
+			+ (s->Target.empty() ? std::string() : "  at " + s->Target) + "      " + GS::InputMap::Active().Keys("fire") + "  fire");
 	}
 
 	void PrintSettings()

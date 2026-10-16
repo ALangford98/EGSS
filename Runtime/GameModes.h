@@ -58,7 +58,7 @@ public:
 				{ "type": "panel", "anchor": "top-left", "pos": [28, 28], "layout": "vertical", "style": "accent",
 				  "padding": 14, "gap": 2, "children": [
 					{ "type": "label", "text": "{hud.mode}", "style": "title" },
-					{ "type": "label", "text": "walk up to things and press E", "style": "dim" } ] },
+					{ "type": "label", "text": "walk up to things and press {keys.interact}", "style": "dim" } ] },
 				{ "type": "panel", "anchor": "bottom", "pos": [0, 26], "padding": 12, "children": [
 					{ "type": "label", "text": "{hud.hints}", "style": "dim" } ] }
 			] } })json";
@@ -102,7 +102,7 @@ public:
 					{ "type": "label", "text": "range {aim.range} m   flight {aim.time} s", "style": "dim" },
 					{ "type": "label", "text": "too slow to reach -- more speed", "style": "accent", "visible": "aim.warn" } ] },
 				{ "type": "panel", "anchor": "bottom", "pos": [0, 26], "padding": 12, "children": [
-					{ "type": "label", "text": "click to fire   wheel picks an object   sliders set it   E or Esc to step away", "style": "dim" } ] }
+					{ "type": "label", "text": "{keys.shoot} fires   wheel picks an object   sliders set it   {keys.interact} or {keys.cancel} steps away", "style": "dim" } ] }
 			] } })json";
 	}
 	Mode CurrentMode() const { return m_Mode; }
@@ -171,9 +171,10 @@ public:
 	void Step(float dt)
 	{
 		bool keys = !GS::ImGuiLayer::WantsKeyboard();
-		bool e = keys && GS::Input::IsKeyPressed(GS_KEY_E);
-		bool esc = keys && GS::Input::IsKeyPressed(GS_KEY_ESCAPE);
-		bool click = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_LEFT) && !m_UIWantsPointer && !GS::ImGuiLayer::WantsMouse();
+		const GS::InputMap& map = GS::InputMap::Active();
+		bool e = keys && map.Down("interact");
+		bool esc = keys && map.Down("cancel");
+		bool click = map.Down("shoot") && !m_UIWantsPointer && !GS::ImGuiLayer::WantsMouse();
 		bool eEdge = e && !m_EWas, escEdge = esc && !m_EscWas, clickEdge = click && !m_ClickWas;
 		m_EWas = e;
 		m_EscWas = esc;
@@ -277,7 +278,7 @@ public:
 					glm::vec2 ndc = glm::vec2(clip) / clip.w;
 					ImVec2 at(x + (ndc.x * 0.5f + 0.5f) * width, y + (0.5f - ndc.y * 0.5f) * height);
 					GameUI::Theme theme;
-					GameUI::Prompt(list, at, "E", interact->Prompt, theme, std::max(0.5f, height / 1080.0f));
+					GameUI::Prompt(list, at, GS::InputMap::Active().Keys("interact"), interact->Prompt, theme, std::max(0.5f, height / 1080.0f));
 				}
 			}
 		list->PopClipRect();
@@ -396,7 +397,8 @@ private:
 		// Look: the pointer's travel since the last step while the right
 		// button is held -- per step, not per frame, so it replays.
 		glm::vec2 mouse(GS::Input::GetMouseX(), GS::Input::GetMouseY());
-		bool look = GS::Input::IsMouseButtonPressed(GS_MOUSE_BUTTON_RIGHT) && !GS::ImGuiLayer::WantsMouse();
+		const GS::InputMap& map = GS::InputMap::Active();
+		bool look = map.Down("look") && !GS::ImGuiLayer::WantsMouse();
 		if (look && m_MouseKnown)
 		{
 			glm::vec2 delta = mouse - m_LastMouse;
@@ -412,13 +414,13 @@ private:
 		{
 			glm::vec3 forward = ForwardFromRotation(glm::vec3(m_Pitch, m_Yaw, 0.0f));
 			glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
-			if (GS::Input::IsKeyPressed(GS_KEY_W)) move += forward;
-			if (GS::Input::IsKeyPressed(GS_KEY_S)) move -= forward;
-			if (GS::Input::IsKeyPressed(GS_KEY_D)) move += right;
-			if (GS::Input::IsKeyPressed(GS_KEY_A)) move -= right;
-			if (GS::Input::IsKeyPressed(GS_KEY_SPACE)) move.y += 1.0f;
-			if (GS::Input::IsKeyPressed(GS_KEY_LEFT_CONTROL) || GS::Input::IsKeyPressed(GS_KEY_C)) move.y -= 1.0f;
-			if (GS::Input::IsKeyPressed(GS_KEY_LEFT_SHIFT) || GS::Input::IsKeyPressed(GS_KEY_RIGHT_SHIFT)) speed *= 3.0f;
+			if (map.Down("forward")) move += forward;
+			if (map.Down("back")) move -= forward;
+			if (map.Down("right")) move += right;
+			if (map.Down("left")) move -= right;
+			if (map.Down("jump")) move.y += 1.0f;
+			if (map.Down("down")) move.y -= 1.0f;
+			if (map.Down("sprint")) speed *= 3.0f;
 		}
 		if (glm::length(move) > 1e-4f || look)
 			MakeActive(m_FlyCamera);   // flying takes the view back from a fixed camera
@@ -689,14 +691,23 @@ private:
 		}
 	}
 
+	// The hints, and every action's key as `keys.<action>` for screens to
+	// show ("{keys.interact} to use"), from the project's Controls: rebind
+	// Interact to F and every prompt says F.
 	void PublishHud()
 	{
-		const char* mode = "FREE CAMERA";
-		const char* hints = "WASD fly   Space / Ctrl up, down   Shift faster   hold right mouse to look   F fire   backtick  terminal";
+		const GS::InputMap& map = GS::InputMap::Active();
+		for (const GS::InputMap::Action& action : map.Actions())
+			m_UI.Set("keys." + action.Id, map.Keys(action.Id));
+		std::string move = map.Keys("forward") + map.Keys("left") + map.Keys("back") + map.Keys("right");
+		std::string mode = "FREE CAMERA";
+		std::string hints = move + " fly   " + map.Keys("jump") + " / " + map.Keys("down") + " up, down   " + map.Keys("sprint")
+			+ " faster   hold " + map.Keys("look") + " to look   " + map.Keys("fire") + " fire   " + map.Keys("terminal") + " terminal";
 		if (m_Mode == Mode::Possess)
 		{
 			mode = "CONTROLLING THE DUMMY";
-			hints = "WASD walk   Shift run   Space jump   hold right mouse to look   E let go";
+			hints = move + " walk   " + map.Keys("sprint") + " run   " + map.Keys("jump") + " jump   hold " + map.Keys("look")
+				+ " to look   " + map.Keys("interact") + " let go";
 		}
 		m_UI.Set("hud.mode", mode);
 		m_UI.Set("hud.hints", hints);

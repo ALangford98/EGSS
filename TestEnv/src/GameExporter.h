@@ -470,6 +470,11 @@ namespace GameExporter {
 			}
 		}
 
+		// The project's controls (GS::InputMap), when it has rebound any.
+		if (fs::exists(project / GS::InputMap::FileName()))
+			fs::copy_file(project / GS::InputMap::FileName(), package / "game" / GS::InputMap::FileName(),
+				fs::copy_options::overwrite_existing, ec);
+
 		// The game UI's fonts (GameUI::Font), unless the project has its own:
 		// the player has no editor assets to borrow them from. 1.1 MB.
 		{

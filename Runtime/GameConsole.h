@@ -133,12 +133,17 @@ public:
 			return;
 
 		// The toggle -- not while some other text field has the keyboard.
+		// The Terminal and Cancel controls (GS::InputMap), on their press.
 		ImGuiIO& io = ImGui::GetIO();
 		bool typingElsewhere = io.WantTextInput && !m_InputActive;
-		if (!typingElsewhere && ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false))
+		const GS::InputMap& map = GS::InputMap::Active();
+		bool toggle = map.Down("terminal"), cancel = map.Down("cancel");
+		bool togglePressed = toggle && !m_ToggleWas, cancelPressed = cancel && !m_CancelWas;
+		m_ToggleWas = toggle;
+		m_CancelWas = cancel;
+		if (!typingElsewhere && togglePressed)
 			SetOpen(!m_Open);
-
-		if (m_Open && !typingElsewhere && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+		else if (m_Open && !typingElsewhere && cancelPressed)
 			SetOpen(false);
 
 		if (!m_Open)
@@ -172,7 +177,7 @@ public:
 		{
 			ImGui::TextColored(ImVec4(0.35f, 0.8f, 0.5f, 1.0f), "TERMINAL");
 			ImGui::SameLine();
-			ImGui::TextDisabled("  `  to close   help  for commands   up/down history   tab completes");
+			ImGui::TextDisabled("  %s  to close   help  for commands   up/down history   tab completes", GS::InputMap::Active().Keys("terminal").c_str());
 			ImGui::Separator();
 
 			float inputHeight = ImGui::GetFrameHeightWithSpacing() + 4.0f;
@@ -217,7 +222,9 @@ public:
 		float header = 46.0f * s;
 		list->AddRectFilled(ImVec2(0, 0), ImVec2(width, header), IM_COL32(18, 70, 44, 255));
 		GameUI::AddText(list, GameUI::Font(true), font, ImVec2(18.0f * s, (header - font) * 0.5f), IM_COL32(200, 255, 220, 255), title.c_str());
-		const char* state = focused ? "ONLINE  //  ESC TO STEP BACK" : "STANDBY  //  [E] TO USE";
+		std::string stateText = focused ? "ONLINE  //  " + GameConsole::Upper(GS::InputMap::Active().Keys("cancel")) + " TO STEP BACK"
+			: "STANDBY  //  [" + GameConsole::Upper(GS::InputMap::Active().Keys("interact")) + "] TO USE";
+		const char* state = stateText.c_str();
 		ImVec2 stateSize = GameUI::Font(true)->CalcTextSizeA(font * 0.8f, FLT_MAX, 0.0f, state);
 		GameUI::AddText(list, GameUI::Font(true), font * 0.8f, ImVec2(width - stateSize.x - 18.0f * s, (header - font * 0.8f) * 0.5f),
 			focused ? IM_COL32(255, 220, 120, 255) : IM_COL32(120, 200, 150, 255), state);
@@ -367,7 +374,7 @@ private:
 	{
 		if (m_Status.empty())
 			return;
-		std::string text = m_Status + "      `  terminal";
+		std::string text = m_Status + "      " + GS::InputMap::Active().Keys("terminal") + "  terminal";
 		ImVec2 size = ImGui::CalcTextSize(text.c_str());
 		ImDrawList* draw = ImGui::GetForegroundDrawList();
 		ImVec2 at(x + 10.0f, y + height - size.y - 14.0f);
@@ -393,7 +400,15 @@ private:
 	{
 		GameConsole& self = *(GameConsole*)data->UserData;
 		if (data->EventFlag == ImGuiInputTextFlags_CallbackCharFilter)
-			return data->EventChar == '`' ? 1 : 0;   // the toggle, not text
+		{
+			// The toggle's own character is the toggle, not text.
+			const GS::InputMap::Action* toggle = GS::InputMap::Active().Find("terminal");
+			for (const GS::Binding& binding : toggle ? toggle->Bindings : std::vector<GS::Binding>{})
+				if (!binding.Mouse && binding.Code >= 32 && binding.Code < 127
+					&& std::tolower((int)data->EventChar) == std::tolower(binding.Code))
+					return 1;
+			return 0;
+		}
 		if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways)
 		{
 			self.m_Cursor = data->CursorPos;
@@ -458,6 +473,12 @@ private:
 	}
 
 public:
+	static std::string Upper(std::string text)
+	{
+		std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return (char)std::toupper(c); });
+		return text;
+	}
+
 	static std::string Lower(std::string text)
 	{
 		std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return (char)std::tolower(c); });
@@ -489,6 +510,7 @@ private:
 	bool m_InputActive = false;
 	bool m_ScrollToEnd = false;
 	bool m_Embedded = false;
+	bool m_ToggleWas = false, m_CancelWas = false;
 	bool m_Quiet = false;
 	int m_Cursor = 0;
 	std::string m_Status;

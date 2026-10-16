@@ -184,6 +184,16 @@ public:
 		}
 		m_Characters.Start(m_Scene);
 
+		// The project's controls, when it has saved some: what every
+		// action below reads. Without the file the map is left as it is --
+		// defaults in a player, whatever the editor's Controls panel holds
+		// in the editor.
+		{
+			std::string controls = GS::Assets::Resolve(GS::InputMap::FileName());
+			if (std::filesystem::exists(controls))
+				GS::InputMap::Active().Load(controls);
+		}
+
 		m_Launchers.Start(m_LauncherHost);
 		RegisterCommands();
 		m_Launchers.RegisterCommands(m_Console);
@@ -453,7 +463,7 @@ private:
 		});
 		c.Print("GS game terminal -- type help", GameConsole::Tone::Title);
 		if (m_Launchers.Active())
-			c.Print("a launcher is ready: F fires it; try  preset car, fire  or  slowmo 0.25", GameConsole::Tone::Dim);
+			c.Print("a launcher is ready: " + GS::InputMap::Active().Keys("fire") + " fires it; try  preset car, fire  or  slowmo 0.25", GameConsole::Tone::Dim);
 	}
 
 	// What the launcher needs of the session: the world, and bodies made
