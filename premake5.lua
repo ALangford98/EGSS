@@ -212,7 +212,11 @@ project "GS"
             -- windows.h otherwise defines min/max as macros, which break
             -- every std::min/std::max in the engine.
             "NOMINMAX",
-            "WIN32_LEAN_AND_MEAN"
+            "WIN32_LEAN_AND_MEAN",
+            -- ImGui is linked into this DLL and exported from it: a DLL
+            -- exports only what it marks, and the runtime a game is built
+            -- from draws its terminal and HUD with ImGui.
+            "IMGUI_API=__declspec(dllexport)"
         }
 
         links
@@ -524,7 +528,9 @@ project "GSPlayer"
         staticruntime "On"
         systemversion "latest"
         disablewarnings { "4251" }
-        defines { "GS_PLATFORM_WINDOWS", "NOMINMAX", "WIN32_LEAN_AND_MEAN" }
+        -- The runtime draws the game's terminal and HUD with ImGui, which
+        -- lives inside GS.dll: imported from it, as GS_API's symbols are.
+        defines { "GS_PLATFORM_WINDOWS", "NOMINMAX", "WIN32_LEAN_AND_MEAN", "IMGUI_API=__declspec(dllimport)" }
         includedirs { "GS/src/Platform/Windows/shim" }
         postbuildcommands
         {

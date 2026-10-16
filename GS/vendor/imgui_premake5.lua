@@ -57,6 +57,9 @@ project "ImGui"
 
 	filter "system:windows"
 		systemversion "latest"
+		-- Exported from GS.dll, which this is linked into (see GS's own
+		-- IMGUI_API define for why).
+		defines { "IMGUI_API=__declspec(dllexport)" }
 
 	filter "configurations:Debug"
 		runtime "Debug"

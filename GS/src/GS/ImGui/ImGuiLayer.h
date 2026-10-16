@@ -9,6 +9,7 @@
 #include <string>
 
 struct ImFont;
+struct ImDrawList;
 
 namespace GS {
 
@@ -77,6 +78,20 @@ namespace GS {
 		// The same for the mouse: true while it is over a panel, so a click
 		// on a button is not also a tap in the game under it.
 		static bool WantsMouse();
+
+		// Draws one ImDrawList, built by the caller, into whatever target is
+		// bound -- a framebuffer that becomes a texture: a game screen on a
+		// monitor. ImGui's own renderer, so the same font, the same
+		// anti-aliasing and the same look as on screen. (0, 0) is the top left
+		// and (width, height) the bottom right, so the texture comes out with
+		// its top at v = 1. Call inside a frame: glyphs the list asked for are
+		// uploaded by this call.
+		static void RenderDrawList(ImDrawList* list, float width, float height);
+		// Uploads whatever any font atlas has pending -- one created this
+		// frame, glyphs baked this frame -- so draw lists built since can be
+		// rendered this frame. RenderDrawList calls it; a game that draws
+		// text over its view calls it before the frame ends.
+		static void UploadTextures();
 
 		// Runtime font switching, unlike the static SetFontPath above (which
 		// only works pre-OnAttach) -- called any time after the ImGui

@@ -117,8 +117,8 @@ namespace {
 			m_Session->FixedUpdate(step);
 		}
 
-		// The game console, over the whole window.
-		void OnImGuiRender() override
+		// The game's HUD, prompts and console, over the whole window.
+		void OnGameOverlay() override
 		{
 			ImGuiIO& io = ImGui::GetIO();
 			m_Session->DrawOverlay(0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y);

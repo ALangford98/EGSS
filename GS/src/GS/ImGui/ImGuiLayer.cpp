@@ -5,6 +5,7 @@
 #include "GS/Log.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <backends/imgui_impl_opengl3.h>
 
 // Android and iOS have no GLFW. Their windows hand touches to the engine as
@@ -22,6 +23,37 @@ namespace GS {
 
 	std::string ImGuiLayer::s_FontPath;
 	bool ImGuiLayer::s_NoIniFile = false;
+
+	void ImGuiLayer::UploadTextures()
+	{
+		if (!ImGui::GetCurrentContext())
+			return;
+		// An atlas uploads its texture during ImGui::Render, and one added
+		// mid-frame is not on the renderer's list until the next NewFrame --
+		// but text drawn now asks for it now. So every registered atlas's
+		// textures are brought up to date here, which also uploads glyphs
+		// asked for at sizes not baked before.
+		for (ImFontAtlas* atlas : GImGui->FontAtlases)
+			for (ImTextureData* texture : atlas->TexList)
+				if (texture->Status != ImTextureStatus_OK)
+					ImGui_ImplOpenGL3_UpdateTexture(texture);
+	}
+
+	void ImGuiLayer::RenderDrawList(ImDrawList* list, float width, float height)
+	{
+		if (!ImGui::GetCurrentContext() || !list)
+			return;
+		UploadTextures();
+		ImDrawData data;
+		data.Valid = true;
+		data.AddDrawList(list);
+		data.DisplayPos = ImVec2(0.0f, 0.0f);
+		data.DisplaySize = ImVec2(width, height);
+		data.FramebufferScale = ImVec2(1.0f, 1.0f);
+		data.OwnerViewport = ImGui::GetMainViewport();
+		data.Textures = &ImGui::GetPlatformIO().Textures;
+		ImGui_ImplOpenGL3_RenderDrawData(&data);
+	}
 
 	bool ImGuiLayer::WantsKeyboard()
 	{

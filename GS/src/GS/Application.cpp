@@ -429,6 +429,9 @@ namespace GS {
 				// is being tested.
 				m_ImGuiLayer->Begin();
 
+				for (Layer* layer : m_LayerStack)
+					layer->OnGameOverlay();
+
 				if (!m_HideUI)
 				{
 					for (Layer* layer : m_LayerStack)

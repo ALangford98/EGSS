@@ -31,6 +31,11 @@ namespace GS {
 		virtual void OnUpdate(Timestep ts) {}
 
 		virtual void OnImGuiRender() {}
+		// What the game itself shows over its view -- a HUD, a prompt, a
+		// terminal -- drawn with ImGui like a panel but not one: it runs
+		// under --hide-ui too, because a capture of a game should show what
+		// a player sees, and none of it prints frame times.
+		virtual void OnGameOverlay() {}
 		virtual void OnEvent(Event& event) {}
 
 		inline const std::string& GetName() const { return m_DebugName; }
