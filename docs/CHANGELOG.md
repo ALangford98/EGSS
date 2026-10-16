@@ -7,6 +7,41 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-16 (parkour: one move into the next)
+
+Each move used to end in the walk, and the next began from it. Now each
+move has a point after which he is on his feet enough to go on
+(`BeginMove`'s `chainFrom`: a vault's landing, a climb's rise, a drop's
+absorb, a roll's feet down); from there to its end the same check the
+walk makes (`TryMove`, shared) runs from inside the move, at the speed
+the hips have and with the limbs where they are.
+
+Three things it turned up:
+
+- **A roll went through a wall.** Dropping 3 m with a wall 3.5 m on, the
+  roll -- a body carried along the floor -- went 30 cm into it. A roll now
+  asks for room first (`RoomAhead`, rays at shin and chest height from
+  the landing; `RollRoom`, 3 m in his scale) and lands absorbing when
+  there is none, carrying on only as far as there is room.
+- **Running at a wall from a standstill stood him at it for good.** The
+  run's vault asked for speed as well as run held; landing in front of a
+  wall leaves him nearly still. Running is now the wish (run held), not
+  the speed.
+- **A wall at the edge of a drop was a wall.** A vault now lands up to
+  4.5 m below the top: absorbing as deep as v^2 / 2a at 3 g asks, or
+  rolling when the landing is fast enough and there is room (the vault's
+  flight followed by the drop's roll, `PlanRoll` taking the track's
+  shaping from whichever move led to it).
+
+Measured, four bodies over four courses -- two walls running, a wall then
+a 1.4 m ledge with jump, a wall at a 2.5 m edge running, a 3 m drop with a
+wall after it running: 16 of 16 on their feet, each sequence chained
+(vault -> vault, drop -> vault, vault into a roll; the wall-then-ledge
+climb starts 4-10 frames after the vault for three of the four, chained
+for the tallest, whose landing is near enough). Worst limb contact 5-26
+cm, in 0-3 steps of about 400, each a foot at a vault's landing. The
+default figure on open ground is unchanged (58,500 values, identical).
+
 ### 2026-10-16 (humanoids: parkour -- vault, step on, climb, drop and roll; walls; the get-up into the floor)
 
 The owner, on the get-up's penetration and parkour as next: "go ahead".

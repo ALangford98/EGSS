@@ -37,6 +37,9 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-16 — Parkour chains**: one move straight into the next
+  (vault -> vault, drop -> vault, vault off an edge into a roll); rolls
+  only where there is room.
 - **2026-10-16 — Parkour**: vault, step on, climb, drop and roll, and
   walls that stop him; the get-up's floor penetration halved; run held
   standing no longer throws the rig. Try it in the crash test hall's

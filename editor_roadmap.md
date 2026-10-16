@@ -122,8 +122,8 @@ catching yourself, falling realistically. Where it stands:
   Jump starts a move, a run vaults by itself. Measured over five bodies
   and eight courses, 40/40 on their feet; see the changelog.
 - **Next for parkour**, toward the "flowing" the owner asked for:
-  - moves into moves: a vault straight into a climb or a roll, without
-    the walk's step between (each move ends in the walk now);
+  - ~~moves into moves~~ -- done 2026-10-16: each move hands straight to
+    the next once he is on his feet; a vault off an edge rolls;
   - wall run and wall jump; a speed vault (one hand, legs to the side);
     hanging and shimmying along a ledge; dropping to a hang;
   - speculative contacts in the physics, for the one-step penetration of
