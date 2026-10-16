@@ -281,6 +281,13 @@ namespace CrashTestScene
 		Static(Box(scene, "Step Box", { yardX, 0.3f, 7.5f }, { 3.0f, 0.6f, 1.4f }, concrete, 0.7f));
 		Static(Box(scene, "Ledge", { yardX, 0.8f, 11.0f }, { 3.0f, 1.6f, 2.4f }, concrete, 0.7f));
 		Static(Box(scene, "Tower", { yardX, 1.5f, 13.6f }, { 3.0f, 3.0f, 2.8f }, { 0.5f, 0.52f, 0.55f, 1.0f }, 0.7f));
+		// A wall along the hall's west side to run along (3.5 m, 8 m long:
+		// run beside it and jump; jump again to kick off), and a ledge too
+		// high to reach standing (2.35 m: jump to it and hang; A and D go
+		// along it, W climbs, S lets go). Walking off the tower's far side
+		// lowers him into a hang too; running off it, he drops and rolls.
+		Static(Box(scene, "Run Wall", { -12.6f, 1.75f, 6.0f }, { 0.4f, 3.5f, 8.0f }, { 0.55f, 0.57f, 0.6f, 1.0f }, 0.7f));
+		Static(Box(scene, "High Ledge", { -4.8f, 1.175f, 18.5f }, { 2.6f, 2.35f, 1.2f }, concrete, 0.7f));
 		Dummy(scene, "Runner Dummy", { yardX, 0.0f, 0.0f }, 0.0f, { 0.15f, 0.75f, 0.45f, 1.0f }, 0);
 
 		// The cannon, 11 m down the lane, firing back along -z: its base
