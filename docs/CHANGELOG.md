@@ -7,6 +7,97 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-16 (humanoids: any body, a walking style each, and getting up the way people do)
+
+The owner: "have them stand up more naturally, and add some variable meshes
+for their skeletons ... various heights, masculine and feminine, various
+statures and weights ... control the walking style down to the preset
+animation." Parkour is the stated next goal.
+
+**Bodies** (`GS::PhysiqueSettings` on the Player/NPC component: height, mass,
+build). `Humanoid::ComputeProportions` makes the rig any person:
+- **Height scales every length by s = h / 1.86:** bones, joint positions,
+  and the controller's ~45 lengths (stride, foot lift, catch reach,
+  get-up).
+- **Speeds and times scale by sqrt(s):** equal Froude number, and a
+  pendulum's period goes as sqrt(L/g).
+- **Mass against the isometric 71.2 s³ gives the girth,**
+  g = sqrt(m / 71.2 s³): limbs and trunk widen by g, and the belly by
+  g^1.25 front to back. Joint strength goes with (m / 71.2) s.
+- **Build** moves between masculine and feminine proportions:
+  - shoulders 10% narrower and hips 12% wider;
+  - mass lower (pelvis +15%, thighs +12%, chest −8%, upper arms −12%);
+  - a slightly smaller head.
+
+  Segment masses are normalised to the mass asked for.
+- **Bodies never start overlapping:** the arms sit clear of a wide pelvis,
+  and the thighs clear of each other.
+
+**The dummy follows the body.** Trunk, head and feet are scaled to the
+colliders they cover; a feminine build (≥ 0.5) gets its own torso (a waist
+and bust) and pelvis (rounded hips).
+
+**Walking styles** (`GS::GaitSettings`): nineteen numbers over the
+figure's tuned gait.
+- **Scales:** speed, stride, run speed, arm swing, elbow bend, lean, bob,
+  sway, hip roll, stance width, foot lift, irregularity, turn rate.
+- **Values:** arms held out, posture, head carriage, crouch, a drunk's
+  wander, and a limp (the hips drop and the step is shortened onto the
+  bad leg).
+- **Eleven presets:** Normal, Brisk, Stroll, Confident, Feminine, March,
+  Tired, Elderly, Sneak, Limp, Drunk.
+- **Where they're set:**
+  - the Inspector (style list, then every number, with undo);
+  - `walkstyle <name> <style>` in the game terminal, live;
+  - saved in the scene.
+
+**Getting up, choreographed** (`PlanGetUp`, `UpdateNaturalGetUp`):
+- **The sequence:** key poses worked out from where he lies and his own
+  measurements.
+  - *Face down:* hands under the shoulders, push up chest first, knees
+    under onto all fours, a kneeling lunge with a hand on the front knee,
+    up over the front foot with the back foot stepping in.
+  - *Face up:* he rolls onto his front about his own length, then the
+    same.
+- **Planted points:** hands, knees and feet are IK targets on the floor.
+  One moved between two floor spots is lifted on the way, not dragged.
+- **Bugs fixed along the way:**
+  - **The hands never reached the floor:** the shoulder's 75° cone. It
+    opens to 120° (the cone only) while getting up.
+  - **The face-up version came apart:** it first sat up and turned over
+    bent knees, which asks the 55° hip cones for too much; the knee
+    flipped between IK solutions mid-turn. Rolling over replaced it.
+  - **A foot was driven 10 cm into the floor:** a tucked foot stands at
+    right angles to the shin, so its ankle is a foot's length up. A
+    kneeling ankle is now soft and lets the floor set it.
+  - **The pelvis's corners dipped 5.5 cm into the floor between keys:** it
+    is now clamped by its actual orientation.
+- `m_NaturalGetUp` off brings back the old three-waypoint lift. It's a
+  checkbox in the Ragdoll demo, beside a style picker.
+
+**Measured** (a headless harness, 8 bodies from 1.35 m/35 kg to
+1.98 m/88 kg and 1.75 m/115 kg):
+- **The default body and gait are bit-identical to the last commit:**
+  58,500 body values over 900 steps of walking, running, a jump and a
+  shove, against a renamed copy of the old class.
+- **Every body:**
+  - stands 8 s, walks, runs and jumps without going down, and catches a
+    40 N·s shove (scaled by mass);
+  - gets up from face down (2.1–2.6 s) and face up (2.7–3.3 s), and stays
+    up.
+- **Walk speeds** follow sqrt(s): 1.32 m/s at 1.86 m, 1.13 at 1.35 m.
+- **Every style's speed** is its multiplier times 1.32 (Brisk 1.65,
+  Elderly 0.69, Drunk 0.93 with 0.51 m of sideways wander). None falls.
+- **Into the floor during a get-up:** at most 4.6–9.9 cm, and over 3 cm
+  for 3–12% of the get-up's steps; a few steps at a time, mostly a thigh
+  or forearm under the motors while pushing up. Standing, the feet sit
+  at 0.000. This is the remaining rough edge.
+
+**Also:**
+- `shove <name> <N s> [front|back|left|right]` in the terminal.
+- The crash test hall gains eight wandering test dummies, each a different
+  body and style.
+
 ### 2026-10-16 (controls: a rebindable input map and a Controls panel)
 
 The owner asked for "a panel for controls" in the editor. Of the three

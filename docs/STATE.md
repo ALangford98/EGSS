@@ -37,6 +37,11 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-16 — Humanoid bodies, walking styles, a natural get-up**:
+  height/mass/build per humanoid (the dummy follows), eleven walking
+  styles with every parameter editable, and a get-up choreographed from
+  how people do it (push up, all fours, lunge, rise; rolling over first
+  from on the back). Default rig bit-identical. Next: parkour.
 - **2026-10-16 — Controls**: View > Controls rebinds the game's actions
   per project (`controls.txt`, `GS::InputMap`); prompts, hints and
   `.gsui` screens follow; scripts get `input.isActionDown`.

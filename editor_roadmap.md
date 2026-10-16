@@ -112,6 +112,22 @@ catching yourself, falling realistically. Where it stands:
   - **bracing.** A lost stumble goes down hands first;
   - jumping (crouch, push, flight, absorbing landing), ragdoll, get-up
     from the ground.
+- **Working (2026-10-16):** any body (height, mass, masculine to feminine
+  build; the dummy follows), walking styles (eleven presets, nineteen
+  numbers each, in the Inspector and the terminal), and a choreographed
+  get-up (face down and, rolling over first, face up). See the
+  changelog's 2026-10-16 entry for the measurements.
+- **Next, the owner's goal: parkour.** "Pretty in depth and flowing
+  parkour movements", after walking, running, stumbling and jumping, which
+  are where it should be now.
+  - The get-up's key-pose machinery (`GetUpKey`: pelvis path, spine, hand
+    and foot targets with lifts, knee poles, planted and soft feet) is the
+    natural base for vaults, climbs and rolls.
+  - Each needs a trigger from what is ahead: a raycast at knee, waist and
+    head height (`PhysicsWorld3D::Raycast` exists).
+  - The floor penetration under strong motors during the get-up (up to
+    5–10 cm for a few steps) would show more in fast moves, and is worth
+    solving first.
 - **Open:**
   1. **Running hits, physically.** They still use the kinematic stagger.
   2. **The steepest slope he walks up** since the hips' climb became a
