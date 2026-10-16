@@ -7,6 +7,90 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-16 (humanoids: parkour -- vault, step on, climb, drop and roll; walls; the get-up into the floor)
+
+The owner, on the get-up's penetration and parkour as next: "go ahead".
+Floor first, then the moves.
+
+**The floor.** Measured with contacts against the floor, five bodies,
+face up and down, two seeds: before, worst 4.3-9.9 cm, over 3 cm in up to
+12% of steps. Three causes, each found by tracing the deepest contact:
+
+- *Knees driven through the floor.* Lying face down with the legs at 0.97
+  of their length and the knee pole down, the IK bends the knee 11 cm
+  below the hip-ankle line -- into the floor. `SolveLegPole` takes a
+  `kneeFloor` now (`KeepKneeAbove`): the knee is lifted round the hip
+  towards straight until it clears, and the ankle goes where the shin
+  then reaches. Thigh and shin went from 5-6 cm to under 2.
+- *A foot dragged.* Coming forward into the lunge the lead foot trailed
+  its target by 40-50 cm, so the carry's arc was over before the foot had
+  moved, and it was dragged the rest of the way, toe 7.5 cm in. The lift
+  now also follows how far the limb is from where it should be now.
+- *Toes into a riser* (seen first in the step-on, then in the get-up's
+  steps): a foot well below where it is being lifted to rises before it
+  goes forward.
+
+After: worst 1.4-5.9 cm, over 3 cm in at most 2.5% of steps, every body up
+from both sides. For scale, a limp body lying still sinks 0.5-2 cm.
+
+**Parkour** (`Humanoid.h`, "Parkour"). Rays at knee, waist, chest and
+head height find a face ahead; one down just past it finds the top; more
+along the top find where it ends; one over the top asks for room. Only
+static bodies count, and nothing facing up more than at him (a slope is
+walked). Classed by height and depth, in his own scale:
+
+- under the step height: nothing (the walk takes it);
+- to 1.15 s, at most 0.75 s deep, ground beyond: **vault**;
+- to 0.8 s and deep: **step on**;
+- to 2.1 s: **climb**;
+- otherwise a **wall**: he slows to stop short of it (v = sqrt(2 a d),
+  a = 6 m/s^2) instead of the hips walking through it as they used to.
+  Stopped dead in one step, a run into a wall put him down.
+
+Jump with one in reach starts the move; running, a vault starts by
+itself. Off an edge higher than the walk steps down (1.5 m), up to 4.5 s,
+he **drops** rather than ragdolling: lands, absorbs v^2 / 2a at 3 g, and
+past 6.5 sqrt(s) m/s at impact (about 2.2 m) **rolls**.
+
+Each move is the get-up's machinery (`GetUpKey`, now also with limbs in
+the pelvis's own frame for a tuck; `DriveKeyLimbs` shared) over a pelvis
+path that is worked out, not drawn: a vault's flight and a drop are
+projectiles (`Way::Ballistic`; the vault's apex half a metre over the top
+fixes the time, the distance the speed), a climb jumps to a hang whose
+apex is where the hands meet the edge with the arms straight, and the
+roll's hips sit as high as his lowest part allows (`LowestBelow`: pelvis,
+rounded torso, head, tucked knees and feet, for each turn of the roll),
+travelling d(along) = height * d(angle), rolling without slipping. Hips
+118 deg, spine 60 and shoulders 120 are opened for a move and closed after.
+
+Measured, five bodies (1.35-1.98 m, 35-115 kg) over eight courses -- a
+1 m wall run at, a 0.9 m wall walked at with a jump, a 0.6 m box, ledges
+of 1.2 and 1.8 m, a 3 m wall, drops of 1.8 m walking and 3 m running:
+40 of 40 end on their feet. The vault's mid-flight hip acceleration reads
+-9.8 m/s^2. Running vaults leave at 3.5-3.9 m/s (in at about 4), the 3 m
+drop rolls out at 3.2-3.9. The smallest body treats the 1 m wall as a
+climb (it is 1.37 of his scale) and, running without a jump, stops at it.
+The hips never enter an obstacle (0 to 3 cm of a corner, for a frame).
+Limb contacts: mostly 3-8 cm, worst 9-12 cm for a trailing foot on a
+vault's far edge, and 20 cm for one step as the 115 kg body lands from
+3 m at 7.7 m/s -- 13 cm a step, inside the floor before a contact exists.
+That needs speculative contacts, not better targets.
+
+Also found: **run held standing still threw the rig across the world**
+(Shift in the Ragdoll demo, untouched). The run's bob divided by the
+speed: at 0.01 m/s a cycle of minutes and a take-off to match. It is now
+worked out at no less than walking speed and scaled down with the
+stride. Present in the last commit too (checked against it).
+
+The default figure on open ground is unchanged: 900 steps of walking,
+running, a jump and a shove, 58,500 values, identical to the last commit.
+
+**Where to try it**: the crash test hall has a parkour yard down its west
+side -- a wall, a box, a 1.6 m ledge and a 3 m tower -- with a Runner
+Dummy at the start and a "Yard" camera. Take control of him (E); the
+hint says "vault", "climb" or "step on" where a jump would. The Ragdoll
+demo has a Parkour checkbox and shows what is ahead.
+
 ### 2026-10-16 (humanoids: any body, a walking style each, and getting up the way people do)
 
 The owner: "have them stand up more naturally, and add some variable meshes

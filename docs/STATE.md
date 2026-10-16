@@ -37,6 +37,10 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-16 — Parkour**: vault, step on, climb, drop and roll, and
+  walls that stop him; the get-up's floor penetration halved; run held
+  standing no longer throws the rig. Try it in the crash test hall's
+  parkour yard (Runner Dummy).
 - **2026-10-16 — Humanoid bodies, walking styles, a natural get-up**:
   height/mass/build per humanoid (the dummy follows), eleven walking
   styles with every parameter editable, and a get-up choreographed from

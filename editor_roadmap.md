@@ -117,17 +117,18 @@ catching yourself, falling realistically. Where it stands:
   numbers each, in the Inspector and the terminal), and a choreographed
   get-up (face down and, rolling over first, face up). See the
   changelog's 2026-10-16 entry for the measurements.
-- **Next, the owner's goal: parkour.** "Pretty in depth and flowing
-  parkour movements", after walking, running, stumbling and jumping, which
-  are where it should be now.
-  - The get-up's key-pose machinery (`GetUpKey`: pelvis path, spine, hand
-    and foot targets with lifts, knee poles, planted and soft feet) is the
-    natural base for vaults, climbs and rolls.
-  - Each needs a trigger from what is ahead: a raycast at knee, waist and
-    head height (`PhysicsWorld3D::Raycast` exists).
-  - The floor penetration under strong motors during the get-up (up to
-    5–10 cm for a few steps) would show more in fast moves, and is worth
-    solving first.
+- **Working (2026-10-16, later): parkour.** Vault, step on, climb, drop
+  and roll, from rays ahead (knee, waist, chest, head); walls stop him.
+  Jump starts a move, a run vaults by itself. Measured over five bodies
+  and eight courses, 40/40 on their feet; see the changelog.
+- **Next for parkour**, toward the "flowing" the owner asked for:
+  - moves into moves: a vault straight into a climb or a roll, without
+    the walk's step between (each move ends in the walk now);
+  - wall run and wall jump; a speed vault (one hand, legs to the side);
+    hanging and shimmying along a ledge; dropping to a hang;
+  - speculative contacts in the physics, for the one-step penetration of
+    a hard landing (20 cm at 7.7 m/s);
+  - the climb's hang currently has the feet on the wall but not pushing.
 - **Open:**
   1. **Running hits, physically.** They still use the kinematic stagger.
   2. **The steepest slope he walks up** since the hips' climb became a
