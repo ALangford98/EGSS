@@ -129,9 +129,19 @@ catching yourself, falling realistically. Where it stands:
     2026-10-16;
   - speculative contacts were tried for the deep steps of a hard landing
     and did not help: the hips are carried, and a carried body wins over
-    contacts through the joints. **Hips driven by forces** (a dynamic
-    pelvis following its path through a strong spring) is the fix, and
-    would also let a heavy landing actually load the legs;
+    contacts through the joints. **Hips driven by forces** were tried
+    next (2026-10-16): a dynamic pelvis set each step to the velocity
+    that reaches its path, gravity taken off in advance, its mass scaled
+    up so the limbs do not drag it. Worse at every scale, over 70 runs
+    (limb depth median / p90 / steps over 8 cm): carried 6.0 / 13.6 cm /
+    36; driven x1 8.5 / 16.4 / 99; x4 6.8 / 17.8 / 62; x12 9.7 / 22.9 /
+    111; x40 11.2 / 27.4 / 191 -- the stiffer it holds the path the worse,
+    the velocity reset each step pumping the chain. Taken out. Nor the
+    legs' motors (x2 torque 6.5 / 11.2 / 36, x4 7.3 / 16.2 / 93, speed
+    cap 60 rad/s 7.1 / 16.7 / 50, stiffness x2 8.2 / 14.1 / 75), nor the
+    solver (32 velocity iterations 5.6 / 10.2 / 37, 64 worse, position
+    iterations no change). The depth left is case by case -- a target, a
+    landing -- which is how every fix so far was found;
   - next: a wall run that turns a corner; a cat leap (jump to a hang on
     a wall ahead); hanging round a corner; a tic-tac (one step off a wall
     to change direction); precision jumps between narrow tops.
