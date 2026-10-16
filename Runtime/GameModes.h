@@ -706,7 +706,10 @@ private:
 		if (m_Mode == Mode::Possess)
 		{
 			mode = "CONTROLLING THE DUMMY";
-			hints = move + " walk   " + map.Keys("sprint") + " run   " + map.Keys("jump") + " jump   hold " + map.Keys("look")
+			// What a jump does here: over the wall in front, onto the ledge.
+			const Humanoid* rig = m_Characters.ControlledRig();
+			std::string jump = rig && rig->ParkourHint()[0] ? rig->ParkourHint() : "jump";
+			hints = move + " walk   " + map.Keys("sprint") + " run   " + map.Keys("jump") + " " + jump + "   hold " + map.Keys("look")
 				+ " to look   " + map.Keys("interact") + " let go";
 		}
 		m_UI.Set("hud.mode", mode);

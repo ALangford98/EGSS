@@ -613,6 +613,12 @@ public:
 		// rolling over first from on his back); off, the old three-waypoint
 		// lift, for comparing.
 		ImGui::Checkbox("Natural get-up", &m_NaturalGetUp);
+		// Vaults, climbs, drops and rolls (Humanoid's "Parkour"); off, he
+		// walks through walls and falls off ledges, as he used to.
+		ImGui::Checkbox("Parkour", &m_Parkour);
+		if (m_Parkour)
+			ImGui::Text("Ahead: %s%s", IsMoving() ? "doing a " : "",
+				IsMoving() ? MoveName() : (m_Ahead.Type == Obstacle::None ? "clear" : ObstacleName(m_Ahead.Type)));
 		if (!m_NaturalGetUp)
 			ImGui::SliderFloat("Get up over (s)", &m_GetUpTime, 0.2f, 3.0f);
 		if (ImGui::BeginCombo("Walking style", m_Gait.Preset.c_str()))

@@ -261,7 +261,7 @@ namespace CrashTestScene
 		for (float z : { 3.0f, 5.2f, 7.4f })
 			for (float x : { -2.6f, 2.6f })
 				Static(Mesh(scene, "Barrier", "model:barrier", { x, 0.4f, z }, { 0.0f, 90.0f, 0.0f }));
-		const glm::vec3 stacks[] = { { 9.5f, 0.0f, -10.0f }, { 10.6f, 0.0f, -10.4f }, { 10.0f, 0.0f, -9.0f }, { -10.5f, 0.0f, 12.0f } };
+		const glm::vec3 stacks[] = { { 9.5f, 0.0f, -10.0f }, { 10.6f, 0.0f, -10.4f }, { 10.0f, 0.0f, -9.0f }, { -12.8f, 0.0f, 18.0f } };
 		for (const glm::vec3& at : stacks)
 		{
 			GS::Entity crate = Mesh(scene, "Crate", "model:crate", at + glm::vec3(0.0f, 0.5f, 0.0f), { 0.0f, at.x * 7.0f, 0.0f });
@@ -269,6 +269,19 @@ namespace CrashTestScene
 			body.Mass = 40.0f;
 			crate.Add<GS::PhysicsComponent>(body);
 		}
+
+		// The parkour yard, down the west side: a wall to vault (1 m, 30 cm
+		// thick), a box to step onto (60 cm), a ledge to climb (1.6 m) and
+		// a tower above it (3 m, 1.4 m higher) to climb again and drop off
+		// the far side of into a roll. The Runner Dummy waits at the start;
+		// take control of him and run at it (jump at the climbs).
+		const float yardX = -8.5f;
+		const glm::vec4 concrete(0.62f, 0.6f, 0.56f, 1.0f), painted(0.85f, 0.55f, 0.15f, 1.0f);
+		Static(Box(scene, "Vault Wall", { yardX, 0.5f, 4.0f }, { 3.0f, 1.0f, 0.3f }, painted, 0.6f));
+		Static(Box(scene, "Step Box", { yardX, 0.3f, 7.5f }, { 3.0f, 0.6f, 1.4f }, concrete, 0.7f));
+		Static(Box(scene, "Ledge", { yardX, 0.8f, 11.0f }, { 3.0f, 1.6f, 2.4f }, concrete, 0.7f));
+		Static(Box(scene, "Tower", { yardX, 1.5f, 13.6f }, { 3.0f, 3.0f, 2.8f }, { 0.5f, 0.52f, 0.55f, 1.0f }, 0.7f));
+		Dummy(scene, "Runner Dummy", { yardX, 0.0f, 0.0f }, 0.0f, { 0.15f, 0.75f, 0.45f, 1.0f }, 0);
 
 		// The cannon, 11 m down the lane, firing back along -z: its base
 		// (with the computer), the yoke that turns, the barrel that tips --
@@ -316,6 +329,7 @@ namespace CrashTestScene
 		Camera(scene, "Behind Launcher", { 0.9f, 2.4f, 14.8f }, { 0.0f, 1.0f, 0.0f }, false);
 		Camera(scene, "Wide", { 12.0f, 6.0f, 16.0f }, { 0.0f, 0.5f, 2.5f }, false);
 		Camera(scene, "Close", { 2.6f, 1.4f, 2.4f }, { 0.0f, 1.1f, 0.0f }, false);
+		Camera(scene, "Yard", { 1.5f, 4.2f, 9.5f }, { -8.5f, 1.4f, 11.0f }, false);
 	}
 
 	// The sign: a .gsui screen like any HUD, drawn into a texture.

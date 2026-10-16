@@ -488,6 +488,15 @@ public:
 		return true;
 	}
 
+	// The rig being controlled, if it is a humanoid: for the HUD's hint of
+	// what a jump would do there (vault, climb, step on).
+	const Humanoid* ControlledRig() const
+	{
+		if (m_Player < 0)
+			return nullptr;
+		return m_Characters[(size_t)m_Player].Rig.get();
+	}
+
 	// The controller's yaw (degrees), for facing the camera's way.
 	float Yaw() const { return m_Yaw; }
 
