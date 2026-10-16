@@ -1318,6 +1318,95 @@ private:
 			EditorHistory::Push(std::make_unique<EditFieldCommand<Component, std::string>>(m_Selected, member, m_EditBeforeString, value));
 	}
 
+	// One undo step for an edit made by a widget that writes the component
+	// straight through: the entity before the first change, after the last.
+	void SnapshotEdit()
+	{
+		if (ImGui::IsItemActivated())
+			m_BodyBefore = EntitySnapshot::Capture(m_Selected);
+		if (ImGui::IsItemDeactivatedAfterEdit() && m_BodyBefore)
+		{
+			EntitySnapshot after = EntitySnapshot::Capture(m_Selected);
+			EditorHistory::Push(std::make_unique<ReplaceEntityCommand>(m_Selected, *m_BodyBefore, after));
+			m_BodyBefore.reset();
+		}
+	}
+
+	// A humanoid's body and its walk (Runtime/Humanoid.h): height, mass and
+	// build, which the rig is built from when the game starts; and a walking
+	// style -- a preset, then every one of its numbers.
+	void DrawHumanoidBody(GS::PhysiqueSettings& body, GS::GaitSettings& gait)
+	{
+		ImGui::SeparatorText("Body");
+		struct Quick { const char* Name; GS::PhysiqueSettings Body; };
+		static const Quick quick[] = {
+			{ "Man", { 1.78f, 78.0f, 0.0f } }, { "Woman", { 1.64f, 62.0f, 1.0f } }, { "Tall", { 1.98f, 88.0f, 0.15f } },
+			{ "Short", { 1.52f, 52.0f, 0.6f } }, { "Heavy", { 1.75f, 115.0f, 0.3f } }, { "Slight", { 1.70f, 50.0f, 0.5f } },
+			{ "Default", {} } };
+		for (size_t i = 0; i < sizeof(quick) / sizeof(quick[0]); i++)
+		{
+			if (i > 0)
+				ImGui::SameLine();
+			if (ImGui::SmallButton(quick[i].Name))
+			{
+				GS::PhysiqueSettings chosen = quick[i].Body;
+				ReplaceSelected([chosen](EntitySnapshot& s)
+				{
+					if (s.Npc) s.Npc->Physique = chosen;
+					if (s.Player) s.Player->Physique = chosen;
+				});
+				return;
+			}
+		}
+		ImGui::SliderFloat("Height (m)", &body.Height, 1.3f, 2.2f, "%.2f");
+		SnapshotEdit();
+		ImGui::SliderFloat("Mass (kg)", &body.Mass, 35.0f, 160.0f, "%.1f");
+		SnapshotEdit();
+		ImGui::SliderFloat("Build", &body.Femininity, 0.0f, 1.0f, body.Femininity < 0.5f ? "%.2f masculine" : "%.2f feminine");
+		SnapshotEdit();
+		float bmi = body.Mass / (body.Height * body.Height);
+		ImGui::TextDisabled("BMI %.1f -- %s. Built when the game starts.", bmi,
+			bmi < 18.5f ? "slight" : bmi < 25.0f ? "average" : bmi < 30.0f ? "heavy" : "very heavy");
+
+		ImGui::SeparatorText("Walk");
+		const auto& presets = Humanoid::GaitPresets();
+		if (ImGui::BeginCombo("Style", gait.Preset.c_str()))
+		{
+			for (const GS::GaitSettings& preset : presets)
+				if (ImGui::Selectable(preset.Preset.c_str(), preset.Preset == gait.Preset))
+				{
+					GS::GaitSettings chosen = preset;
+					ReplaceSelected([chosen](EntitySnapshot& s)
+					{
+						if (s.Npc) s.Npc->Gait = chosen;
+						if (s.Player) s.Player->Gait = chosen;
+					});
+				}
+			ImGui::EndCombo();
+		}
+		if (ImGui::TreeNode("Every number of the style"))
+		{
+			struct Field { const char* Label; float* Value; float Min, Max; const char* Format; };
+			Field fields[] = {
+				{ "Speed", &gait.Speed, 0.3f, 2.0f, "%.2fx" }, { "Stride", &gait.Stride, 0.4f, 1.6f, "%.2fx" },
+				{ "Run speed", &gait.RunSpeed, 0.3f, 1.8f, "%.2fx" }, { "Arm swing", &gait.ArmSwing, 0.0f, 3.0f, "%.2fx" },
+				{ "Elbow bend", &gait.ElbowBend, 0.0f, 3.0f, "%.2fx" }, { "Arms out", &gait.ArmsOut, -0.1f, 0.4f, "%.2f rad" },
+				{ "Lean with speed", &gait.Lean, 0.0f, 3.0f, "%.2fx" }, { "Posture", &gait.Posture, -0.15f, 0.4f, "%.2f rad" },
+				{ "Head", &gait.HeadPitch, -0.3f, 0.5f, "%.2f rad" }, { "Bob", &gait.Bob, 0.0f, 3.0f, "%.2fx" },
+				{ "Sway", &gait.Sway, 0.0f, 4.0f, "%.2fx" }, { "Hip roll", &gait.HipRoll, 0.0f, 3.0f, "%.2fx" },
+				{ "Stance width", &gait.StanceWidth, 0.2f, 2.5f, "%.2fx" }, { "Foot lift", &gait.FootLift, 0.2f, 2.5f, "%.2fx" },
+				{ "Crouch", &gait.Crouch, 0.0f, 0.3f, "%.2f m" }, { "Irregularity", &gait.Jitter, 0.0f, 5.0f, "%.2fx" },
+				{ "Wander", &gait.Wander, 0.0f, 0.8f, "%.2f rad" }, { "Limp", &gait.Limp, 0.0f, 1.0f, "%.2f" },
+				{ "Turn rate", &gait.Turn, 0.3f, 2.0f, "%.2fx" } };
+			for (const Field& f : fields)
+			{
+				ImGui::SliderFloat(f.Label, f.Value, f.Min, f.Max, f.Format);
+				SnapshotEdit();
+			}
+			ImGui::TreePop();
+		}
+	}
+
 	// What the game shows and how the player gets about: a humanoid's look,
 	// a surface under the full renderer, the scene's environment, a fly
 	// camera, something to walk up to and use, a UI screen on a mesh.
@@ -1333,12 +1422,14 @@ private:
 			int look = std::clamp(player->Look, 0, 1);
 			if (ImGui::Combo("Look##player", &look, looks, 2) && look != player->Look)
 				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::PlayerComponent, int>>(m_Selected, &GS::PlayerComponent::Look, player->Look, look));
+			DrawHumanoidBody(player->Physique, player->Gait);
 		}
 		if (npc && npc->Body == 2)
 		{
 			int look = std::clamp(npc->Look, 0, 1);
 			if (ImGui::Combo("Look##npc", &look, looks, 2) && look != npc->Look)
 				EditorHistory::Push(std::make_unique<EditFieldCommand<GS::NpcComponent, int>>(m_Selected, &GS::NpcComponent::Look, npc->Look, look));
+			DrawHumanoidBody(npc->Physique, npc->Gait);
 		}
 
 		if (mesh && !player && !npc)
@@ -1683,7 +1774,7 @@ private:
 			// A humanoid is its mannequin, standing on its position.
 			if (IsHumanoidEntity(g_EditorScene, entity))
 			{
-				Mannequin::RestBounds(lo, hi);
+				Mannequin::RestBounds(lo, hi, Mannequin::PhysiqueOf(g_EditorScene, entity));
 				model = glm::translate(glm::mat4(1.0f), transform->Position)
 					* glm::rotate(glm::mat4(1.0f), glm::radians(transform->Rotation.y), glm::vec3(0, 1, 0));
 			}
@@ -2589,6 +2680,7 @@ private:
 
 private:
 	GS::PerspectiveCamera m_Camera;
+	std::optional<EntitySnapshot> m_BodyBefore;   // DrawHumanoidBody's edit in progress
 	bool m_WasPlaying = false;
 	glm::vec3 m_CameraBeforePlay{ 0.0f };
 	float m_YawBeforePlay = 0.0f, m_PitchBeforePlay = 0.0f;

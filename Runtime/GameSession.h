@@ -433,6 +433,59 @@ private:
 			if (m_TimeScale > 0.0f) { m_PausedFrom = m_TimeScale; m_TimeScale = 0.0f; m_Console.Good("paused"); }
 			else { m_TimeScale = m_PausedFrom > 0.0f ? m_PausedFrom : 1.0f; m_Console.Good("running"); }
 		});
+		c.Register("shove", "<name> <N s> [front|back|left|right]", "push a humanoid at the chest (from behind by default)", [this](const GameConsole::Args& a)
+		{
+			if (a.size() < 2) { m_Console.Bad("shove Dummy 120 back"); return; }
+			float strength;
+			// The name may hold spaces: the number is the first word that is one.
+			size_t numberAt = 1;
+			char* end = nullptr;
+			while (numberAt < a.size() && (std::strtof(a[numberAt].c_str(), &end), end == a[numberAt].c_str() || *end))
+				numberAt++;
+			if (numberAt >= a.size() || !m_Console.Number(a[numberAt], strength)) { m_Console.Bad("shove Dummy 120 back"); return; }
+			std::string name;
+			for (size_t i = 0; i < numberAt; i++)
+				name += (i ? " " : "") + a[i];
+			Humanoid* rig = FindRig(name);
+			if (!rig) { m_Console.Bad("no humanoid called '" + name + "'"); return; }
+			std::string from = numberAt + 1 < a.size() ? GameConsole::Lower(a[numberAt + 1]) : "back";
+			float f = rig->FacingRadians();
+			glm::vec3 forward(std::sin(f), 0.0f, std::cos(f)), right(std::cos(f), 0.0f, -std::sin(f));
+			// Pushed *from* that side: from behind sends him forwards.
+			glm::vec3 direction = from == "front" ? -forward : from == "left" ? right : from == "right" ? -right : forward;
+			rig->Shove(strength, direction);
+			m_Console.Good("shoved " + name + " with " + a[numberAt] + " N s from the " + from);
+		});
+		c.Register("walkstyle", "<name> [preset]", "how a humanoid walks; no preset lists them", [this](const GameConsole::Args& a)
+		{
+			const auto& presets = Humanoid::GaitPresets();
+			if (a.empty())
+			{
+				std::string list;
+				for (const GS::GaitSettings& g : presets)
+					list += (list.empty() ? "" : "  ") + g.Preset;
+				m_Console.Print("styles: " + list, GameConsole::Tone::Dim);
+				return;
+			}
+			// The last word is the style when it names one; the rest, the humanoid.
+			std::string style = GameConsole::Lower(a.back());
+			const GS::GaitSettings* chosen = nullptr;
+			for (const GS::GaitSettings& g : presets)
+				if (GameConsole::Lower(g.Preset) == style)
+					chosen = &g;
+			std::string name;
+			for (size_t i = 0; i + (chosen ? 1 : 0) < a.size(); i++)
+				name += (i ? " " : "") + a[i];
+			Humanoid* rig = FindRig(name);
+			if (!rig) { m_Console.Bad("no humanoid called '" + name + "'"); return; }
+			if (!chosen)
+			{
+				m_Console.Print(name + " walks " + rig->GetGait().Preset, GameConsole::Tone::Dim);
+				return;
+			}
+			rig->SetGait(*chosen);
+			m_Console.Good(name + " now walks " + chosen->Preset);
+		});
 		c.Register("camera", "[name]", "look through another camera; no name lists them", [this](const GameConsole::Args& a)
 		{
 			auto& cameras = m_Scene.View<GS::CameraComponent>();
@@ -464,6 +517,15 @@ private:
 		c.Print("GS game terminal -- type help", GameConsole::Tone::Title);
 		if (m_Launchers.Active())
 			c.Print("a launcher is ready: " + GS::InputMap::Active().Keys("fire") + " fires it; try  preset car, fire  or  slowmo 0.25", GameConsole::Tone::Dim);
+	}
+
+	// A humanoid by its entity's name.
+	Humanoid* FindRig(const std::string& name)
+	{
+		for (GS::EntityId id : m_Scene.GetEntities())
+			if (auto* tag = m_Scene.GetComponent<GS::TagComponent>(id); tag && GameConsole::Lower(tag->Name) == GameConsole::Lower(name))
+				return m_Characters.RigOf(id);
+		return nullptr;
 	}
 
 	// What the launcher needs of the session: the world, and bodies made
@@ -683,7 +745,8 @@ inline void AppendHumanoidDraws(GS::Scene& scene, const GameSession* session, st
 		auto* transform = scene.GetComponent<GS::TransformComponent>(entity);
 		auto* mesh = scene.GetComponent<GS::MeshComponent>(entity);
 		if (transform && (!mesh || mesh->Visible))
-			Mannequin::AppendRestPose(*transform, Mannequin::ColourOf(scene, entity), entity, out, Mannequin::LookOf(scene, entity));
+			Mannequin::AppendRestPose(*transform, Mannequin::ColourOf(scene, entity), entity, out, Mannequin::LookOf(scene, entity),
+				Mannequin::PhysiqueOf(scene, entity));
 	};
 	auto& players = scene.View<GS::PlayerComponent>();
 	for (size_t i = 0; i < players.Size(); i++)

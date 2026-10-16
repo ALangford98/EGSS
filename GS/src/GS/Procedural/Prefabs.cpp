@@ -3,6 +3,7 @@
 #include "GS/Procedural/ModelBuilder.h"
 
 #include <glm/gtc/constants.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <sstream>
 #include <unordered_map>
@@ -293,6 +294,82 @@ namespace GS::Prefabs {
 			b.Push(M::At({ 0.0f, -h - r * 0.7f, 0.0f }));
 			b.Cylinder(r * 0.6f, r * 0.2f, 14, r * 0.05f);
 			b.Pop();
+		}
+	}
+
+
+	// The feminine build's trunk: the same plates and fittings, over a
+	// chest that narrows to a waist, with a bust, and a pelvis that is
+	// rounder at the hips. Sized for the default colliders like the rest;
+	// the look scales them to the body it is drawn over.
+	static void DummyTorsoFeminine(M& b)
+	{
+		b.Material("dummy.skin");
+		b.Push(M::At({ 0.0f, 0.075f, 0.0f }));
+		b.RoundedBox({ 0.158f, 0.13f, 0.1f }, 0.06f, 4);
+		b.Pop();
+		b.Push(M::At({ 0.0f, -0.11f, -0.005f }));
+		b.RoundedBox({ 0.128f, 0.1f, 0.088f }, 0.05f, 4);   // the waist
+		b.Pop();
+		for (float x : { -0.062f, 0.062f })
+		{
+			b.Push(M::At({ x, 0.045f, 0.072f }) * glm::scale(glm::mat4(1.0f), glm::vec3(1.0f, 0.9f, 0.75f)));
+			b.Sphere(0.058f, 18, 12);
+			b.Pop();
+		}
+		b.Material("dummy.rubber");
+		b.Push(M::At({ 0.0f, -0.07f, 0.083f }));
+		b.RoundedBox({ 0.085f, 0.05f, 0.012f }, 0.01f, 2);   // the abdomen insert
+		b.Pop();
+		b.Material("dummy.label");
+		b.Push(M::At({ 0.0f, -0.16f, 0.083f }));
+		b.RoundedBox({ 0.06f, 0.017f, 0.006f }, 0.004f, 2);
+		b.Pop();
+		b.Material("dummy.joint");
+		b.Push(M::At({ 0.0f, 0.0f, -0.096f }));
+		b.RoundedBox({ 0.045f, 0.16f, 0.012f }, 0.01f, 2);
+		b.Pop();
+		for (float side : { -1.0f, 1.0f })
+		{
+			b.Material("dummy.joint");
+			b.Push(M::At({ side * 0.163f, 0.155f, 0.0f }, { 0.0f, 0.0f, 90.0f }));
+			b.Cylinder(0.052f, 0.016f, 20, 0.006f);
+			b.Pop();
+			Target(b, M::At({ side * 0.155f, 0.06f, 0.0f }, { 0.0f, side * 90.0f, 0.0f }), 0.036f);
+		}
+		for (int k = 0; k < 4; k++)
+		{
+			b.Material(k % 2 == 0 ? "dummy.rubber" : "dummy.joint");
+			b.Push(M::At({ 0.0f, 0.205f + 0.016f * k, -0.01f }));
+			b.Cylinder(k % 2 == 0 ? 0.04f : 0.033f, 0.008f, 16, 0.003f);
+			b.Pop();
+		}
+	}
+
+	static void DummyPelvisFeminine(M& b)
+	{
+		b.Material("dummy.skin");
+		b.Push(M::At({ 0.0f, 0.02f, 0.0f }));
+		b.RoundedBox({ 0.118f, 0.066f, 0.09f }, 0.045f, 4);
+		b.Pop();
+		// The hips' curve: two rounded pads low on the sides.
+		for (float x : { -0.085f, 0.085f })
+		{
+			b.Push(M::At({ x, -0.025f, -0.005f }) * glm::scale(glm::mat4(1.0f), glm::vec3(0.85f, 1.0f, 1.05f)));
+			b.Sphere(0.075f, 18, 12);
+			b.Pop();
+		}
+		b.Material("dummy.rubber");
+		b.Push(M::At({ 0.0f, 0.066f, 0.0f }));
+		b.RoundedBox({ 0.124f, 0.016f, 0.094f }, 0.012f, 3);
+		b.Pop();
+		for (float side : { -1.0f, 1.0f })
+		{
+			b.Material("dummy.joint");
+			b.Push(M::At({ side * 0.1f, -0.07f, 0.0f }, { 0.0f, 0.0f, 90.0f }));
+			b.Cylinder(0.046f, 0.03f, 18, 0.006f);
+			b.Pop();
+			Target(b, M::At({ side * 0.152f, -0.015f, 0.0f }, { 0.0f, side * 90.0f, 0.0f }), 0.03f);
 		}
 	}
 
@@ -822,6 +899,8 @@ namespace GS::Prefabs {
 		else if (name == "dummy.torso") DummyTorso(b);
 		else if (name == "dummy.pelvis") DummyPelvis(b);
 		else if (name == "dummy.foot") DummyFoot(b);
+		else if (name == "dummy.torso.f") DummyTorsoFeminine(b);
+		else if (name == "dummy.pelvis.f") DummyPelvisFeminine(b);
 		else if (name.rfind("dummy.limb:", 0) == 0)
 		{
 			// dummy.limb:<kind>:<radius>:<halfHeight>

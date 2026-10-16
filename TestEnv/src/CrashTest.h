@@ -220,6 +220,30 @@ namespace CrashTestScene
 		Dummy(scene, "Dummy", { 0.0f, 0.0f, 0.0f }, 0.0f, { 0.98f, 0.8f, 0.1f, 1.0f }, 0);
 		Dummy(scene, "Test Dummy B", { -6.5f, 0.0f, -3.0f }, 60.0f, { 0.95f, 0.42f, 0.12f, 1.0f }, 1);
 
+		// The test population, wandering the far side of the hall: every one
+		// a different body and a different walk -- heights from 1.35 to
+		// 1.98 m, 35 to 115 kg, masculine to feminine builds -- to show what
+		// the rig does with each.
+		struct Walker { const char* Name; glm::vec3 At; GS::PhysiqueSettings Body; const char* Style; glm::vec4 Colour; };
+		const Walker walkers[] = {
+			{ "Tall Dummy",     { 7.0f, 0.0f, -8.0f }, { 1.98f, 88.0f, 0.15f }, "Confident", { 0.20f, 0.55f, 0.95f, 1.0f } },
+			{ "Female Dummy",   { 9.5f, 0.0f, -4.0f }, { 1.64f, 62.0f, 1.0f },  "Feminine",  { 0.95f, 0.45f, 0.65f, 1.0f } },
+			{ "Heavy Dummy",    { 6.0f, 0.0f, -1.0f }, { 1.75f, 115.0f, 0.3f }, "Tired",     { 0.55f, 0.75f, 0.30f, 1.0f } },
+			{ "Small Dummy",    { 10.0f, 0.0f, 1.5f }, { 1.35f, 35.0f, 0.5f },  "Brisk",     { 0.20f, 0.80f, 0.80f, 1.0f } },
+			{ "Elderly Dummy",  { 7.5f, 0.0f, 4.5f },  { 1.70f, 66.0f, 0.4f },  "Elderly",   { 0.75f, 0.70f, 0.60f, 1.0f } },
+			{ "Drunk Dummy",    { 11.0f, 0.0f, -9.5f },{ 1.80f, 84.0f, 0.0f },  "Drunk",     { 0.60f, 0.30f, 0.80f, 1.0f } },
+			{ "Limping Dummy",  { 9.0f, 0.0f, 7.5f },  { 1.82f, 76.0f, 0.1f },  "Limp",      { 0.90f, 0.25f, 0.20f, 1.0f } },
+			{ "Sneaking Dummy", { 5.5f, 0.0f, -12.0f },{ 1.68f, 58.0f, 0.7f },  "Sneak",     { 0.25f, 0.25f, 0.30f, 1.0f } },
+		};
+		for (const Walker& w : walkers)
+		{
+			GS::Entity dummy = Dummy(scene, w.Name, w.At, 0.0f, w.Colour, 1);
+			GS::NpcComponent* npc = dummy.Get<GS::NpcComponent>();
+			npc->Physique = w.Body;
+			npc->Gait = Humanoid::GaitPreset(w.Style);
+			npc->WanderRadius = 3.5f;
+		}
+
 		// The impact wall behind him, crates to land in, barriers along the
 		// lane, and a stack of crates for scenery.
 		GS::Entity pad = Mesh(scene, "Impact Wall", "model:padwall", { 0.0f, 1.22f, -4.6f });

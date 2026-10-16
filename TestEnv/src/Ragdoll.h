@@ -609,7 +609,19 @@ public:
 		ImGui::SliderFloat("Max sole tilt (deg)", &m_MaxSoleTilt, 0.0f, 35.0f);
 		ImGui::Text("Gait: %.0f%% of the cycle on the ground, %s",
 			100.0f * m_Duty, m_Duty < 0.5f ? "so it has flight" : "so it has double support");
-		ImGui::SliderFloat("Get up over (s)", &m_GetUpTime, 0.2f, 3.0f);
+		// The choreographed get-up (hands, push, all fours, lunge, rise --
+		// rolling over first from on his back); off, the old three-waypoint
+		// lift, for comparing.
+		ImGui::Checkbox("Natural get-up", &m_NaturalGetUp);
+		if (!m_NaturalGetUp)
+			ImGui::SliderFloat("Get up over (s)", &m_GetUpTime, 0.2f, 3.0f);
+		if (ImGui::BeginCombo("Walking style", m_Gait.Preset.c_str()))
+		{
+			for (const GS::GaitSettings& preset : GaitPresets())
+				if (ImGui::Selectable(preset.Preset.c_str(), preset.Preset == m_Gait.Preset))
+					SetGait(preset);
+			ImGui::EndCombo();
+		}
 		ImGui::SliderFloat("Camera distance", &m_CameraDistance, 1.5f, 10.0f);
 		ImGui::SliderFloat("Camera lag", &m_CameraLag, 1.0f, 20.0f);
 		ImGui::Text("Standing %.2f m above ground; step ahead %.0f%%",
