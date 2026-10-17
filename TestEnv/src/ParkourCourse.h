@@ -28,7 +28,7 @@
 #include <imgui.h>
 
 #include "CrashTest.h"
-#include "DodgeDriver.h"   // TEMPORARY
+#include "Gunnery.h"
 
 #include <cctype>
 #include <string>
@@ -90,7 +90,7 @@ namespace ParkourCourseScene
 				// the numbers people know stayed where they were.
 				{ "SLOPES", "slope", { "up the ramp, walking or running ({keys.sprint})",
 					"and down the far side: his feet follow the slope", "the last is 30 degrees: steep, but a walk" }, north(6), 0.0f },
-				{ "DODGING", "dodge", { "the cannon fires when it hears the fuse: watch it",
+				{ "DODGING", "dodge", { "the cannon hisses and blinks, then fires: watch it",
 					"{keys.dodge} with a direction: a sidestep, a cut or a dive", "hold {keys.focus} to look at what is coming" }, south(6), 180.0f },
 			};
 		}();
@@ -463,8 +463,22 @@ public:
 	{
 		m_Scene = std::make_unique<GS::Scene>();
 		ParkourCourseScene::Build(*m_Scene);
+		// The dodging lane's cannon is the cannon run's (Gunnery), not a
+		// launcher: it charges, leads him and holds its fire as those do.
+		{
+			const ParkourCourseScene::Station& s = ParkourCourseScene::Stations()[13];
+			ParkourCourseScene::Lane lane(s);
+			Gunnery::Settings settings;
+			settings.Speed = 16.0f;
+			settings.Reload = 2.4f;
+			settings.Charge = 0.9f;
+			settings.MinRange = 5.0f;
+			m_Guns.AddCannon(*m_Scene, "Dodge Cannon", lane.At(16.0f, 0.0f, 1.25f), lane.Yaw + 180.0f, settings);
+		}
 		m_Session = std::make_unique<GameSession>(*m_Scene, PlayMode::s_ScriptEngine);
 		m_Session->Start();
+		m_Guns.Attach(m_Session.get());
+		m_Session->Modes().SetMouseLook(true);
 		GameUI::Context& ui = m_Session->UI();
 		for (int i = 0; i < (int)ParkourCourseScene::Stations().size(); i++)
 			ui.RegisterBuiltin(ParkourCourseScene::SignName(i), ParkourCourseScene::SignScreen(i));
@@ -479,6 +493,9 @@ public:
 
 	void OnDemoDeactivated() override
 	{
+		Capture(false);
+		m_Guns.Clear(m_Scene.get());
+		m_Guns.Attach(nullptr);
 		m_Session.reset();
 		m_Scene.reset();
 	}
@@ -487,9 +504,15 @@ public:
 	{
 		if (!m_Session)
 			return;
-		DodgeDriver::Step(*m_Session, *m_Scene);   // TEMPORARY
 		m_Session->FixedUpdate(step);
-		DodgeDriver::PostStep(*m_Session, *m_Scene);   // TEMPORARY
+		// The dodging lane's cannon, live while he is in that lane.
+		Humanoid* rig = m_Session->Rig("Runner");
+		bool inLane = rig && ParkourCourseScene::StationAt(m_Session->World().GetBody(rig->PelvisBody()).Position) == 13;
+		m_Guns.Step(step, *m_Session, *m_Scene, rig, inLane);
+		glm::vec3 focus(0.0f);
+		bool has = m_Guns.Focus(focus);
+		m_Session->Characters().SetFocusTarget(focus, has);
+		m_Session->Characters().SetDodgeAssist(m_Guns.Evade());
 		PublishStation();
 	}
 
@@ -513,8 +536,16 @@ public:
 		GS::RenderCommand::SetCullFace(GS::CullFace::Back);
 		std::vector<ExtraDraw> humanoids;
 		AppendHumanoidDraws(*m_Scene, m_Session.get(), humanoids);
+		m_Guns.AppendDraws(humanoids);
 		m_Renderer.Render(*m_Scene, *camera, &humanoids);
 		GS::RenderCommand::SetCullFace(GS::CullFace::None);
+		Capture(m_Session->Modes().WantsCursorCaptured());
+
+		GS::AudioListener listener;
+		listener.Position = camera->GetPosition();
+		listener.Forward = camera->GetForward();
+		listener.Up = camera->GetUp();
+		GS::AudioEngine::SetListener(listener);
 	}
 
 	void OnDemoGameOverlay() override
@@ -605,8 +636,20 @@ private:
 		return { 0, 0, (int)window.GetWidth(), (int)window.GetHeight() };
 	}
 
+	// The pointer is the camera's while he is being walked, and the
+	// desktop's otherwise -- flying, at the terminal, at the cannon.
+	void Capture(bool on)
+	{
+		if (on == m_Captured)
+			return;
+		m_Captured = on;
+		GS::Application::Get().GetWindow().SetCursorCaptured(on);
+	}
+
 	std::unique_ptr<GS::Scene> m_Scene;
 	std::unique_ptr<GameSession> m_Session;
+	Gunnery m_Guns;
+	bool m_Captured = false;
 	SceneRenderer m_Renderer;
 	GS::PerspectiveCamera m_Camera{ 50.0f, 16.0f / 9.0f, 0.1f, 500.0f };
 	GS::PerspectiveCamera m_Fallback{ 50.0f, 16.0f / 9.0f, 0.1f, 500.0f };

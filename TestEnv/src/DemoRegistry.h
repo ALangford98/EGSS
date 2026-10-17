@@ -34,6 +34,7 @@
 #include "NetworkDemo.h"
 #include "CrashTest.h"
 #include "ParkourCourse.h"
+#include "CannonRun.h"
 
 struct DemoEntry
 {
@@ -85,7 +86,8 @@ inline const DemoEntry s_Demos[] =
 	{ "Engine",   "Terrain lab (9^3 chunks, every knob)", "TerrainLab", []() -> DemoLayer* { return new TerrainLab(); } },
 	{ "Engine",   "NetworkDemo (2-process replication + RPC)", "NetworkDemo", []() -> DemoLayer* { return new NetworkDemo(); } },
 	{ "Engine",   "Crash test (launch things at a dummy)", "CrashTest", []() -> DemoLayer* { return new CrashTest(); }, true },
-	{ "Engine",   "Parkour course (a station for each move)", "Parkour", []() -> DemoLayer* { return new ParkourCourse(); }, true }
+	{ "Engine",   "Parkour course (a station for each move)", "Parkour", []() -> DemoLayer* { return new ParkourCourse(); }, true },
+	{ "Engine",   "Cannon run (a course under fire)", "CannonRun", []() -> DemoLayer* { return new CannonRun(); } }
 };
 
 inline constexpr int s_DemoCount = (int)(sizeof(s_Demos) / sizeof(s_Demos[0]));

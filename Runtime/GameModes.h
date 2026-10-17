@@ -729,12 +729,17 @@ private:
 			// What a jump does here: over the wall in front, onto the ledge.
 			const Humanoid* rig = m_Characters.ControlledRig();
 			std::string jump = rig && rig->ParkourHint()[0] ? rig->ParkourHint() : "jump";
-			hints = move + " walk   " + map.Keys("sprint") + " run   " + map.Keys("jump") + " " + jump + "   hold " + map.Keys("look")
-				+ " to look   " + map.Keys("interact") + " let go";
+			// With the mouse looking (SetMouseLook) no button is held to
+			// look, and the buttons dodge and look at what is coming.
+			std::string look = m_MouseLookWanted
+				? map.Keys("dodge") + " dodge   hold " + map.Keys("focus") + " look at what is coming"
+				: "hold " + map.Keys("look") + " to look";
+			hints = move + " walk   " + map.Keys("sprint") + " run   " + map.Keys("jump") + " " + jump + "   " + look
+				+ "   " + map.Keys("interact") + " let go";
 			// Hanging, the keys are his: along the edge, up, down.
 			if (rig && rig->IsHanging())
 				hints = map.Keys("left") + " " + map.Keys("right") + " along the edge   " + map.Keys("forward") + " or " + map.Keys("jump")
-					+ " climb up   " + map.Keys("back") + " drop   hold " + map.Keys("look") + " to look   " + map.Keys("interact") + " let go";
+					+ " climb up   " + map.Keys("back") + " drop   " + look + "   " + map.Keys("interact") + " let go";
 		}
 		m_UI.Set("hud.mode", mode);
 		m_UI.Set("hud.hints", hints);

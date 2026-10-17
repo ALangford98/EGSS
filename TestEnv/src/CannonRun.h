@@ -26,6 +26,7 @@
 #include "Gunnery.h"
 #include "RunCourse.h"
 
+#include <cctype>
 #include <cstdio>
 #include <map>
 #include <memory>
@@ -52,7 +53,7 @@ namespace CannonRunScreens
 					{ "type": "label", "text": "{run.move}", "style": "title" } ] },
 				{ "type": "panel", "anchor": "bottom", "pos": [0, 22], "padding": 12, "children": [
 					{ "type": "label", "text": "{keys.dodge} dodge, with a direction     hold {keys.focus} look at what is coming     {keys.sprint} run     {keys.jump} jump / vault / climb     {keys.restart} restart     {keys.cancel} pause", "style": "dim" } ] },
-				{ "type": "panel", "anchor": "center", "pos": [0, 190], "layout": "vertical", "padding": 22, "gap": 6, "visible": "run.ready", "children": [
+				{ "type": "panel", "anchor": "bottom", "pos": [0, 96], "layout": "vertical", "padding": 22, "gap": 6, "visible": "run.ready", "children": [
 					{ "type": "label", "text": "CANNON RUN", "style": "big", "align": "center" },
 					{ "type": "label", "text": "the clock starts at the line: get round, fast", "align": "center" },
 					{ "type": "label", "text": "the cannons hiss and blink before they fire -- listen, look, dodge", "style": "dim", "align": "center" },
@@ -204,8 +205,8 @@ private:
 		GS::PlayerComponent player;
 		player.Body = 2;
 		player.Look = 1;
-		player.CameraDistance = 4.3f;
-		player.CameraHeight = 0.7f;
+		player.CameraDistance = 4.9f;
+		player.CameraHeight = 0.75f;
 		runner.Add<GS::PlayerComponent>(player);
 		glm::vec3 F(std::sin(m_Built.SpawnYaw), 0.0f, std::cos(m_Built.SpawnYaw));
 		CrashTestScene::Camera(*m_Scene, "Run Camera", m_Built.Spawn - F * 4.0f + glm::vec3(0.0f, 2.2f, 0.0f), m_Built.Spawn + F * 4.0f + glm::vec3(0.0f, 1.0f, 0.0f), true);
@@ -216,6 +217,8 @@ private:
 		m_Session->Modes().SetMouseLook(true);
 		GameUI::Context& ui = m_Session->UI();
 		ui.RegisterBuiltin("run", CannonRunScreens::Hud());
+		ui.RegisterBuiltin("run-gate-start", RunCourse::GateScreen("START", "#8dffb0"));
+		ui.RegisterBuiltin("run-gate-finish", RunCourse::GateScreen("FINISH", "#ffffff"));
 		ui.Show("run");
 		ui.Show("hud", false);
 		m_Session->Console().Register("course", "[seed]", "run a course: a number makes one from that seed; none, the one made by hand",
@@ -260,13 +263,27 @@ private:
 		if (m_SplitShown >= 0.0f)
 			m_SplitShown += dt;
 
-		if (m_HaveLast && m_NextGate < (int)m_Built.Gates.size() && m_Phase != Phase::Finished)
+		// The next gate, or one of the two after it: a dive or a cut can
+		// carry him a few metres off the track, past a gate's end, and a
+		// gate missed that way used to leave every later one unpassable --
+		// the clock ran on for ever (an autopilot's run of course 1001,
+		// pushed 4 m wide in a cover gauntlet). The gates are 4 m wider
+		// than the track, each side, and a later one counts those before it.
+		if (m_HaveLast && m_Phase != Phase::Finished)
 		{
-			const RunCourse::Gate& g = m_Built.Gates[(size_t)m_NextGate];
-			float before = glm::dot(m_Last - g.At, g.Forward), after = glm::dot(p - g.At, g.Forward);
-			glm::vec3 across = glm::cross(g.Forward, glm::vec3(0.0f, 1.0f, 0.0f));
-			if (before < 0.0f && after >= 0.0f && std::fabs(glm::dot(p - g.At, across)) <= g.HalfWidth + 1.0f)
-				Pass(rig);
+			int last = std::min(m_NextGate + (m_Phase == Phase::Running ? 2 : 0), (int)m_Built.Gates.size() - 1);
+			for (int k = m_NextGate; k <= last; k++)
+			{
+				const RunCourse::Gate& g = m_Built.Gates[(size_t)k];
+				float before = glm::dot(m_Last - g.At, g.Forward), after = glm::dot(p - g.At, g.Forward);
+				glm::vec3 across = glm::cross(g.Forward, glm::vec3(0.0f, 1.0f, 0.0f));
+				if (before < 0.0f && after >= 0.0f && std::fabs(glm::dot(p - g.At, across)) <= g.HalfWidth + 4.0f)
+				{
+					while (m_NextGate <= k)
+						Pass(rig);
+					break;
+				}
+			}
 		}
 		m_Last = p;
 		m_HaveLast = true;
@@ -394,9 +411,12 @@ private:
 			bool inside = !behind && std::fabs(ndc.x) < 0.95f && std::fabs(ndc.y) < 0.92f;
 			if (inside)
 			{
+				// A ring that tightens on it as it comes: wide when there is
+				// time, close when there is not.
 				ImVec2 at(x + (ndc.x * 0.5f + 0.5f) * w, y + (0.5f - ndc.y * 0.5f) * h);
-				float r = (t.Ball ? 26.0f : 34.0f) * scale * (0.8f + 0.5f * urgency);
-				list->AddCircle(at, r, colour, 32, 3.0f * scale);
+				float r = (t.Ball ? 22.0f : 30.0f) * scale * (2.2f - 1.3f * urgency);
+				list->AddCircle(at, r, IM_COL32(0, 0, 0, 90), 40, 6.0f * scale);
+				list->AddCircle(at, r, colour, 40, 3.5f * scale);
 				continue;
 			}
 			// Out of sight: an arrow on an ellipse inside the edge, pointing out.

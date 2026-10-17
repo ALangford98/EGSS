@@ -158,19 +158,50 @@ namespace RunCourse
 		crate.Add<GS::PhysicsComponent>(body);
 	}
 
-	// A gate: two steel posts and a lit bar across the track. Not solid
-	// overhead (the bar is high), the posts are.
-	inline void GateArch(GS::Scene& scene, const Frame& f, float along, const glm::vec4& light, bool chequer)
+	// The gates' signs: .gsui screens, drawn into the sign in the world
+	// (ScreenComponent), registered by whoever runs the course. A screen
+	// is laid out on a 1080-line page scaled to its texture's height --
+	// 200 here -- so its text is sized as for a page five times taller.
+	inline std::string GateScreen(const char* word, const char* colour)
+	{
+		std::string text = R"json({
+			"theme": { "accent": "@C", "panel": "#101418f0" },
+			"root": { "type": "panel", "stretch": "both", "padding": 0, "children": [
+				{ "type": "label", "text": "@W", "style": "accent", "fontSize": 740, "anchor": "center", "align": "center" } ] } })json";
+		text.replace(text.find("@C"), 2, colour);
+		text.replace(text.find("@W"), 2, word);
+		return text;
+	}
+
+	// A gate: two steel posts and a lit bar across the track, with a sign
+	// facing whoever comes at it -- `screen` names its .gsui -- and a light
+	// strip on each face, chequered for the finish. Not solid overhead (the
+	// bar is high), the posts are.
+	inline void GateArch(GS::Scene& scene, const Frame& f, float along, const glm::vec4& light, bool chequer, const char* screen)
 	{
 		for (float side : { -1.0f, 1.0f })
 		{
-			Block(scene, "Gate Post", f, along - 0.15f, along + 0.15f, side * (0.5f * Width + 0.45f), 0.3f, 0.0f, 3.3f, Palette::Steel, 0.4f)
+			Block(scene, "Gate Post", f, along - 0.15f, along + 0.15f, side * (0.5f * Width + 0.45f), 0.3f, 0.0f, 3.6f, Palette::Steel, 0.4f)
 				.Get<GS::MeshComponent>()->Metallic = 0.7f;
 		}
-		GS::Entity bar = Box(scene, "Gate Bar", f.At(along, 0.0f, 3.15f), { Width + 1.2f, 0.42f, 0.24f }, Palette::Steel, 0.4f);
+		// Solid, though nothing runs into it: the follow camera keeps out
+		// of what it can hit, and swung round to look at a cannon it went
+		// through the bar and filled the picture with it.
+		GS::Entity bar = Box(scene, "Gate Bar", f.At(along, 0.0f, 3.2f), { Width + 1.2f, 0.95f, 0.24f }, Palette::Steel, 0.4f);
 		bar.Get<GS::TransformComponent>()->Rotation = { 0.0f, f.Yaw, 0.0f };
 		bar.Get<GS::MeshComponent>()->Metallic = 0.7f;
-		int cells = chequer ? 12 : 1;
+		Static(bar);
+		// The sign, on the face he runs at.
+		GS::Entity sign = Mesh(scene, "Gate Sign", "model:screen", f.At(along - 0.125f, 0.0f, 3.2f), { 0.0f, f.Yaw + 180.0f, 0.0f },
+			{ 4.4f, 0.8f, 1.0f });
+		GS::ScreenComponent sc;
+		sc.Screen = screen;
+		sc.Width = 1100;
+		sc.Height = 200;
+		sc.Emission = 2.4f;
+		sign.Add<GS::ScreenComponent>(sc);
+		// Light strips below it, both faces.
+		int cells = chequer ? 14 : 1;
 		for (int k = 0; k < cells; k++)
 		{
 			float w = (Width + 0.9f) / (float)cells;
@@ -178,10 +209,10 @@ namespace RunCourse
 			bool dark = chequer && (k % 2 == 1);
 			for (float face : { -1.0f, 1.0f })
 			{
-				GS::Entity panel = Box(scene, "Gate Light", f.At(along + face * 0.125f, across, 3.15f), { w, 0.3f, 0.02f },
+				GS::Entity panel = Box(scene, "Gate Light", f.At(along + face * 0.125f, across, 2.79f), { w, 0.1f, 0.02f },
 					dark ? glm::vec4(0.05f, 0.05f, 0.06f, 1.0f) : light, 0.3f);
 				panel.Get<GS::TransformComponent>()->Rotation = { 0.0f, f.Yaw, 0.0f };
-				panel.Get<GS::MeshComponent>()->Emission = dark ? 0.0f : 2.2f;
+				panel.Get<GS::MeshComponent>()->Emission = dark ? 0.0f : 2.4f;
 			}
 		}
 	}
@@ -292,7 +323,7 @@ namespace RunCourse
 				out.Spawn = f.At(1.6f, 0.0f, 0.0f);
 				out.SpawnYaw = glm::radians(f.Yaw);
 				Paint(scene, "Start Line", f, 4.4f, 4.6f, 0.0f, Width, Line, 0.007f);
-				GateArch(scene, f, 4.5f, glm::vec4(0.5f, 1.0f, 0.62f, 1.0f), false);
+				GateArch(scene, f, 4.5f, glm::vec4(0.5f, 1.0f, 0.62f, 1.0f), false, "run-gate-start");
 				out.Gates.push_back(Gate{ f.At(4.5f, 0.0f, 0.0f), f.F, half + 0.4f, "start" });
 				break;
 			}
@@ -387,7 +418,7 @@ namespace RunCourse
 			case Kind::Finish:
 			{
 				Paint(scene, "Finish Line", f, 2.9f, 3.1f, 0.0f, Width, Line, 0.007f);
-				GateArch(scene, f, 3.0f, glm::vec4(1.0f, 0.95f, 0.85f, 1.0f), true);
+				GateArch(scene, f, 3.0f, glm::vec4(1.0f, 0.95f, 0.85f, 1.0f), true, "run-gate-finish");
 				out.Gates.push_back(Gate{ f.At(3.0f, 0.0f, 0.0f), f.F, half + 0.4f, "finish" });
 				break;
 			}
@@ -399,11 +430,10 @@ namespace RunCourse
 			out.Gates.push_back(Gate{ f.At(0.2f, 0.0f, 0.0f), f.F, half + 0.4f, KindName(p.Type) });
 			for (float side : { -1.0f, 1.0f })
 			{
-				GS::Entity post = Box(scene, "Checkpoint Post", f.At(0.2f, side * (half + 0.3f), 0.75f), { 0.12f, 1.5f, 0.12f }, Steel, 0.4f);
-				GS::Entity cap = Box(scene, "Checkpoint Light", f.At(0.2f, side * (half + 0.3f), 1.58f), { 0.2f, 0.16f, 0.2f },
+				Static(Box(scene, "Checkpoint Post", f.At(0.2f, side * (half + 0.3f), 0.79f), { 0.2f, 1.58f, 0.2f }, Steel, 0.4f));
+				GS::Entity cap = Box(scene, "Checkpoint Light", f.At(0.2f, side * (half + 0.3f), 1.58f), { 0.21f, 0.16f, 0.21f },
 					glm::vec4(0.35f, 0.85f, 1.0f, 1.0f), 0.3f);
 				cap.Get<GS::MeshComponent>()->Emission = 2.5f;
-				(void)post;
 			}
 		}
 
@@ -560,6 +590,24 @@ namespace RunCourse
 		}
 		l.Pieces.push_back({ Kind::Finish, 0, 0 });
 		return l;
+	}
+
+	// The track's middle line as points to run through: where each piece
+	// starts, a corner's middle, and the end -- for anything that runs a
+	// course without a person's eyes (a test, a ghost).
+	inline std::vector<glm::vec3> Waypoints(const Layout& layout)
+	{
+		std::vector<glm::vec3> out;
+		Frame f(glm::vec3(0.0f), 0.0f);
+		for (const Piece& p : layout.Pieces)
+		{
+			out.push_back(f.At(0.0f, 0.0f, 0.0f));
+			if (p.Type == Kind::Corner)
+				out.push_back(f.At(4.0f, 0.0f, 0.0f));
+			f = Next(f, p);
+		}
+		out.push_back(f.O);
+		return out;
 	}
 
 	// The whole place: the field, the course, the cannons, trees about it,
