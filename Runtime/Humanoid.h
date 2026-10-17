@@ -200,6 +200,8 @@ public:
 	// Hit while standing and catching it with its feet (UpdateStumble).
 	bool IsStumbling() const { return m_Mode == Mode::Stumbling; }
 	bool IsGettingUp() const { return m_Mode == Mode::GettingUp; }
+	// Getting up from on his back (rolling over first), not his front.
+	bool GettingUpFromBack() const { return m_GetUpSupine; }
 	// In a parkour move -- vaulting, climbing, dropping, rolling.
 	bool IsMoving() const { return m_Mode == Mode::Moving; }
 	// Hanging from an edge, where the keys do other things (UpdateHang).
@@ -2280,6 +2282,7 @@ public:
 
 		HipsHeavy(true);
 		pelvis.AngularVelocity = glm::vec3(0.0f);
+		m_FloorLift = 0.0f;
 
 		// A hand under the shoulder of a body lying flat is the arm at right
 		// angles to the trunk, and a shoulder flexes far further than that --
@@ -2423,6 +2426,16 @@ public:
 			float reach = std::fabs(r[0].y) * half.x + std::fabs(r[1].y) * half.y + std::fabs(r[2].y) * half.z;
 			reach = std::max(reach, LowestBelow(turn, glm::mix(a.Spine, b.Spine, w), false));
 			target.y = std::max(target.y, m_GetUpGround + reach + 0.004f);
+			// And the moves' give (UpdateMove): up as far as the trunk he has
+			// needs, and further while an arm he lies on, or anything else of
+			// his, is wedged against the floor -- in 46 knock-downs, 14 get-ups
+			// pressed a forearm 5 to 15 cm into it and 8 then flung it out.
+			float s = m_Proportions.Scale;
+			float need = TrunkLift(target, turn);
+			if (Wedged(dt, true) || ArmSunk())
+				need = std::max(need, m_FloorLift + 0.03f * s);
+			m_FloorLift += glm::clamp(need - m_FloorLift, -0.6f * s * dt, 2.0f * s * dt);
+			target.y += m_FloorLift;
 		}
 		// Closing the gap to the key over a 60th of a second, however finely
 		// the step is split. Closed within one substep, the push behind the
@@ -2448,7 +2461,11 @@ public:
 				GS::Joint3D& joint = m_World.GetJoint(handle);
 				joint.MotorStiffness = glm::mix(m_LimpStiffness, m_LegStiffness, strength);
 				joint.MotorMaxTorque = glm::mix(m_LimpTorque, m_JointTorque[handle] * m_LegTorqueScale, strength);
-				joint.MotorMaxSpeed = 30.0f;
+				// 12 rad/s, not the walk's 30: nothing in a get-up is that
+				// quick, and at 30 a leg left folded by the fall whipped
+				// round at 1,500-1,800 degrees a second as its strength came
+				// back (4 get-ups in 46).
+				joint.MotorMaxSpeed = 12.0f;
 			}
 
 		DriveKeyLimbs(a, b, w, m_GetUpGround);
@@ -2595,24 +2612,39 @@ public:
 			float under = ground > -1e8f ? ground
 				: GroundY(HipWorld(side), -1000.0f);
 			SolveLegPole(side, HipWorld(side), ankle, pole, under + m_Proportions.ThighRadius + 0.005f * m_Proportions.Scale);
-			bool kneeling = w < 0.5f ? a.Kneeling[side] : b.Kneeling[side];
-			if (kneeling)
+			// How flat the sole is held, 0 toes tucked and soft (the floor
+			// decides the foot's angle -- held at its rest pose with the
+			// leg's full strength, the foot out-pushed the floor's contact
+			// and sank 8 cm into it) to 1 flat on the ground, turned the way
+			// he will face. Eased across the middle of the keys' interval:
+			// switched at its half-way point, the lead foot coming forward
+			// into the lunge went from soft to full strength in one step
+			// with its target 90 degrees away, and every face-down get-up
+			// measured had a foot snap round at 2,550 degrees a second;
+			// eased, 1,800-2,200. What is left (and all of the face-up
+			// ones' 2,300) is the sole slapping flat as it lands on its
+			// edge, one step of 38 degrees: the contact, not the motor.
+			float flat = glm::mix(a.Kneeling[side] ? 0.0f : 1.0f, b.Kneeling[side] ? 0.0f : 1.0f, glm::smoothstep(0.2f, 0.8f, w));
+			GS::Joint3D& ankleJoint = m_World.GetJoint(m_AnkleJoint[side]);
+			if (flat <= 0.0f)
 			{
-				// Toes tucked and soft: the floor decides the foot's angle.
-				// Held at its rest pose with the leg's full strength, the foot
-				// out-pushed the floor's contact and sank 8 cm into it.
-				GS::Joint3D& ankle = m_World.GetJoint(m_AnkleJoint[side]);
-				ankle.MotorTargetRotation = m_AnkleRest[side];
-				ankle.MotorStiffness = m_LimpStiffness * 2.0f;
-				ankle.MotorMaxTorque = m_LimpTorque * 2.0f;
+				ankleJoint.MotorTargetRotation = m_AnkleRest[side];
+				ankleJoint.MotorStiffness = m_LimpStiffness * 2.0f;
+				ankleJoint.MotorMaxTorque = m_LimpTorque * 2.0f;
 			}
 			else
 			{
-				// The sole flat on the ground, turned the way he will face.
 				const GS::RigidBody3D& shinBody = m_World.GetBody(m_LowerLeg[side]);
 				float heading = glm::mix(a.Heading, b.Heading, w);
-				m_World.GetJoint(m_AnkleJoint[side]).MotorTargetRotation = glm::normalize(
-					glm::conjugate(shinBody.Orientation) * glm::angleAxis(heading, up));
+				glm::quat sole = glm::normalize(glm::conjugate(shinBody.Orientation) * glm::angleAxis(heading, up));
+				if (flat >= 1.0f)
+					ankleJoint.MotorTargetRotation = sole;
+				else
+				{
+					ankleJoint.MotorTargetRotation = glm::normalize(glm::slerp(m_AnkleRest[side], sole, flat));
+					ankleJoint.MotorStiffness = glm::mix(m_LimpStiffness * 2.0f, ankleJoint.MotorStiffness, flat);
+					ankleJoint.MotorMaxTorque = glm::mix(m_LimpTorque * 2.0f, ankleJoint.MotorMaxTorque, flat);
+				}
 			}
 			m_Planted[side] = ankle;
 			m_Swinging[side] = false;
@@ -5307,8 +5339,10 @@ public:
 	// world harder than five times his weight, upwards, in the last step: a
 	// limb caught between the floor and the carried hips. Hands and feet
 	// carry him in a move -- a climb hangs his whole weight on them -- and
-	// are left out.
-	bool Wedged(float dt) const
+	// are left out, unless `hands`: getting up, nothing carries more than
+	// half his weight on one hand, and a forearm pressed five times harder
+	// is one he is lying on.
+	bool Wedged(float dt, bool hands = false) const
 	{
 		if (dt <= 0.0f)
 			return false;
@@ -5318,12 +5352,33 @@ public:
 			if (mineA == mineB)
 				continue;
 			unsigned int mine = mineA ? contact.A : contact.B, other = mineA ? contact.B : contact.A;
-			if (mine == m_Foot[0] || mine == m_Foot[1] || mine == m_LowerArm[0] || mine == m_LowerArm[1] || !Solid(other))
+			bool forearm = mine == m_LowerArm[0] || mine == m_LowerArm[1];
+			if (mine == m_Foot[0] || mine == m_Foot[1] || (forearm && !hands) || !Solid(other))
 				continue;
 			glm::vec3 up = mineA ? -contact.Normal : contact.Normal;
 			if (up.y > 0.5f && contact.TotalNormalImpulse() / dt > 5.0f * m_BodyMass * 9.81f)
 				return true;
 		}
+		return false;
+	}
+
+	// An arm more than 1.2 cm into the ground under it: lain on, or pressed
+	// down by the trunk he is pushing up -- not always hard enough to read
+	// as a wedge (Wedged), and as visible.
+	bool ArmSunk() const
+	{
+		for (int side = 0; side < 2; side++)
+			for (GS::PhysicsWorld3D::BodyHandle handle : { m_UpperArm[side], m_LowerArm[side] })
+			{
+				const GS::RigidBody3D& b = m_World.GetBody(handle);
+				glm::vec3 axis = b.Orientation * glm::vec3(0.0f, b.HalfHeight, 0.0f);
+				for (const glm::vec3& end : { b.Position + axis, b.Position - axis })
+				{
+					float ground = GroundY(glm::vec3(end.x, end.y + 0.3f * m_Proportions.Scale, end.z), -1000.0f);
+					if (ground - (end.y - b.Radius) > 0.012f * m_Proportions.Scale)
+						return true;
+				}
+			}
 		return false;
 	}
 
