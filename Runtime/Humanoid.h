@@ -121,6 +121,8 @@ public:
 			m_Facing = yaw;
 			GoControlled();
 		}
+		if (m_PieceBaker)
+			m_PieceBaker(*this);
 	}
 
 	// Standing again at `origin`, facing `yaw`, in the pose it was built
@@ -182,6 +184,42 @@ public:
 	const RestSkeleton& Rest() const { return m_Rest; }
 	// Each body's centre and turn as built, in the order of Bodies().
 	const std::vector<std::pair<glm::vec3, glm::quat>>& BuildPose() const { return m_BuildPose; }
+
+	// --- Set pieces: recorded movements played on his bodies ---------------
+	//
+	// Turning round, stopping and setting off are not worked out step by
+	// step: they are a person's, recorded (MotionClip.h bakes a stretch of a
+	// CMU clip onto his bodies -- his lengths, its rotations), and played
+	// with the hips and feet carried exactly, as the walk carries them, and
+	// the trunk, head and arms following on their motors. Nothing here reads
+	// a file; with no pieces given, everything is the walk's own.
+	struct SetPiece
+	{
+		enum class Kind { TurnRound, Stop, Start };
+		Kind What = Kind::Stop;
+		std::string Name;
+		float FrameRate = 120.0f;
+		std::vector<glm::vec3> P;        // 13 bodies a frame, the recording's own frame, his size, its floor at 0
+		std::vector<glm::quat> Q;
+		std::vector<float> SwingT;       // 2 a frame: how far through a swing that foot is, or -1 down
+		std::vector<float> Facing;       // a frame: the yaw of halfway between pelvis and chest, unwrapped
+		int EntryFrom = 0, EntryTo = 0;  // the frames of the swing it can be joined during
+		int EntrySwing = 0;              // which of his sides swings then (as recorded; mirrored, the other)
+		int ExitLift = -1;               // which side is lifting at the last frame; -1 standing
+		float TurnSign = 0.0f;           // which way it turns, as recorded
+		float SpeedIn = 1.0f, SpeedOut = 0.0f;   // m/s of the hips at the join and the end
+		int Frames() const { return (int)Facing.size(); }
+	};
+	void SetSetPieces(std::vector<SetPiece> pieces) { m_Pieces = std::move(pieces); m_Piece = -1; }
+	// Bakes the pieces for this body, now and whenever it is built again.
+	void SetSetPieceBaker(std::function<void(Humanoid&)> bake)
+	{
+		m_PieceBaker = std::move(bake);
+		if (m_PieceBaker)
+			m_PieceBaker(*this);
+	}
+	bool InSetPiece() const { return m_Piece >= 0; }
+	const char* SetPieceName() const { return m_Piece >= 0 ? m_Pieces[(size_t)m_Piece].Name.c_str() : ""; }
 	GS::PhysicsWorld3D::BodyHandle PelvisBody() const { return m_Pelvis; }
 	GS::PhysicsWorld3D::BodyHandle HeadBody() const { return m_Head; }
 	bool IsFoot(GS::PhysicsWorld3D::BodyHandle handle) const { return handle == m_Foot[0] || handle == m_Foot[1]; }
@@ -310,6 +348,7 @@ public:
 		m_LastDt = dt;
 		m_MoveGrace = std::max(m_MoveGrace - dt, 0.0f);
 		m_DodgeCooldown = std::max(m_DodgeCooldown - dt, 0.0f);
+		m_PieceCooldown = std::max(m_PieceCooldown - dt, 0.0f);
 		RefreshStandable();
 		EaseJointsClosed(dt);
 		m_Balance = ComputeBalance();
@@ -333,6 +372,8 @@ public:
 			// it did to him, not by the size of the number.
 			if (hit > m_StaggerThreshold)
 			{
+				if (m_Piece >= 0)
+					EndPiece(false);
 				if (StumblesPhysically())
 				{
 					// The root was kinematic when it was hit, so the hit went
@@ -6552,7 +6593,10 @@ public:
 	float TurnStepRate(float gaitSpeed) const
 	{
 		bool need = std::fabs(m_TurnWanted) > 0.05f && std::fabs(m_TurnToGo) > m_SettleYaw;
-		if (gaitSpeed < 0.3f)
+		// Stood by a set piece, the stance it left is a person's and is kept
+		// until he is asked to go somewhere: the stop closes the feet to 10-15
+		// cm, not the walk's 20, and stepping them back out was a fidget.
+		if (gaitSpeed < 0.3f && !m_PieceStood)
 		{
 			glm::vec3 right(std::cos(m_Facing), 0.0f, -std::sin(m_Facing));
 			for (int side = 0; side < 2 && !need; side++)
@@ -6570,6 +6614,332 @@ public:
 		if (!need)
 			return 0.0f;
 		return std::max(glm::pi<float>() * std::fabs(m_TurnWanted) / m_StepTurn, glm::pi<float>() / m_SettleStepTime);
+	}
+
+	// --- set pieces, played -------------------------------------------------
+
+	static int MirrorBody(int i) { return i >= 3 ? (i % 2 == 1 ? i + 1 : i - 1) : i; }
+
+	// Frame `frame` of the piece being played, in the world: each body, and
+	// how far through a swing each foot is (-1 down). Mirrored, the left and
+	// right bodies trade places and the recording is reflected across its
+	// own x (a turn rotation (w, x, y, z) reflects to (w, x, -y, -z)).
+	void PieceSample(float frame, glm::vec3* P, glm::quat* Q, float* swingT, float* facing) const
+	{
+		const SetPiece& sp = m_Pieces[(size_t)m_Piece];
+		int n = sp.Frames();
+		float f = glm::clamp(frame, 0.0f, (float)(n - 1));
+		int a = (int)f, b = std::min(a + 1, n - 1);
+		float w = f - (float)a;
+		for (int i = 0; i < 13; i++)
+		{
+			int src = m_PieceMirror ? MirrorBody(i) : i;
+			glm::vec3 p = glm::mix(sp.P[(size_t)(a * 13 + src)], sp.P[(size_t)(b * 13 + src)], w);
+			glm::quat q = glm::normalize(glm::slerp(sp.Q[(size_t)(a * 13 + src)], sp.Q[(size_t)(b * 13 + src)], w));
+			if (m_PieceMirror)
+			{
+				p.x = -p.x;
+				q = glm::quat(q.w, q.x, -q.y, -q.z);
+			}
+			P[i] = m_PieceOffset + m_PieceTurn * p;
+			Q[i] = glm::normalize(m_PieceTurn * q);
+		}
+		for (int side = 0; side < 2; side++)
+		{
+			int src = m_PieceMirror ? 1 - side : side;
+			float ta = sp.SwingT[(size_t)(a * 2 + src)], tb = sp.SwingT[(size_t)(b * 2 + src)];
+			swingT[side] = (ta < 0.0f || tb < 0.0f) ? (w < 0.5f ? ta : tb) : glm::mix(ta, tb, w);
+		}
+		float yaw = glm::mix(sp.Facing[(size_t)a], sp.Facing[(size_t)b], w);
+		*facing = (m_PieceMirror ? -yaw : yaw) + m_PieceYaw;
+	}
+
+	static float YawOfTurn(const glm::quat& q)
+	{
+		glm::vec3 f = q * glm::vec3(0.0f, 0.0f, 1.0f);
+		return std::atan2(f.x, f.z);
+	}
+
+	// Starts a piece of this kind, joined where his feet are: during its
+	// entry swing at the same point of the swing his foot is at (mirrored
+	// if it is his other foot), or, both feet down, at the end of it, the
+	// foot that lifts next being the one the recording lifts next. Laid so
+	// the recording's planted foot is on his. Not where the ground under
+	// the way it goes is not flat, or something stands in it: the walk's
+	// own then. True if it started.
+	bool TryPiece(SetPiece::Kind kind, float rateScale)
+	{
+		if (m_PieceCooldown > 0.0f || !m_DriveFeet || !m_Pinned[0] || !m_Pinned[1])
+			return false;
+		int index = -1;
+		for (size_t i = 0; i < m_Pieces.size(); i++)
+			if (m_Pieces[i].What == kind && m_Pieces[i].Frames() > 2)
+				index = (int)i;
+		if (index < 0)
+			return false;
+		const SetPiece& sp = m_Pieces[(size_t)index];
+
+		int swinging = m_Swinging[0] != m_Swinging[1] ? (m_Swinging[0] ? 0 : 1) : -1;
+		bool mirror;
+		float entry;
+		if (swinging >= 0)
+		{
+			float t = glm::clamp((CyclePosition(swinging) - m_Duty) / std::max(1.0f - m_Duty, 0.01f), 0.0f, 1.0f);
+			mirror = swinging != sp.EntrySwing;
+			entry = glm::mix((float)sp.EntryFrom, (float)sp.EntryTo, t);
+		}
+		else
+		{
+			int next = m_TurnStartFromRest ? (int)((m_Seed + m_StepCount[0] + m_StepCount[1]) & 1u)
+				: (CyclePosition(0) > CyclePosition(1) ? 0 : 1);
+			mirror = next != 1 - sp.EntrySwing;
+			entry = (float)sp.EntryTo;
+		}
+		if (kind == SetPiece::Kind::TurnRound && m_TurnToGo != 0.0f
+			&& std::fabs(m_TurnToGo) < m_ReverseFree && sp.TurnSign * (mirror ? -1.0f : 1.0f) * m_TurnToGo < 0.0f)
+			return false;   // a turn of 120-150 degrees that the piece would take the long way round
+
+		// Lay it down: turned so its facing at the join is his, moved so its
+		// planted foot (or the middle of both) is where his is.
+		int saved = m_Piece;
+		bool savedMirror = m_PieceMirror;
+		m_Piece = index;
+		m_PieceMirror = mirror;
+		m_PieceTurn = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+		m_PieceOffset = glm::vec3(0.0f);
+		m_PieceYaw = 0.0f;
+		glm::vec3 P[13];
+		glm::quat Q[13];
+		float swingT[2], facing;
+		PieceSample(entry, P, Q, swingT, &facing);
+		m_PieceYaw = m_Facing - facing;
+		m_PieceTurn = glm::angleAxis(m_PieceYaw, glm::vec3(0.0f, 1.0f, 0.0f));
+		glm::vec3 clipAnchor(0.0f), hisAnchor(0.0f);
+		int anchors = 0;
+		for (int side = 0; side < 2; side++)
+		{
+			if (side == swinging)
+				continue;
+			clipAnchor += m_PieceTurn * (P[7 + side] + Q[7 + side] * m_FootToAnkle);
+			hisAnchor += m_FootTarget[side];
+			anchors++;
+		}
+		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		float ground = GroundY(pelvis.Position, -1000.0f);
+		m_PieceOffset = (hisAnchor - clipAnchor) / (float)std::max(anchors, 1);
+		m_PieceOffset.y = ground;
+
+		// Room: the ground under the hips' way flat to 4 cm, and nothing at
+		// knee or waist height between one point of it and the next.
+		bool room = true;
+		glm::vec3 last = pelvis.Position;
+		const SetPiece& piece = m_Pieces[(size_t)index];
+		for (int k = (int)entry; k < piece.Frames() && room; k += 10)
+		{
+			PieceSample((float)k, P, Q, swingT, &facing);
+			float g = GroundY(glm::vec3(P[0].x, pelvis.Position.y + 0.3f, P[0].z), -1000.0f);
+			if (std::fabs(g - ground) > 0.04f * m_Proportions.Scale)
+				room = false;
+			glm::vec3 step = P[0] - last;
+			step.y = 0.0f;
+			float length = glm::length(step);
+			if (length > 1e-3f)
+				for (float h : { 0.35f, 0.9f })
+				{
+					GS::PhysicsWorld3D::RayHit hit = m_World.Raycast(glm::vec3(last.x, ground + h * m_Proportions.Scale, last.z),
+						step / length, length + 0.25f * m_Proportions.Scale, m_CharacterBodies);
+					if (hit.Hit && hit.Normal.y < 0.6f && Solid(hit.Body))
+						room = false;
+				}
+			last = P[0];
+		}
+		if (!room)
+		{
+			m_Piece = saved;
+			m_PieceMirror = savedMirror;
+			return false;
+		}
+
+		// Where each part of him is now against where the piece has it,
+		// eased out: the hips and joints over 0.3 s, each foot over its next
+		// swing (one in the air now, over what is left of it).
+		m_PieceFrame = entry;
+		m_PieceRate = sp.FrameRate * rateScale;
+		m_PieceClock = 0.0f;
+		PieceSample(entry, P, Q, swingT, &facing);
+		m_PiecePelvisFrom = pelvis.Position - P[0];
+		m_PiecePelvisTurnFrom = glm::normalize(pelvis.Orientation * glm::conjugate(Q[0]));
+		for (int side = 0; side < 2; side++)
+		{
+			const GS::RigidBody3D& foot = m_World.GetBody(m_Foot[side]);
+			m_PieceFootFrom[side] = foot.Position - P[7 + side];
+			m_PieceFootTurnFrom[side] = glm::normalize(foot.Orientation * glm::conjugate(Q[7 + side]));
+			m_PieceFootStartT[side] = swingT[side] >= 0.0f ? swingT[side] : 0.0f;
+			m_PieceFootCorrect[side] = 1.0f;
+			m_PieceHolding[side] = false;
+		}
+		m_PieceSpineFrom = m_World.GetJoint(m_SpineJoint).MotorTargetRotation;
+		m_PieceNeckFrom = m_World.GetJoint(m_NeckJoint).MotorTargetRotation;
+		for (int side = 0; side < 2; side++)
+		{
+			m_PieceShoulderFrom[side] = m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation;
+			m_PieceElbowFrom[side] = m_World.GetJoint(m_ElbowJoint[side]).MotorTargetAngle;
+		}
+		m_TurnSign = 0.0f;
+		m_StaggerVelocity = glm::vec3(0.0f);
+		return true;
+	}
+
+	// The piece's next frame: hips carried, feet carried and pinned (held
+	// where they landed while the recording has them down, so they cannot
+	// slide), legs solved between, trunk, head and arms on their motors.
+	void UpdatePiece(float dt)
+	{
+		const SetPiece& sp = m_Pieces[(size_t)m_Piece];
+		m_PieceClock += dt;
+		m_PieceFrame += m_PieceRate * dt;
+		if (m_PieceFrame >= (float)(sp.Frames() - 1))
+		{
+			EndPiece(true);
+			return;
+		}
+		glm::vec3 P[13];
+		glm::quat Q[13];
+		float swingT[2], facing;
+		PieceSample(m_PieceFrame, P, Q, swingT, &facing);
+		float ease = 1.0f - glm::smoothstep(0.0f, 0.3f, m_PieceClock);
+
+		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		glm::vec3 hips = P[0] + m_PiecePelvisFrom * ease;
+		pelvis.Velocity = (hips - pelvis.Position) / std::max(dt, 1e-4f);
+		pelvis.Orientation = glm::normalize(glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), m_PiecePelvisTurnFrom, ease) * Q[0]);
+		pelvis.UpdateInertiaWorld();
+		m_Facing = facing;
+		// What a dodge or a hit reads of how fast he is going: the hips' own.
+		m_Speed = glm::length(glm::vec2(pelvis.Velocity.x, pelvis.Velocity.z));
+		m_TravelYaw = m_Facing;
+
+		for (int side = 0; side < 2; side++)
+		{
+			// The correction from where his foot was to where the piece has
+			// it goes while the foot is in the air -- by 85% of the swing it
+			// is in or the next one -- and stays while it is down.
+			if (swingT[side] >= 0.0f)
+			{
+				float s0 = m_PieceFootStartT[side];
+				m_PieceFootCorrect[side] = std::min(m_PieceFootCorrect[side],
+					1.0f - glm::smoothstep(s0, std::max(s0 + 0.05f, 0.85f), swingT[side]));
+				m_PieceHolding[side] = false;
+			}
+			else
+				m_PieceFootStartT[side] = 0.0f;
+			float c = m_PieceFootCorrect[side];
+			glm::vec3 at = P[7 + side] + m_PieceFootFrom[side] * c;
+			glm::quat turn = glm::normalize(glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), m_PieceFootTurnFrom[side], c) * Q[7 + side]);
+			if (swingT[side] < 0.0f)
+			{
+				if (!m_PieceHolding[side])
+				{
+					m_PieceHolding[side] = true;
+					m_PieceHold[side] = at;
+				}
+				at.x = m_PieceHold[side].x;
+				at.z = m_PieceHold[side].z;
+			}
+			PinFootPose(side, at, turn, dt);
+		}
+		for (int side = 0; side < 2; side++)
+			SolveDrivenLeg(side, HipWorld(side) + pelvis.Velocity * dt, dt);
+
+		auto relative = [&](int a, int b) { return glm::normalize(glm::conjugate(Q[a]) * Q[b]); };
+		auto hinge = [&](int a, int b)
+		{
+			glm::quat q = relative(a, b);
+			return 2.0f * std::atan2(q.x, q.w);
+		};
+		auto blendTo = [&](const glm::quat& from, const glm::quat& to) { return glm::normalize(glm::slerp(to, from, ease)); };
+		m_World.GetJoint(m_SpineJoint).MotorTargetRotation = blendTo(m_PieceSpineFrom, relative(0, 1));
+		m_World.GetJoint(m_NeckJoint).MotorTargetRotation = blendTo(m_PieceNeckFrom, relative(1, 2));
+		for (int side = 0; side < 2; side++)
+		{
+			m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation = blendTo(m_PieceShoulderFrom[side], relative(1, 9 + side));
+			float elbow = glm::clamp(hinge(9 + side, 11 + side), -glm::radians(135.0f), 0.0f);
+			m_World.GetJoint(m_ElbowJoint[side]).MotorTargetAngle = glm::mix(elbow, m_PieceElbowFrom[side], ease);
+		}
+	}
+
+	// A foot put exactly where the piece has it, as the walk's are.
+	void PinFootPose(int side, const glm::vec3& at, const glm::quat& turn, float dt)
+	{
+		GS::RigidBody3D& foot = m_World.GetBody(m_Foot[side]);
+		if (!m_Pinned[side])
+		{
+			m_Pinned[side] = true;
+			foot.Type = GS::BodyType::Kinematic;
+			foot.AngularVelocity = glm::vec3(0.0f);
+			GS::Joint3D& ankleJoint = m_World.GetJoint(m_AnkleJoint[side]);
+			ankleJoint.ConeTwistEnabled = false;
+			ankleJoint.MotorEnabled = false;
+			SetLegsColliding(false);
+		}
+		foot.Orientation = turn;
+		foot.UpdateInertiaWorld();
+		foot.Velocity = (at - foot.Position) / std::max(dt, 1e-4f);
+		m_FootTarget[side] = at + turn * m_FootToAnkle;
+		m_PinYaw[side] = YawOfTurn(turn);
+	}
+
+	// Back to the walk: from the piece's last frame (`finished`), or now,
+	// cut short -- facing as the piece faces, at its speed, the feet where
+	// they are and the walk's step to come the one the piece had coming.
+	void EndPiece(bool finished)
+	{
+		if (m_Piece < 0)
+			return;
+		const SetPiece& sp = m_Pieces[(size_t)m_Piece];
+		int lift = finished && sp.ExitLift >= 0 ? (m_PieceMirror ? 1 - sp.ExitLift : sp.ExitLift) : -1;
+		// Ending standing is ending still: the last of a stop's settling
+		// (0.09 m/s) handed on kept the walk's steps turning over, slowly.
+		float speed = finished && sp.ExitLift >= 0 ? sp.SpeedOut * m_PieceRate / std::max(sp.FrameRate, 1.0f) : 0.0f;
+		m_PieceStood = finished && sp.ExitLift < 0;
+		if (!finished)
+		{
+			// Cut short, at the speed the hips have now.
+			const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+			speed = glm::length(glm::vec2(pelvis.Velocity.x, pelvis.Velocity.z));
+		}
+		m_Piece = -1;
+		m_PieceCooldown = 0.3f;
+		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		m_TravelYaw = m_Facing;
+		m_TurnSign = 0.0f;
+		m_Speed = speed;
+		m_SpeedRate = 0.0f;
+		m_LastSpeed = speed;
+		m_LeanAccel = 0.0f;
+		m_RunBlend = 0.0f;
+		m_RunBlendRate = 0.0f;
+		m_RootAnchor = glm::vec3(pelvis.Position.x, m_StandHeight, pelvis.Position.z)
+			+ glm::vec3(std::sin(m_Facing), 0.0f, std::cos(m_Facing)) * (speed * m_LastDt);
+		m_StandHeight = pelvis.Position.y;
+		m_StandRate = 0.0f;
+		m_StandTarget = GroundY(pelvis.Position, -1000.0f) + m_StandClearance - m_Crouch;
+		for (int side = 0; side < 2; side++)
+		{
+			m_Planted[side] = m_FootTarget[side];
+			m_SwingFrom[side] = m_SwingTo[side] = m_Planted[side];
+			m_Swinging[side] = false;
+			// The stance the piece ends in counts as settled: toes turned out
+			// as a person's are is not a foot to step round straight.
+			m_PlantYaw[side] = m_Facing;
+		}
+		m_GaitPhase = lift >= 0
+			? glm::two_pi<float>() * m_Duty + (lift == 0 ? 1.5f : 0.5f) * glm::pi<float>() - 1e-3f
+			: 1.5f * glm::pi<float>();
+		m_TurnStartFromRest = lift < 0 && speed < 0.05f;
+		m_PhaseRate = 0.0f;
+		m_HandoffPending = true;
+		EaseArmsFromHere();
 	}
 
 	void DriveWalk(float dt)
@@ -6605,6 +6975,36 @@ public:
 		float wishLength = glm::length(wish);
 		if (wishLength > 0.0f)
 			wish /= wishLength;
+		if (wishLength > 0.0f)
+			m_PieceStood = false;
+
+		// A set piece playing goes on unless what he is asked for no longer
+		// fits it: keys pressed again while he stops, let go or turned well
+		// away while he sets off, let go while he turns round. Then it hands
+		// back to the walk where it is, and the walk carries on from there.
+		if (m_Piece >= 0)
+		{
+			SetPiece::Kind kind = m_Pieces[(size_t)m_Piece].What;
+			float off = 0.0f;
+			if (wishLength > 0.0f)
+			{
+				off = std::atan2(wish.x, wish.z) - m_Facing;
+				while (off > glm::pi<float>()) off -= glm::two_pi<float>();
+				while (off < -glm::pi<float>()) off += glm::two_pi<float>();
+			}
+			bool keep = kind == SetPiece::Kind::Stop ? wishLength <= 0.0f
+				: kind == SetPiece::Kind::Start ? (wishLength > 0.0f && std::fabs(off) < glm::radians(50.0f))
+				: wishLength > 0.0f;
+			// A jump pressed cuts it short too, so the jump goes when pressed.
+			if (keep && m_Air == Air::Grounded && !m_WantsJump)
+			{
+				UpdatePiece(dt);
+				if (m_Piece >= 0)
+					return;
+			}
+			else
+				EndPiece(false);
+		}
 
 		// The heading turns towards where it is going at a limited rate, the
 		// short way round. A character that pivots instantly reads as weightless
@@ -6683,6 +7083,42 @@ public:
 			m_TurnWanted = 0.0f;
 			m_TurnToGo = 0.0f;
 			m_TurnRateNow = 0.0f;
+		}
+
+		// A set piece instead, where there is one for what he is doing: turning
+		// round from a walk (out of the run's brake too), stopping from a walk,
+		// setting off straight from standing. Played a little quicker than it
+		// was recorded to match his pace -- his walk is 1.37 m/s, the people
+		// recorded walked at 0.8-1.1 -- but not much past 1.35 times, beyond
+		// which a person's movement starts to look hurried.
+		if (m_Piece < 0 && !m_Pieces.empty() && m_Air == Air::Grounded && m_LandSpeed <= 0.0f
+			&& glm::length(m_StaggerVelocity) < 0.1f && m_RunBlend < 0.5f)
+		{
+			auto pace = [&](SetPiece::Kind kind, float most)
+			{
+				for (const SetPiece& sp : m_Pieces)
+					if (sp.What == kind)
+						return glm::clamp(m_Speed / std::max(sp.SpeedIn, 0.1f), 1.0f, most);
+				return 1.0f;
+			};
+			bool started = false;
+			// Not out of the run's brake (0.7 m/s and falling): brake and the
+			// recorded turn after it took 2.5 s to face round, where brake and
+			// the walk's own turn on the spot take 1.3. Turning round from a
+			// walk, up to 1.45 times as quick as recorded: 1.25 s to face round,
+			// against the person's 1.6 at their pace and the walk's own 0.9.
+			if (m_TurnSign != 0.0f && m_Speed > 0.9f && m_Speed < 2.2f)
+				started = TryPiece(SetPiece::Kind::TurnRound, pace(SetPiece::Kind::TurnRound, 1.45f));
+			else if (wishLength <= 0.0f && m_Speed > 0.7f && m_Speed < 2.2f)
+				started = TryPiece(SetPiece::Kind::Stop, pace(SetPiece::Kind::Stop, 1.35f));
+			else if (wishLength > 0.0f && turnLeft < glm::radians(30.0f) && m_Speed < 0.05f
+				&& !m_Swinging[0] && !m_Swinging[1] && m_TurnStartFromRest && !(m_Control.Enabled && m_Control.Run))
+				started = TryPiece(SetPiece::Kind::Start, 1.25f);
+			if (started)
+			{
+				UpdatePiece(dt);
+				return;
+			}
 		}
 
 		// Speed eases towards the target and coasts to a stop, and the figure
@@ -7215,6 +7651,25 @@ public:
 		// integrates, or they would accumulate into a drift.
 		m_RootAnchor += wanted * dt;
 
+		// Out of a set piece, the walk's hips start where the piece left
+		// them and ease to its own over a third of a second: handed straight
+		// over, the hips jumped to where the walk would have had them -- the
+		// stand height, the sway, the bob -- at up to 154 m/s^2.
+		if (m_HandoffPending)
+		{
+			m_HandoffPending = false;
+			// From where they are going, not where they are: measured from
+			// the position, the first step of the walk held them still.
+			m_HandoffOffset = pelvis.Position + pelvis.Velocity * dt - target;
+			m_HandoffClock = 0.0f;
+		}
+		float handoff = 0.0f;
+		if (m_HandoffClock < m_HandoffTime)
+		{
+			m_HandoffClock += dt;
+			handoff = 1.0f - glm::smoothstep(0.0f, m_HandoffTime, m_HandoffClock);
+			target += m_HandoffOffset * handoff;
+		}
 		float toTarget = 1.0f / std::max(dt, 1e-4f);
 		pelvis.Velocity = (target - pelvis.Position) * toTarget;
 
@@ -7272,7 +7727,11 @@ public:
 			* std::cos(glm::two_pi<float>() * CyclePosition(0));
 		m_HipTurn = hipTurn;
 		glm::quat swivel = glm::angleAxis(hipTurn, glm::vec3(0.0f, 1.0f, 0.0f));
-		pelvis.Orientation = glm::normalize(facing * swivel * pitch * roll);
+		glm::quat walkTurn = glm::normalize(facing * swivel * pitch * roll);
+		if (m_HandoffClock <= dt && handoff > 0.0f)
+			m_HandoffTurn = glm::normalize(pelvis.Orientation * glm::conjugate(walkTurn));
+		pelvis.Orientation = handoff > 0.0f
+			? glm::normalize(glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), m_HandoffTurn, handoff) * walkTurn) : walkTurn;
 		pelvis.UpdateInertiaWorld();
 
 		// The remainder is carried by the spine, so the lean is a *bend* rather
@@ -7429,8 +7888,12 @@ public:
 		while (twist > glm::pi<float>()) twist -= glm::two_pi<float>();
 		while (twist < -glm::pi<float>()) twist += glm::two_pi<float>();
 		float allowed = stance ? m_PinTwist : 0.0f;
+		// Out of a set piece a planted foot is turned however the recording
+		// left it -- a person stands with the toes out -- and is brought
+		// round to his facing over the hand-off, not in one step.
+		float take = m_HandoffClock < m_HandoffTime ? std::min(1.0f, dt / std::max(m_HandoffTime - m_HandoffClock, dt)) : 1.0f;
 		if (std::fabs(twist) > allowed)
-			m_PinYaw[side] += twist - glm::sign(twist) * allowed;
+			m_PinYaw[side] += (twist - glm::sign(twist) * allowed) * take;
 
 		glm::quat flat = glm::normalize(ConformToGround(ankle, side) * glm::angleAxis(m_PinYaw[side], up));
 		glm::vec3 axis = flat * glm::vec3(1.0f, 0.0f, 0.0f);
@@ -7580,6 +8043,9 @@ public:
 
 	void UnpinFeet()
 	{
+		// A set piece carries the feet; whatever lets them go -- a move, a
+		// stumble, a fall, a get-up -- ends it.
+		m_Piece = -1;
 		UnpinFoot(0);
 		UnpinFoot(1);
 		SetLegsColliding(true);
@@ -8703,6 +9169,28 @@ protected:
 	bool m_Pinned[2] = { false, false };
 	float m_PinYaw[2] = { 0.0f, 0.0f };
 	RestSkeleton m_Rest;
+	// The set pieces and the one being played (-1 none).
+	std::vector<SetPiece> m_Pieces;
+	std::function<void(Humanoid&)> m_PieceBaker;
+	int m_Piece = -1;
+	bool m_PieceMirror = false;
+	float m_PieceFrame = 0.0f, m_PieceRate = 120.0f, m_PieceClock = 0.0f, m_PieceCooldown = 0.0f;
+	glm::quat m_PieceTurn{ 1.0f, 0.0f, 0.0f, 0.0f };
+	float m_PieceYaw = 0.0f;
+	glm::vec3 m_PieceOffset{ 0.0f }, m_PiecePelvisFrom{ 0.0f };
+	glm::quat m_PiecePelvisTurnFrom{ 1.0f, 0.0f, 0.0f, 0.0f };
+	glm::vec3 m_PieceFootFrom[2] = {}, m_PieceHold[2] = {};
+	glm::quat m_PieceFootTurnFrom[2] = { glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f) };
+	float m_PieceFootStartT[2] = { 0.0f, 0.0f }, m_PieceFootCorrect[2] = { 1.0f, 1.0f };
+	bool m_PieceHolding[2] = { false, false };
+	glm::quat m_PieceSpineFrom{ 1.0f, 0.0f, 0.0f, 0.0f }, m_PieceNeckFrom{ 1.0f, 0.0f, 0.0f, 0.0f };
+	glm::quat m_PieceShoulderFrom[2] = { glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f) };
+	float m_PieceElbowFrom[2] = { 0.0f, 0.0f };
+	bool m_PieceStood = false;         // a piece left him standing: its stance stands until he moves
+	bool m_HandoffPending = false;     // a piece just ended: the walk's next hips start from its
+	glm::vec3 m_HandoffOffset{ 0.0f };
+	glm::quat m_HandoffTurn{ 1.0f, 0.0f, 0.0f, 0.0f };
+	float m_HandoffClock = 1e9f, m_HandoffTime = 0.35f;
 	float m_PinLift[2] = { 0.0f, 0.0f };
 	float m_HipCone = glm::radians(45.0f);
 	bool m_DriveFeet = true;              // off: the old motor-only feet, for comparing

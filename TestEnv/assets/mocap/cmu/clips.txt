@@ -16,3 +16,4 @@ run-left        16.asf    16_51.amc run, 90-degree left turn
 walk-stop       16.asf    16_33.amc slow walk, stop
 jog-stop        16.asf    16_08.amc run/jog, sudden stop
 turn-around     47.asf    47_01.amc walk forward, turn around, walk back
+walk-start      69.asf    69_01.amc walk forward (from standing)
