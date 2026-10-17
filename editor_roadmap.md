@@ -177,8 +177,16 @@ catching yourself, falling realistically. Where it stands:
     back)~~ -- done: a turn steps, the hips wait for the feet, a run
     brakes first (changelog, same date). Next: **limbs clipping into the
     ground**, then **rotations that look wrong** (a planted foot still
-    pivots on its ankle under a turn, up to 85 degrees). The owner wants
+    pivots on its ankle under a turn, up to 95 degrees). The owner wants
     more scripted, coordinated responses and less emergence.
+  - modelled on recordings (2026-10-17, night): CMU motion capture, a
+    `ghost` in the yard, and the walk and run taken from a person's (see
+    the changelog). Next along this line, as agreed: clips driving the
+    set pieces -- turning round, starting, stopping, pivoting -- through
+    the moves' track, the way the dodge and vaults are planned; and a
+    second spine joint when the get-ups and rolls are next worked on
+    (measured: 4-9 cm of chest lost to the one joint, the rounded back
+    the real gain).
 - **The cannon run** (2026-10-17, later; `TestEnv/src/CannonRun.h`,
   `Gunnery.h`, `RunCourse.h`). A course against the clock under fair
   cannon fire, hand-made or from a seed. Where it could go, in order: a

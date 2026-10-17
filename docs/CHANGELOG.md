@@ -7,6 +7,184 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-17, night (modelled on recordings: CMU motion capture, a ghost to walk beside, a walk and run taken from a person's)
+
+"Lets perhaps try modelling the movements after something real. Can we
+use reference material to get the movements right?" Then: "Sounds like a
+plan. One thing, perhaps we should add more spine joints? ... Do it if it
+makes sense."
+
+**The reference.** Ten clips from the CMU Graphics Lab Motion Capture
+Database (mocap.cs.cmu.edu). Its terms, read off the site: "free for all
+uses ... you may include this data in commercially-sold products, but you
+may not resell this data directly". The clips are in
+`TestEnv/assets/mocap/cmu/`, 3.1 MB, unmodified, credited in `clips.txt`:
+
+- subject 16 walking, jogging and running;
+- 90 degree turns walking, jogging and running;
+- a walk to a stop, and a jog to a sudden stop;
+- subject 47 walking, turning round and walking back.
+
+`Runtime/MotionClip.h` reads CMU's own two files: the ASF skeleton (each
+bone's rest direction and length, the frame its rotations are in, which it
+has) and the AMC frames (120 a second). Nothing converted. Checked against
+what a walk is known to be: leg 0.84 m, 1.09 m/s, 107 steps a minute, the
+knee between 12 and 73 degrees, the hips bobbing 4.7 cm. Running: 3.0 m/s,
+the knee to 107.
+
+`ClipRetarget` puts a clip on his thirteen bodies with the recording's
+rotations and his own lengths. Each body hangs from its joint as he was
+built, turned by the recorded bone's turn after the shortest turn lining
+his rest bone up with the recording's. That turn is about the way he faces
+for an arm, since CMU's rest pose is a T. The left bones are his side 1.
+The floor is the tenth percentile of the soles' lowest.
+
+`Humanoid::Rest()` and `BuildPose()` give the joints and bodies as built.
+
+**The ghost.** `ghost walk` (`ghost` lists the clips, `ghost off` stops
+it) in the parkour yard's terminal plays a clip on his bodies a metre to
+his side, from where he stands, looped. Walk beside it and compare. Only in
+the demo, not editor Play: it is the layer's, like `station`.
+
+**Measured against him.** A temporary driver had him do each clip's
+action (walk, run, turn round, 90 left and right walking, 90 left
+running, stop). It measured him and the ghost the same way, from the same
+thirteen bodies:
+
+- speed, steps a minute and stride;
+- how long each foot is down, step width and foot clearance;
+- knee, hip and foot angles;
+- the pelvis's bob, sway, rotation, tilt and roll;
+- the trunk's lean, twist and roll;
+- arm swing and elbow bend;
+- how close the legs come;
+- every swing resampled lift to landing: foot height, knee, the foot
+  against the hips;
+- for turns: how long, how many steps, the head's lead.
+
+Three measurements were wrong at first and were fixed before anything was
+believed:
+
+- steps counted by foot height counted two or three a step, because the
+  rolling foot crossed the threshold. They are now counted by the foot's
+  speed, with hysteresis;
+- sway was measured from the start of a clip that wandered;
+- the facing in a turn was read off a pelvis that now swivels each
+  stride; it is now halfway between the pelvis and the chest.
+
+**What he got wrong, and the fixes** (walk at 1.37 m/s against 1.17;
+reference, then him before, then after):
+
+| | reference | before | after |
+| --- | --- | --- | --- |
+| knee through the swing, at 0 / 0.2 / 0.3 / 0.5 | 23 / 56 / 67 / 62 | 30 / 12 / 11 / 30 | 29 / 47 / 52 / 38 |
+| swing knee, most | 73 | 44 | 58 |
+| thigh against the pelvis | -15 to 33 | -26 to 33 | -15 to 30 |
+| foot clearance | 13 cm | 8 | 12.5 |
+| pelvis turn, either way | 8 | 2 | 9 |
+| chest against the pelvis | 9 | 0 | 8 |
+| arm swing | -12 to 6 | -29 to 29 | -12 to 12 |
+| elbow, mean | 30 | 15 | 30 |
+| step width | 6 cm | 19 | 10 |
+
+- **The swing.** His knee straightened in early swing where a person's
+  bends. He lifted the foot too little and too late, so a leg reaching a
+  low foot behind him had to be straight. The swing path is now the
+  person's: progress along the step and the lift, in tenths, from the CMU
+  walk and run (`SwingCurve`, a Catmull-Rom between them, walk and run
+  blended). The peak lift is 10 cm walking and 15 running (`m_FootLift`,
+  `m_RunFootLift`), so the walking styles still scale it.
+- **Toe-off.** Even then the knee stayed straight: the foot left 41 cm
+  behind the hip with the leg at full length, and the reach clamp did the
+  lifting along an arc. A person rolls onto their toes first (the foot
+  pitched to 56 at toe-off, the knee at 23). The heel now rises over the
+  last two fifths of stance, to 40 degrees (`m_PreSwingHeel`). The swing
+  starts from where the ankle is up on the toes, not from where the foot
+  was planted flat.
+- **The hips and chest.** The pelvis turns with the stride, the leading
+  leg's side forward (7 degrees walking, 11 running). The chest turns back
+  against it by 1.1 times as much (1.35 running), so the shoulders stay
+  nearly square.
+- **The arms.** A smaller swing, and elbows bent even standing: 10 degrees
+  of swing (it was 24), the elbow at 48 forward and three quarters of that
+  back. Running, the swing is 4 times, held 11 degrees back, and the elbow
+  2.6 times: 77 degrees on average got for 91 asked, against a runner's 91
+  and a jogger's 111.
+- **Step width.** The feet narrow with speed to 60% of standing's (12 cm).
+  Standing and the rig as built are unchanged (legs straight under the
+  hips). The swing keeps 10 cm from the planted foot rather than 17.
+
+**The run.** At 4 m/s against the clips' 3. Matched to the steady jog's
+posture (the run clip starts from standing, so its 25 degree lean is the
+acceleration), the trunk is 10 degrees and the pelvis 5, against 10 and
+6.
+
+At 4 m/s the hips ran away from a foot following a 3 m/s runner's path.
+It trailed 55 cm back on a straight knee: the thigh 32 degrees behind
+where a runner's goes 18, the knee folding to 77 where theirs folds to
+106. A swinging foot now never trails its hip by more than 40 cm
+(`m_SwingBehind`), and after that the thigh goes -22 to 44 (jog -18 to 47)
+and the knee to 77. Run at the jog's own speed and stride, as an
+experiment, he folded to 71 and swung -13 to 44: most of what is left is
+the speed.
+
+**Turns.**
+
+- Turning, the head now goes first, at 0.6 of what is left of the turn,
+  45 degrees at most. Turning round, the person's head is half way 0.20 s
+  before the hips, and now his is 0.12 s before (it was 0.05 s behind).
+  On a 90 degree turn the person's hardly leads (0 to 0.05 s) and his now
+  leads by 0.13 to 0.37 s, which is more than theirs.
+- Going round a curve he leans into it, atan(v w / g) times 0.45. Running
+  round 90 degrees the person's pelvis rolls in 9 degrees on average, his
+  4 (it was 0).
+- A turn on the spot takes a step for every 100 degrees (it was 80), the
+  hips leading a planted foot by up to 95. Turning round he takes 2 steps,
+  as the person did (2 or 3). A 90 degree turn walking takes 1 or 2, and
+  running 3 (the person: 1-2 and 4). He is still quicker: 0.83 s to turn
+  round against the person's 1.6. The person walks round a curve; he
+  stops and pivots, for responsiveness.
+
+**Checked for regressions** on a course through the yard's stations:
+
+- walking, stairs walked and run;
+- the vaults, climbing, crates and drops;
+- the slopes walked and run;
+- the wall run and the tic-tac.
+
+None fell. Stumbles and dragged planted feet were the same as the
+committed walk's, which was run alongside: 274 against 279 on the stairs,
+376 against 376 on the drops, 146 against 152 walking the slopes. Smoke-run
+with no errors: CannonRun, CrashTest, Ragdoll, Parkour (Release and
+Debug), MapBuilding. All three configs build.
+
+**More spine joints: not now, and why.** CMU's skeleton has three spine
+bones (lower back, upper back, thorax); his trunk is one joint.
+
+- Folding the three into one puts the chest 3.7 cm off its recorded place
+  walking, 5.6-7 cm running and up to 9 cm in a turn. The lower back alone
+  bends 9 degrees walking and 23-31 running and turning.
+- With one joint his chest already turns against the hips as the person's
+  does (±8 against ±9).
+- A second joint's gain is the rounded back: rolling, crouching, getting
+  up. It would mean re-checking the get-ups (82% natural from 142
+  knock-downs), the dives, the rolls and every move's spine keys, and
+  splitting the dummy's torso mesh.
+- It belongs with that work, not the walk's.
+
+**Still open:**
+
+- His swing knee peaks at 58 walking, against 73; running at 4 m/s, at
+  77 against the jog's 106.
+- The jogger's arms are always behind them and bent to 111; his swing
+  through and reach 77.
+- The head leads more than a person's on a 90 degree turn.
+- The legs' closest: a person's thighs on his bodies overlap by 2 cm
+  walking, and his by 2.7 now that the feet are narrower. His thighs are
+  thick for his hips, not the gait wrong.
+- Planted feet are dragged on stairs, drops and slopes (as before). This
+  is the owner's "limbs into the ground", next.
+
 ### 2026-10-17, evening (turning on his feet: legs that no longer pass through each other)
 
 "The limbs still clip into the ground and rotate unnaturally. Please lets

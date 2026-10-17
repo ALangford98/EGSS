@@ -37,6 +37,13 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-17 — Modelled on recordings**: CMU motion capture
+  (`TestEnv/assets/mocap`, `Runtime/MotionClip.h`), `ghost walk` in the
+  parkour yard plays a person on his bodies beside him. Measured against
+  them, the walk's swing, toe-off, hip and chest turn, arms and step width
+  now follow the person's (swing knee 44 -> 58 of 73, chest turn 0 -> 8 of
+  9). The run's posture and arms too; the head leads into turns; he leans
+  into curves. A second spine joint measured and left for the get-up work.
 - **2026-10-17 — Turning on his feet**: a turn steps, the hips wait for
   the feet, the swing goes round the planted leg. The legs no longer pass
   through each other turning back (12-15 cm inside each other, crossed
