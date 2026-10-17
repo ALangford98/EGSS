@@ -154,12 +154,33 @@ catching yourself, falling realistically. Where it stands:
     a face with holds; sliding under a low gap; a dive roll over
     something; hanging round an inside corner; the moves for NPCs (an
     NPC choosing a route through them).
-  - open from the course (2026-10-17): one get-up in 40 on a clear floor
-    still spikes (the same fall from the right each time); rolling onto
-    his front lifts the legs high behind; balls roll for half a minute
-    (no rolling resistance) and keep GameSession splitting its steps; a
-    tilted box cannot be a ramp, since `GroundBelow` answers a box with
-    the top of its bounds -- slopes are terrain only.
+  - open from the course (2026-10-17): ~~a tilted box cannot be a ramp~~
+    -- done 2026-10-17, later: `GroundBelow` asks a tilted box through its
+    own frame, and the stand height feeds the slope's rate forward (lane
+    13 of the yard). Still open: launcher balls roll for half a minute (no
+    rolling resistance) and keep GameSession splitting its steps -- the
+    cannon run's own balls are cleared 2 s after they land.
+  - ~~a dodge~~ -- done 2026-10-17, later: sidestep, cut, brake or dive
+    into a roll by speed and direction (`TryDodge`). The dive found the
+    forward roll's faults: feet blended through the air between a tuck and
+    the ground, the trunk and a thigh wedged into the floor at up to 140
+    kN, hands hanging into the floor. All fixed; see the changelog.
+  - get-ups, measured from eight directions (2026-10-17, later): 82% of
+    142 knock-downs natural, 87% from his front, 74% from his back.
+    Front-right (72%) and back (71%) are one get-up short of 75%. What is
+    left is an arm caught as he rolls from his back onto his front --
+    sending it overhead made things worse (73% to 51%) and was taken out.
+    Next to try: roll him the other way round, over the arm that is free,
+    or lift the trunk off the floor before the roll rather than during.
+- **The cannon run** (2026-10-17, later; `TestEnv/src/CannonRun.h`,
+  `Gunnery.h`, `RunCourse.h`). A course against the clock under fair
+  cannon fire, hand-made or from a seed. Where it could go, in order: a
+  difficulty curve validated by a ghost runner, height (platforms, gaps,
+  wall runs across them), branching routes, cannons placed as a pass of
+  their own, themes -- `docs/superpowers/specs/2026-10-17-procedural-
+  courses-scope.md`. To ship it as a game: `Gunnery` as a runtime system
+  with a component (as the launcher is), the course built from a seed
+  component, best times and ghosts saved with the project.
 - **Cover** (asked for 2026-10-16). Builds on parkour's sensing (`Sense`
   already knows a face's height and where it ends):
   - take cover: up against a wall or a low wall, back or shoulder to

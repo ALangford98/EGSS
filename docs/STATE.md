@@ -37,6 +37,12 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-17 — The cannon run** (`--demo CannonRun`): a course under
+  fire, against the clock, from pieces (hand-made, or any seed: `course
+  4711`); fair cannons that charge, lead and hold; sounds; a camera that
+  turns to what is coming (hold RMB). The dodge (LMB + direction:
+  sidestep, cut, brake or dive by speed); slopes (tilted boxes are
+  ramps); get-ups natural in 82% of 142 knock-downs (87% front, 74% back).
 - **2026-10-17 — The parkour course** (`--demo Parkour`): a lane per
   move, `station <n>`; crates climbable; the get-up's arms (natural
   elbows, no flick on standing) and its blow-ups (27 in 40 among

@@ -7,6 +7,188 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-17, later (slopes; the dodge; the cannon run; get-ups measured from eight directions)
+
+"Fix the slopes and make sure getting up looks natural about 75% of the
+time from each angle ... add a robust directional dodge mechanic ... I want
+to be able to dodge cannon balls shot at the player ... a sound cue for the
+cannon balls, and a focus attention camera shifter. The player must
+complete the obstacle course as fast as possible while being targeted by
+cannons ... Something that would be cool would be procedural courses."
+
+**Slopes.** `PhysicsWorld3D::GroundBelow` answered a box with the top of its
+bounds, so a tilted box reported its highest edge everywhere over it: on a
+20 degree ramp 4 m long he stood 1.4 m up in the air at its foot, and slopes
+were terrain only. A box that is not level is now asked straight down through
+it in its own frame (Raycast's slab test), and the face entered gives the
+height and the normal. A level box keeps the bounds' answer, which for it is
+exact, so every scene of level boxes is bit-identical. Then the walk: running
+up 15 degrees, the stand height's spring trailed the climb by 27 cm
+(2 r / w + 0.08 r, as its comment says). The slope's own rate,
+-(n.x v.x + n.z v.z) / n.y, is now fed forward to both the target's filter
+and the spring, which is damped towards that rate rather than towards rest.
+A riser's top is level, so steps feed nothing and the stairs are as they
+were. Measured on the yard's new lane 13 (15 degrees up to 1.2 m, 25 down,
+30 up to 0.9 m), the hips' lowest height over the ground running went from
+0.55 m to 1.00 m. He walks and runs every slope without a stumble.
+
+**The dodge** (`Humanoid::RequestDodge`, Left mouse button or Q, with a
+direction). It is planned as the parkour moves are: the hips carried along a
+path, the feet put down where a person's go. What it does comes from what one
+push can do to the velocity he already has, about 3 m/s (a sole's grip, mu g,
+over a third of a second):
+
+- standing, a sidestep, hop back or lunge: 0.9 m in 0.6 s, 0.37 m off the
+  line by 0.3 s;
+- walking, the same with the walk carried on through it;
+- running, sideways is a cut, with the run bent off its line and carried on
+  along the new one. Backwards is a brake: 3.2 m/s off 4 ends at 0.6 m/s
+  going forwards, not backwards;
+- sprinting, sideways or ahead is a dive into a roll: 4.2 m covered and the
+  lowest of them, and slowest to come back from.
+
+It goes only as far as there is room (a wall, a ledge, a step up), and not at
+all for under a third of a full dodge. Fifteen scripted dodges from standing,
+walking, running and sprinting all ended on his feet. A press waits a quarter
+of a second for a moment it can go: the end of a move, a landing.
+
+**What the dive found in the roll.** The dive ends in PlanRoll's forward
+roll, the same roll as a drop's, and the roll was broken in ways the drop had
+shown less.
+
+- Between a key with the feet tucked in his own frame and one with them on
+  the ground in the world's, the feet were blended in the world's frame.
+  Upside down, that took them through the air above him, so his legs went
+  straight up and he came down flat on his back. They are now blended in his
+  own frame (`BodyBlend`), which is also likely the get-up's "legs up high
+  behind".
+- The carried hips drove his trunk into the floor mid-roll, at 60 kN on the
+  torso (85 times his weight), and a thigh at up to 140 kN off the 3 m
+  tower. The hips now rise for the trunk he actually has (`TrunkLift`), and
+  give way upwards while anything of his is wedged on the floor (`Wedged`).
+  The give is eased: taken as it came, it jumped 15 to 25 cm in a step and
+  slammed him back down.
+- A hanging hand hung down the world's vertical, which for a body on its
+  back is into the floor; it now hangs down his trunk. The chin tucks as the
+  back rounds past 20 degrees.
+
+The worst limb spin in a dive went from 55,000 degrees a second to under
+5,000, and off the tower from 33,000 to 4,200.
+
+**Also fixed:**
+
+- Every move's first step of walking stood still, a 7 cm hitch at a run: the
+  walk's anchor is now put a step ahead.
+- A cannonball hitting him mid-move now puts him down (`m_MoveHitThreshold`,
+  loose things only); it used to vanish into the carried hips.
+
+**Get-ups, measured.** A temporary driver knocked him down 144 times (8
+directions x 2 strengths x standing, walking, running x 3) and scored each
+get-up: it completes, stays up a second, nothing but a foot spins faster than
+1,500 degrees a second, nothing goes more than 5 cm into the floor, and no
+foot goes over 0.75 m up. Every get-up completed and none fell again. What
+failed the rest:
+
+- **The lead foot**, coming forward into the lunge, switched from soft and
+  toes-tucked to full strength and flat, halfway between two keys, and
+  snapped round at 2,550 degrees a second in every get-up. It is now eased
+  across the interval, but the foot still slaps flat as it lands on its edge
+  (one step of 38 degrees), so feet are scored apart.
+- **An arm lain on.** A forearm pressed 5 to 15 cm into the floor (14 in
+  46), or flung out (8). The get-up now gives the moves' eased lift, also
+  when an arm is wedged or more than 1.2 cm into the floor.
+- **Legs whipping** at the start, while their strength comes back at the
+  walk's 30 rad/s: capped at 12 while getting up.
+
+Scored as above, the first full measurement (with the ankle already eased)
+was 28 of 46, 61%. With the lift and the legs' cap it is 116 of 142, 82%: 87%
+from his front and 74% from his back. By the direction he was knocked from:
+
+| Front | Front-right | Right | Back-right | Back | Back-left | Left | Front-left |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 82% | 72% | 83% | 89% | 71% | 78% | 83% | 94% |
+
+With 17 or 18 get-ups each, one get-up is about 6 points, so front-right and
+back are each one short of 75%. What is left is mostly getting up from his
+back:
+
+- an arm caught as he rolls onto his front (a forearm still 5-7 cm into the
+  floor, or flung at 1,500-2,800 degrees a second);
+- feet over 0.75 m in 2 of the 142.
+
+Tried and taken out: sending the arm underneath overhead as he rolls from
+his back onto his front. Get-ups from his back dropped from 73% to 51%.
+
+**The cannon run** (`TestEnv/src/CannonRun.h`, `--demo CannonRun`). Get
+round a course as fast as you can while cannons try to knock you down.
+
+- The clock starts at the line and stops at the finish, with checkpoints
+  between and splits against your best.
+- R starts again, N gives a new course, Esc pauses. `course 4711` in the
+  terminal runs that course; `course` alone runs the hand-made one.
+- The mouse looks while you run, with the pointer captured
+  (`GameModes::SetMouseLook`). Holding the right button turns the camera to
+  what is coming (`CharacterController::SetFocusTarget`): the ball that
+  reaches him first, or a cannon charging. The movement keys keep their
+  frame, so you can watch and still run.
+- A dodge with no direction held goes the way out of the most urgent ball's
+  path (`SetDodgeAssist`).
+- Rings mark charging cannons (orange) and balls (red), and tighten as they
+  come. Arrows at the edge of the picture point to ones out of sight.
+
+**`Gunnery`** (`TestEnv/src/Gunnery.h`) runs the cannons, and they are fair.
+
+- Each charges before it fires: a rising pressure hiss and a lamp blinking
+  faster, 0.8 s.
+- It leads him, aiming where his chest will be after the flight at his
+  smoothed velocity.
+- It holds the shot unless all of these hold:
+  - he can react (on his feet, not in a move, two seconds after a fall);
+  - his way for the whole flight keeps out of the course's no-fire zones;
+  - the ball's own arc, traced step by step, meets nothing first, so cover
+    is cover;
+  - no other shot arrives within 1.2 s.
+- The sounds are synthesised from hashed noise: the charge, a pneumatic
+  thump, a whistle carried by the ball (the mixer's Doppler makes it rise as
+  it comes), a thud, and a heavier one when it is him.
+- Balls go 2 s after landing, and the muzzle flash, smoke and dust are
+  `ExtraDraw` spheres.
+
+**`RunCourse`** (`TestEnv/src/RunCourse.h`) builds the course from pieces:
+start, sprint (open or with cover), vault line, ramp up to a platform and
+off its end, climb, crates, cover gauntlet, pillars, corner, finish. Each
+piece places its own cannons, declares its no-fire zones and lays its
+track, edges and checkpoint. There are gates with START and FINISH signs
+(`.gsui` screens in the world), trees outside 18 m of the track, and a
+late-afternoon sky.
+
+- The hand-made "gauntlet" is 11 pieces. An autopilot (temporary: steer for
+  the next checkpoint, jump on the hint, dodge at 0.45 s) ran it in 58.2 s:
+  10 shots, 11 held, 9 dodges, 2 hits. Both were fair: one was a ball that
+  arrived while it chose to climb a crate, the other a dodge too late.
+- `Generate(seed)` draws 8 to 11 pieces by weight. Never the same twice
+  running, never two committing pieces in a row, and corners turn whichever
+  way keeps the track off itself.
+- The autopilot finished all five generated courses it ran:
+  - 3003 in 65.6 s;
+  - 1001 in 86.5 s;
+  - 6006 in 82.6 s;
+  - 7007 in 93.4 s;
+  - 5005 in 100.1 s.
+- That took one fix: a checkpoint missed by a dodge 4 m off the track left
+  every later one unpassable. Gates are now 4 m wider than the track, and a
+  later one counts those before it.
+- The scoping note for going further is
+  `docs/superpowers/specs/2026-10-17-procedural-courses-scope.md`.
+
+**The yard** gained lane 13, SLOPES, and lane 14, DODGING, where one of the
+run's cannons is live while he is in the lane. The yard also takes the mouse
+look, the focus button and the sounds.
+
+**Input.** New actions: `dodge` (Left mouse, Q), `focus` (Right mouse, Tab),
+`restart` (R) and `next` (N). Left Alt was the first thought for the dodge,
+but on KDE Alt with a right drag resizes the window.
+
 ### 2026-10-17 (the parkour course; crates; the get-up's arms, and why get-ups blew apart)
 
 "Lets take a step back and clean up what we have. Some issues ive
