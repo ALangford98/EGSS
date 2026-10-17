@@ -1702,6 +1702,9 @@ public:
 		m_Speed = 0.0f;
 		m_SpeedRate = 0.0f;
 		m_GaitPhase = 0.0f;
+		m_TurnSign = 0.0f;
+		m_TurnStartFromRest = true;
+		m_TravelYaw = m_Facing;
 
 		// Whatever knocked him over does not follow him back up. Left behind,
 		// the stagger that felled him is still there the instant he stands and
@@ -5169,8 +5172,10 @@ public:
 	// plants ahead, the other beside it, and the body comes to them leaning
 	// back against the stop -- m_DodgeBrake, both feet pushing, takes 3 m/s
 	// off in about 0.35 s, so from a run he ends slow, not going backwards.
-	bool PlanBrake(const glm::vec3& v0, const glm::vec3& heading)
+	bool PlanBrake(const glm::vec3& v0, const glm::vec3& heading, float brake = -1.0f)
 	{
+		if (brake <= 0.0f)
+			brake = m_DodgeBrake;
 		const Measures M = BodyMeasures();
 		const glm::vec3 up(0.0f, 1.0f, 0.0f);
 		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
@@ -5181,7 +5186,7 @@ public:
 		path.V0 = v0;
 		path.V1 = v0 - heading * take;
 		path.VE = path.V1;
-		path.Tp = std::max(1.5f * take / m_DodgeBrake, 0.18f * rs);   // the smoothstep's mean is 2/3 of its peak
+		path.Tp = std::max(1.5f * take / brake, 0.18f * rs);   // the smoothstep's mean is 2/3 of its peak
 		path.Ts = 0.10f * rs;
 		float T = path.Duration();
 		float depth = 0.10f * s;
@@ -6398,6 +6403,151 @@ public:
 		x += rate * dt;
 	}
 
+	// --- turning on his feet ------------------------------------------------
+	//
+	// The hips used to turn and the feet to follow only as far as walking
+	// happened to move them, so a turn on the spot, or back from a walk,
+	// wound the legs round each other. These three make a turn something
+	// the feet do: which way round to go, how far the hips may turn over a
+	// planted foot, and how quickly to step to keep up.
+
+	// How far he could turn one way (sign +1 towards side 1's side, -1
+	// towards side 0's) before a planted foot came round past the middle of
+	// him: a foot planted behind him swings across as he turns away from
+	// its side, one ahead as he turns towards it -- a trailing foot 25 cm
+	// back is under the other hip after 20 degrees. In radians, to pi.
+	float TurnRoom(float sign) const
+	{
+		float room = glm::pi<float>();
+		for (int side = 0; side < 2; side++)
+		{
+			if (m_Swinging[side] || !m_Pinned[side])
+				continue;
+			glm::vec3 d = m_Planted[side] - m_RootAnchor;
+			for (float a = 0.0f; a < room; a += glm::radians(5.0f))
+			{
+				float f = m_Facing + sign * a;
+				glm::vec3 R(std::cos(f), 0.0f, -std::sin(f));
+				if (glm::dot(d, R) * SideSign(side) < 0.0f)
+				{
+					room = a;
+					break;
+				}
+			}
+		}
+		return room;
+	}
+
+	// Turning back, which way round: the way his planted feet let him turn
+	// furthest before one comes past the middle of him. Chosen as the
+	// side of the free foot, it turned away from the trailing one half the
+	// time, and that foot was across under the other hip within 20 degrees
+	// (forwards, back, forwards again: the feet crossed by 9 cm). When the
+	// two ways are much the same, as standing they are, towards the foot
+	// that is free or lifts next -- it opens the turn -- and standing with
+	// both down, the way the wish leans, however little.
+	float ReverseTurnSign(float error) const
+	{
+		// Only for a turn nearly all the way back: the long way round a
+		// 135 degree turn is 225, and slower by 0.4 s for the sake of the feet.
+		if (std::fabs(error) < m_ReverseFree)
+			return error < 0.0f ? -1.0f : 1.0f;
+		float left = TurnRoom(-1.0f), right = TurnRoom(1.0f);
+		if (std::fabs(left - right) > glm::radians(10.0f))
+			return right > left ? 1.0f : -1.0f;
+		int side = -1;
+		if (m_Swinging[0] != m_Swinging[1])
+			side = m_Swinging[0] ? 0 : 1;
+		else if (m_Speed > 0.05f && !m_TurnStartFromRest)
+			side = CyclePosition(0) > CyclePosition(1) ? 0 : 1;
+		if (side < 0)
+			return error < 0.0f ? -1.0f : 1.0f;
+		// Facing grows towards side 1's side (+x of the rig's own frame).
+		return side == 1 ? 1.0f : -1.0f;
+	}
+
+	// The hips turn at most m_TurnLead past the yaw a planted foot was put
+	// down at, and slow as they near it: past about a quarter turn a foot
+	// that stays put is on the far side of the other one. The turn waits
+	// for the next step instead.
+	float FeetAllowTurn(float step) const
+	{
+		for (int side = 0; side < 2; side++)
+		{
+			if (m_Swinging[side] || !m_Pinned[side])
+				continue;
+			float off = m_Facing - m_PlantYaw[side];
+			while (off > glm::pi<float>()) off -= glm::two_pi<float>();
+			while (off < -glm::pi<float>()) off += glm::two_pi<float>();
+			if (std::fabs(off + step) <= std::fabs(off))
+				continue;
+			float room = std::max(m_TurnLead - std::fabs(off), 0.0f);
+			float most = std::min(std::fabs(step) * glm::clamp(room / m_TurnSoft, 0.2f, 1.0f), room);
+			step = glm::sign(step) * most;
+		}
+		// Turning back, where he turns over his feet with next to no speed,
+		// also not so far that a planted foot comes past the middle of him
+		// (TurnRoom): the short way round 135 degrees, the trailing foot
+		// did, and the thighs met. Not in an ordinary turn on the move: a
+		// foot planted ahead of him is past the middle after 20 degrees of
+		// turning towards it, and nothing touches -- the legs are a stride
+		// apart -- so it would only make every walking turn stutter.
+		if (m_TurnSign != 0.0f && step != 0.0f)
+		{
+			auto across = [&](int side, float f)
+			{
+				glm::vec3 R(std::cos(f), 0.0f, -std::sin(f));
+				return glm::dot(m_Planted[side] - m_RootAnchor, R) * SideSign(side);
+			};
+			for (int side = 0; side < 2; side++)
+			{
+				if (m_Swinging[side] || !m_Pinned[side])
+					continue;
+				float keep = std::min(across(side, m_Facing), m_TurnAcross * m_Proportions.Scale);
+				if (across(side, m_Facing + step) >= keep)
+					continue;
+				float low = 0.0f, high = 1.0f;
+				for (int i = 0; i < 8; i++)
+				{
+					float mid = 0.5f * (low + high);
+					(across(side, m_Facing + step * mid) >= keep ? low : high) = mid;
+				}
+				step *= low;
+			}
+		}
+		return step;
+	}
+
+	// How fast the gait's phase must go for the feet to keep up with a
+	// turn, in rad/s (0: no need). A step -- half a cycle -- for every
+	// m_StepTurn of turning, and never slower than a step each
+	// m_SettleStepTime. Slow, the same for a planted foot left turned more
+	// than m_SettleYaw from him or more than m_SettleReach from where it
+	// stands: one step puts it right. A small turn on the spot is a pivot
+	// on the feet, as it is for a person, not a shuffle.
+	float TurnStepRate(float gaitSpeed) const
+	{
+		bool need = std::fabs(m_TurnWanted) > 0.05f && std::fabs(m_TurnToGo) > m_SettleYaw;
+		if (gaitSpeed < 0.3f)
+		{
+			glm::vec3 right(std::cos(m_Facing), 0.0f, -std::sin(m_Facing));
+			for (int side = 0; side < 2 && !need; side++)
+			{
+				if (m_Swinging[side] || !m_Pinned[side])
+					continue;
+				float off = m_Facing - m_PlantYaw[side];
+				while (off > glm::pi<float>()) off -= glm::two_pi<float>();
+				while (off < -glm::pi<float>()) off += glm::two_pi<float>();
+				glm::vec3 home = m_RootAnchor + right * (SideSign(side) * m_StanceWidth);
+				glm::vec2 out(m_Planted[side].x - home.x, m_Planted[side].z - home.z);
+				need = std::fabs(off) > m_SettleYaw || glm::length(out) > m_SettleReach * m_Proportions.Scale;
+			}
+		}
+		if (!need)
+			return 0.0f;
+		return std::max(glm::pi<float>() * std::fabs(m_TurnWanted) / m_StepTurn, glm::pi<float>() / m_SettleStepTime);
+	}
+
 	void DriveWalk(float dt)
 	{
 		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
@@ -6448,18 +6598,75 @@ public:
 			while (error >  glm::pi<float>()) error -= glm::two_pi<float>();
 			while (error < -glm::pi<float>()) error += glm::two_pi<float>();
 
-			// Slower turning the faster he goes: 4 rad/s on the spot, about
-			// half that at a walk. At full rate while walking the hips swung
-			// round faster than the legs could follow them.
-			float turnRate = m_TurnRate / (1.0f + m_Speed / std::max(m_WalkSpeed, 0.01f));
-			m_Facing += glm::clamp(error, -turnRate * dt, turnRate * dt);
+			// Turning back the way he came, which way round is a choice, and
+			// it is made once (ReverseTurnSign). Left to "the short way", a
+			// wish dead behind him flipped between +180 and -180 on the
+			// wander's noise or a hair of facing, and the hips swung one way
+			// and then the other. Held until the turn is all but done, not
+			// just past its middle: let go at a quarter turn to go, the
+			// planted foot was free to drift under the other hip while the
+			// last swing went past it.
+			if (m_TurnSign != 0.0f && std::fabs(error) < m_SettleYaw)
+				m_TurnSign = 0.0f;
+			if (m_TurnSign == 0.0f && std::fabs(error) > m_ReverseAngle)
+				m_TurnSign = ReverseTurnSign(error);
+			if (m_TurnSign != 0.0f && error * m_TurnSign < 0.0f)
+				error += m_TurnSign * glm::two_pi<float>();
+
+			// Running and turning back: the brake first, as a runner does --
+			// the rear foot through and planted ahead, leaning back against
+			// it (PlanBrake, the run's dodge back). Turned at a run's turn
+			// rate instead, with the speed falling as the turn grows, he
+			// either ran a wide loop or, braked hard enough not to, came off
+			// 4 m/s in a quarter of a second, 1.6 g with nothing to push on,
+			// the run's long strides wheeling at a walking pace. The turn
+			// then goes on from a walk, on the feet.
+			if (m_TurnSign != 0.0f && m_Speed > m_TurnBrakeSpeed * std::sqrt(m_Proportions.Scale)
+				&& m_Air == Air::Grounded && m_LandSpeed <= 0.0f
+				&& glm::length(m_StaggerVelocity) < 0.1f && m_DodgeCooldown <= 0.0f)
+			{
+				glm::vec3 F(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
+				if (PlanBrake(F * m_Speed, F, m_TurnBrakeDecel))
+				{
+					// He comes out of it at a walk, and which way round to go
+					// is chosen again from where the brake leaves his feet.
+					m_RunBlend = 0.0f;
+					m_RunBlendRate = 0.0f;
+					m_TurnSign = 0.0f;
+					return;
+				}
+			}
+
+			// Slower turning the faster he goes: m_TurnRate times
+			// m_SpotTurn on the spot, about 2.5 rad/s at a walk. At full rate
+			// while walking the hips swung round faster than the legs could
+			// follow them. Quicker on the spot than it was (4 rad/s), now
+			// that the feet step round with the turn rather than the hips
+			// turning over them: a half turn on the spot takes about 0.6 s.
+			float boost = m_SpotTurn;
+			float turnRate = m_TurnRate * boost / (1.0f + boost * m_Speed / std::max(m_WalkSpeed, 0.01f));
+			float step = glm::clamp(error, -turnRate * dt, turnRate * dt);
+			m_TurnWanted = step / std::max(dt, 1e-4f);
+			m_TurnToGo = error;
+			step = FeetAllowTurn(step);
+			m_Facing += step;
 			turnLeft = std::fabs(error);
+		}
+		else
+		{
+			m_TurnSign = 0.0f;
+			m_TurnWanted = 0.0f;
+			m_TurnToGo = 0.0f;
 		}
 
 		// Speed eases towards the target and coasts to a stop, and the figure
 		// walks along its *facing* rather than along the input -- so a turn is
 		// a curve rather than a sidestep.
-		bool wantsRun = m_Control.Enabled && m_Control.Run;
+		// Not while the way he wants to go is well off the way he faces:
+		// a run's stride and cadence are no way to turn round in, and held
+		// through a turn back they wheeled at a walking speed.
+		bool wantsRun = m_Control.Enabled && m_Control.Run
+			&& (wishLength <= 0.0f || turnLeft < m_RunTurnAngle);
 
 		// Eased, because everything about the run differs from the walk --
 		// stride, stance fraction, arm swing, lean -- and snapping between two
@@ -6475,6 +6682,14 @@ public:
 		// came. Turning at full speed, the hips ran a 0.33 m circle (v / turn
 		// rate) and left the planted foot 1.5 m behind them.
 		float wantedSpeed = wishLength > 0.0f ? topSpeed * 0.5f * (1.0f + std::cos(turnLeft)) : 0.0f;
+		// Turning back, not at all until he is within a quarter turn of the
+		// way he wants to go. The walk goes along his facing, so anything
+		// kept through the turn carried the hips round an arc -- and across
+		// the planted foot: out of a brake at 0.7 m/s, the foot he turned on
+		// ended up 0.67 m on the wrong side of him. A person turning back
+		// turns over their feet, then goes.
+		if (m_TurnSign != 0.0f && turnLeft > glm::half_pi<float>())
+			wantedSpeed = 0.0f;
 		// Speed follows a critically damped spring rather than ramping at a
 		// fixed rate. A ramp switches its acceleration on and off in a single
 		// step, and everything scaled by speed -- the bob above all -- kinks
@@ -6482,7 +6697,23 @@ public:
 		// change of direction, which is the hitch a ramp reads as. The spring
 		// eases in and out; at m_SpeedResponse = 6 a walk is reached at a
 		// peak of about 2.9 m/s^2 (omega * dv / e), where the ramp used 3.
-		Spring(m_Speed, m_SpeedRate, wantedSpeed, m_SpeedResponse, dt);
+		// Braking into a turn is quicker than setting off: the foot that
+		// opens the turn plants and stops him, as a person turning back
+		// does, rather than him coasting round a curve for half a second.
+		float response = m_SpeedResponse;
+		if (wantedSpeed < m_Speed && turnLeft > glm::half_pi<float>())
+			response *= m_TurnBrake;
+		float speedRateBefore = m_SpeedRate;
+		Spring(m_Speed, m_SpeedRate, wantedSpeed, response, dt);
+		// And never quicker than the feet can stop him, about 0.8 g of
+		// grip. Only when slowing: setting off, the spring never comes
+		// near it.
+		if (m_SpeedRate < -m_MaxBrake && m_SpeedRate < speedRateBefore)
+		{
+			float capped = std::min(speedRateBefore, -m_MaxBrake);
+			m_Speed -= (m_SpeedRate - capped) * dt;
+			m_SpeedRate = capped;
+		}
 		if (m_Speed < 0.0f)
 		{
 			m_Speed = 0.0f;
@@ -6494,7 +6725,24 @@ public:
 		// over or onto starts the move instead of the walk.
 		if (ParkourStep(forward))
 			return;
-		glm::vec3 wanted = forward * m_Speed;
+
+		// Which way the speed he has carries him. Along his facing, as it
+		// always was -- except turning back, when what is left of the way he
+		// was going carries on straight while it dies away. Momentum does
+		// not turn because the hips do, and swung round with them it walked
+		// the hips in an arc round the planted foot (a 1.3 m/s walk, turned
+		// back, crossed the feet by 8 cm). Brought back to the facing
+		// quickly once the turn back is done.
+		if (m_TurnSign == 0.0f || std::fabs(m_TurnToGo) < glm::half_pi<float>())
+		{
+			float off = m_Facing - m_TravelYaw;
+			while (off > glm::pi<float>()) off -= glm::two_pi<float>();
+			while (off < -glm::pi<float>()) off += glm::two_pi<float>();
+			float most = m_TravelTurnRate * dt;
+			m_TravelYaw = m_Speed < 0.3f ? m_Facing : m_TravelYaw + glm::clamp(off, -most, most);
+		}
+		glm::vec3 travel(std::sin(m_TravelYaw), 0.0f, std::cos(m_TravelYaw));
+		glm::vec3 wanted = travel * m_Speed;
 
 		// --- catching himself ------------------------------------------------
 		//
@@ -6532,9 +6780,48 @@ public:
 		// not cycle while standing still and do not moonwalk when the speed
 		// changes.
 		float gaitSpeed = m_Speed + glm::length(m_StaggerVelocity);
-		m_GaitPhase += (gaitSpeed / std::max(CurrentStride(), 0.01f)) * glm::two_pi<float>() * dt;
-		if (gaitSpeed < 0.05f)
-			m_GaitPhase = 0.0f;
+		float phaseRate = (gaitSpeed / std::max(CurrentStride(), 0.01f)) * glm::two_pi<float>();
+
+		// Turning steps, too. The phase used to advance with distance alone,
+		// so turning on the spot -- and turning back from a walk, which
+		// brakes to nearly nothing first -- turned the hips over two planted
+		// feet: past a quarter turn each leg was on the other's side, and
+		// the shins went through each other by up to 12 cm (and stayed
+		// crossed, standing, after a turn back and stop). Now a turn sets
+		// a cadence of its own, a step for each m_StepTurn of it, so the
+		// feet come round with him; and a foot left turned or out of place
+		// when he stops gets a step to put it right.
+		m_StepDemand = TurnStepRate(gaitSpeed);
+		phaseRate = std::max(phaseRate, m_StepDemand);
+		bool swingInHand = m_Swinging[0] || m_Swinging[1];
+		if (gaitSpeed < 0.05f && m_StepDemand <= 0.0f)
+		{
+			// Stopping: a step already in the air is finished, not dropped
+			// where it is, and then he stands with the phase at a moment
+			// both feet are down -- side 0 or side 1 just landed.
+			if (swingInHand)
+				phaseRate = glm::pi<float>() / m_SettleStepTime;
+			else
+			{
+				phaseRate = 0.0f;
+				m_GaitPhase = CyclePosition(0) < 0.5f ? 1.5f * glm::pi<float>() : 0.5f * glm::pi<float>();
+			}
+		}
+		else if (!swingInHand && m_StepDemand > 0.0f && m_TurnStartFromRest)
+		{
+			// Setting off round from standing, or out of a move: the foot on
+			// the side of the turn lifts first, now, and opens it.
+			int inside = m_TurnToGo < 0.0f ? 0 : 1;
+			m_GaitPhase = glm::two_pi<float>() * m_Duty + (inside == 0 ? 1.5f : 0.5f) * glm::pi<float>() - 1e-3f;
+		}
+		// Easing down, never dropping: the end of a turn took a swing from a
+		// turn's cadence to a slow walk's in one step, and the foot in the
+		// air finished its swing at a third of the speed it began it.
+		if (swingInHand && phaseRate < m_PhaseRate)
+			phaseRate = std::max(phaseRate, m_PhaseRate - m_PhaseEase * dt);
+		m_TurnStartFromRest = gaitSpeed < 0.05f && m_StepDemand <= 0.0f && !swingInHand;
+		m_PhaseRate = phaseRate;
+		m_GaitPhase = std::fmod(m_GaitPhase + phaseRate * dt, glm::two_pi<float>() * 4.0f);
 
 		float stride = std::min(gaitSpeed / std::max(m_WalkSpeed, 0.01f), 1.0f);
 
@@ -6691,7 +6978,7 @@ public:
 		// for the next foot-plant, which is what turns the jump from a lift
 		// into a hurdle.
 		//
-		// The wait cannot be unconditional: m_GaitPhase is pinned to 0 below
+		// The wait cannot be unconditional: m_GaitPhase stands still below
 		// 0.05 m/s, so standing still there is no plant coming and a press
 		// would hang forever.
 		if (m_WantsJump && m_Air == Air::Grounded)
@@ -7067,6 +7354,7 @@ public:
 		{
 			m_Pinned[side] = true;
 			m_PinYaw[side] = m_Facing;
+			m_PlantYaw[side] = m_Facing;
 			foot.Type = GS::BodyType::Kinematic;
 			foot.AngularVelocity = glm::vec3(0.0f);
 
@@ -7266,8 +7554,10 @@ public:
 			// has gaps (neither foot down at all).
 			// In the air both feet are off the ground by definition, and they
 			// tuck rather than reaching for a floor that is not there.
+			// A step under way is finished even if he has stopped; a turn or
+			// a foot out of place steps with no speed at all (TurnStepRate).
 			bool swinging = m_Air == Air::Flying
-				|| (CyclePosition(side) >= m_Duty && stride > 0.05f);
+				|| (CyclePosition(side) >= m_Duty && (stride > 0.05f || m_StepDemand > 0.0f || m_Swinging[side]));
 
 			// Where the hip will be at the end of this step, not where it is:
 			// the kinematic pelvis moves by its velocity during the step, and
@@ -7285,10 +7575,25 @@ public:
 			// far forward as the phase said it should be and forced the stride
 			// down to 0.45 m to keep it reachable: 0.22 m steps at seven a
 			// second. A person walks at two.
+			//
+			// Turning, it lands where he will be facing when it is down, not
+			// where he faces as it lifts: the rest of the swing's worth of
+			// the turn, as far as there is turn left. A foot put down in the
+			// frame he was leaving was a step behind the turn from the start.
+			float landingYaw = m_Facing;
+			if (swinging && m_Air != Air::Flying && m_TurnToGo != 0.0f && m_PhaseRate > 1e-3f)
+			{
+				float t = glm::clamp((CyclePosition(side) - m_Duty) / std::max(1.0f - m_Duty, 0.01f), 0.0f, 1.0f);
+				float left = (1.0f - t) * (1.0f - m_Duty) * glm::two_pi<float>() / m_PhaseRate;
+				float ahead = std::min({ std::fabs(m_TurnWanted) * left, std::fabs(m_TurnToGo), m_StepTurn });
+				landingYaw += glm::sign(m_TurnToGo) * ahead;
+			}
+			glm::vec3 landForward(std::sin(landingYaw), 0.0f, std::cos(landingYaw));
+			glm::vec3 landRight(std::cos(landingYaw), 0.0f, -std::sin(landingYaw));
 			glm::vec3 landing = m_RootAnchor
-				+ forward * (FootReach(stride) + m_StepJitter[side].x * stride)
+				+ landForward * (FootReach(stride) + m_StepJitter[side].x * stride)
 				+ m_StaggerVelocity * m_StaggerStep
-				+ right * ((side == 0 ? -m_StanceWidth : m_StanceWidth) + m_StepJitter[side].y);
+				+ landRight * ((side == 0 ? -m_StanceWidth : m_StanceWidth) + m_StepJitter[side].y);
 			// The ankle rides above the sole, so a target on the ground is a
 			// target with the foot buried in it.
 			landing.y = GroundY(landing + glm::vec3(0.0f, 1.0f, 0.0f)) + m_AnkleHeight;
@@ -7347,7 +7652,10 @@ public:
 				m_StanceTime[side] = 0.0f;
 				// Just landed. Pinned here until it swings again.
 				m_Planted[side] = glm::vec3(landed.x, m_SwingTo[side].y, landed.z);
+				m_PlantYaw[side] = m_LandingYaw[side];
 			}
+			if (swinging)
+				m_LandingYaw[side] = landingYaw;
 			m_Swinging[side] = swinging;
 
 			glm::vec3 target;
@@ -7438,6 +7746,25 @@ public:
 				// Pulled back under the body on the way up, as a heel kick is.
 				target -= forward * (over * m_RunHeelKick * m_RunBlend * (1.0f - t));
 
+				// Never through the other leg. The swing goes in a straight
+				// line from where the foot left to where it lands, and in a
+				// turn that line can run through the planted foot -- turning
+				// back, each foot's landing is on the far side of the other.
+				// Kept out on its own side of the planted one, in the frame he
+				// faces now, wherever the two are level along the way; a
+				// straight walk passes them 2 x m_StanceWidth apart and is
+				// untouched.
+				int other = 1 - side;
+				if (!m_Swinging[other])
+				{
+					glm::vec3 d = target - m_Planted[other];
+					float lat = glm::dot(d, right) * SideSign(side);
+					float along = std::fabs(glm::dot(d, forward));
+					float pass = m_FootPass * m_Proportions.Scale;
+					float level = 1.0f - glm::smoothstep(0.6f * m_FootPassAlong, m_FootPassAlong, along / std::max(m_Proportions.Scale, 0.01f));
+					if (lat < pass && level > 0.0f)
+						target += right * (SideSign(side) * (pass - lat) * level);
+				}
 			}
 			else
 			{
@@ -8330,6 +8657,34 @@ protected:
 	float m_SpeedResponse = 6.0f;     // rad/s: the speed's spring
 	float m_SpeedRate = 0.0f;
 	float m_TurnRate = 4.0f;          // radians a second
+	float m_SpotTurn = 1.75f;         // on the spot, the turn rate times this (it tails off with speed)
+	float m_TurnBrake = 1.8f;         // the speed's spring stiffer by this, braking to turn back
+	float m_MaxBrake = 8.0f;          // m/s^2, the most the walk ever slows him by
+	float m_TurnBrakeSpeed = 2.4f;    // m/s: turning back faster than this, he brakes first (PlanBrake)
+	float m_TurnBrakeDecel = 11.0f;   // m/s^2 at its peak, a mean of 0.75 g: firmer than the dodge's, as it is meant
+	float m_RunTurnAngle = glm::radians(60.0f);   // the run eases off while the wish is further round than this
+	float m_ReverseAngle = glm::radians(120.0f);   // a wish further round than this is a turn back, its side chosen once
+	float m_TurnSign = 0.0f;          // that choice: +1, -1, or 0 for none
+	float m_TurnAcross = 0.04f;       // m a planted foot keeps on its own side of him, turning back
+	float m_ReverseFree = glm::radians(150.0f);   // past this either way round is as quick, and the feet choose
+	float m_TurnWanted = 0.0f;        // rad/s the hips want to turn this step, before the feet have their say
+	float m_TurnToGo = 0.0f;          // rad still to turn
+	float m_StepTurn = glm::radians(80.0f);    // turned per step at most, which sets a turn's cadence
+	float m_TurnLead = glm::radians(85.0f);    // how far the hips may turn past a planted foot
+	float m_TurnSoft = glm::radians(30.0f);    // and they slow over this much before it
+	float m_SettleYaw = glm::radians(25.0f);   // a foot turned further than this from him gets a step
+	float m_SettleReach = 0.12f;      // m, and one this far from where it stands (stopped)
+	float m_SettleStepTime = 0.30f;   // s a step, at slowest, turning or settling
+	float m_StepDemand = 0.0f;        // rad/s the phase is being asked for by a turn or a settle
+	float m_PhaseRate = 0.0f;         // rad/s the phase went at last step
+	bool m_TurnStartFromRest = true;
+	float m_PhaseEase = 20.0f;        // rad/s^2: how fast a step in the air may slow
+	float m_TravelYaw = 0.0f;         // the way his speed carries him (his facing, but for a turn back)
+	float m_TravelTurnRate = 8.0f;    // rad/s it comes back round to the facing at
+	float m_PlantYaw[2] = { 0.0f, 0.0f };     // the yaw each planted foot was put down for
+	float m_LandingYaw[2] = { 0.0f, 0.0f };   // and the one a swinging foot is going to be
+	float m_FootPass = 0.17f;         // m between the feet, across, while a swing passes the planted one
+	float m_FootPassAlong = 0.30f;    // m along, within which the two count as level
 	glm::vec3 m_RootAnchor{ 0.0f };
 
 	// Weight.

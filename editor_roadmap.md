@@ -172,6 +172,13 @@ catching yourself, falling realistically. Where it stands:
     sending it overhead made things worse (73% to 51%) and was taken out.
     Next to try: roll him the other way round, over the arm that is free,
     or lift the trunk off the floor before the roll rather than during.
+  - the owner's three (2026-10-17, evening), one at a time: ~~limbs
+    bending unnaturally (the legs passing through each other turning
+    back)~~ -- done: a turn steps, the hips wait for the feet, a run
+    brakes first (changelog, same date). Next: **limbs clipping into the
+    ground**, then **rotations that look wrong** (a planted foot still
+    pivots on its ankle under a turn, up to 85 degrees). The owner wants
+    more scripted, coordinated responses and less emergence.
 - **The cannon run** (2026-10-17, later; `TestEnv/src/CannonRun.h`,
   `Gunnery.h`, `RunCourse.h`). A course against the clock under fair
   cannon fire, hand-made or from a seed. Where it could go, in order: a

@@ -7,6 +7,133 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-17, evening (turning on his feet: legs that no longer pass through each other)
+
+"The limbs still clip into the ground and rotate unnaturally. Please lets
+focus on each of these one by one. First lets work on limbs bending
+unnaturally ... when walking forward and then pushing the backwards key.
+The humanoids legs clip through one another instead of naturally turning
+around ... I want the controls to be responsive ... rely a little more on
+scripted/animated responses."
+
+**What was wrong.** The walk turned the hips and left the feet to follow
+only as far as walking happened to move them. The gait's phase advanced
+with distance alone. Turning back from a walk brakes to almost nothing,
+so the hips turned 180 degrees over two planted feet. Past a quarter turn
+each foot was on the other's side, since a half turn on the spot puts each
+foot where the other was. A step that did come drew a straight line from
+one to the other, through the other leg. Driven legs do not collide with
+each other (`SetLegsColliding`), so nothing stopped them. Standing after a
+turn back, he stayed crossed.
+
+**How it was measured.** A temporary driver ran 18 scenarios in the yard:
+
+- turning back from standing, walking and running (with Shift held and
+  let go);
+- 90 degree turns walking, running and standing, and a 135 degree turn;
+- forwards and back in quick succession;
+- stopping, standing still for 10 s, and walking and running straight.
+
+Every step it recorded:
+
+- how close the two legs' capsules came (thighs, shins, feet, each pair);
+- whether the feet were on the wrong sides of the hips;
+- how far either knee or elbow bent the wrong way;
+- how long until he faced the new way, and until he was going that way at
+  1 m/s.
+
+Before, at worst (legs' gap, below zero is inside each other; steps
+inside; time to face round / to be going):
+
+| scenario | gap | steps inside | feet crossed by | turned / going |
+| --- | --- | --- | --- | --- |
+| standing, back | -12.3 cm | 56 | 1 cm | 0.92 / 0.97 s |
+| walking, back | -12.3 cm | 49 | 34.5 cm | 1.15 / 1.18 s |
+| running, back | -15.1 cm | 29 | 37.7 cm | 1.75 / 1.18 s |
+| walking, right | -12.4 cm | 16 | 12.0 cm | 0.65 / 0.58 s |
+| right, left, back | -13.5 cm | 63 | 23.5 cm | |
+| walk, back, stop | -6.0 cm | 126 | 21.8 cm, standing | |
+
+After:
+
+| scenario | gap | steps inside | turned / going |
+| --- | --- | --- | --- |
+| standing, back | +0.5 cm | 0 | 0.60 / 0.80 s |
+| walking, back | +0.6 cm | 0 | 0.90 / 1.02 s |
+| running, back | +1.2 cm | 0 | 1.27 / 1.35 s |
+| walking, left / right | +1.2 / +2.2 cm | 0 | 0.52 / 0.45 s |
+| standing, left / right | -0.6 / -0.3 cm | 1 / 2 | 0.30 / 0.50 s |
+| back and forth | -0.6 cm | 2 | |
+| walking, 135 degrees | -1.8 cm | 2 | 0.75 / 0.95 s |
+| running, left | -5.2 cm | 7 | 0.88 s |
+
+Walking and running straight, the thighs come within 3.2-3.8 cm of each
+other anyway, so a lean of a few degrees closes the rest. No knee bent
+the wrong way in any scenario, before or after, and no elbow more than 1
+degree. Standing still for 10 s takes no steps; stopping from a walk
+takes one or two.
+
+**What changed** (`Runtime/Humanoid.h`, all in the walk):
+
+- **A turn steps.** It sets a cadence of its own: half a cycle for every
+  80 degrees of turning, and at least one step every 0.3 s
+  (`TurnStepRate`). A planted foot left more than 25 degrees turned, or
+  12 cm out of place, after he stops gets one step to put it right. A
+  step under way when he stops is finished, not dropped where it is. The
+  phase now stands still at a moment both feet are down, instead of
+  snapping to zero, which used to plant a foot in mid-air.
+- **The hips wait for the feet.** They may turn at most 85 degrees past
+  the yaw a planted foot was put down for, and they slow over the last 30
+  (`FeetAllowTurn`). A swinging foot lands where he will be facing when
+  it is down, not where he faced as it lifted.
+- **The swing goes round, not through.** A swinging foot is kept 17 cm
+  across from the planted one, in the frame he faces now, while the two
+  are level along the way. A straight walk passes them 20 cm apart and is
+  untouched.
+- **Turning back is a decision, made once** (`ReverseTurnSign`). Before, a
+  wish dead behind him flipped between +180 and -180 on the wander's
+  noise. Past 150 degrees, the direction is the one his planted feet allow
+  furthest before one comes past the middle of him (`TurnRoom`). A foot
+  planted 25 cm behind him is under the other hip after 20 degrees of
+  turning away from it. Choosing the side of the free foot instead, which
+  was the first idea, crossed the feet by 9 cm going back and forth. When
+  the two ways are close, the free foot opens the turn. Through a turn
+  back:
+  - he does not move until he is within a quarter turn;
+  - what is left of the way he was going carries straight on while it
+    dies away (`m_TravelYaw`), not round with the hips. Swung round with
+    them, it walked the hips in an arc across the planted foot.
+  - a planted foot is kept 4 cm on its own side of him.
+- **Running and turning back brakes first.** A runner does, and it is the
+  run's own dodge back (`PlanBrake`), at 11 m/s^2 peak (0.75 g mean)
+  rather than the dodge's 8.5. He comes out of it at a walk and turns on
+  his feet. Without it he either ran a wide loop or, braked hard enough
+  not to, came off 4 m/s in a quarter of a second (1.6 g with nothing to
+  push on) with the run's long strides wheeling at a walking pace.
+- **Smaller things:**
+  - the run eases off while the wish is more than 60 degrees off his
+    facing;
+  - the walk never slows him by more than 8 m/s^2;
+  - braking to turn back is 1.8 times stiffer;
+  - a turn on the spot is 1.75 times the old rate (7 rad/s; about 2.5 at
+    a walk), now that the feet keep up;
+  - a step in the air slows by at most 20 rad/s^2, so the end of a turn
+    no longer finishes a swing at a third of the speed it began.
+
+Smoke-run afterwards with no errors: CannonRun, CrashTest, Ragdoll,
+Parkour, MapBuilding. All three configs build.
+
+**Still open:**
+
+- 2-5 cm of thigh overlap for a few frames in a running 90 degree turn
+  and the walking 135 degree turn. The thighs are never more than 4 cm
+  apart.
+- A planted foot still pivots on its ankle with the hips (`m_PinTwist` is
+  0): turning on the spot, it can turn up to 85 degrees under him before
+  it steps.
+- The owner's other two from the same message: limbs into the ground, and
+  rotations that look wrong.
+
 ### 2026-10-17, later (slopes; the dodge; the cannon run; get-ups measured from eight directions)
 
 "Fix the slopes and make sure getting up looks natural about 75% of the

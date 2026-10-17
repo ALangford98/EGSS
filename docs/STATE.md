@@ -37,6 +37,12 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-17 — Turning on his feet**: a turn steps, the hips wait for
+  the feet, the swing goes round the planted leg. The legs no longer pass
+  through each other turning back (12-15 cm inside each other, crossed
+  for seconds; now apart). A run brakes before it turns back. Quicker:
+  180 degrees standing 0.92 -> 0.60 s, walking 1.15 -> 0.90 s, running
+  1.75 -> 1.27 s. Next of the owner's three: limbs into the ground.
 - **2026-10-17 — The cannon run** (`--demo CannonRun`): a course under
   fire, against the clock, from pieces (hand-made, or any seed: `course
   4711`); fair cannons that charge, lead and hold; sounds; a camera that
