@@ -15,7 +15,9 @@
 // Like the crash test it is a scene rather than code of its own --
 // everything that happens is the runtime's (GameSession, GameModes, the
 // humanoid, the launcher) -- so it opens in the editor too (File > Add
-// Demo Scene). What only this layer adds is the panel and `station`.
+// Demo Scene). What only this layer adds is the panel, `station`, and
+// `ghost`: a recorded person (TestEnv/assets/mocap, MotionClip.h) walking,
+// running or turning beside him on his own bodies, to see where he is wrong.
 //
 // Each lane is laid out in its own frame (along it, across it), so a
 // station is a list of blocks at distances from its start mark. The
@@ -29,6 +31,7 @@
 
 #include "CrashTest.h"
 #include "Gunnery.h"
+#include "MotionClip.h"
 
 #include <cctype>
 #include <string>
@@ -486,6 +489,9 @@ public:
 		ui.Show("course");
 		m_Session->Console().Register("station", "[number or name]", "put him at the start of a station; no number lists them",
 			[this](const GameConsole::Args& a) { Station(a); });
+		m_Session->Console().Register("ghost", "[clip | off]", "a recorded person doing it beside him, on his bodies; no clip lists them",
+			[this](const GameConsole::Args& a) { Ghost(a); });
+		m_Ghost = false;
 		// As pressing E on him does.
 		m_Session->Console().Execute("possess Runner", false);
 		m_Shown = -2;
@@ -505,6 +511,14 @@ public:
 		if (!m_Session)
 			return;
 		m_Session->FixedUpdate(step);
+		if (m_Ghost)
+		{
+			// Looped, with half a second standing at the end so where it
+			// stopped can be seen before it starts again.
+			m_GhostTime += step.GetSeconds();
+			if (m_GhostTime > m_GhostClip.Duration() + 0.5f)
+				m_GhostTime = 0.0f;
+		}
 		// The dodging lane's cannon, live while he is in that lane.
 		Humanoid* rig = m_Session->Rig("Runner");
 		bool inLane = rig && ParkourCourseScene::StationAt(m_Session->World().GetBody(rig->PelvisBody()).Position) == 13;
@@ -537,6 +551,7 @@ public:
 		std::vector<ExtraDraw> humanoids;
 		AppendHumanoidDraws(*m_Scene, m_Session.get(), humanoids);
 		m_Guns.AppendDraws(humanoids);
+		AppendGhost(humanoids);
 		m_Renderer.Render(*m_Scene, *camera, &humanoids);
 		GS::RenderCommand::SetCullFace(GS::CullFace::None);
 		Capture(m_Session->Modes().WantsCursorCaptured());
@@ -608,6 +623,82 @@ private:
 		console.Good("station " + std::to_string(index + 1) + ": " + GameConsole::Lower(s.Name));
 	}
 
+	// `ghost walk`: the clip on his bodies a metre to his side, facing the
+	// way he faces, from where he stands -- so walking beside it, the two
+	// can be watched step for step. `ghost off` stops it.
+	void Ghost(const GameConsole::Args& a)
+	{
+		GameConsole& console = m_Session->Console();
+		const std::string folder = "assets/mocap/cmu";
+		std::vector<MotionClip::Entry> clips = MotionClip::ReadIndex(folder);
+		if (a.empty())
+		{
+			console.Print("clips (CMU motion capture library, mocap.cs.cmu.edu)", GameConsole::Tone::Title);
+			for (const MotionClip::Entry& e : clips)
+				console.Print("  " + e.Name + "   " + e.About);
+			return;
+		}
+		std::string want = GameConsole::Lower(a[0]);
+		if (want == "off")
+		{
+			m_Ghost = false;
+			console.Good("ghost off");
+			return;
+		}
+		Humanoid* rig = m_Session->Rig("Runner");
+		for (const MotionClip::Entry& e : clips)
+		{
+			if (e.Name != want)
+				continue;
+			std::string error;
+			if (!rig || !m_GhostClip.Load(folder + "/" + e.Skeleton, folder + "/" + e.Frames, &error)
+				|| !m_GhostMap.Setup(m_GhostClip, *rig))
+			{
+				console.Bad("could not load " + e.Name + (error.empty() ? "" : ": " + error));
+				m_Ghost = false;
+				return;
+			}
+			// Where the clip starts and which way its hips face then, so it
+			// can be turned and moved to start beside him.
+			glm::vec3 position[ClipRetarget::BodyCount];
+			glm::quat orientation[ClipRetarget::BodyCount];
+			m_GhostMap.Pose(0.0f, position, orientation);
+			glm::vec3 f = orientation[0] * glm::vec3(0.0f, 0.0f, 1.0f);
+			m_GhostFrom = glm::vec3(position[0].x, 0.0f, position[0].z);
+			float clipYaw = std::atan2(f.x, f.z);
+			const GS::RigidBody3D& pelvis = m_Session->World().GetBody(rig->PelvisBody());
+			float yaw = rig->FacingRadians();
+			glm::vec3 side(std::cos(yaw), 0.0f, -std::sin(yaw));
+			float ground = m_Session->World().GroundHeightBelow(pelvis.Position, rig->Bodies(), -1000.0f);
+			m_GhostAt = glm::vec3(pelvis.Position.x, ground, pelvis.Position.z) + side * 1.0f;
+			m_GhostTurn = glm::angleAxis(yaw - clipYaw, glm::vec3(0.0f, 1.0f, 0.0f));
+			m_GhostTime = 0.0f;
+			m_Ghost = true;
+			console.Good("ghost: " + e.Name + " (" + e.About + "), " + std::to_string(m_GhostClip.Duration()).substr(0, 4) + " s, looped");
+			return;
+		}
+		console.Bad("no clip '" + a[0] + "' -- ghost lists them");
+	}
+
+	void AppendGhost(std::vector<ExtraDraw>& out) const
+	{
+		Humanoid* rig = m_Ghost ? m_Session->Rig("Runner") : nullptr;
+		if (!rig)
+			return;
+		glm::vec3 position[ClipRetarget::BodyCount];
+		glm::quat orientation[ClipRetarget::BodyCount];
+		m_GhostMap.Pose(std::min(m_GhostTime, m_GhostClip.Duration()), position, orientation);
+		const glm::vec4 colour(1.0f, 0.72f, 0.32f, 1.0f);
+		const auto& bodies = rig->Bodies();
+		for (int i = 0; i < ClipRetarget::BodyCount && i < (int)bodies.size(); i++)
+		{
+			const GS::RigidBody3D& body = m_Session->World().GetBody(bodies[(size_t)i]);
+			glm::vec3 at = m_GhostAt + m_GhostTurn * (position[i] - m_GhostFrom);
+			glm::quat turn = glm::normalize(m_GhostTurn * orientation[i]);
+			Mannequin::AppendBody(body, at, turn, Mannequin::PartColour(*rig, bodies[(size_t)i], colour), GS::InvalidEntity, out);
+		}
+	}
+
 	// The panel's text for the station he is in, when that changes.
 	void PublishStation()
 	{
@@ -654,4 +745,12 @@ private:
 	GS::PerspectiveCamera m_Camera{ 50.0f, 16.0f / 9.0f, 0.1f, 500.0f };
 	GS::PerspectiveCamera m_Fallback{ 50.0f, 16.0f / 9.0f, 0.1f, 500.0f };
 	int m_Shown = -2;   // the station the panel shows; -2 before the first
+
+	// `ghost`: the clip, put on his bodies, and where it plays.
+	MotionClip m_GhostClip;
+	ClipRetarget m_GhostMap;
+	bool m_Ghost = false;
+	float m_GhostTime = 0.0f;
+	glm::vec3 m_GhostAt{ 0.0f }, m_GhostFrom{ 0.0f };
+	glm::quat m_GhostTurn{ 1.0f, 0.0f, 0.0f, 0.0f };
 };

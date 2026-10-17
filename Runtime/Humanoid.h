@@ -170,6 +170,18 @@ public:
 	}
 
 	const std::vector<GS::PhysicsWorld3D::BodyHandle>& Bodies() const { return m_CharacterBodies; }
+
+	// Where his joints were, and each body, as he was built: standing on the
+	// origin facing +z, x towards side 1. What a recorded movement is put
+	// onto (MotionClip.h): its rotations, his own lengths.
+	struct RestSkeleton
+	{
+		glm::vec3 Spine{ 0.0f }, Neck{ 0.0f };
+		glm::vec3 Hip[2], Knee[2], Ankle[2], Shoulder[2], Elbow[2];
+	};
+	const RestSkeleton& Rest() const { return m_Rest; }
+	// Each body's centre and turn as built, in the order of Bodies().
+	const std::vector<std::pair<glm::vec3, glm::quat>>& BuildPose() const { return m_BuildPose; }
 	GS::PhysicsWorld3D::BodyHandle PelvisBody() const { return m_Pelvis; }
 	GS::PhysicsWorld3D::BodyHandle HeadBody() const { return m_Head; }
 	bool IsFoot(GS::PhysicsWorld3D::BodyHandle handle) const { return handle == m_Foot[0] || handle == m_Foot[1]; }
@@ -534,8 +546,13 @@ public:
 		m_HeadPitch += (m_GlancePitch * reach - m_HeadPitch) * ease;
 		m_HeadTilt += (m_GlanceTilt * reach - m_HeadTilt) * ease;
 		float headPitch = m_GaitApplied ? m_HeadPitch + m_Gait.HeadPitch : m_HeadPitch;
+		// Turning, the head goes first: a person looks where they are
+		// turning, then the body follows -- turning round, the head is half
+		// way there 0.22 s before the hips (measured). His followed them.
+		float lead = glm::clamp(m_TurnToGo * m_HeadLeadShare, -m_HeadLeadMax, m_HeadLeadMax);
+		m_HeadLead += (lead - m_HeadLead) * (1.0f - std::exp(-dt / 0.12f));
 		m_World.GetJoint(m_NeckJoint).MotorTargetRotation = glm::normalize(
-			glm::angleAxis(m_HeadYaw, glm::vec3(0.0f, 1.0f, 0.0f))
+			glm::angleAxis(m_HeadYaw + m_HeadLead, glm::vec3(0.0f, 1.0f, 0.0f))
 			* glm::angleAxis(headPitch, glm::vec3(1.0f, 0.0f, 0.0f))
 			* glm::angleAxis(m_HeadTilt, glm::vec3(0.0f, 0.0f, 1.0f)) * m_NeckRest);
 
@@ -687,7 +704,7 @@ public:
 		if (m_Scaled.empty())
 		{
 			auto add = [&](float& member, Kind kind) { m_Scaled.push_back({ &member, member, (int)kind }); };
-			for (float* m : { &m_StrideLength, &m_RunStride, &m_FootLift, &m_RunFootLift, &m_RunHeelKick, &m_RunFootReach,
+			for (float* m : { &m_StrideLength, &m_RunStride, &m_FootLift, &m_RunFootLift, &m_RunFootReach,
 				&m_MaxFootReach, &m_RollReach, &m_BobAmount, &m_SwayAmount, &m_JumpHeight, &m_JumpCrouchDepth, &m_MaxStepUp,
 				&m_CatchReach, &m_CatchReachSide, &m_RecoverCrouch, &m_StumbleStance, &m_StumbleFootGap, &m_StumbleReach,
 				&m_StumbleLift, &m_StumbleOvershoot, &m_StumbleSettle, &m_StumbleRestCrouch, &m_StumbleMaxCrouch, &m_StaggerStep,
@@ -925,6 +942,8 @@ public:
 		m_SpineRest = m_World.GetJoint(m_SpineJoint).MotorTargetRotation;
 		m_NeckJoint = ball(m_Torso, m_Head, { 0.0f, 1.62f * s, 0.0f }, { 0.0f, 1.0f, 0.0f }, 40.0f, 60.0f, 30.0f * strength);
 		m_NeckRest = m_World.GetJoint(m_NeckJoint).MotorTargetRotation;
+		m_Rest.Spine = { 0.0f, 1.18f * s, 0.0f };
+		m_Rest.Neck = { 0.0f, 1.62f * s, 0.0f };
 
 		for (int side = 0; side < 2; side++)
 		{
@@ -980,6 +999,11 @@ public:
 				{ shoulderSide, 1.55f * s, 0.0f }, { 0.0f, 1.0f, 0.0f }, 75.0f, 45.0f, 60.0f * strength);
 			m_ShoulderRest[side] = m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation;
 
+			m_Rest.Hip[side] = { x, 1.00f * s, 0.0f };
+			m_Rest.Knee[side] = m_KneeAt[side];
+			m_Rest.Ankle[side] = m_AnkleAt[side];
+			m_Rest.Shoulder[side] = { shoulderSide, 1.55f * s, 0.0f };
+			m_Rest.Elbow[side] = { armX, 1.20f * s, 0.0f };
 			m_ElbowJoint[side] = hinge(m_UpperArm[side], m_LowerArm[side],
 				{ armX, 1.20f * s, 0.0f },
 				// And the elbow is the knee's mirror: the forearm swings
@@ -6650,6 +6674,7 @@ public:
 			m_TurnToGo = error;
 			step = FeetAllowTurn(step);
 			m_Facing += step;
+			m_TurnRateNow = step / std::max(dt, 1e-4f);
 			turnLeft = std::fabs(error);
 		}
 		else
@@ -6657,6 +6682,7 @@ public:
 			m_TurnSign = 0.0f;
 			m_TurnWanted = 0.0f;
 			m_TurnToGo = 0.0f;
+			m_TurnRateNow = 0.0f;
 		}
 
 		// Speed eases towards the target and coasts to a stop, and the figure
@@ -7225,10 +7251,28 @@ public:
 		// about +z tips the top of the body towards -x, which is the same side
 		// the hips have just moved away from -- the trunk leans over the leg
 		// that is carrying.
-		glm::quat roll = glm::angleAxis(-m_RollAmount * m_Carry * stride - m_IdleRoll,
+		// Leaning into a turn, as anything going round a curve must to keep
+		// its weight over its feet: atan(v w / g), the pelvis taking
+		// m_BankShare of it. Turning towards +x tips the top that way, the
+		// negative way about +z. A runner going round 82 degrees leans in 9
+		// (measured); he stayed upright.
+		float bank = -std::atan(m_Speed * m_TurnRateNow / 9.81f) * m_BankShare;
+		m_Bank += (bank - m_Bank) * (1.0f - std::exp(-dt / 0.15f));
+		glm::quat roll = glm::angleAxis(-m_RollAmount * m_Carry * stride - m_IdleRoll + m_Bank,
 			glm::vec3(0.0f, 0.0f, 1.0f));
 
-		pelvis.Orientation = glm::normalize(facing * pitch * roll);
+		// The hips turn with the stride, the leading leg's side forward --
+		// most at each heel strike -- and the chest turns back against them,
+		// so the shoulders stay nearly square. Measured: a walker's pelvis
+		// turns 8 degrees either way and the chest 9 against it; running 11
+		// and 15. His did neither, which is half of what made the walk look
+		// like a mannequin's on a rail. Positive yaw brings side 0's hip
+		// forward, and side 0 leads at its heel strike (CyclePosition 0).
+		float hipTurn = glm::mix(m_PelvisTurn, m_RunPelvisTurn, m_RunBlend) * stride
+			* std::cos(glm::two_pi<float>() * CyclePosition(0));
+		m_HipTurn = hipTurn;
+		glm::quat swivel = glm::angleAxis(hipTurn, glm::vec3(0.0f, 1.0f, 0.0f));
+		pelvis.Orientation = glm::normalize(facing * swivel * pitch * roll);
 		pelvis.UpdateInertiaWorld();
 
 		// The remainder is carried by the spine, so the lean is a *bend* rather
@@ -7240,7 +7284,8 @@ public:
 		// The breath lifts the chest: the spine eases back a touch on the
 		// in-breath.
 		m_World.GetJoint(m_SpineJoint).MotorTargetRotation = glm::normalize(
-			glm::angleAxis(lean * (1.0f - m_LeanPelvisShare) - m_Breath, glm::vec3(1.0f, 0.0f, 0.0f))
+			glm::angleAxis(-m_HipTurn * glm::mix(m_ChestCounter, m_RunChestCounter, m_RunBlend), glm::vec3(0.0f, 1.0f, 0.0f))
+			* glm::angleAxis(lean * (1.0f - m_LeanPelvisShare) - m_Breath, glm::vec3(1.0f, 0.0f, 0.0f))
 			* glm::angleAxis(0.7f * m_IdleRoll, glm::vec3(0.0f, 0.0f, 1.0f))
 			* m_SpineRest);
 
@@ -7270,7 +7315,12 @@ public:
 
 			// Each arm's swing wanders a little, and differently.
 			float wander = 1.0f + 0.12f * VariationAmount() * Noise(m_Clock / 1.7f, 41u + (uint32_t)side);
-			float swing = m_ArmSwing * wander * (1.0f + m_RunBlend) * std::sin(phase) * stride;
+			// Measured (CMU walk and run on his bodies): a walker's arm
+			// swings through about 18 degrees and a runner's through 88, held
+			// 15 back; his swung 58 walking. The run's swing is the walk's
+			// times m_RunArmSwing, and leans back by m_RunArmBack.
+			float swing = m_ArmSwing * wander * glm::mix(1.0f, m_RunArmSwing, m_RunBlend) * std::sin(phase) * stride
+				+ m_RunArmBack * m_RunBlend * stride;   // positive about the shoulder's x swings the arm back
 
 			// About the shoulder's pitch axis, in the torso's frame, on top of
 			// the pose the rig was built in.
@@ -7282,9 +7332,12 @@ public:
 			glm::quat shoulder = glm::normalize(turn * m_ShoulderRest[side]);
 
 			// A little more bend on the forward swing than the back, which is
-			// what an arm actually does -- it does not stay straight.
-			float bend = m_ElbowBend * (1.0f + m_RunBlend)
-				* (0.6f + 0.4f * std::sin(phase)) * stride;
+			// what an arm actually does -- it does not stay straight. And bent
+			// even standing a little, then more with speed: a walker's elbow
+			// is at 30 degrees on average and 39 at most, a runner's at 91
+			// (measured); his were at 15 and 31, so he ran with straight arms.
+			float bend = m_ElbowBend * glm::mix(1.0f, m_RunElbowBend, m_RunBlend)
+				* (0.75f + 0.25f * std::sin(phase)) * glm::mix(0.35f, 1.0f, stride);
 			float elbow = -bend;
 			if (ease < 1.0f)
 			{
@@ -7413,6 +7466,14 @@ public:
 				}
 				angle = high;
 			}
+			// Late in stance the heel comes up whether reach needs it or not
+			// (m_HeelRise, set by PlaceFeet): a person's foot rolls onto its
+			// toes before it leaves, which bends the knee before the swing
+			// starts -- 23 degrees at toe-off, measured, against his 5.
+			// The foot is behind the hip by then, so rising onto the toes
+			// only ever brings the ankle nearer it: never out of reach.
+			if (behind && m_HeelRise[side] > angle)
+				angle = std::min(m_HeelRise[side], m_MaxHeelLift);
 			// Just landed, heel first: the toe comes down about the heel over
 			// the first tenth of a second rather than slapping flat.
 			if (!behind)
@@ -7541,6 +7602,36 @@ public:
 		}
 	}
 
+	// A swing foot's path, measured: the CMU walk (16_15, 1.17 m/s) and run
+	// (16_55, 3.2 m/s) on his bodies, every swing resampled from lift-off
+	// (0) to landing (1) in tenths and averaged (6 and 4 swings). Progress
+	// is how far along from where it lifted to where it lands, over the
+	// ground; lift is its height above the straight line between the two,
+	// over its peak (walking 10 cm, running 15 for his leg). The walk's
+	// small rise at 0.8 -- the toes coming up before the heel lands -- is
+	// smoothed a little.
+	static constexpr float kWalkProgress[11] = { 0.0f, 0.048f, 0.127f, 0.249f, 0.378f, 0.549f, 0.706f, 0.853f, 0.954f, 0.986f, 1.0f };
+	static constexpr float kRunProgress[11] = { 0.0f, 0.029f, 0.107f, 0.251f, 0.426f, 0.643f, 0.814f, 0.951f, 1.0f, 1.0f, 1.0f };
+	static constexpr float kWalkLift[11] = { 0.0f, 0.385f, 0.803f, 1.0f, 0.855f, 0.462f, 0.18f, 0.12f, 0.12f, 0.06f, 0.0f };
+	static constexpr float kRunLift[11] = { 0.0f, 0.258f, 0.618f, 0.978f, 1.0f, 0.78f, 0.526f, 0.328f, 0.153f, 0.046f, 0.0f };
+
+	// A curve at t (0..1), between its tenths with a smooth (Catmull-Rom)
+	// join so the foot's speed has no corners, the walk's and the run's
+	// blended as the gait is.
+	float SwingCurve(float t, const float* walk, const float* run) const
+	{
+		auto sample = [](const float* c, float t)
+		{
+			float x = glm::clamp(t, 0.0f, 1.0f) * 10.0f;
+			int i = std::min((int)x, 9);
+			float u = x - (float)i;
+			float p0 = c[std::max(i - 1, 0)], p1 = c[i], p2 = c[i + 1], p3 = c[std::min(i + 2, 10)];
+			return 0.5f * (2.0f * p1 + (p2 - p0) * u + (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * u * u
+				+ (3.0f * p1 - p0 - 3.0f * p2 + p3) * u * u * u);
+		};
+		return glm::mix(sample(walk, t), sample(run, t), m_RunBlend);
+	}
+
 	void PlaceFeet(float dt, const glm::vec3& forward, const glm::vec3& right, float stride)
 	{
 		for (int side = 0; side < 2; side++)
@@ -7593,7 +7684,7 @@ public:
 			glm::vec3 landing = m_RootAnchor
 				+ landForward * (FootReach(stride) + m_StepJitter[side].x * stride)
 				+ m_StaggerVelocity * m_StaggerStep
-				+ landRight * ((side == 0 ? -m_StanceWidth : m_StanceWidth) + m_StepJitter[side].y);
+				+ landRight * (SideSign(side) * m_StanceWidth * glm::mix(1.0f, m_WalkNarrow, stride) + m_StepJitter[side].y);
 			// The ankle rides above the sole, so a target on the ground is a
 			// target with the foot buried in it.
 			landing.y = GroundY(landing + glm::vec3(0.0f, 1.0f, 0.0f)) + m_AnkleHeight;
@@ -7641,8 +7732,12 @@ public:
 					if (side == 1)
 						m_StepJitter[side].x -= m_Gait.Limp * 0.09f * s;
 				}
-				// Just left the ground: remember where from, and where to.
-				m_SwingFrom[side] = m_Planted[side];
+				// Just left the ground: remember where from, and where to --
+				// from where the ankle is, up on the toes, not from where the
+				// foot was planted flat; from there the swing first dropped the
+				// ankle back to the ground line and the reach clamp lifted it
+				// again, along an arc, on a straight leg.
+				m_SwingFrom[side] = m_Pinned[side] ? m_FootTarget[side] : m_Planted[side];
 				m_SwingTo[side] = landing;
 			}
 			else if (!swinging && m_Swinging[side])
@@ -7719,32 +7814,49 @@ public:
 				// stride plants the foot where the character used to be going.
 				m_SwingTo[side] = landing;
 
-				// Eased at both ends: the foot accelerates off the ground and
-				// settles onto it. Linear in t, it left at full speed and
-				// arrived at full speed -- a jerk at every lift-off and every
-				// landing.
-				target = glm::mix(m_SwingFrom[side], m_SwingTo[side], glm::smoothstep(0.0f, 1.0f, t));
+				// The swing's path is a person's: how far along the step the
+				// foot is, and how high, through the swing, read off the CMU
+				// walk and run (16_15, 16_55; MotionClip.h) put on his bodies
+				// -- see SwingCurve. His own, a smoothstep along and a sine of
+				// 6 cm up (32 running, pulled back by a heel kick), lifted the
+				// foot too little too late: the leg swung back straight to
+				// reach a foot that low behind him, the knee *straightening* to
+				// 11 degrees in early swing where a person's bends to 67, and
+				// running the foot went 60 cm behind his hips on a straight
+				// knee where a runner's is tucked under the hip at 95.
+				float along = SwingCurve(t, kWalkProgress, kRunProgress);
+				target = glm::mix(m_SwingFrom[side], m_SwingTo[side], along);
 				// Height changes early: up onto (or down to) the next foothold
 				// in the first half of the swing, while the foot is still near
 				// where it left -- rising evenly across the stride, it met the
 				// riser halfway and drew the shin through it.
 				target.y = glm::mix(m_SwingFrom[side].y, m_SwingTo[side].y,
-					glm::smoothstep(0.0f, m_SwingTo[side].y > m_SwingFrom[side].y ? 0.5f : 1.0f, t));
+					glm::smoothstep(0.0f, m_SwingTo[side].y > m_Planted[side].y + 0.02f ? 0.5f : 1.0f, t));
 
-				// Over the top. Higher when there is a step to clear, which is
-				// what the look-ahead probe is for.
-				// The lift. Walking, the foot skims the ground, peaking halfway.
-				// Running, the heel kicks up behind early in the swing and the
-				// knee drives through: higher, and peaking at m_RunLiftPeak of
-				// the swing. With the walk's 6 cm at every speed, a run was a
-				// lunge -- both feet low and far apart, no flight to see.
-				float peak = glm::mix(0.5f, m_RunLiftPeak, m_RunBlend);
-				float warped = t < peak ? 0.5f * t / peak : 0.5f + 0.5f * (t - peak) / (1.0f - peak);
-				float over = std::sin(warped * glm::pi<float>());
-				float lift = glm::mix(m_FootLift, m_RunFootLift, m_RunBlend);
+				// The lift, peaking a third of the way through (walking) and
+				// two fifths (running), from the heel coming up behind as the
+				// knee folds. Higher when there is a step to clear, which is
+				// what the look-ahead probe is for. A slow step lifts less, a
+				// step on the spot about two thirds as much.
+				float over = SwingCurve(t, kWalkLift, kRunLift);
+				float lift = glm::mix(m_FootLift, m_RunFootLift, m_RunBlend) * glm::mix(0.65f, 1.0f, stride);
 				target.y += over * lift * (1.0f + m_Climb[side] * m_ClimbKnee);
-				// Pulled back under the body on the way up, as a heel kick is.
-				target -= forward * (over * m_RunHeelKick * m_RunBlend * (1.0f - t));
+
+				// And never trailing more than m_SwingBehind behind its hip.
+				// The curves are a 3 m/s runner's; at his 4 the hips ran away
+				// from a foot following them, and it trailed 55 cm back on a
+				// straight knee -- the thigh 32 degrees behind him where a
+				// runner's goes 18, the knee folding to 77 where theirs folds to
+				// 106. Brought in, the foot rises behind him and the knee folds
+				// as a runner's does. A walking foot leaves 36-41 cm back and is
+				// all but untouched. Eased in over the first sixth of the swing
+				// so the foot does not jump as it lifts.
+				{
+					float behind = -glm::dot(target - hip, forward);
+					float most = m_SwingBehind * m_Proportions.Scale;
+					if (behind > most)
+						target += forward * ((behind - most) * glm::smoothstep(0.0f, 0.16f, t));
+				}
 
 				// Never through the other leg. The swing goes in a straight
 				// line from where the foot left to where it lands, and in a
@@ -7752,8 +7864,7 @@ public:
 				// back, each foot's landing is on the far side of the other.
 				// Kept out on its own side of the planted one, in the frame he
 				// faces now, wherever the two are level along the way; a
-				// straight walk passes them 2 x m_StanceWidth apart and is
-				// untouched.
+				// straight walk passes them 12 cm apart and is untouched.
 				int other = 1 - side;
 				if (!m_Swinging[other])
 				{
@@ -7772,6 +7883,10 @@ public:
 				target = m_Planted[side];
 			}
 
+			// Up onto the toes over the last two fifths of stance, as far as
+			// m_PreSwingHeel by toe-off; none standing still.
+			m_HeelRise[side] = swinging ? 0.0f
+				: m_PreSwingHeel * glm::smoothstep(0.6f, 1.0f, CyclePosition(side) / std::max(m_Duty, 0.01f)) * stride;
 			DriveFoot(side, target, !swinging, swingT, dt);
 			SolveDrivenLeg(side, hip, dt);
 		}
@@ -8587,6 +8702,7 @@ protected:
 	float m_TouchMemory[2] = { 0.0f, 0.0f };   // seconds off the ground
 	bool m_Pinned[2] = { false, false };
 	float m_PinYaw[2] = { 0.0f, 0.0f };
+	RestSkeleton m_Rest;
 	float m_PinLift[2] = { 0.0f, 0.0f };
 	float m_HipCone = glm::radians(45.0f);
 	bool m_DriveFeet = true;              // off: the old motor-only feet, for comparing
@@ -8595,6 +8711,8 @@ protected:
 	float m_MaxHeelLift = glm::radians(45.0f);
 	float m_MaxToeLift = glm::radians(25.0f);
 	float m_LandingToeUp = glm::radians(12.0f);   // the swing foot arrives heel first
+	float m_PreSwingHeel = glm::radians(40.0f);   // the heel's rise by toe-off (a walker's foot is at 56, measured)
+	float m_HeelRise[2] = { 0.0f, 0.0f };
 	glm::vec3 m_FootTarget[2] = {};
 	glm::quat m_ThighRestLocal[2] = { glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f) };
 	float m_StanceTime[2] = { 1.0f, 1.0f };
@@ -8657,6 +8775,17 @@ protected:
 	float m_SpeedResponse = 6.0f;     // rad/s: the speed's spring
 	float m_SpeedRate = 0.0f;
 	float m_TurnRate = 4.0f;          // radians a second
+	float m_PelvisTurn = glm::radians(7.0f);      // the hips' turn with the stride, either way, walking
+	float m_RunPelvisTurn = glm::radians(11.0f);  // and running
+	float m_ChestCounter = 1.1f;      // the chest's turn against the hips, as a share of theirs (9 / 8, measured)
+	float m_RunChestCounter = 1.35f;  // running (15 / 11)
+	float m_HipTurn = 0.0f;           // this step's
+	float m_HeadLeadShare = 0.6f;     // the head turns ahead into a turn by this share of what is left of it
+	float m_HeadLeadMax = glm::radians(45.0f);
+	float m_HeadLead = 0.0f;
+	float m_BankShare = 0.45f;        // of atan(v w / g), leaning into a turn
+	float m_Bank = 0.0f;
+	float m_TurnRateNow = 0.0f;       // rad/s the facing turned this step
 	float m_SpotTurn = 1.75f;         // on the spot, the turn rate times this (it tails off with speed)
 	float m_TurnBrake = 1.8f;         // the speed's spring stiffer by this, braking to turn back
 	float m_MaxBrake = 8.0f;          // m/s^2, the most the walk ever slows him by
@@ -8669,8 +8798,8 @@ protected:
 	float m_ReverseFree = glm::radians(150.0f);   // past this either way round is as quick, and the feet choose
 	float m_TurnWanted = 0.0f;        // rad/s the hips want to turn this step, before the feet have their say
 	float m_TurnToGo = 0.0f;          // rad still to turn
-	float m_StepTurn = glm::radians(80.0f);    // turned per step at most, which sets a turn's cadence
-	float m_TurnLead = glm::radians(85.0f);    // how far the hips may turn past a planted foot
+	float m_StepTurn = glm::radians(100.0f);   // turned per step at most, which sets a turn's cadence (a person turns round in two or three steps, measured)
+	float m_TurnLead = glm::radians(95.0f);    // how far the hips may turn past a planted foot
 	float m_TurnSoft = glm::radians(30.0f);    // and they slow over this much before it
 	float m_SettleYaw = glm::radians(25.0f);   // a foot turned further than this from him gets a step
 	float m_SettleReach = 0.12f;      // m, and one this far from where it stands (stopped)
@@ -8683,7 +8812,9 @@ protected:
 	float m_TravelTurnRate = 8.0f;    // rad/s it comes back round to the facing at
 	float m_PlantYaw[2] = { 0.0f, 0.0f };     // the yaw each planted foot was put down for
 	float m_LandingYaw[2] = { 0.0f, 0.0f };   // and the one a swinging foot is going to be
-	float m_FootPass = 0.17f;         // m between the feet, across, while a swing passes the planted one
+	float m_SwingBehind = 0.40f;      // m a swinging foot may trail its hip, at most
+	float m_FootPass = 0.10f;         // m between the feet, across, while a swing passes the planted one
+	float m_WalkNarrow = 0.6f;        // the feet's spacing walking, at full stride, over standing's: 12 cm (a walker's is 6, a runner's 13, measured; his was 19)
 	float m_FootPassAlong = 0.30f;    // m along, within which the two count as level
 	glm::vec3 m_RootAnchor{ 0.0f };
 
@@ -8694,9 +8825,7 @@ protected:
 	float m_BobAmount = 0.008f;      // on top of what the stride geometrically needs
 	float m_FallHeight = 1.5f;       // no ground within this and he is falling
 	float m_RollReach = 0.08f;
-	float m_RunFootLift = 0.32f;     // swing lift at a run, m
-	float m_RunLiftPeak = 0.35f;     // how early in the swing it peaks, running
-	float m_RunHeelKick = 0.20f;
+	float m_RunFootLift = 0.15f;     // swing lift at a run, at its peak, m (a runner's, measured: SwingCurve)
 	float m_RunFootReach = 0.26f;    // how far ahead a running foot lands, m     // how far the rising heel is drawn back under him, m       // reach the heel-to-toe roll gives a foot, m
 	float m_SwayAmount = 0.013f;
 	float m_Carry = 0.0f;   // -1 fully over side 0, +1 fully over side 1
@@ -8744,7 +8873,7 @@ protected:
 	// from 0.02 up still gets him onto the 0.30 m step, because the foot's
 	// target is on top of the step either way and the lift only has to clear
 	// the riser on the way there.
-	float m_FootLift = 0.06f;
+	float m_FootLift = 0.10f;        // swing lift walking, at its peak, m (a walker's, measured: SwingCurve)
 	// Jump. Grounded -> Crouching (the windup) -> Flying (ballistic) -> back.
 	enum class Air { Grounded, Crouching, Pushing, Flying };
 	Air m_Air = Air::Grounded;
@@ -8816,8 +8945,11 @@ protected:
 	float m_RunDuty = 0.30f;
 	float m_Duty = 0.62f;
 	float m_MaxFootReach = 0.32f;     // how far ahead a foot may land
-	float m_ArmSwing = 0.42f;         // radians at full stride, about 24 degrees
-	float m_ElbowBend = 0.55f;
+	float m_ArmSwing = 0.17f;         // radians at full stride, either way: 10 degrees (it was 24, and a person's is 9)
+	float m_ElbowBend = 0.84f;        // radians at the forward swing, walking; three quarters of it at the back
+	float m_RunArmSwing = 4.0f;       // running, the walk's swing times this
+	float m_RunArmBack = 0.20f;       // and held this far back, radians
+	float m_RunElbowBend = 2.6f;      // running, the walk's elbow times this: 2.2 rad asked, about 90 degrees got (the forearm hangs back)
 	float m_AnkleHeight = 0.10f;      // ankle joint above the sole
 
 	// How far the sole follows the ground it is landing on, and the most it

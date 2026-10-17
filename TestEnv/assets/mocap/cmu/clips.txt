@@ -1,0 +1,18 @@
+# Reference clips from the CMU Graphics Lab Motion Capture Database,
+# mocap.cs.cmu.edu -- "free for all uses ... You may include this data in
+# commercially-sold products, but you may not resell this data directly,
+# even in converted form." The database was created with funding from NSF
+# EIA-0196217. Files are unmodified: <subject>.asf is the skeleton,
+# <subject>_<trial>.amc the frames, at 120 a second.
+#
+# name          skeleton  frames    what the database calls it
+walk            16.asf    16_15.amc walk
+jog             16.asf    16_35.amc run/jog
+run             16.asf    16_55.amc run
+walk-left       16.asf    16_17.amc walk, 90-degree left turn
+walk-right      16.asf    16_19.amc walk, 90-degree right turn
+jog-left        16.asf    16_41.amc run/jog, 90-degree left turn
+run-left        16.asf    16_51.amc run, 90-degree left turn
+walk-stop       16.asf    16_33.amc slow walk, stop
+jog-stop        16.asf    16_08.amc run/jog, sudden stop
+turn-around     47.asf    47_01.amc walk forward, turn around, walk back
