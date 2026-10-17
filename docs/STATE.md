@@ -37,6 +37,11 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-17 — The parkour course** (`--demo Parkour`): a lane per
+  move, `station <n>`; crates climbable; the get-up's arms (natural
+  elbows, no flick on standing) and its blow-ups (27 in 40 among
+  rolling cannonballs, 4 on a clear floor, now 0 and 1); stairs, the
+  corner run, hanging keys, both cameras' pitch, screens' glow fixed.
 - **2026-10-16 — More parkour**: corner wall runs, cat leap, hanging
   round corners, tic-tac, precision jumps. Force-driven hips, stronger
   legs and more solver iterations measured against limb depth: no help.

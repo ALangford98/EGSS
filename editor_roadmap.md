@@ -144,11 +144,22 @@ catching yourself, falling realistically. Where it stands:
     landing -- which is how every fix so far was found;
   - ~~a wall run round a corner; the cat leap; hanging round a corner;
     the tic-tac; precision jumps~~ -- done 2026-10-16;
+  - ~~a course to try each move on; climbing crates; the get-up's arms~~
+    -- done 2026-10-17: the Parkour course demo (a lane per move,
+    `station <n>`), loose heavy boxes climbable, natural elbows and no
+    flick on standing, and get-ups that no longer fly apart (27 in 40
+    among rolling cannonballs, 4 on a clear floor; now 0 and 1);
   - next: balancing along a beam or a wall top (narrow footing, arms
     out); swinging on a bar; climbing a ladder or a pipe; a wall climb up
     a face with holds; sliding under a low gap; a dive roll over
     something; hanging round an inside corner; the moves for NPCs (an
     NPC choosing a route through them).
+  - open from the course (2026-10-17): one get-up in 40 on a clear floor
+    still spikes (the same fall from the right each time); rolling onto
+    his front lifts the legs high behind; balls roll for half a minute
+    (no rolling resistance) and keep GameSession splitting its steps; a
+    tilted box cannot be a ramp, since `GroundBelow` answers a box with
+    the top of its bounds -- slopes are terrain only.
 - **Cover** (asked for 2026-10-16). Builds on parkour's sensing (`Sense`
   already knows a face's height and where it ends):
   - take cover: up against a wall or a low wall, back or shoulder to

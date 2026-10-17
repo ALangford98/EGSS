@@ -7,6 +7,164 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-17 (the parkour course; crates; the get-up's arms, and why get-ups blew apart)
+
+"Lets take a step back and clean up what we have. Some issues ive
+identified are that I cant climb onto the crates, and getting up often
+causes the arms to move unnaturally. Perhaps another in engine demo would
+be best."
+
+**The parkour course** (`TestEnv/src/ParkourCourse.h`, demo 20, `--demo
+Parkour`). The crash test's dummy on his own in a yard: twelve lanes in
+two rows either side of a walkway, one station each -- walking (a kerb,
+stairs up and down, a 33 cm step, a wall), vaults (two walls 4.2 m apart
+and a rail), climbing (a step box, a 1.6 m ledge, a 2.35 m wall), crates,
+hanging (a block with an edge on every side), drops (a ledge, a 3 m tower,
+open ground for the roll), wall run, an inside corner, a slanted wall for
+the tic-tac, a cat leap, precision pillars, and knock-downs (the crash
+test's cannon at 12 kg and 16 m/s, aimed at him). You are him from the
+start; each lane's sign faces the walkway; the panel at the top right
+says what to do in the lane he is in; `station 7` (or `station wallrun`)
+in the terminal puts him on a mark, and `station` lists them. It opens in
+the editor like the crash test. Checked with a temporary driver that fed
+keys through `GS::Input::SetPlaybackSnapshot` -- so through the input
+map, the controller and the rig as a person's are -- down every lane: 19
+scripted runs, every move firing where it should and him on his feet.
+
+**Crates.** The world's ground leaves every dynamic body out (so a stand
+height does not chase what wanders underfoot) and `Sense` climbed only
+static things, so a crate was neither ground nor obstacle: he walked into
+it, leaned on it until the contacts read as blows -- a stumble at 3.3 s,
+down at 8.3 s -- and never climbed it. Now a loose body counts as solid
+when it is a box at rest, not jointed to anything (another character's
+limb is no step), and at least a fifth of his weight, and stays counted
+until it is clearly moving. `GroundUnder`/`GroundY` add their tops to the
+world's ground (exactly the world's answer with none about); `Sense`,
+`RoomAhead` and the blow test treat them as they treat walls. In the
+course he climbs the 1 m crate, steps onto the small ones, climbs the
+stack of three, and the crash test hall's pile behind the mark (one crate
+shifted 10.6 cm). Walked up to, something low he can stand on (under 0.8
+m, at least 0.45 deep) is stepped onto; run at, still vaulted.
+
+**What the course turned up:**
+
+- *Running at stairs vaulted them.* The top's depth was probed from 30 cm
+  over it; a ray starting inside the 5th step saw only the floor, so the
+  flight read as a wall 60 cm deep. Probed from a metre up now, and a face
+  that stands less than a step over the ground just in front of it is a
+  step, however far up the flight it is.
+- *Jump as the hint came up was a hop.* The hint shows 0.6 m before the
+  move is in reach; the press launched a plain jump and he stopped at the
+  wall, every time. A press with a move hinted ahead now waits for it (up
+  to 0.6 s), and the hint shows only when he is square on, as the move
+  asks.
+- *The corner wall run* turned 1.35 m short of the cross wall at speed,
+  and the run's face check (a metre) ended it on its first step.
+- *Hanging, D went left* (the edge's R, up x F, is his left). The keys are
+  his while he hangs: forward climbs, back drops, right goes right --
+  round corners too, where camera-relative keys would point at the wall.
+  The HUD says so while he hangs.
+- *A running jump at a 1 m crate was a cat leap* into a "hang" with the
+  hips below the floor. Only to an edge he would have to jump for now.
+- *Precision jumps need a gap over 0.8 m deep* or the floor in it reads as
+  the nearer top: from the crash test's 50 cm step none went. The course
+  starts them from a 1 m block.
+- *A respawn mid-move* left the joints open and the move half set up, and
+  the last world step's contacts -- rolling, when `station` moved him --
+  stumbled him on his mark.
+- *The follow camera and the fly camera* wrote pitch and yaw straight into
+  the Euler rotation, which tips about the world's x after the turn:
+  facing +z, asking to look down looked up, and facing along x pitch did
+  nothing at all. `LookDirection`/`PitchYawOf` (SceneRenderer.h) now.
+- *Screens did not glow.* On a built-in model the surface's emission (the
+  screen model's is 0) replaced the ScreenComponent's: every screen was
+  lit like card, which the hall's lamps hid and a sign in the shade
+  outdoors did not.
+- The terminal's status line ran under the HUD's hints; it sits above them.
+
+**The arms getting up**, measured per step through ten knock-downs (spin
+of each upper arm and forearm against the torso):
+
+- *A flick as he stood*: the get-up's last pose had the elbows bent 36
+  degrees (a hanging hand aimed at 95% of the arm), the walk's straight,
+  and both forearms snapped over at ~415 deg/s. The walk's arms now ease
+  in from wherever a get-up or move left them, over 0.35 s: 80-180 deg/s.
+- *Elbows bent sideways* rolling over (the hinge 4 degrees off square to
+  his sides), the arms whipping round at 580 deg/s: `SolveArm` aimed the
+  upper arm with the shortest rotation from hanging, which leaves its
+  twist to chance. It is given its whole orientation now, the elbow
+  pointing back and down in the torso's frame, as `SolveLegPole` does the
+  knee; an arm hanging at his side solves to exactly the walk's pose.
+- *Targets past the joints' stops*: a hand beside the shoulder wanted
+  150-167 degrees of an elbow that stops at 140, and a shoulder 136 of a
+  120 cone -- motors driving into limits, arms flung about (4,700 deg/s).
+  Both kept inside now.
+- The lift for a lagging limb raised the hands coming up off the floor
+  to his sides; it is for hands moving between two places on the floor.
+- The joints opened for a move or a get-up shut in one step (an arm up
+  from a climb went from 170 degrees of room to 75); they close as the
+  limbs come in now.
+
+**And why get-ups blew apart.** Forty knock-downs (eight shoves, two
+cannon shots, four times over), on a clear floor and with the cannonballs
+left rolling about the yard. On the rig as it was, arms over 10,000 deg/s
+-- the body flying apart -- in 4 of 40 on the clear floor (worst 337,833)
+and about 27 of 40 among the balls (worst 780,736): very likely what the
+crash test showed after a cannon shot. Traced, it was always something
+pressed between the floor and something that would not give, the force
+growing step on step -- 5, 100, 560 times his weight -- until the solver
+gave way:
+
+- *The hips are carried*, kinematic, an unlimited force: now 1000 kg
+  while he gets up, unturnable and still set to the keys each step, so a
+  squeeze gives a little (clear floor 4 -> 1). Closing on the keys over a
+  60th of a second however finely the step is split -- in one substep the
+  push went as one over the substep squared.
+- *The torso on its side* is 3 cm wider than the hips each way, and
+  rolling over at the hips' height pinned its corner into the floor: the
+  roll's own `LowestBelow` keeps the trunk clear now.
+- *The spine's limits* (25 degrees, 35 of twist) dragged the torso round
+  after the hips against the floor's grip; opened to 60/60 while he gets
+  up, so the spine's motor brings it, and closed as it comes in.
+- *The balls were never under him* (3 to 26 m away when he got up). They
+  roll for half a minute, and anything fast makes GameSession split its
+  steps; cut finer, the impulses carried into a step were too strong by
+  the ratio of the lengths, and every joint corrected its drift faster in
+  real time. `PhysicsWorld3D` now scales carried impulses by the step
+  ratio (Box2D's dtRatio) and corrects joints at no more than the 60 Hz
+  rate (`JointRateDt`). Among the balls, with the hips already heavy,
+  7 -> 0. Both are exact no-ops for a world stepped at a constant 60 Hz.
+- *Wedged anyway* -- something not his pressing the trunk past 1500 times
+  his weight (get-ups that stood up went to 711 on a clear floor, 967
+  among the balls) -- he lets go and tries again in a moment.
+
+Now: clear floor 1 in 40 over 10,000 deg/s (a single 10,884 spike, and
+he stood), among the balls none -- the fastest arm 4,287; spin after
+standing 153-288 deg/s on average against ~420. And no deeper into the
+floor for the heavier hips, which hips driven by forces were in moves:
+over the same 40 get-ups (7,000 steps) his bodies' depth below the floor
+went from 1.30 to 1.12 cm at the 90th percentile, 3.49 to 3.02 at the
+99th, 51 to 9.5 cm at worst, and 54 steps over 4 cm to 33.
+
+**Tried and taken out:** blending the arms from the pose they lay in
+(a straight arm held where it lay was rolled onto, and the torso thrown
+47 cm in two steps); pushing loose things aside before getting up (there
+was never anything near); the hips at 150 or 400 kg rather than 1000, or
+heavy in turn as well (no consistent difference); a lower wedge threshold
+(100x weight caught get-ups the motors were simply coming back in).
+
+**Unchanged:** open-ground walking, running and standing hash bit-for-bit
+the same as before with the physics changes off -- the rig's changes act
+only near obstacles, crates, get-ups and moves. The physics changes alter
+only steps GameSession splits, which a walk turning on the spot does:
+standing still on its own is bit-identical with them on.
+
+**Still open:** one get-up in 40 on a clear floor spikes (the same fall
+each time, from the right); rolling onto his front lifts his legs high
+behind; a hall full of rolling balls keeps the world split into substeps
+(no rolling resistance); and a tilted box cannot be a ramp, since
+`GroundBelow` answers a box with the top of its bounds.
+
 ### 2026-10-16 (parkour: corner wall runs, the cat leap, hanging round corners, the tic-tac, precision jumps; what did not help the depth)
 
 "Carry on" -- down the roadmap list.
