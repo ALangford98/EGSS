@@ -157,6 +157,12 @@ public:
 			m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation = m_ShoulderRest[side];
 			m_World.GetJoint(m_ElbowJoint[side]).MotorTargetAngle = 0.0f;
 		}
+		// Out of whatever move it was in: a respawn mid-climb left the
+		// joints open and the move half set up.
+		m_Move = Move::None;
+		CloseJointsNow();
+		m_ArmEase = 1.0f;
+		m_FreshSpawn = true;
 		m_Mode = Mode::Ragdoll;   // so GoControlled does the whole hand-back
 		GoControlled();
 	}
@@ -192,6 +198,8 @@ public:
 	bool IsGettingUp() const { return m_Mode == Mode::GettingUp; }
 	// In a parkour move -- vaulting, climbing, dropping, rolling.
 	bool IsMoving() const { return m_Mode == Mode::Moving; }
+	// Hanging from an edge, where the keys do other things (UpdateHang).
+	bool IsHanging() const { return m_Mode == Mode::Moving && m_Move == Move::Hang; }
 	const char* MoveName() const
 	{
 		switch (m_Move)
@@ -211,17 +219,27 @@ public:
 		}
 	}
 	// What a jump would do now, for an on-screen hint: "vault", "climb",
-	// "step on", or "" when it would just be a jump.
+	// "step on", or "" when it would just be a jump. A little before it is
+	// in reach -- a jump pressed then waits for it (see the walk's jump) --
+	// and only square on to it, as TryMove asks.
 	const char* ParkourHint() const
 	{
 		if (m_Parkour && m_Mode == Mode::Moving && m_Move == Move::Hang)
 			return "climb up";
-		if (!m_Parkour || m_Mode != Mode::Controlled)
+		if (!m_Parkour || m_Mode != Mode::Controlled || m_Ahead.Type == Obstacle::None || m_Ahead.Type == Obstacle::Wall)
+			return "";
+		glm::vec3 F(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
+		glm::vec3 n(m_Ahead.Normal.x, 0.0f, m_Ahead.Normal.z);
+		if (glm::length(n) < 1e-4f || -glm::dot(F, glm::normalize(n)) <= 0.75f)
 			return "";
 		float s = m_Proportions.Scale;
+		bool running = m_Control.Enabled && m_Control.Run && m_RunBlend > 0.5f;
 		switch (m_Ahead.Type)
 		{
-			case Obstacle::Vault: return m_Ahead.Distance <= 0.55f * s + 0.22f * m_Speed + 0.6f * s ? "vault" : "";
+			case Obstacle::Vault:
+				if (m_Ahead.Distance > 0.55f * s + 0.22f * m_Speed + 0.6f * s)
+					return "";
+				return !running && StepsOnto(m_Ahead) ? "step on" : "vault";
 			case Obstacle::StepOn: return m_Ahead.Distance <= 0.80f * s + 0.15f * m_Speed + 0.4f * s ? "step on" : "";
 			case Obstacle::Climb: return m_Ahead.Distance <= 0.80f * s + 0.15f * m_Speed + 0.4f * s ? "climb" : "";
 			default: return "";
@@ -241,6 +259,8 @@ public:
 	{
 		m_Clock += dt;
 		m_MoveGrace = std::max(m_MoveGrace - dt, 0.0f);
+		RefreshStandable();
+		EaseJointsClosed(dt);
 		m_Balance = ComputeBalance();
 
 		if (m_Mode == Mode::Controlled)
@@ -250,6 +270,12 @@ public:
 			// during the last one.
 			glm::vec3 hitFrom(0.0f);
 			float hit = ImpactForce(dt, hitFrom);
+			// The contacts read here are the last world step's, and just
+			// after a respawn those belong to wherever he was: rolling on the
+			// floor when `station` moved him, they stumbled him on his mark.
+			if (m_FreshSpawn)
+				hit = 0.0f;
+			m_FreshSpawn = false;
 
 			// Everything above the noise floor is a stagger now. Whether he
 			// actually goes down is decided by whether his feet can catch what
@@ -1511,6 +1537,7 @@ public:
 		m_RagdollReason = why;
 		m_RagdollTimer = 0.0f;
 
+		HipsHeavy(false);
 		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 		pelvis.Type = GS::BodyType::Dynamic;
 
@@ -1590,6 +1617,7 @@ public:
 		m_RagdollTimer = 0.0f;
 		m_GetUpTimer = 0.0f;
 
+		HipsHeavy(false);
 		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 		pelvis.Type = GS::BodyType::Kinematic;
 		pelvis.AngularVelocity = glm::vec3(0.0f);
@@ -1653,7 +1681,7 @@ public:
 				if (m_World.GetBody(handle).Position.y < m_World.GetBody(lowest).Position.y)
 					lowest = handle;
 			const GS::RigidBody3D& body = m_World.GetBody(lowest);
-			float below = body.Position.y - m_World.GroundHeightBelow(body.Position, m_CharacterBodies, -1e9f);
+			float below = body.Position.y - GroundY(body.Position, -1e9f);
 			if (below > m_GetUpMaxGap)
 				return;
 		}
@@ -1674,7 +1702,7 @@ public:
 
 		// Stand on whatever is underneath, not at the height of the floor it
 		// started on -- otherwise getting up on a step sinks into it.
-		m_GetUpGround = m_World.GroundHeightBelow(pelvis.Position, m_CharacterBodies);
+		m_GetUpGround = GroundY(pelvis.Position);
 		m_GetUpTo = glm::vec3(pelvis.Position.x,
 			m_GetUpGround + m_StandClearance, pelvis.Position.z);
 
@@ -1964,7 +1992,7 @@ public:
 		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 		const glm::vec3 up(0.0f, 1.0f, 0.0f);
 		float s = m_Proportions.Scale;
-		float g = m_World.GroundHeightBelow(pelvis.Position, m_CharacterBodies);
+		float g = GroundY(pelvis.Position);
 		m_GetUpGround = g;
 		m_GetUpTimer = 0.0f;
 		m_GetUpKeys.clear();
@@ -2181,14 +2209,91 @@ public:
 			m_GetUpTime2 = 3.2f * std::sqrt(s);
 		}
 
-		pelvis.Type = GS::BodyType::Kinematic;
+		HipsHeavy(true);
 		pelvis.AngularVelocity = glm::vec3(0.0f);
 
 		// A hand under the shoulder of a body lying flat is the arm at right
 		// angles to the trunk, and a shoulder flexes far further than that --
 		// but the rig's cone is 75 degrees, kept tight for the walk and the
 		// fall. Opened while he gets up, closed again when he stands.
+		m_JointsClosing = false;
 		ShoulderCone(120.0f);
+		// And the spine opened as a move opens it, with its twist: the hips
+		// are turned to the keys and the torso has to come round after them
+		// off the floor. At the built 25 degrees and 35 of twist the limit
+		// dragged it round against the floor's grip, and a limit is as hard
+		// as the hips behind it -- the floor pressed the trunk 5 times his
+		// weight, then 100, then 560, step on step, until it gave. Inside the
+		// wider limits it is the spine's motor that brings it, as hard as a
+		// motor can.
+		OpenSpine(true);
+	}
+
+	void OpenSpine(bool open)
+	{
+		StoreCones();
+		GS::Joint3D& spine = m_World.GetJoint(m_SpineJoint);
+		spine.ConeAngle = open ? glm::radians(60.0f) : m_SpineCone;
+		spine.TwistLower = open ? -glm::radians(60.0f) : m_SpineTwistBuilt[0];
+		spine.TwistUpper = open ? glm::radians(60.0f) : m_SpineTwistBuilt[1];
+	}
+
+	// The hardest anything not his pressed his pelvis, torso or head in the
+	// last step, as a force.
+	float TrunkPressed(float dt) const
+	{
+		if (dt <= 0.0f)
+			return 0.0f;
+		float worst = 0.0f;
+		for (const GS::Contact3D& contact : m_World.GetContacts())
+		{
+			bool mineA = IsCharacter(contact.A), mineB = IsCharacter(contact.B);
+			if (mineA == mineB)
+				continue;
+			unsigned int mine = mineA ? contact.A : contact.B;
+			if (mine != m_Pelvis && mine != m_Torso && mine != m_Head)
+				continue;
+			worst = std::max(worst, contact.TotalNormalImpulse() / dt);
+		}
+		return worst;
+	}
+
+	// The hips while he gets up: carried along the keys as before, but
+	// heavy -- 1000 kg -- rather than kinematic. Kinematic, they are an
+	// unlimited force, and whatever was caught between them and the floor --
+	// his own torso, wider on its side than they are, its corner at the
+	// spine pinned into the floor -- was pressed harder every step until the
+	// solver gave way and threw him about. Heavy, they give a little:
+	// knock-downs on a clear floor that ended that way went from 4 in 40 to
+	// 1. Their turn stays exact -- no inverse inertia, so no joint or contact
+	// can turn them; heavy in turn as well measured no better -- and is set
+	// to the keys' each step. What still wedges him UpdateNaturalGetUp
+	// catches, letting go and trying again.
+	void HipsHeavy(bool heavy)
+	{
+		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		if (heavy)
+		{
+			if (!m_HipsHeavy)
+			{
+				m_PelvisInverseMass = pelvis.InverseMass;
+				m_PelvisInverseInertia = pelvis.InverseInertiaLocal;
+			}
+			pelvis.Type = GS::BodyType::Dynamic;
+			pelvis.InverseMass = 1.0f / 1000.0f;
+			pelvis.InverseInertiaLocal = glm::mat3(0.0f);
+			pelvis.UpdateInertiaWorld();
+			pelvis.Awake = true;
+			pelvis.SleepTimer = 0.0f;
+			m_HipsHeavy = true;
+		}
+		else if (m_HipsHeavy)
+		{
+			pelvis.InverseMass = m_PelvisInverseMass;
+			pelvis.InverseInertiaLocal = m_PelvisInverseInertia;
+			pelvis.UpdateInertiaWorld();
+			m_HipsHeavy = false;
+		}
 	}
 
 	void ShoulderCone(float degrees)
@@ -2204,6 +2309,22 @@ public:
 		if (m_GetUpKeys.size() < 2)
 		{
 			GoControlled();
+			return;
+		}
+		// Wedged: something not his pressing his trunk with more than 1500
+		// times his weight. Get-ups that stood up went to 711 at the most on
+		// a clear floor (7 typically) and 967 among rolling cannonballs; one
+		// caught between the floor and something that will not give -- a
+		// signpost, once -- climbs past that step on step, and pressed on, the
+		// solver gave way and threw him about. He lets go instead, as a person
+		// does who cannot get up that way, and tries again in a moment from
+		// wherever he settles. (What wedged him most was the get-up's own
+		// making: his spine dragged round against the floor by its limits,
+		// and joints corrected eight times as hard in a step cut eight ways
+		// -- OpenSpine, and PhysicsWorld3D's JointRateDt.)
+		if (m_GetUpTimer > 0.0f && TrunkPressed(dt) > 1500.0f * m_BodyMass * 9.81f)
+		{
+			GoRagdoll("wedged getting up");
 			return;
 		}
 		m_GetUpTimer += dt;
@@ -2223,13 +2344,24 @@ public:
 		// nothing else will stop it: between two keys a box turning on its
 		// edge reaches lower than either key's height allows for (5.5 cm in
 		// the roll, measured). Its lowest corner, for the turn it has now.
+		// And the torso and head with it, the trunk bent as the keys bend it
+		// (LowestBelow, the roll's own measure, without the tuck): on his
+		// side the torso is 3 cm wider than the hips each way, and rolling
+		// over at the hips' height put its corner into the floor.
 		{
 			glm::mat3 r = glm::mat3_cast(turn);
 			const glm::vec3& half = m_Proportions.PelvisHalf;
 			float reach = std::fabs(r[0].y) * half.x + std::fabs(r[1].y) * half.y + std::fabs(r[2].y) * half.z;
+			reach = std::max(reach, LowestBelow(turn, glm::mix(a.Spine, b.Spine, w), false));
 			target.y = std::max(target.y, m_GetUpGround + reach + 0.004f);
 		}
-		pelvis.Velocity = (target - pelvis.Position) / std::max(dt, 1e-4f);
+		// Closing the gap to the key over a 60th of a second, however finely
+		// the step is split. Closed within one substep, the push behind the
+		// hips on whatever is in the way goes as one over the substep squared
+		// -- 64 times as hard at an eighth of the step -- and GameSession
+		// splits the step whenever anything is fast, his own limbs included.
+		pelvis.Velocity = (target - pelvis.Position) / std::max(dt, 1.0f / 60.0f);
+		pelvis.AngularVelocity = glm::vec3(0.0f);
 		pelvis.Orientation = turn;
 		pelvis.UpdateInertiaWorld();
 
@@ -2262,7 +2394,8 @@ public:
 				m_SwingFrom[side] = m_SwingTo[side] = last.Foot[side];
 			}
 			m_StandHeight = last.Pelvis.y;
-			ShoulderCone(75.0f);
+			m_JointsClosing = true;
+			EaseArmsFromHere();
 			GoControlled();
 		}
 	}
@@ -2318,7 +2451,13 @@ public:
 		};
 		for (int side = 0; side < 2; side++)
 		{
-			SolveArm(side, carry(hand(a, side), hand(b, side), w, WristWorld(side)));
+			// Carried over the floor only between two places on it. A hand
+			// coming up off the floor to hang at his side, or onto his knee,
+			// has nothing to clear, and the lift for one lagging its target
+			// -- up to 15 cm -- raised the arms as he stood.
+			glm::vec3 handFrom = hand(a, side), handTo = hand(b, side);
+			SolveArm(side, a.Hand[side] == 0 && b.Hand[side] == 0 ? carry(handFrom, handTo, w, WristWorld(side))
+				: glm::mix(handFrom, handTo, w));
 
 			glm::vec3 now = AnkleWorld(side);
 			glm::vec3 ankle = carry(Resolve(a.Foot[side], a.LocalFeet), Resolve(b.Foot[side], b.LocalFeet), w, now);
@@ -2342,7 +2481,7 @@ public:
 			// lies on, for a move whatever is under that hip -- the top of
 			// the wall he is going over.
 			float under = ground > -1e8f ? ground
-				: m_World.GroundHeightBelow(HipWorld(side), m_CharacterBodies, -1000.0f);
+				: GroundY(HipWorld(side), -1000.0f);
 			SolveLegPole(side, HipWorld(side), ankle, pole, under + m_Proportions.ThighRadius + 0.005f * m_Proportions.Scale);
 			bool kneeling = w < 0.5f ? a.Kneeling[side] : b.Kneeling[side];
 			if (kneeling)
@@ -2366,6 +2505,133 @@ public:
 			m_Planted[side] = ankle;
 			m_Swinging[side] = false;
 		}
+	}
+
+	// ---------------------------------------------------------------------
+	// Loose things that count as solid
+	// ---------------------------------------------------------------------
+	//
+	// The world's ground is only what holds still -- PhysicsWorld3D::
+	// GroundBelow leaves every dynamic body out, so that a stand height does
+	// not chase whatever wanders underfoot -- and Sense climbed only fixed
+	// things. So a crate was neither ground nor an obstacle: he walked into
+	// it, leaned on it until the contacts read as blows and put him down
+	// (measured in the course: a stumble 3 s in, down at 8 s), and never
+	// climbed it. A loose body counts as solid -- an obstacle, something
+	// to put a hand or a foot on, ground -- when it is a box at rest, not
+	// part of a jointed figure (another character's limb is no step), and
+	// at least a fifth of his weight, so that what a climb does to it does
+	// not move it. Once counted it stays counted until it is clearly moving:
+	// a crate under his feet trembling past the at-rest speed for one step
+	// would otherwise drop the ground he stands on by its height.
+	void RefreshStandable()
+	{
+		const std::vector<GS::Joint3D>& joints = m_World.GetJoints();
+		const std::vector<GS::RigidBody3D>& bodies = m_World.GetBodies();
+		if (m_Jointed.size() != bodies.size() || m_JointsSeen != joints.size())
+		{
+			m_Jointed.assign(bodies.size(), 0);
+			for (const GS::Joint3D& joint : joints)
+				for (unsigned int b : { joint.A, joint.B })
+					if (b < m_Jointed.size())
+						m_Jointed[b] = 1;
+			m_JointsSeen = joints.size();
+		}
+		std::vector<GS::PhysicsWorld3D::BodyHandle> was;
+		was.swap(m_Standable);
+		float heavy = 0.2f * glm::clamp(m_Physique.Mass, 20.0f, 250.0f);
+		for (unsigned int i = 0; i < bodies.size(); i++)
+		{
+			const GS::RigidBody3D& b = bodies[i];
+			if (!b.Enabled || b.Type != GS::BodyType::Dynamic || b.Shape != GS::ColliderShape3D::Box || m_Jointed[i]
+				|| b.GetMass() < heavy)
+				continue;
+			bool counted = std::find(was.begin(), was.end(), i) != was.end();
+			if (glm::length(b.Velocity) < (counted ? 1.5f : 0.3f) && glm::length(b.AngularVelocity) < (counted ? 3.0f : 0.6f))
+				m_Standable.push_back(i);
+		}
+	}
+
+	bool Standable(GS::PhysicsWorld3D::BodyHandle handle) const
+	{
+		return std::find(m_Standable.begin(), m_Standable.end(), handle) != m_Standable.end();
+	}
+
+	// Fixed, or loose and counted as fixed.
+	bool Solid(GS::PhysicsWorld3D::BodyHandle handle) const
+	{
+		return m_World.GetBody(handle).Type == GS::BodyType::Static || Standable(handle);
+	}
+
+	// Moving about, or light: something whose touch can be a blow.
+	bool Loose(GS::PhysicsWorld3D::BodyHandle handle) const
+	{
+		return m_World.GetBody(handle).Type == GS::BodyType::Dynamic && !Standable(handle);
+	}
+
+	// The ground under `point` for him: the world's, or the top of a loose
+	// body he counts as solid -- straight down through the box in its own
+	// frame, as PhysicsWorld3D::Raycast does -- whichever is higher. With
+	// nothing loose about it is the world's answer exactly.
+	bool GroundUnder(const glm::vec3& point, float& height, glm::vec3& normal, float floor) const
+	{
+		bool found = m_World.GroundBelow(point, height, normal, m_CharacterBodies, floor);
+		if (!found)
+		{
+			height = floor;
+			normal = glm::vec3(0.0f, 1.0f, 0.0f);
+		}
+		for (GS::PhysicsWorld3D::BodyHandle handle : m_Standable)
+		{
+			const GS::RigidBody3D& b = m_World.GetBody(handle);
+			glm::quat inverse = glm::inverse(b.Orientation);
+			glm::vec3 lo = inverse * (point - b.Position);
+			glm::vec3 ld = inverse * glm::vec3(0.0f, -1.0f, 0.0f);
+			float enter = 0.0f, leave = point.y - floor;
+			int axis = -1;
+			bool miss = false;
+			for (int a = 0; a < 3 && !miss; a++)
+			{
+				if (std::fabs(ld[a]) < 1e-9f)
+				{
+					miss = std::fabs(lo[a]) > b.HalfExtents[a];
+					continue;
+				}
+				float t1 = (-b.HalfExtents[a] - lo[a]) / ld[a], t2 = (b.HalfExtents[a] - lo[a]) / ld[a];
+				if (t1 > t2)
+					std::swap(t1, t2);
+				if (t1 > enter)
+				{
+					enter = t1;
+					axis = a;
+				}
+				leave = std::min(leave, t2);
+				miss = enter > leave;
+			}
+			// A start inside the box reports nothing (axis stays -1): only a
+			// surface below the point is ground, as for the world's own.
+			if (miss || axis < 0)
+				continue;
+			glm::vec3 n(0.0f);
+			n[axis] = 1.0f;
+			n = b.Orientation * n;
+			if (n.y < 0.0f)
+				n = -n;
+			float y = point.y - enter;
+			if (n.y > 0.7f && y > height)
+			{
+				height = y;
+				normal = n;
+				found = true;
+			}
+		}
+		return found;
+	}
+	float GroundY(const glm::vec3& point, float floor = 0.0f) const
+	{
+		float height;
+		glm::vec3 normal;
+		return GroundUnder(point, height, normal, floor) ? height : floor;
 	}
 
 	// ---------------------------------------------------------------------
@@ -2423,20 +2689,20 @@ public:
 
 	// Rays along `F` from the ground under him: the nearest face at knee,
 	// waist, chest or head height, then down onto its top just past the
-	// face, then on along the top to find where it ends. Only fixed things
-	// count (a crate is something to push, not to climb), and nothing that
-	// faces up more than it faces him: a slope is walked.
+	// face, then on along the top to find where it ends. Only solid things
+	// count -- fixed, or a crate heavy enough and at rest (Solid) -- and
+	// nothing that faces up more than it faces him: a slope is walked.
 	Obstacle Sense(const glm::vec3& F) const
 	{
 		Obstacle o;
 		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 		const glm::vec3 up(0.0f, 1.0f, 0.0f);
 		float s = m_Proportions.Scale;
-		o.Ground = m_World.GroundHeightBelow(pelvis.Position, m_CharacterBodies, -1000.0f);
+		o.Ground = GroundY(pelvis.Position, -1000.0f);
 		glm::vec3 base(pelvis.Position.x, o.Ground, pelvis.Position.z);
 		auto fixed = [&](const GS::PhysicsWorld3D::RayHit& hit)
 		{
-			return hit.Hit && m_World.GetBody(hit.Body).Type == GS::BodyType::Static;
+			return hit.Hit && Solid(hit.Body);
 		};
 		bool any = false;
 		for (float h : { 0.42f, 0.80f, 1.20f, 1.60f })
@@ -2466,12 +2732,17 @@ public:
 		GS::PhysicsWorld3D::RayHit room = m_World.Raycast(base + up * (height + 0.30f * s), F, o.Distance + 0.35f * s, m_CharacterBodies);
 		bool roof = fixed(room);
 
+		// From a metre over the top, not 30 cm: a ray that starts inside
+		// what rises beyond the top sees nothing of it and goes on to the
+		// floor, so a flight of stairs -- the 3rd step's riser the first
+		// face the rays meet, the 5th step 34 cm above it -- read as a wall
+		// 60 cm deep, and running at it vaulted the stairs.
 		o.Depth = 1.2f * s;
 		o.Beyond = o.Top;
 		for (int k = 1; k <= 8; k++)
 		{
 			glm::vec3 p = over + F * (0.12f * s * (float)k);
-			GS::PhysicsWorld3D::RayHit down = m_World.Raycast(glm::vec3(p.x, o.Top + 0.3f * s, p.z), -up, 4.6f * s, m_CharacterBodies);
+			GS::PhysicsWorld3D::RayHit down = m_World.Raycast(glm::vec3(p.x, o.Top + 1.0f * s, p.z), -up, 5.3f * s, m_CharacterBodies);
 			if (!down.Hit || down.Point.y < o.Top - 0.3f * s)
 			{
 				o.Depth = 0.12f * s * (float)k;
@@ -2480,11 +2751,17 @@ public:
 			}
 		}
 
+		// How high the face stands over the ground just in front of it,
+		// which on stairs is the step below it, not the floor under him: a
+		// riser the walk takes is a step however far up the flight it is.
+		glm::vec3 front = base + F * std::max(o.Distance - 0.10f * s, 0.0f);
+		float before = GroundY(glm::vec3(front.x, o.Top + 0.05f * s, front.z), -1000.0f);
+
 		// To 2.6 m in his scale: the hands reach 2.1 standing, and a jump
 		// of half a metre catches the edge above that (the climb's hang).
 		if (!top.Hit || roof || height > 2.6f * s)
 			o.Type = Obstacle::Wall;
-		else if (height < m_MaxStepUp * 1.05f)
+		else if (height < m_MaxStepUp * 1.05f || o.Top - before < m_MaxStepUp * 1.05f)
 			o.Type = Obstacle::None;   // a step: the walk takes it
 		else if (o.Depth <= 0.75f * s && height <= 1.15f * s)
 			o.Type = o.Beyond > o.Ground - 4.5f * s ? Obstacle::Vault : Obstacle::Wall;   // a drop beyond is landed, or rolled
@@ -2563,6 +2840,13 @@ public:
 		// as well had him stand at it, run held, for good.
 		bool running = m_Control.Enabled && m_Control.Run && m_RunBlend > 0.5f;
 		bool square = facing > 0.75f && m_Air == Air::Grounded && glm::length(m_StaggerVelocity) < 0.1f;
+		// Walked up to, something low he can stand on -- a crate, a box --
+		// is stepped onto rather than over; run at, it is still a vault.
+		if (square && jump && !running && o.Type == Obstacle::Vault && StepsOnto(o) && o.Distance <= 0.80f * s + 0.15f * m_Speed)
+		{
+			PlanStepOn(o);
+			return true;
+		}
 		if (square && o.Type == Obstacle::Vault && o.Distance <= 0.55f * s + 0.22f * m_Speed && (jump || running))
 		{
 			PlanVault(o);
@@ -2587,6 +2871,14 @@ public:
 			return true;
 		}
 		return false;
+	}
+
+	// A top low enough to step onto and deep enough to stand on: half a
+	// metre takes the feet where PlanStepOn puts them, 22 cm past the edge.
+	bool StepsOnto(const Obstacle& o) const
+	{
+		float s = m_Proportions.Scale;
+		return o.Top - o.Ground <= 0.80f * s && o.Depth >= 0.45f * s && o.Beyond >= o.Ground - 0.3f * s;
 	}
 
 	// Running, jump, a tall wall alongside: onto it.
@@ -2706,22 +2998,82 @@ public:
 	// flexes to about 120 degrees with the knee bent (the rig's cone is 55,
 	// which is about where a straight leg stops), the back rounds, the arm
 	// goes overhead (170). Opened for the move or the get-up, back as built after.
+	// Closed, they close as the limbs come in (EaseJointsClosed) rather than
+	// at once: a cone shut on a limb still outside it shoves the limb in
+	// within a step, and an arm still up from a climb went from 170 degrees
+	// of room to 75 in one.
 	void OpenJoints(bool open)
 	{
-		if (!m_ConesStored)
-		{
-			for (int side = 0; side < 2; side++)
-				m_HipConeBuilt[side] = m_World.GetJoint(m_HipJoint[side]).ConeAngle;
-			m_SpineCone = m_World.GetJoint(m_SpineJoint).ConeAngle;
-			m_ConesStored = true;
-		}
+		StoreCones();
+		m_JointsClosing = !open;
+		if (!open)
+			return;
 		for (int side = 0; side < 2; side++)
-			m_World.GetJoint(m_HipJoint[side]).ConeAngle = open ? glm::radians(118.0f) : m_HipConeBuilt[side];
-		m_World.GetJoint(m_SpineJoint).ConeAngle = open ? glm::radians(60.0f) : m_SpineCone;
+			m_World.GetJoint(m_HipJoint[side]).ConeAngle = glm::radians(118.0f);
+		m_World.GetJoint(m_SpineJoint).ConeAngle = glm::radians(60.0f);
 		// Overhead, for hanging and catching an edge: an arm straight up is
 		// 180 degrees from hanging at the side. At 120 the hands of a hang
 		// stopped 19-25 cm short of the edge they were meant to hold.
-		ShoulderCone(open ? 170.0f : 75.0f);
+		ShoulderCone(170.0f);
+	}
+
+	void StoreCones()
+	{
+		if (m_ConesStored)
+			return;
+		for (int side = 0; side < 2; side++)
+			m_HipConeBuilt[side] = m_World.GetJoint(m_HipJoint[side]).ConeAngle;
+		m_SpineCone = m_World.GetJoint(m_SpineJoint).ConeAngle;
+		m_SpineTwistBuilt[0] = m_World.GetJoint(m_SpineJoint).TwistLower;
+		m_SpineTwistBuilt[1] = m_World.GetJoint(m_SpineJoint).TwistUpper;
+		m_ConesStored = true;
+	}
+
+	// Each step while closing: a cone no tighter than its limb is now (and
+	// a little), so it never shoves it, and narrowing by at least 45 degrees
+	// a second, so a limb its motor holds out is brought in gently rather
+	// than left with room it should not have. Done once all are as built.
+	void EaseJointsClosed(float dt)
+	{
+		if (!m_JointsClosing)
+			return;
+		StoreCones();
+		bool done = true;
+		auto ease = [&](GS::PhysicsWorld3D::JointHandle handle, float target)
+		{
+			GS::Joint3D& joint = m_World.GetJoint(handle);
+			float next = std::max(target, std::min(joint.SwingAngle + glm::radians(3.0f), joint.ConeAngle - glm::radians(45.0f) * dt));
+			joint.ConeAngle = std::min(joint.ConeAngle, next);
+			done = done && joint.ConeAngle <= target + 1e-4f;
+		};
+		for (int side = 0; side < 2; side++)
+		{
+			ease(m_HipJoint[side], m_HipConeBuilt[side]);
+			ease(m_ShoulderJoint[side], glm::radians(75.0f));
+		}
+		ease(m_SpineJoint, m_SpineCone);
+		// The spine's twist the same way, each end of its range.
+		{
+			GS::Joint3D& spine = m_World.GetJoint(m_SpineJoint);
+			float step = glm::radians(45.0f) * dt, margin = glm::radians(3.0f);
+			float upper = std::max(m_SpineTwistBuilt[1], std::min(spine.TwistAngle + margin, spine.TwistUpper - step));
+			float lower = std::min(m_SpineTwistBuilt[0], std::max(spine.TwistAngle - margin, spine.TwistLower + step));
+			spine.TwistUpper = std::min(spine.TwistUpper, upper);
+			spine.TwistLower = std::max(spine.TwistLower, lower);
+			done = done && spine.TwistUpper <= m_SpineTwistBuilt[1] + 1e-4f && spine.TwistLower >= m_SpineTwistBuilt[0] - 1e-4f;
+		}
+		m_JointsClosing = !done;
+	}
+
+	// Closed now, for a body put back in its built pose (Respawn).
+	void CloseJointsNow()
+	{
+		StoreCones();
+		for (int side = 0; side < 2; side++)
+			m_World.GetJoint(m_HipJoint[side]).ConeAngle = m_HipConeBuilt[side];
+		OpenSpine(false);
+		ShoulderCone(75.0f);
+		m_JointsClosing = false;
 	}
 
 	// Common to every move once it is planned: the keys' seconds become
@@ -2802,7 +3154,7 @@ public:
 		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 		const glm::vec3 up(0.0f, 1.0f, 0.0f);
 		float s = m_Proportions.Scale;
-		float g = m_World.GroundHeightBelow(pelvis.Position, m_CharacterBodies, -1000.0f);
+		float g = GroundY(pelvis.Position, -1000.0f);
 		glm::vec3 R = glm::cross(up, F);
 		auto fixedWall = [&](const GS::PhysicsWorld3D::RayHit& hit)
 		{
@@ -2922,6 +3274,7 @@ public:
 		m_WallNormal = n;
 		m_WallRunDir = D;
 		m_WallRunSpeed = v;
+		m_WallRunFrom = w.Distance;
 		m_Facing = heading;
 		BeginMove(Move::WallRun, T, v, T + 1.0f);
 	}
@@ -2963,6 +3316,11 @@ public:
 		glm::vec3 P0 = pelvis.Position;
 		float rise = hangY - P0.y;
 		if (rise > 0.8f * s || rise < -1.5f * s)
+			return false;
+		// Only to an edge he would have to jump for (PlanClimb's test): run
+		// at a crate a metre high and jump, and it was a leap into a "hang"
+		// with the hips below the floor, then a climb.
+		if (hangY <= o.Ground + m_StandClearance - 0.05f * s)
 			return false;
 		float v = std::max(m_Speed, 2.0f * rs);
 		float tC = 0.10f * rs;                              // the plant and push
@@ -3110,7 +3468,7 @@ public:
 			return false;
 		float s = m_Proportions.Scale;
 		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
-		float g0 = m_World.GroundHeightBelow(pelvis.Position, m_CharacterBodies, -1000.0f);
+		float g0 = GroundY(pelvis.Position, -1000.0f);
 		const glm::vec3 up(0.0f, 1.0f, 0.0f);
 		// Down rays ahead: the gap, then the far top, its near edge and
 		// where it ends.
@@ -3304,8 +3662,14 @@ public:
 		glm::vec3 n = m_WallNormal, F = -n, R = glm::cross(up, F);
 		m_MoveTimer += dt;
 
+		// The keys are his while he hangs, not the camera's: forward climbs,
+		// back lets go, right goes to his right -- round a corner too, where
+		// keys read through a camera that has not turned with him would
+		// point at the new wall, or away from it. R here (up x F) is his
+		// left, which is why right is -R: read straight onto R, as it was,
+		// D went to his left.
 		bool on = m_Control.Enabled;
-		float along = on ? (m_Control.Right ? 1.0f : 0.0f) - (m_Control.Left ? 1.0f : 0.0f) : 0.0f;
+		float along = on ? (m_Control.Left ? 1.0f : 0.0f) - (m_Control.Right ? 1.0f : 0.0f) : 0.0f;   // + towards R
 		float toward = on ? (m_Control.Forward ? 1.0f : 0.0f) - (m_Control.Back ? 1.0f : 0.0f) : 0.0f;
 		bool jump = m_WantsJump;
 		m_WantsJump = false;
@@ -3317,7 +3681,7 @@ public:
 			o.Type = Obstacle::Climb;
 			o.Distance = glm::dot(m_HangEdge - pelvis.Position, F);
 			o.Normal = n;
-			o.Ground = m_World.GroundHeightBelow(pelvis.Position, m_CharacterBodies, -1000.0f);
+			o.Ground = GroundY(pelvis.Position, -1000.0f);
 			o.Top = m_HangTop;
 			o.Depth = 1.2f * s;
 			m_Speed = 0.0f;
@@ -3422,7 +3786,7 @@ public:
 			// a climber's hang. Knees bent towards the wall went into it, a
 			// shin 24 cm.
 			glm::vec3 foot = m_HangEdge + R * (SideSign(side) * M.HipX) - F * (0.18f * s);
-			float ground = m_World.GroundHeightBelow(pelvis.Position, m_CharacterBodies, -1000.0f);
+			float ground = GroundY(pelvis.Position, -1000.0f);
 			foot.y = std::max(ground + m_AnkleHeight, target.y - M.HipDrop - 0.86f * (M.Thigh + M.Shin));
 			if (m_HangCornerTimer >= 0.0f && m_HangCornerTimer < 0.35f * rs)
 				foot = glm::vec3(m_HangCornerOut.x, foot.y, m_HangCornerOut.z) + R * (SideSign(side) * M.HipX);
@@ -3540,7 +3904,7 @@ public:
 		for (float h : { 0.30f, 0.90f })
 		{
 			GS::PhysicsWorld3D::RayHit hit = m_World.Raycast(ground + glm::vec3(0.0f, h * s, 0.0f), F, room, m_CharacterBodies);
-			if (hit.Hit && hit.Normal.y < 0.6f && m_World.GetBody(hit.Body).Type == GS::BodyType::Static)
+			if (hit.Hit && hit.Normal.y < 0.6f && Solid(hit.Body))
 				room = std::min(room, hit.Distance);
 		}
 		return room;
@@ -4046,7 +4410,7 @@ public:
 		for (int i = 0; i < 3; i++)
 		{
 			glm::vec3 x = P0 + vh * T;
-			gl = m_World.GroundHeightBelow(glm::vec3(x.x, P0.y, x.z), m_CharacterBodies, -1000.0f);
+			gl = GroundY(glm::vec3(x.x, P0.y, x.z), -1000.0f);
 			float drop = P0.y - (gl + stand);
 			if (gl < -999.0f || drop > 4.5f * s)
 				return false;
@@ -4143,7 +4507,7 @@ public:
 	// with the back rounded by `bend` and the knees in: the pelvis, the
 	// torso and head, the knees and feet of the tuck. A body rolling on a
 	// floor has its centre that high above it.
-	float LowestBelow(const glm::quat& q, float bend) const
+	float LowestBelow(const glm::quat& q, float bend, bool tuck = true) const
 	{
 		float s = m_Proportions.Scale;
 		const Proportions& P = m_Proportions;
@@ -4159,6 +4523,8 @@ public:
 		lowest = std::max(lowest, -torso.y + reach(qt, P.TorsoHalf));
 		glm::vec3 head = torso + qt * glm::vec3(0.0f, 0.26f * s, 0.10f * s);   // chin in
 		lowest = std::max(lowest, -head.y + P.HeadRadius);
+		if (!tuck)
+			return lowest;
 		const Measures M = BodyMeasures();
 		for (int side = 0; side < 2; side++)
 		{
@@ -4325,7 +4691,7 @@ public:
 		// Never into what is under him: the pelvis is carried, and nothing
 		// else would stop it.
 		{
-			float under = m_World.GroundHeightBelow(target, m_CharacterBodies, -1000.0f);
+			float under = GroundY(target, -1000.0f);
 			glm::mat3 r = glm::mat3_cast(turn);
 			const glm::vec3& half = m_Proportions.PelvisHalf;
 			float reach = std::fabs(r[0].y) * half.x + std::fabs(r[1].y) * half.y + std::fabs(r[2].y) * half.z;
@@ -4349,7 +4715,13 @@ public:
 			// Jump again to kick off; off the end, or where the wall stops.
 			float s = m_Proportions.Scale;
 			bool kick = m_WantsJump && m_MoveTimer > 0.12f * std::sqrt(s);
-			GS::PhysicsWorld3D::RayHit face = m_World.Raycast(pelvis.Position, -m_WallNormal, 1.0f * s, m_CharacterBodies);
+			// The face under him, which ends where the wall does. Further
+			// than the metre a run keeps while the hips close in on a wall
+			// turned onto from further off: a corner met at speed is turned
+			// 1.35 m short of it, and the run along it used to end there
+			// on its first step, the new wall out of reach.
+			float reach = m_MoveTimer < 0.25f * std::sqrt(s) ? std::max(1.0f * s, m_WallRunFrom + 0.3f * s) : 1.0f * s;
+			GS::PhysicsWorld3D::RayHit face = m_World.Raycast(pelvis.Position, -m_WallNormal, reach, m_CharacterBodies);
 			// An inside corner: a wall across the way ahead. Onto it, turning
 			// away from the one he is on, keeping the speed up he has --
 			// twice at most, so a corridor is not run up for ever.
@@ -4421,10 +4793,11 @@ public:
 	void FinishMove()
 	{
 		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
-		float ground = m_World.GroundHeightBelow(pelvis.Position, m_CharacterBodies, -1000.0f);
+		float ground = GroundY(pelvis.Position, -1000.0f);
 		m_StandHeight = pelvis.Position.y;
 		OpenJoints(false);
 		m_Move = Move::None;
+		EaseArmsFromHere();
 		GoControlled();
 		m_StandTarget = ground + m_StandClearance - m_Crouch;
 		m_Speed = m_MoveExit;
@@ -4492,17 +4865,17 @@ public:
 			// driven things only: something thrown at his legs still counts.
 			unsigned int other = mineA ? contact.B : contact.A;
 			bool leg = mine == m_UpperLeg[0] || mine == m_UpperLeg[1] || mine == m_LowerLeg[0] || mine == m_LowerLeg[1];
-			if (leg && m_World.GetBody(other).Type != GS::BodyType::Dynamic)
+			if (leg && !Loose(other))
 				continue;
 			// Nor a hand or arm against a wall: stopping at one, running, the
 			// arms swing into it, and read as a blow that stumbled him
 			// sideways along it.
 			bool arm = mine == m_UpperArm[0] || mine == m_UpperArm[1] || mine == m_LowerArm[0] || mine == m_LowerArm[1];
-			if (arm && m_World.GetBody(other).Type != GS::BodyType::Dynamic)
+			if (arm && !Loose(other))
 				continue;
 			// Just off a vault or a climb, hands and knees are still leaving
 			// the top they were on.
-			if (m_MoveGrace > 0.0f && m_World.GetBody(other).Type != GS::BodyType::Dynamic)
+			if (m_MoveGrace > 0.0f && !Loose(other))
 				continue;
 
 			float force = contact.TotalNormalImpulse() / dt;
@@ -4564,8 +4937,7 @@ public:
 	// controlled falling and is supposed to look like that.
 	float CatchableSpeed() const
 	{
-		float ground = m_World.GroundHeightBelow(
-			m_World.GetBody(m_Pelvis).Position, m_CharacterBodies, -1000.0f);
+		float ground = GroundY(m_World.GetBody(m_Pelvis).Position, -1000.0f);
 		float height = glm::clamp(m_Balance.Com.y - ground, 0.2f, 2.0f);
 		float tau = std::sqrt(height / 9.81f);
 
@@ -4789,7 +5161,7 @@ public:
 		for (int side = 0; side < 2; side++)
 		{
 			const GS::RigidBody3D& foot = m_World.GetBody(m_Foot[side]);
-			float ground = m_World.GroundHeightBelow(foot.Position, m_CharacterBodies, -1000.0f);
+			float ground = GroundY(foot.Position, -1000.0f);
 			m_FootGround[side] = ground;
 			touching[side] = FootTouching(side) || SoleHeight(side) - ground < 0.015f;
 			if (touching[side])
@@ -5479,7 +5851,7 @@ public:
 		// "there is nothing here" is answerable at all. With the default the
 		// probe reports y = 0 off the edge of the world and the character
 		// walks out over the void on an invisible floor.
-		float groundHere = m_World.GroundHeightBelow(under, m_CharacterBodies, -1000.0f);
+		float groundHere = GroundY(under, -1000.0f);
 
 		// --- the jump --------------------------------------------------------
 		//
@@ -5500,7 +5872,18 @@ public:
 			m_JumpPending = true;
 		m_WantsJump = false;
 
-		if (m_JumpPending && m_Air == Air::Grounded)
+		// Pressed with a move just ahead and not yet in reach -- the hint is
+		// up a stride early -- the jump waits for the move instead of going
+		// off as a hop in front of the wall, which is what pressing as the
+		// hint came up used to do (measured in the course: a hop, then a
+		// stop at the wall, every time). Not for ever: he may turn away.
+		if (!m_JumpPending)
+			m_JumpWait = 0.0f;
+		bool waiting = m_JumpPending && m_Parkour && ParkourHint()[0] && m_JumpWait < 0.6f;
+		if (waiting)
+			m_JumpWait += dt;
+
+		if (m_JumpPending && m_Air == Air::Grounded && !waiting)
 		{
 			bool moving = m_Speed > m_JumpGateSpeed;
 			int planting = -1;
@@ -5739,7 +6122,7 @@ public:
 			* m_SpineRest);
 
 		PlaceFeet(dt, forward, right, stride);
-		SwingArms(stride);
+		SwingArms(stride, dt);
 	}
 
 	// Arms swing opposite the leg on the same side. That is not decoration:
@@ -5747,8 +6130,15 @@ public:
 	// step and the arms are what cancels it, which is why walking with your
 	// arms folded feels like work. Antiphase is the whole trick -- in phase
 	// looks like a toy soldier.
-	void SwingArms(float stride)
+	void SwingArms(float stride, float dt)
 	{
+		// Out of a get-up or a move the arms come from wherever it left
+		// them, over a third of a second. They used to be handed straight to
+		// the walk, and the get-up's last pose had the elbows bent 36
+		// degrees (a hanging hand is aimed at 95% of the arm's length):
+		// both forearms flicked straight at 415 deg/s the moment he stood.
+		m_ArmEase = std::min(m_ArmEase + dt / 0.35f, 1.0f);
+		float ease = glm::smoothstep(0.0f, 1.0f, m_ArmEase);
 		for (int side = 0; side < 2; side++)
 		{
 			// Same phase the leg on this side uses, turned half a cycle round.
@@ -5766,15 +6156,32 @@ public:
 			// about the torso's forward axis, outwards on each side.
 			if (m_GaitApplied && m_Gait.ArmsOut != 0.0f)
 				turn = turn * glm::angleAxis((side == 0 ? -1.0f : 1.0f) * m_Gait.ArmsOut, glm::vec3(0.0f, 0.0f, 1.0f));
-			m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation =
-				glm::normalize(turn * m_ShoulderRest[side]);
+			glm::quat shoulder = glm::normalize(turn * m_ShoulderRest[side]);
 
 			// A little more bend on the forward swing than the back, which is
 			// what an arm actually does -- it does not stay straight.
 			float bend = m_ElbowBend * (1.0f + m_RunBlend)
 				* (0.6f + 0.4f * std::sin(phase)) * stride;
-			m_World.GetJoint(m_ElbowJoint[side]).MotorTargetAngle = -bend;
+			float elbow = -bend;
+			if (ease < 1.0f)
+			{
+				shoulder = glm::normalize(glm::slerp(m_ArmFrom[side], shoulder, ease));
+				elbow = glm::mix(m_ElbowFrom[side], elbow, ease);
+			}
+			m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation = shoulder;
+			m_World.GetJoint(m_ElbowJoint[side]).MotorTargetAngle = elbow;
 		}
+	}
+
+	// The walk's arms to start from where they are driven now.
+	void EaseArmsFromHere()
+	{
+		for (int side = 0; side < 2; side++)
+		{
+			m_ArmFrom[side] = m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation;
+			m_ElbowFrom[side] = m_World.GetJoint(m_ElbowJoint[side]).MotorTargetAngle;
+		}
+		m_ArmEase = 0.0f;
 	}
 
 	// ---------------------------------------------------------------------
@@ -6048,7 +6455,7 @@ public:
 				+ right * ((side == 0 ? -m_StanceWidth : m_StanceWidth) + m_StepJitter[side].y);
 			// The ankle rides above the sole, so a target on the ground is a
 			// target with the foot buried in it.
-			landing.y = m_World.GroundHeightBelow(landing + glm::vec3(0.0f, 1.0f, 0.0f), m_CharacterBodies) + m_AnkleHeight;
+			landing.y = GroundY(landing + glm::vec3(0.0f, 1.0f, 0.0f)) + m_AnkleHeight;
 
 			// How much higher this foot's next foothold is than the one it is
 			// standing on. This used to be a single probe a stride ahead of
@@ -6064,7 +6471,7 @@ public:
 			// and a lift that starts once the foot is already over the riser
 			// arrives after the swing has passed its peak.
 			glm::vec3 beyond = landing + forward * (CurrentStride() * 0.5f * stride);
-			float ahead = m_World.GroundHeightBelow(beyond + glm::vec3(0.0f, 1.0f, 0.0f), m_CharacterBodies) + m_AnkleHeight;
+			float ahead = GroundY(beyond + glm::vec3(0.0f, 1.0f, 0.0f)) + m_AnkleHeight;
 
 			float climb = glm::clamp(
 				(std::max(landing.y, ahead) - m_Planted[side].y) / m_MaxStepUp, 0.0f, 1.0f);
@@ -6141,7 +6548,7 @@ public:
 				{
 					float fall = glm::clamp(1.0f - m_JumpOffset / std::max(m_JumpHeight, 0.05f), 0.0f, 1.0f);
 					glm::vec3 floor = tuck;
-					floor.y = m_World.GroundHeightBelow(tuck + glm::vec3(0.0f, 1.0f, 0.0f), m_CharacterBodies) + m_AnkleHeight;
+					floor.y = GroundY(tuck + glm::vec3(0.0f, 1.0f, 0.0f)) + m_AnkleHeight;
 					tuck = glm::mix(tuck, floor, glm::smoothstep(0.0f, 1.0f, fall));
 				}
 
@@ -6335,12 +6742,73 @@ public:
 		return torso.Position + torso.Orientation * m_ShoulderLocal[side];
 	}
 
-	// Put a hand somewhere. Same solve as a leg, mirrored at the elbow.
+	// Put a hand somewhere, the elbow pointing the way an elbow does: back
+	// and down, in the torso's own frame -- so it stays natural however he
+	// is turned, lying, rolling or hanging. The upper arm is given its whole
+	// orientation, direction and twist, as SolveLegPole gives the thigh, and
+	// the elbow its bend. It used to be aimed with the shortest rotation from
+	// hanging (SolveLimb), which leaves the twist to chance: with the hands
+	// overhead that rotation is all but undefined, and rolling over in the
+	// get-up the elbows bent sideways (the hinge 4 degrees off square to his
+	// sides) while the arms whipped round at up to 580 deg/s.
 	void SolveArm(int side, const glm::vec3& handWorld)
 	{
-		SolveLimb(m_World.GetBody(m_Torso).Orientation, ShoulderWorld(side), handWorld,
-			m_UpperArmLength, m_ForearmLength,
-			m_ShoulderJoint[side], m_ShoulderRest[side], m_ElbowJoint[side], -1.0f);
+		const GS::RigidBody3D& torso = m_World.GetBody(m_Torso);
+		glm::vec3 shoulder = ShoulderWorld(side);
+		float upper = m_UpperArmLength, fore = m_ForearmLength;
+		glm::vec3 toHand = handWorld - shoulder;
+		float length = glm::length(toHand);
+		if (length < 1e-4f)
+			return;
+		glm::vec3 d = toHand / length;
+		// No nearer than the elbow can fold to, 5 degrees short of its stop:
+		// a hand asked for beside the shoulder -- the bottom of a push-up --
+		// wanted 150-167 degrees of an elbow that stops at 140, and the motor
+		// driving into the stop flung the arm about.
+		GS::Joint3D& elbowJoint = m_World.GetJoint(m_ElbowJoint[side]);
+		float foldMost = std::max(-elbowJoint.LowerLimit - glm::radians(5.0f), 0.0f);
+		float nearest = std::sqrt(upper * upper + fore * fore + 2.0f * upper * fore * std::cos(foldMost));
+		float reach = glm::clamp(length, std::max(nearest, std::fabs(upper - fore) + 0.01f), (upper + fore) * m_LegCap);
+		glm::vec3 tx = torso.Orientation * glm::vec3(1.0f, 0.0f, 0.0f);
+		glm::vec3 ty = torso.Orientation * glm::vec3(0.0f, 1.0f, 0.0f);
+		glm::vec3 tz = torso.Orientation * glm::vec3(0.0f, 0.0f, 1.0f);
+		// Back and down. With no outward lean in it, an arm hanging at his
+		// side solves to exactly the pose it was built in -- the one the walk
+		// holds it in -- so nothing turns when one hands over to the other.
+		glm::vec3 pole = -tz - 0.5f * ty;
+		glm::vec3 e = pole - d * glm::dot(pole, d);
+		if (glm::length(e) < 0.25f)
+		{
+			// Reaching back and down along it: down and out instead.
+			pole = -ty + tx * (side == 0 ? -1.0f : 1.0f);
+			e = pole - d * glm::dot(pole, d);
+		}
+		e = glm::normalize(e);
+		float alpha = std::acos(glm::clamp((upper * upper + reach * reach - fore * fore) / (2.0f * upper * reach), -1.0f, 1.0f));
+		glm::vec3 elbow = shoulder + (d * std::cos(alpha) + e * std::sin(alpha)) * upper;
+		// The bone's frame as it was built: +y up it to the shoulder, +z the
+		// way the forearm folds (away from where the elbow points), +x the
+		// hinge. Built hanging, that frame is the torso's, so the arm's own
+		// turn within it is the shoulder's rest.
+		glm::vec3 y = glm::normalize(shoulder - elbow);
+		glm::vec3 z = -e - y * glm::dot(-e, y);
+		z = glm::length(z) > 1e-4f ? glm::normalize(z) : tz;
+		glm::quat upperWorld = glm::normalize(glm::quat_cast(glm::mat3(glm::cross(y, z), y, z)));
+		glm::quat target = glm::normalize(glm::conjugate(torso.Orientation) * upperWorld * m_ShoulderRest[side]);
+		// And inside the shoulder's cone, 4 degrees in, for the same reason:
+		// a target past it is a motor pushing against a limit that pushes
+		// back, and that is a flail (an arm at 4,700 deg/s getting up).
+		GS::Joint3D& shoulderJoint = m_World.GetJoint(m_ShoulderJoint[side]);
+		const glm::vec3 down(0.0f, -1.0f, 0.0f);
+		glm::vec3 restDown = shoulderJoint.ConeTwistRest * down, wantDown = target * down;
+		float swing = std::acos(glm::clamp(glm::dot(restDown, wantDown), -1.0f, 1.0f));
+		float room = shoulderJoint.ConeAngle - glm::radians(4.0f);
+		glm::vec3 back = glm::cross(wantDown, restDown);
+		if (swing > room && glm::length(back) > 1e-5f)
+			target = glm::normalize(glm::angleAxis(swing - room, glm::normalize(back)) * target);
+		shoulderJoint.MotorTargetRotation = target;
+		float cosElbow = (upper * upper + fore * fore - reach * reach) / (2.0f * upper * fore);
+		elbowJoint.MotorTargetAngle = -(glm::pi<float>() - std::acos(glm::clamp(cosElbow, -1.0f, 1.0f)));
 	}
 
 	void SolveLeg(int side, const glm::vec3& hipWorld, const glm::vec3& footWorld, float dt)
@@ -6495,7 +6963,7 @@ public:
 
 		// From a metre above, so a target already at ground level still finds
 		// the surface it is sitting on rather than the one below it.
-		if (!m_World.GroundBelow(footWorld + up, height, ground, m_CharacterBodies, -1000.0f))
+		if (!GroundUnder(footWorld + up, height, ground, -1000.0f))
 			return none;
 
 		float tilt = std::acos(glm::clamp(ground.y, -1.0f, 1.0f));
@@ -7142,6 +7610,7 @@ protected:
 	float m_LandTime = 0.18f;
 	float m_TuckFraction = 0.72f;     // how far the tucked leg reaches down
 	bool m_JumpPending = false;       // pressed, waiting for a foot to push off
+	float m_JumpWait = 0.0f;          // seconds a press has waited for a move ahead to come in reach
 	int m_JumpLead = -1;              // which leg swings through in front, -1 for a hop
 	float m_JumpGateSpeed = 0.5f;     // below this it is a standing hop, no waiting
 	float m_JumpGateWindow = 0.10f;   // how soon after a plant counts as "on it"
@@ -7201,10 +7670,16 @@ protected:
 	std::vector<TrackPoint> m_Track;
 	size_t m_TrackIndex = 0;
 	Move m_Move = Move::None;
+	// Loose bodies counted as solid this step (RefreshStandable), and which
+	// bodies are jointed to something, rebuilt when the world's counts change.
+	std::vector<GS::PhysicsWorld3D::BodyHandle> m_Standable;
+	std::vector<char> m_Jointed;
+	size_t m_JointsSeen = 0;
 	float m_MoveTime = 1.0f, m_MoveTimer = 0.0f, m_MoveExit = 0.0f, m_MoveGrace = 0.0f;
 	float m_ChainFrom = 1.0f;
 	glm::vec3 m_WallNormal{ 0.0f }, m_WallRunDir{ 0.0f, 0.0f, 1.0f };
 	float m_WallRunSpeed = 0.0f;
+	float m_WallRunFrom = 0.0f;   // how far off the wall the run began: a corner's
 	bool m_SpeedVault = false;
 	int m_WallRunCorners = 0;
 	uint32_t m_HangCorners = 0;
@@ -7219,7 +7694,19 @@ protected:
 	uint32_t m_Chained = 0;            // moves started straight from another, for the panel
 	float m_RollSpeed = 6.5f;          // m/s down at landing, scaled by sqrt(s), past which he rolls (about a 2.2 m drop)
 	bool m_ConesStored = false;
+	bool m_JointsClosing = false;     // easing the cones back as built (EaseJointsClosed)
+	bool m_FreshSpawn = false;        // respawned since the last step: its contacts are not his
+	// The hips heavy rather than kinematic while getting up (HipsHeavy), and
+	// what they weighed before.
+	bool m_HipsHeavy = false;
+	float m_PelvisInverseMass = 0.0f;
+	glm::mat3 m_PelvisInverseInertia = glm::mat3(1.0f);
+	// The walk's arms easing in from a get-up or a move (SwingArms).
+	float m_ArmEase = 1.0f;
+	glm::quat m_ArmFrom[2] = { glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f) };
+	float m_ElbowFrom[2] = { 0.0f, 0.0f };
 	float m_HipConeBuilt[2] = { 0.0f, 0.0f }, m_SpineCone = 0.0f;
+	float m_SpineTwistBuilt[2] = { 0.0f, 0.0f };   // lower, upper
 	bool m_NaturalGetUp = true;       // the choreographed one (PlanGetUp); off, the old three-waypoint lift
 	std::vector<GetUpKey> m_GetUpKeys;
 	float m_GetUpTime2 = 2.5f;        // s, the choreography's length, set by PlanGetUp
