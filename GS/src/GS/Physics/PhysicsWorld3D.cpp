@@ -2196,6 +2196,57 @@ namespace GS {
 			if (point.x < low.x || point.x > high.x || point.z < low.z || point.z > high.z)
 				continue;
 
+			// A tilted box is a ramp, and its bounds' top is not its surface:
+			// a 20 degree ramp 4 m long reported its top edge's height all
+			// the way down it, so he stood 1.4 m up in the air at its foot
+			// and nothing could be a slope. Asked straight down through the
+			// box in its own frame instead -- Raycast's slab test -- where
+			// the face it enters is the ground and its normal the slope's. A
+			// box whose axes are level keeps the bounds' answer, which for
+			// it is exact, so every scene built of level boxes stands where
+			// it stood to the bit.
+			if (body.Shape == ColliderShape3D::Box)
+			{
+				glm::mat3 r = glm::mat3_cast(body.Orientation);
+				bool level = std::abs(r[0].y) == 1.0f || std::abs(r[1].y) == 1.0f || std::abs(r[2].y) == 1.0f;
+				if (!level)
+				{
+					glm::quat inverse = glm::inverse(body.Orientation);
+					glm::vec3 lo = inverse * (point - body.Position);
+					glm::vec3 ld = inverse * glm::vec3(0.0f, -1.0f, 0.0f);
+					float enter = 0.0f, leave = point.y - best;
+					int axis = -1;
+					float sign = 1.0f;
+					bool miss = leave <= 0.0f;
+					for (int a = 0; a < 3 && !miss; a++)
+					{
+						if (std::abs(ld[a]) < 1e-9f)
+						{
+							miss = std::abs(lo[a]) > body.HalfExtents[a];
+							continue;
+						}
+						float t1 = (-body.HalfExtents[a] - lo[a]) / ld[a];
+						float t2 = (body.HalfExtents[a] - lo[a]) / ld[a];
+						float s = -1.0f;
+						if (t1 > t2) { std::swap(t1, t2); s = 1.0f; }
+						if (t1 > enter) { enter = t1; axis = a; sign = s; }
+						leave = std::min(leave, t2);
+						miss = enter > leave;
+					}
+					// A start inside the box reports nothing (axis stays -1),
+					// as the level answer does for a point below its top.
+					if (!miss && axis >= 0)
+					{
+						glm::vec3 n(0.0f);
+						n[axis] = sign;
+						best = point.y - enter;
+						bestNormal = body.Orientation * n;
+						found = true;
+					}
+					continue;
+				}
+			}
+
 			// Below the point, and the highest such surface wins -- a step on
 			// a floor should report the step.
 			if (high.y <= point.y && high.y > best)

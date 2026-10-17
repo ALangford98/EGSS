@@ -160,6 +160,8 @@ public:
 		// Out of whatever move it was in: a respawn mid-climb left the
 		// joints open and the move half set up.
 		m_Move = Move::None;
+		m_DodgeAsked = 0.0f;
+		m_DodgeCooldown = 0.0f;
 		CloseJointsNow();
 		m_ArmEase = 1.0f;
 		m_FreshSpawn = true;
@@ -193,6 +195,8 @@ public:
 	// Down: a ragdoll, no longer driven -- fallen, shoved too hard, or
 	// dropped with nothing under it.
 	bool IsDown() const { return m_Mode == Mode::Ragdoll; }
+	// Why he last went down ("outrun", "toppled", "hit mid-move" ...).
+	const char* DownReason() const { return m_RagdollReason; }
 	// Hit while standing and catching it with its feet (UpdateStumble).
 	bool IsStumbling() const { return m_Mode == Mode::Stumbling; }
 	bool IsGettingUp() const { return m_Mode == Mode::GettingUp; }
@@ -215,6 +219,7 @@ public:
 			case Move::CatLeap: return "cat leap";
 			case Move::TicTac: return "tic-tac";
 			case Move::Precision: return "precision jump";
+			case Move::Dodge: return DodgeName();
 			default: return "";
 		}
 	}
@@ -245,6 +250,36 @@ public:
 			default: return "";
 		}
 	}
+	// A dodge, along `direction` (world, flattened; zero for the way
+	// that suits -- back, standing): what it becomes depends on how fast
+	// he is going (TryDodge). Asked for on the press, it waits a quarter
+	// of a second for a moment it can go -- landing, the end of a move.
+	void RequestDodge(const glm::vec3& direction)
+	{
+		m_DodgeAsked = 0.25f;
+		m_DodgeWish = direction;
+	}
+	bool IsDodging() const { return m_Mode == Mode::Moving && m_Move == Move::Dodge; }
+	// What a dodge was, or is: "sidestep", "cut", "brake", "dive".
+	const char* DodgeName() const
+	{
+		switch (m_DodgeKind)
+		{
+			case Dodge::Step: return "sidestep";
+			case Dodge::Cut: return "cut";
+			case Dodge::Brake: return "brake";
+			case Dodge::Dive: return "dive";
+			default: return "";
+		}
+	}
+	uint32_t DodgeCount() const { return m_Dodges; }
+	// On his feet and free to act: walking, standing, or in a dodge --
+	// what a game asks before it gives him something to get out of the
+	// way of (a move, a hang, a fall or a get-up is none of these).
+	bool CanReact() const
+	{
+		return (m_Mode == Mode::Controlled && m_Air == Air::Grounded) || IsDodging();
+	}
 	void SetParkour(bool on) { m_Parkour = on; }
 	bool GetParkour() const { return m_Parkour; }
 	float TimeDown() const { return m_RagdollTimer; }
@@ -258,7 +293,9 @@ public:
 	void Update(float dt)
 	{
 		m_Clock += dt;
+		m_LastDt = dt;
 		m_MoveGrace = std::max(m_MoveGrace - dt, 0.0f);
+		m_DodgeCooldown = std::max(m_DodgeCooldown - dt, 0.0f);
 		RefreshStandable();
 		EaseJointsClosed(dt);
 		m_Balance = ComputeBalance();
@@ -294,6 +331,18 @@ public:
 					Stagger(hit * dt, hitFrom);
 			}
 
+			// A dodge asked for: from the walk, on the ground. A press that
+			// cannot go yet (in the air, cooling down) waits for a moment.
+			if (m_Mode == Mode::Controlled && m_DodgeAsked > 0.0f)
+			{
+				m_DodgeAsked -= dt;
+				if (m_Air == Air::Grounded && m_DodgeCooldown <= 0.0f && TryDodge(m_DodgeWish))
+				{
+					m_DodgeAsked = 0.0f;
+					return;
+				}
+			}
+
 			if (m_Mode == Mode::Controlled)
 				DriveWalk(dt);
 		}
@@ -307,7 +356,27 @@ public:
 		}
 		else if (m_Mode == Mode::Moving)
 		{
-			UpdateMove(dt);
+			// Hit in the middle of a move -- a cannonball mid-vault, or mid-
+			// dodge -- he goes down. The hips are carried, so the blow went
+			// into an immovable body and moved nothing; it is handed to the
+			// limp one. Only loose things count: in a move his hands, knees
+			// and hips are meant to be on the walls and tops he is going over.
+			glm::vec3 hitFrom(0.0f);
+			float hit = ImpactForce(dt, hitFrom, true);
+			if (hit > m_MoveHitThreshold && m_Move != Move::Hang)
+			{
+				glm::vec3 push = m_HitPush;
+				OpenJoints(false);
+				m_Move = Move::None;
+				GoRagdoll("hit mid-move");
+				m_World.ApplyImpulseAt(m_Torso, push * (hit * dt), m_World.GetBody(m_Torso).Position);
+			}
+			else
+			{
+				if (m_DodgeAsked > 0.0f)
+					m_DodgeAsked -= dt;
+				UpdateMove(dt);
+			}
 		}
 		else
 		{
@@ -2414,12 +2483,28 @@ public:
 		return local ? m_World.GetBody(m_Pelvis).Orientation * d : d;
 	}
 
+	// `w` of the way from `from` to `to`, both in the world, along the
+	// straight line between them in the pelvis's own frame as it is now.
+	glm::vec3 BodyBlend(const glm::vec3& from, const glm::vec3& to, float w) const
+	{
+		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		glm::quat inverse = glm::inverse(pelvis.Orientation);
+		glm::vec3 a = inverse * (from - pelvis.Position), b = inverse * (to - pelvis.Position);
+		return pelvis.Position + pelvis.Orientation * glm::mix(a, b, w);
+	}
+
 	void DriveKeyLimbs(const GetUpKey& a, const GetUpKey& b, float w, float ground)
 	{
 		const glm::vec3 up(0.0f, 1.0f, 0.0f);
+		float spine = glm::mix(a.Spine, b.Spine, w);
 		m_World.GetJoint(m_SpineJoint).MotorTargetRotation =
-			glm::normalize(glm::angleAxis(glm::mix(a.Spine, b.Spine, w), glm::vec3(1.0f, 0.0f, 0.0f)) * m_SpineRest);
-		m_World.GetJoint(m_NeckJoint).MotorTargetRotation = m_NeckRest;
+			glm::normalize(glm::angleAxis(spine, glm::vec3(1.0f, 0.0f, 0.0f)) * m_SpineRest);
+		// The chin tucked as the back rounds past 20 degrees, as a person
+		// rolling tucks it -- and as LowestBelow already supposed. Held as
+		// built, the head of a dive's roll met the floor at 17-32 kN while
+		// the rest of him cleared it. Nothing the get-up bends that far.
+		float tuck = glm::clamp(spine - glm::radians(20.0f), 0.0f, glm::radians(35.0f));
+		m_World.GetJoint(m_NeckJoint).MotorTargetRotation = glm::angleAxis(tuck, glm::vec3(1.0f, 0.0f, 0.0f)) * m_NeckRest;
 
 		// A point moved between two places on the ground is carried over,
 		// not dragged: lifted by up to a fifth of the distance. And lifted
@@ -2439,15 +2524,33 @@ public:
 			p.y += std::max(arc, lag);
 			return p;
 		};
+		// A hanging hand hangs along him, down his trunk -- not down the
+		// world's up, which for a figure on his back in a roll was into
+		// the floor under his shoulders: the arms pressed into it until
+		// the solver threw them about (44,000 degrees a second, a dive's
+		// roll). Upright the two are the same. And no hand below the floor.
+		const GS::RigidBody3D& torso = m_World.GetBody(m_Torso);
+		glm::vec3 trunkDown = torso.Orientation * glm::vec3(0.0f, -1.0f, 0.0f);
+		glm::vec3 trunkFront = torso.Orientation * glm::vec3(0.0f, 0.0f, 1.0f);
+		bool upright = trunkDown.y < -0.7f;
 		auto hand = [&](const GetUpKey& k, int side)
 		{
+			glm::vec3 p;
 			switch (k.Hand[side])
 			{
-				case 1: return ShoulderWorld(side) + glm::vec3(0.0f, -0.95f * (m_UpperArmLength + m_ForearmLength), 0.0f)
-					+ glm::vec3(std::sin(k.Heading), 0.0f, std::cos(k.Heading)) * (0.04f * m_Proportions.Scale);
-				case 2: return KneeWorld(m_GetUpLead) + up * (0.06f * m_Proportions.Scale);
+				case 1:
+					p = upright
+						? ShoulderWorld(side) + glm::vec3(0.0f, -0.95f * (m_UpperArmLength + m_ForearmLength), 0.0f)
+							+ glm::vec3(std::sin(k.Heading), 0.0f, std::cos(k.Heading)) * (0.04f * m_Proportions.Scale)
+						: ShoulderWorld(side) + trunkDown * (0.95f * (m_UpperArmLength + m_ForearmLength)) + trunkFront * (0.04f * m_Proportions.Scale);
+					break;
+				case 2: p = KneeWorld(m_GetUpLead) + up * (0.06f * m_Proportions.Scale); break;
 				default: return Resolve(k.HandAt[side], k.LocalHands);
 			}
+			glm::vec3 shoulder = ShoulderWorld(side);
+			float floor = GroundY(glm::vec3(p.x, std::max(p.y, shoulder.y) + 0.1f * m_Proportions.Scale, p.z), -1000.0f);
+			p.y = std::max(p.y, floor + m_Proportions.ForearmRadius + 0.012f * m_Proportions.Scale);
+			return p;
 		};
 		for (int side = 0; side < 2; side++)
 		{
@@ -2456,11 +2559,20 @@ public:
 			// has nothing to clear, and the lift for one lagging its target
 			// -- up to 15 cm -- raised the arms as he stood.
 			glm::vec3 handFrom = hand(a, side), handTo = hand(b, side);
-			SolveArm(side, a.Hand[side] == 0 && b.Hand[side] == 0 ? carry(handFrom, handTo, w, WristWorld(side))
-				: glm::mix(handFrom, handTo, w));
+			glm::vec3 handAt = a.Hand[side] == 0 && b.Hand[side] == 0 ? carry(handFrom, handTo, w, WristWorld(side))
+				: glm::mix(handFrom, handTo, w);
+			if (a.Hand[side] == 0 && b.Hand[side] == 0 && a.LocalHands != b.LocalHands)
+				handAt = BodyBlend(handFrom, handTo, w);
+			SolveArm(side, handAt);
 
 			glm::vec3 now = AnkleWorld(side);
-			glm::vec3 ankle = carry(Resolve(a.Foot[side], a.LocalFeet), Resolve(b.Foot[side], b.LocalFeet), w, now);
+			glm::vec3 footFrom = Resolve(a.Foot[side], a.LocalFeet), footTo = Resolve(b.Foot[side], b.LocalFeet);
+			// From a tuck (in his frame) to the ground (in the world's), or
+			// back, the way between is his: blended in the world's frame,
+			// a foot tucked against him upside down in a roll went from
+			// there towards the ground ahead by way of the air above him --
+			// both legs straight up, a candle, then down flat on his back.
+			glm::vec3 ankle = a.LocalFeet == b.LocalFeet ? carry(footFrom, footTo, w, now) : BodyBlend(footFrom, footTo, w);
 			// Up before over. A foot well below where it is being lifted to
 			// rises first and goes forward once it is up, as a foot lifted
 			// onto a step does: carried straight at its target, the toes --
@@ -2673,7 +2785,7 @@ public:
 		float Depth = 0.0f;              // how far the top goes on past the face
 		float Beyond = 0.0f;             // the ground past it
 	};
-	enum class Move { None, Vault, StepOn, Climb, Drop, Roll, WallRun, Hang, DropToHang, CatLeap, TicTac, Precision };
+	enum class Move { None, Vault, StepOn, Climb, Drop, Roll, WallRun, Hang, DropToHang, CatLeap, TicTac, Precision, Dodge };
 
 	static const char* ObstacleName(Obstacle::Kind kind)
 	{
@@ -3094,6 +3206,7 @@ public:
 		m_MoveTimer = 0.0f;
 		m_MoveExit = exitSpeed;
 		m_TrackIndex = 0;
+		m_FloorLift = 0.0f;
 		m_Mode = Mode::Moving;
 		m_Blocked = glm::vec3(0.0f);
 		m_WantsJump = false;
@@ -4634,6 +4747,617 @@ public:
 		BeginMove(Move::Roll, T + tC + tR + tS, exit, T + tC + 0.92f * tR);
 	}
 
+	// ---------------------------------------------------------------------
+	// Dodging: out of the way, on purpose
+	// ---------------------------------------------------------------------
+	//
+	// A stumble is a body knocked off its line catching itself with its
+	// feet; a dodge is the same lurch chosen, so it is planned the way the
+	// moves above are -- the hips carried along a path, the feet put down
+	// where a person's go -- and it is over sooner, on his feet and in the
+	// walk again.
+	//
+	// What one can do is what a push off the ground can do to the velocity
+	// he already has. The legs change it by about 3 m/s (m_DodgePush): a
+	// sole grips at about mu g, 9 m/s^2, and a push lasts a third of a
+	// second. Added to whatever he is doing:
+	//
+	//   standing   a sidestep, a hop back, a lunge: 0.9 m in 0.6 s;
+	//   walking    the same with the walk carried through it -- a dodge
+	//              back from a walk is the shorter, its push spent first on
+	//              stopping;
+	//   running    sideways a cut, the run bent off its line by the push and
+	//              on along the new one; backwards a brake -- 3 m/s off 4 is
+	//              not going backwards, it is stopping short, which against
+	//              a shot led for where he was going does as well;
+	//   sprinting  sideways or ahead a dive into a roll: the farthest and
+	//              the lowest -- under a ball at chest height -- and the
+	//              slowest to come back from.
+	//
+	// Short of room -- a wall in the way, a ledge, a step up -- it goes as
+	// far as there is room, and not at all when that is next to nothing.
+	enum class Dodge { None, Step, Cut, Brake, Dive };
+
+	bool TryDodge(glm::vec3 wish)
+	{
+		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		float s = m_Proportions.Scale, rs = std::sqrt(s);
+		glm::vec3 F(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
+		// What he is doing now: the walk's velocity (the hips' own carries
+		// the bob and the sway), or, in a move, the hips' along its track.
+		glm::vec3 v0 = m_Mode == Mode::Moving ? glm::vec3(pelvis.Velocity.x, 0.0f, pelvis.Velocity.z)
+			: F * m_Speed + glm::vec3(m_StaggerVelocity.x, 0.0f, m_StaggerVelocity.z);
+		float speed = glm::length(v0);
+		glm::vec3 heading = speed > 0.3f * rs ? v0 / speed : F;
+		wish.y = 0.0f;
+		glm::vec3 d = glm::length(wish) > 1e-3f ? glm::normalize(wish) : -heading;
+		float along = glm::dot(d, heading);
+		bool fast = speed > 1.8f * rs;
+		bool sprint = m_Control.Enabled && m_Control.Run && speed > 0.8f * m_RunSpeed;
+		bool done;
+		if (fast && along < -0.5f)
+			done = PlanBrake(v0, heading);
+		else if (fast && (sprint || along > 0.92f) && along > -0.3f && PlanDive(v0, d))
+			done = true;
+		else
+			done = PlanDodgeStep(v0, d, fast);
+		if (done)
+			m_Dodges++;
+		return done;
+	}
+
+	// How far he can go from where he stands along `dir` before something
+	// stops him: a wall at knee, waist or head height, or the ground on the
+	// way stepping up or dropping away by more than the walk takes.
+	float DodgeRoom(const glm::vec3& dir, float want) const
+	{
+		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		float s = m_Proportions.Scale;
+		float ground = GroundY(pelvis.Position, -1000.0f);
+		glm::vec3 base(pelvis.Position.x, ground, pelvis.Position.z);
+		float room = want + 0.4f * s;
+		for (float h : { 0.35f, 0.9f, 1.45f })
+		{
+			GS::PhysicsWorld3D::RayHit hit = m_World.Raycast(base + glm::vec3(0.0f, h * s, 0.0f), dir, room, m_CharacterBodies);
+			if (hit.Hit && hit.Normal.y < 0.6f && Solid(hit.Body))
+				room = std::min(room, hit.Distance);
+		}
+		float free = std::max(room - 0.4f * s, 0.0f);
+		for (float at = 0.15f * s; at <= free; at += 0.15f * s)
+		{
+			glm::vec3 p = base + dir * at;
+			float g = GroundY(glm::vec3(p.x, ground + m_MaxStepUp + 0.05f * s, p.z), -1000.0f);
+			if (g > ground + m_MaxStepUp || g < ground - 0.45f * s)
+				return std::max(at - 0.15f * s, 0.0f);
+		}
+		return free;
+	}
+
+	// The hips' velocity through a dodge, flat: from v0 to v1 over the push,
+	// eased (a smoothstep, so it never jolts), then to ve over the settle.
+	struct DodgePath
+	{
+		glm::vec3 V0{ 0.0f }, V1{ 0.0f }, VE{ 0.0f };
+		float Tp = 0.3f, Ts = 0.3f;
+		float Duration() const { return Tp + Ts; }
+		// The integral of the smoothstep, u^3 - u^4 / 2, for the distance.
+		static float S(float u) { return u * u * u - 0.5f * u * u * u * u; }
+		glm::vec3 Offset(float t) const
+		{
+			float a = glm::clamp(t, 0.0f, Tp);
+			glm::vec3 x = V0 * a + (V1 - V0) * (Tp * S(a / std::max(Tp, 1e-4f)));
+			if (t > Tp)
+			{
+				float b = std::min(t - Tp, Ts);
+				x += V1 * b + (VE - V1) * (Ts * S(b / std::max(Ts, 1e-4f)));
+				if (t - Tp > Ts)
+					x += VE * (t - Tp - Ts);
+			}
+			return x;
+		}
+		glm::vec3 Acceleration(float t) const
+		{
+			auto ds = [](float u) { return 6.0f * u * (1.0f - u); };
+			if (t < Tp)
+				return (V1 - V0) * (ds(t / std::max(Tp, 1e-4f)) / std::max(Tp, 1e-4f));
+			float u = (t - Tp) / std::max(Ts, 1e-4f);
+			return u < 1.0f ? (VE - V1) * (ds(u) / std::max(Ts, 1e-4f)) : glm::vec3(0.0f);
+		}
+		glm::vec3 Velocity(float t) const
+		{
+			if (t < Tp)
+				return V0 + (V1 - V0) * glm::smoothstep(0.0f, 1.0f, t / std::max(Tp, 1e-4f));
+			return V1 + (VE - V1) * glm::smoothstep(0.0f, 1.0f, (t - Tp) / std::max(Ts, 1e-4f));
+		}
+	};
+
+	// The hips along a dodge's path, every 60th of a second: on the ground
+	// under them, crouched by `crouch(t)`, leaning into the push as a body
+	// accelerating at `a` must -- atan(a / g), the pelvis taking about half
+	// of it as in the walk -- and into the speed as the walk does, turned
+	// from `yaw0` to `yaw1`. Eased out of the pose he was in over the first
+	// 0.12 s: the walk's bob and sway are not on the path, and starting on
+	// it would jump the hips by them in a step.
+	template <typename Crouch>
+	void DodgeWays(const DodgePath& path, float yaw0, float yaw1, const Crouch& crouch, std::vector<Way>& ways) const
+	{
+		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		const glm::vec3 up(0.0f, 1.0f, 0.0f);
+		float T = path.Duration();
+		glm::vec3 P0 = pelvis.Position;
+		float turn = yaw1 - yaw0;
+		while (turn > glm::pi<float>()) turn -= glm::two_pi<float>();
+		while (turn < -glm::pi<float>()) turn += glm::two_pi<float>();
+		auto pose = [&](float t, glm::vec3& at, glm::quat& q)
+		{
+			glm::vec3 x = P0 + path.Offset(t);
+			float g = GroundY(glm::vec3(x.x, P0.y, x.z), -1000.0f);
+			at = glm::vec3(x.x, g + m_StandClearance - m_Crouch - crouch(t), x.z);
+			float yaw = yaw0 + turn * glm::smoothstep(0.15f * T, 0.85f * T, t);
+			glm::vec3 a = path.Acceleration(t);
+			a.y = 0.0f;
+			glm::quat tilt(1.0f, 0.0f, 0.0f, 0.0f);
+			if (glm::length(a) > 1e-3f)
+			{
+				// Into the push, and less against the stop: the lead foot out
+				// beyond him stops the body, the trunk staying nearer upright
+				// -- at the push's share it rocked 44 degrees in 0.3 s.
+				float share = t < path.Tp ? 0.55f : 0.25f;
+				float angle = std::min(share * std::atan(glm::length(a) / 9.81f), glm::radians(22.0f));
+				tilt = glm::angleAxis(angle, glm::normalize(glm::cross(up, a)));
+			}
+			glm::vec3 v = path.Velocity(t);
+			glm::vec3 F(std::sin(yaw), 0.0f, std::cos(yaw));
+			float forward = glm::dot(v, F);
+			float lean = glm::clamp((forward / std::max(m_WalkSpeed, 0.01f)) * m_LeanAmount, -m_LeanBack, m_LeanForward) * m_LeanPelvisShare;
+			q = glm::normalize(tilt * glm::angleAxis(yaw, up) * glm::angleAxis(lean, glm::vec3(1.0f, 0.0f, 0.0f)));
+		};
+		glm::vec3 start;
+		glm::quat startTurn;
+		pose(0.0f, start, startTurn);
+		int n = std::max(2, (int)std::ceil(T * 60.0f));
+		for (int k = 0; k <= n; k++)
+		{
+			float t = T * (float)k / (float)n;
+			glm::vec3 at;
+			glm::quat q;
+			pose(t, at, q);
+			float ease = glm::smoothstep(0.0f, 0.12f, t);
+			at += (P0 - start) * (1.0f - ease) * glm::vec3(0.0f, 1.0f, 0.0f);
+			q = glm::normalize(glm::slerp(pelvis.Orientation, q, ease));
+			ways.push_back({ t, k == 0 ? P0 : at, k == 0 ? pelvis.Orientation : q });
+		}
+	}
+
+	// A sidestep, hop or lunge (slow), or a cut (fast): the push foot down
+	// and pushing, the lead foot out the way he is going, a moment with
+	// both off the ground -- a bound, as a quick sidestep is -- the lead
+	// foot down short of where the hips stop, and the push foot in beside
+	// it. A cut's push foot is planted wide on the outside, the lead foot
+	// lands along the new line and the push foot swings through ahead.
+	bool PlanDodgeStep(const glm::vec3& v0, const glm::vec3& d, bool fast)
+	{
+		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		const Measures M = BodyMeasures();
+		const glm::vec3 up(0.0f, 1.0f, 0.0f);
+		float s = m_Proportions.Scale, rs = std::sqrt(s);
+		float speed = glm::length(v0);
+		glm::vec3 F0(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
+		glm::vec3 heading = speed > 0.3f * rs ? v0 / speed : F0;
+		float along = glm::dot(d, heading);
+		glm::vec3 across = d - heading * along;
+		if (fast && glm::length(across) < 0.2f)
+			return false;
+
+		auto build = [&](float k)
+		{
+			DodgePath path;
+			path.V0 = v0;
+			if (fast)
+			{
+				// The push across, a little of the run lost to the plant, and
+				// on at the new velocity. Less push the faster he goes: a
+				// foot is down for less time.
+				float push = std::max(m_DodgePush * rs - 0.15f * speed, 1.2f * rs) * k;
+				path.V1 = v0 * (1.0f - m_DodgeCutLoss * k) + glm::normalize(across) * push;
+				path.VE = path.V1;
+				path.Tp = 0.24f * rs;
+				path.Ts = 0.18f * rs;
+			}
+			else
+			{
+				// The push along d; the lead foot stops it; the walk he was
+				// in goes on unless the dodge was against it.
+				path.V1 = v0 + d * (m_DodgePush * rs * k);
+				path.VE = v0 * glm::clamp(1.0f + along, 0.0f, 1.0f);
+				path.Tp = m_DodgeTime * rs;
+				path.Ts = m_DodgeSettle * rs;
+			}
+			return path;
+		};
+		DodgePath path = build(1.0f);
+		// As far as the way is clear: the push scaled down until the whole
+		// of it fits, and no dodge at all for less than a third of one.
+		{
+			glm::vec3 shift = path.Offset(path.Duration());
+			float want = glm::length(shift);
+			if (want > 1e-3f)
+			{
+				float room = DodgeRoom(shift / want, want);
+				float k = 1.0f;
+				while (glm::length(path.Offset(path.Duration())) > room && k > 0.3f)
+				{
+					k -= 0.1f;
+					path = build(k);
+				}
+				if (glm::length(path.Offset(path.Duration())) > room + 0.05f * s)
+					return false;
+			}
+		}
+
+		float T = path.Duration(), Tp = path.Tp;
+		float yaw0 = m_Facing;
+		float yaw1 = fast ? std::atan2(path.VE.x, path.VE.z) : m_Facing;
+		float turn = yaw1 - yaw0;
+		while (turn > glm::pi<float>()) turn -= glm::two_pi<float>();
+		while (turn < -glm::pi<float>()) turn += glm::two_pi<float>();
+		float depth = (fast ? 0.06f : 0.10f) * s;
+		std::vector<Way> ways;
+		DodgeWays(path, yaw0, yaw1, [&](float t)
+		{
+			return depth * (glm::smoothstep(0.0f, 0.45f * Tp, t) - 0.85f * glm::smoothstep(Tp, T, t));
+		}, ways);
+		BuildTrack(ways, v0, path.VE);
+
+		glm::vec3 P0 = pelvis.Position;
+		auto hipsAt = [&](float t) { glm::vec3 x = P0 + path.Offset(t); return glm::vec3(x.x, 0.0f, x.z); };
+		auto onGround = [&](glm::vec3 p)
+		{
+			p.y = GroundY(glm::vec3(p.x, P0.y, p.z), -1000.0f) + m_AnkleHeight;
+			return p;
+		};
+		auto lifted = [&](const glm::vec3& a, const glm::vec3& b, float w, float lift)
+		{
+			glm::vec3 p = onGround(glm::mix(a, b, w));
+			p.y += lift * s;
+			return p;
+		};
+		glm::vec3 R0 = glm::cross(up, F0);
+		glm::vec3 F1(std::sin(yaw1), 0.0f, std::cos(yaw1));
+		glm::vec3 R1 = glm::cross(up, F1);
+
+		// The lead foot is the one on the side he is going, or, going
+		// ahead or back, the one already further that way.
+		int lead;
+		if (fast)
+			lead = glm::dot(across, R0) > 0.0f ? 1 : 0;
+		else if (std::fabs(glm::dot(d, R0)) > 0.35f)
+			lead = glm::dot(d, R0) > 0.0f ? 1 : 0;
+		else
+			lead = glm::dot(AnkleWorld(1) - AnkleWorld(0), d) > 0.0f ? 1 : 0;
+		int push = 1 - lead;
+		m_GetUpLead = lead;
+
+		float t1, tOff, tLand;
+		glm::vec3 pushPlant, leadLand, pushFinal;
+		glm::vec3 leadNow = AnkleWorld(lead), pushNow = AnkleWorld(push);
+		if (fast)
+		{
+			t1 = 0.25f * Tp;
+			tOff = 0.85f * Tp;
+			tLand = Tp + 0.05f * rs;
+			pushPlant = onGround(hipsAt(t1) + heading * (0.20f * s) + R0 * (SideSign(push) * M.Stance * 1.5f));
+			leadLand = onGround(hipsAt(tLand) + F1 * (0.25f * s) + R1 * (SideSign(lead) * M.Stance));
+			pushFinal = onGround(hipsAt(T) + F1 * (0.30f * s) + R1 * (SideSign(push) * M.Stance));
+		}
+		else
+		{
+			t1 = 0.30f * Tp;
+			tOff = 0.62f * Tp;
+			tLand = Tp;
+			glm::vec3 dir = glm::length(hipsAt(T) - hipsAt(0.0f)) > 0.05f ? glm::normalize(hipsAt(T) - hipsAt(0.0f)) : d;
+			pushPlant = onGround(pushNow);
+			leadLand = onGround(hipsAt(T) - dir * (0.10f * s) + R0 * (SideSign(lead) * M.Stance));
+			glm::vec3 on = glm::length(path.VE) > 0.2f * rs ? glm::normalize(path.VE) * (0.15f * s) : glm::vec3(0.0f);
+			pushFinal = onGround(hipsAt(T) + on + R0 * (SideSign(push) * M.Stance));
+		}
+
+		m_GetUpKeys.clear();
+		GetUpKey now = KeyNow();
+		m_GetUpKeys.push_back(now);
+		auto key = [&](float t, const GetUpKey& from)
+		{
+			GetUpKey k = from;
+			k.T = t;
+			float u = glm::smoothstep(0.15f * T, 0.85f * T, t);
+			k.Heading = yaw0 + turn * u;
+			glm::vec3 F(std::sin(k.Heading), 0.0f, std::cos(k.Heading));
+			for (int side = 0; side < 2; side++)
+			{
+				k.Pole[side] = F;
+				k.Kneeling[side] = false;
+			}
+			return k;
+		};
+		// Arms out for balance, the lead one wide, the other across in front
+		// of him -- or both forward a little, dodging ahead or back.
+		auto arms = [&](GetUpKey& k, float amount)
+		{
+			k.LocalHands = true;
+			bool sideways = fast || std::fabs(glm::dot(d, R0)) > 0.35f;
+			for (int side = 0; side < 2; side++)
+			{
+				k.Hand[side] = 0;
+				if (sideways)
+					k.HandAt[side] = side == lead
+						? glm::vec3(SideSign(side) * (M.ShoulderX + 0.28f * s * amount), M.Trunk * 0.76f, 0.10f * s)
+						: glm::vec3(SideSign(lead) * 0.02f * s, M.Trunk * 0.80f, 0.28f * s);
+				else
+					k.HandAt[side] = glm::vec3(SideSign(side) * (M.ShoulderX + 0.12f * s * amount), M.Trunk * 0.72f, 0.20f * s);
+			}
+		};
+
+		GetUpKey k1 = key(t1, now);
+		k1.Foot[push] = pushPlant;
+		k1.Foot[lead] = lifted(leadNow, leadLand, 0.25f, 0.10f);
+		k1.Spine = glm::radians(8.0f);
+		arms(k1, 0.7f);
+		m_GetUpKeys.push_back(k1);
+
+		GetUpKey kOff = key(tOff, k1);
+		kOff.Foot[lead] = lifted(leadNow, leadLand, 0.65f, 0.07f);
+		arms(kOff, 1.0f);
+		m_GetUpKeys.push_back(kOff);
+
+		GetUpKey kLand = key(tLand, kOff);
+		kLand.Foot[lead] = leadLand;
+		kLand.Foot[push] = lifted(pushPlant, pushFinal, 0.30f, fast ? 0.14f : 0.10f);
+		m_GetUpKeys.push_back(kLand);
+
+		GetUpKey k3 = key(tLand + 0.45f * (T - tLand), kLand);
+		k3.Foot[push] = lifted(pushPlant, pushFinal, 0.75f, 0.06f);
+		k3.Spine = glm::radians(4.0f);
+		k3.LocalHands = false;
+		k3.Hand[0] = k3.Hand[1] = 1;
+		m_GetUpKeys.push_back(k3);
+
+		GetUpKey kEnd = key(T, k3);
+		kEnd.Foot[push] = pushFinal;
+		kEnd.Spine = 0.0f;
+		m_GetUpKeys.push_back(kEnd);
+
+		m_Facing = yaw1;
+		BeginMove(Move::Dodge, T, glm::length(path.VE), tLand + 0.5f * (T - tLand));
+		m_DodgeKind = fast ? Dodge::Cut : Dodge::Step;
+		m_DodgeCooldown = tLand;
+		return true;
+	}
+
+	// Running, a dodge back: the brake. The rear foot swings through and
+	// plants ahead, the other beside it, and the body comes to them leaning
+	// back against the stop -- m_DodgeBrake, both feet pushing, takes 3 m/s
+	// off in about 0.35 s, so from a run he ends slow, not going backwards.
+	bool PlanBrake(const glm::vec3& v0, const glm::vec3& heading)
+	{
+		const Measures M = BodyMeasures();
+		const glm::vec3 up(0.0f, 1.0f, 0.0f);
+		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		float s = m_Proportions.Scale, rs = std::sqrt(s);
+		float speed = glm::length(v0);
+		float take = std::min(speed, 1.1f * m_DodgePush * rs);
+		DodgePath path;
+		path.V0 = v0;
+		path.V1 = v0 - heading * take;
+		path.VE = path.V1;
+		path.Tp = std::max(1.5f * take / m_DodgeBrake, 0.18f * rs);   // the smoothstep's mean is 2/3 of its peak
+		path.Ts = 0.10f * rs;
+		float T = path.Duration();
+		float depth = 0.10f * s;
+		std::vector<Way> ways;
+		DodgeWays(path, m_Facing, m_Facing, [&](float t)
+		{
+			return depth * (glm::smoothstep(0.0f, 0.4f * path.Tp, t) - 0.7f * glm::smoothstep(path.Tp, T, t));
+		}, ways);
+		BuildTrack(ways, v0, path.VE);
+
+		glm::vec3 P0 = pelvis.Position;
+		auto hipsAt = [&](float t) { glm::vec3 x = P0 + path.Offset(t); return glm::vec3(x.x, 0.0f, x.z); };
+		auto onGround = [&](glm::vec3 p)
+		{
+			p.y = GroundY(glm::vec3(p.x, P0.y, p.z), -1000.0f) + m_AnkleHeight;
+			return p;
+		};
+		glm::vec3 F(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
+		glm::vec3 R = glm::cross(up, F);
+		int lead = glm::dot(AnkleWorld(0) - AnkleWorld(1), heading) < 0.0f ? 0 : 1;   // the one behind swings through
+		int other = 1 - lead;
+		m_GetUpLead = lead;
+		float t1 = 0.10f * rs, t2 = 0.24f * rs;
+		glm::vec3 leadPlant = onGround(hipsAt(t1) + heading * (0.42f * s) + R * (SideSign(lead) * M.Stance));
+		glm::vec3 otherPlant = onGround(hipsAt(t2) + heading * (0.28f * s) + R * (SideSign(other) * M.Stance));
+
+		m_GetUpKeys.clear();
+		GetUpKey now = KeyNow();
+		m_GetUpKeys.push_back(now);
+		GetUpKey k1 = now;
+		k1.T = t1;
+		k1.Foot[lead] = leadPlant;
+		glm::vec3 mid = onGround(glm::mix(now.Foot[other], otherPlant, 0.4f));
+		mid.y += 0.08f * s;
+		k1.Foot[other] = mid;
+		k1.LocalHands = true;
+		for (int side = 0; side < 2; side++)
+		{
+			k1.Pole[side] = F;
+			k1.Kneeling[side] = false;
+			k1.Hand[side] = 0;
+			k1.HandAt[side] = glm::vec3(SideSign(side) * (M.ShoulderX + 0.08f * s), M.Trunk * 0.72f, 0.30f * s);
+		}
+		k1.Spine = glm::radians(6.0f);
+		m_GetUpKeys.push_back(k1);
+		GetUpKey k2 = k1;
+		k2.T = t2;
+		k2.Foot[other] = otherPlant;
+		m_GetUpKeys.push_back(k2);
+		GetUpKey k3 = k2;
+		k3.T = std::max(path.Tp, t2 + 0.05f);
+		m_GetUpKeys.push_back(k3);
+		GetUpKey kEnd = k3;
+		kEnd.T = std::max(T, k3.T + 0.05f);
+		kEnd.LocalHands = false;
+		kEnd.Hand[0] = kEnd.Hand[1] = 1;
+		kEnd.Spine = 0.0f;
+		m_GetUpKeys.push_back(kEnd);
+
+		BeginMove(Move::Dodge, kEnd.T, glm::length(path.VE), k3.T);
+		m_DodgeKind = Dodge::Brake;
+		m_DodgeCooldown = k3.T;
+		return true;
+	}
+
+	// Sprinting, a dodge to the side or ahead: a dive. The push sends him
+	// along the run and the push together, the hips drop, the hands reach
+	// for the ground, and he rolls over a shoulder along the dive's line and
+	// comes up running (PlanRoll). Not without the room a roll takes, flat:
+	// the dodge is then a cut instead.
+	bool PlanDive(const glm::vec3& v0, const glm::vec3& d)
+	{
+		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		const Measures M = BodyMeasures();
+		const glm::vec3 up(0.0f, 1.0f, 0.0f);
+		float s = m_Proportions.Scale, rs = std::sqrt(s);
+		float speed = glm::length(v0);
+		glm::vec3 heading = speed > 0.3f * rs ? v0 / speed : glm::vec3(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
+		glm::vec3 across = d - heading * glm::dot(d, heading);
+		float push = 0.9f * m_DodgePush * rs;
+		glm::vec3 v1 = glm::length(across) > 0.2f ? v0 + glm::normalize(across) * push : v0 + heading * (0.4f * push);
+		float cap = std::max(speed, 1.15f * m_RunSpeed);
+		if (glm::length(v1) > cap)
+			v1 *= cap / glm::length(v1);
+		float horizontal = glm::length(v1);
+		glm::vec3 dir = v1 / std::max(horizontal, 1e-3f);
+
+		float gl = GroundY(pelvis.Position, -1000.0f);
+		glm::vec3 base(pelvis.Position.x, gl, pelvis.Position.z);
+		if (RoomAhead(base, dir) < RollRoom() + 0.5f * s)
+			return false;
+		for (float at = 0.5f * s; at <= RollRoom() + 0.5f * s; at += 0.5f * s)
+		{
+			glm::vec3 p = base + dir * at;
+			float g = GroundY(glm::vec3(p.x, gl + 0.5f * s, p.z), -1000.0f);
+			if (std::fabs(g - gl) > 0.25f * s)
+				return false;
+		}
+
+		int lead = glm::dot(across, glm::cross(up, heading)) > 0.0f ? 1 : 0;
+		m_GetUpLead = lead;
+		m_Facing = std::atan2(dir.x, dir.z);
+		Frame fr = FrameHere();
+		float Tp = 0.18f * rs;
+		glm::vec3 P0 = pelvis.Position;
+		glm::vec3 L = P0 + (v0 + v1) * (0.5f * Tp);
+		L.y = gl + m_StandClearance - 0.25f * s;
+		std::vector<Way> ways;
+		ways.push_back({ 0.0f, P0, pelvis.Orientation });
+		ways.push_back({ Tp, L, fr.Lean(30.0f) });
+
+		m_GetUpKeys.clear();
+		GetUpKey now = KeyNow();
+		m_GetUpKeys.push_back(now);
+		GetUpKey reach = now;
+		reach.T = 0.55f * Tp;
+		reach.LocalHands = true;
+		for (int side = 0; side < 2; side++)
+		{
+			reach.Hand[side] = 0;
+			reach.HandAt[side] = glm::vec3(SideSign(side) * 0.15f * s, M.Trunk * 0.55f, 0.45f * s);
+			reach.Pole[side] = fr.F;
+			reach.Kneeling[side] = false;
+		}
+		reach.Foot[lead] = now.Foot[lead] + up * (0.08f * s);
+		reach.Spine = glm::radians(14.0f);
+		m_GetUpKeys.push_back(reach);
+		GetUpKey touch = reach;
+		touch.T = Tp;
+		touch.LocalHands = false;
+		Frame lf = fr;
+		lf.O = L;
+		// The legs come up into the tuck as the hands reach the ground, so
+		// that the roll goes over a shoulder and not the knees: left trailing
+		// straight, the drop to the roll's crouch put him on his knees.
+		for (int side = 0; side < 2; side++)
+		{
+			touch.HandAt[side] = lf.At(0.45f * s, SideSign(side) * M.ShoulderX, gl + M.HandH + 0.08f * s);
+			touch.Foot[side] = glm::vec3(SideSign(side) * M.HipX * 0.9f, -(M.HipDrop + 0.30f * s), 0.05f * s);
+			touch.Pole[side] = glm::normalize(glm::vec3(0.0f, 0.3f, 1.0f));
+			touch.Kneeling[side] = true;
+		}
+		touch.LocalFeet = true;
+		touch.Spine = glm::radians(24.0f);
+		m_GetUpKeys.push_back(touch);
+
+		PlanRoll(ways, Tp, lf, horizontal, lead, gl, v0);
+		m_Move = Move::Dodge;
+		m_DodgeKind = Dodge::Dive;
+		m_DodgeCooldown = m_ChainFrom;
+		return true;
+	}
+
+	// Something of his other than a hand or a foot pressed by the fixed
+	// world harder than five times his weight, upwards, in the last step: a
+	// limb caught between the floor and the carried hips. Hands and feet
+	// carry him in a move -- a climb hangs his whole weight on them -- and
+	// are left out.
+	bool Wedged(float dt) const
+	{
+		if (dt <= 0.0f)
+			return false;
+		for (const GS::Contact3D& contact : m_World.GetContacts())
+		{
+			bool mineA = IsCharacter(contact.A), mineB = IsCharacter(contact.B);
+			if (mineA == mineB)
+				continue;
+			unsigned int mine = mineA ? contact.A : contact.B, other = mineA ? contact.B : contact.A;
+			if (mine == m_Foot[0] || mine == m_Foot[1] || mine == m_LowerArm[0] || mine == m_LowerArm[1] || !Solid(other))
+				continue;
+			glm::vec3 up = mineA ? -contact.Normal : contact.Normal;
+			if (up.y > 0.5f && contact.TotalNormalImpulse() / dt > 5.0f * m_BodyMass * 9.81f)
+				return true;
+		}
+		return false;
+	}
+
+	// How far the hips must rise, carried to `at` turned `turn`, for the
+	// torso and the head -- held where they are now relative to the hips --
+	// to clear the ground under them. A move plans the hips' height from
+	// the trunk its keys mean to bend (LowestBelow), but the spine's motor
+	// gets there late and the neck holds the head as built, not tucked:
+	// the plan's trunk is not the one there is. Measured in a dive's roll,
+	// the floor pressed the torso with 60 kN, 85 times his weight, step on
+	// step, and the head with 17 -- the wedge the get-up had, in a move.
+	float TrunkLift(const glm::vec3& at, const glm::quat& turn) const
+	{
+		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+		glm::quat inverse = glm::inverse(pelvis.Orientation);
+		float lift = 0.0f;
+		for (GS::PhysicsWorld3D::BodyHandle handle : { m_Torso, m_Head })
+		{
+			const GS::RigidBody3D& b = m_World.GetBody(handle);
+			glm::vec3 centre = at + turn * (inverse * (b.Position - pelvis.Position));
+			float reach = b.Radius;
+			if (b.Shape == GS::ColliderShape3D::Box)
+			{
+				glm::mat3 r = glm::mat3_cast(turn * (inverse * b.Orientation));
+				reach = std::fabs(r[0].y) * b.HalfExtents.x + std::fabs(r[1].y) * b.HalfExtents.y + std::fabs(r[2].y) * b.HalfExtents.z;
+			}
+			// From the body's own centre: from above it, a ledge he is
+			// climbing beside would read as ground over his head.
+			float ground = GroundY(centre, -1000.0f);
+			lift = std::max(lift, ground + 0.004f - (centre.y - reach));
+		}
+		return lift;
+	}
+
 	void UpdateMove(float dt)
 	{
 		if (m_Move == Move::Hang)
@@ -4689,13 +5413,27 @@ public:
 
 		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
 		// Never into what is under him: the pelvis is carried, and nothing
-		// else would stop it.
+		// else would stop it -- nor the trunk it carries (TrunkLift).
 		{
 			float under = GroundY(target, -1000.0f);
 			glm::mat3 r = glm::mat3_cast(turn);
 			const glm::vec3& half = m_Proportions.PelvisHalf;
 			float reach = std::fabs(r[0].y) * half.x + std::fabs(r[1].y) * half.y + std::fabs(r[2].y) * half.z;
 			target.y = std::max(target.y, under + reach + 0.004f);
+			// And as high again as the trunk needs (TrunkLift), and higher
+			// while, for all that, something of his is still being pressed
+			// into the floor -- a knee of the tuck, which the legs' IK puts
+			// where the plan did not (a roll off the 3 m tower: a thigh
+			// pressed with 36 kN, then more each step, to 140). The lift is
+			// eased, up at 1.2 m/s and down at 0.6: taken as it came, it
+			// jumped 15-25 cm in a step and slammed him back down -- 140 kN
+			// on the torso and the head at once, mid-roll.
+			float s = m_Proportions.Scale;
+			float need = TrunkLift(target, turn);
+			if (Wedged(dt))
+				need = std::max(need, m_FloorLift + 0.02f * s);
+			m_FloorLift += glm::clamp(need - m_FloorLift, -0.6f * s * dt, 1.2f * s * dt);
+			target.y += m_FloorLift;
 		}
 		pelvis.Velocity = (target - pelvis.Position) / std::max(dt, 1e-4f);
 		pelvis.Orientation = turn;
@@ -4767,6 +5505,18 @@ public:
 			return;
 		}
 
+		// A dodge asked for as a move ends goes from here, once he is on his
+		// feet: off the end of a vault, out of a roll, one dodge into the next.
+		if (m_DodgeAsked > 0.0f && m_DodgeCooldown <= 0.0f && m_MoveTimer >= m_ChainFrom && m_MoveTimer < m_MoveTime)
+		{
+			if (TryDodge(m_DodgeWish))
+			{
+				m_DodgeAsked = 0.0f;
+				m_Chained++;
+				return;
+			}
+		}
+
 		// Into the next one with no walking step between: once he is on his
 		// feet again, a wall or a ledge in reach starts its move from here,
 		// at the speed the hips have now, with the limbs where they are.
@@ -4802,6 +5552,11 @@ public:
 		m_StandTarget = ground + m_StandClearance - m_Crouch;
 		m_Speed = m_MoveExit;
 		m_LastSpeed = m_MoveExit;
+		// The walk's hips follow its anchor a step behind, and GoControlled
+		// puts the anchor where the hips are: the first step out of every
+		// move stood still, a 7 cm hitch at a run. A step ahead, as the walk
+		// would have had it.
+		m_RootAnchor += glm::vec3(std::sin(m_Facing), 0.0f, std::cos(m_Facing)) * (m_MoveExit * m_LastDt);
 		for (int side = 0; side < 2; side++)
 		{
 			m_Planted[side] = AnkleWorld(side);
@@ -4830,7 +5585,9 @@ public:
 	}
 
 	// The same, and which way it pushed -- a stagger has to go somewhere.
-	float ImpactForce(float dt, glm::vec3& direction)
+	// `looseOnly`: blows from loose things alone (in a move, where touching
+	// the scenery is the point).
+	float ImpactForce(float dt, glm::vec3& direction, bool looseOnly = false)
 	{
 		direction = glm::vec3(0.0f);
 		m_HitPush = glm::vec3(0.0f);
@@ -4857,6 +5614,10 @@ public:
 			// is a hit.
 			unsigned int mine = mineA ? contact.A : contact.B;
 			if (mine == m_Foot[0] || mine == m_Foot[1])
+				continue;
+			// And not what his shins and feet kick on the way: a crate
+			// knocked over mid-vault is not a blow.
+			if (looseOnly && (!Loose(mineA ? contact.B : contact.A) || mine == m_LowerLeg[0] || mine == m_LowerLeg[1]))
 				continue;
 
 			// Nor is a leg brushing the scenery. Walking up stairs the shins
@@ -5573,6 +6334,14 @@ public:
 		rate += (omega * omega * (target - x) - 2.0f * omega * rate) * dt;
 		x += rate * dt;
 	}
+	// The same following a target that moves at `targetRate`: damped
+	// towards that rate rather than towards rest, so a steady climb is
+	// followed with no lag at all (the plain spring trails it by 2 r / w).
+	static void Spring(float& x, float& rate, float target, float omega, float dt, float targetRate)
+	{
+		rate += (omega * omega * (target - x) - 2.0f * omega * (rate - targetRate)) * dt;
+		x += rate * dt;
+	}
 
 	void DriveWalk(float dt)
 	{
@@ -5851,7 +6620,9 @@ public:
 		// "there is nothing here" is answerable at all. With the default the
 		// probe reports y = 0 off the edge of the world and the character
 		// walks out over the void on an invisible floor.
-		float groundHere = GroundY(under, -1000.0f);
+		float groundHere;
+		glm::vec3 groundNormal;
+		GroundUnder(under, groundHere, groundNormal, -1000.0f);
 
 		// --- the jump --------------------------------------------------------
 		//
@@ -6024,11 +6795,21 @@ public:
 		// the lag on a long climb, but at a riser the smoothed target's rate
 		// spikes and was fed straight in -- 358 m/s^2 on the stairs. The lag
 		// that remains on a sustained climb is about 2 r / w + 0.08 r.
-		m_StandTarget += (wantedStand - m_StandTarget) * (1.0f - std::exp(-dt / m_StandSmoothing));
+		//
+		// On a slope the ground under him is not a step but a ramp, and
+		// the rate it rises at is known exactly -- the slope along the way
+		// he is going, -(n.x v.x + n.z v.z) / n.y -- so it is fed forward
+		// to both: running up 15 degrees the hips trailed the climb by
+		// 27 cm, crouching up the ramp. A riser's top is level (n is up),
+		// so steps feed nothing, and the stairs are as they were.
+		float slopeRate = 0.0f;
+		if (groundHere > -999.0f && groundNormal.y > 0.3f)
+			slopeRate = -(groundNormal.x * wanted.x + groundNormal.z * wanted.z) / groundNormal.y;
+		m_StandTarget += (wantedStand - m_StandTarget) * (1.0f - std::exp(-dt / m_StandSmoothing)) + slopeRate * dt;
 		// Never pulled down faster than he would fall: stepping off a 1.2 m
 		// ledge, the spring dropped the hips at 47 m/s^2.
 		float rateBefore = m_StandRate;
-		Spring(m_StandHeight, m_StandRate, m_StandTarget, m_StandResponse, dt);
+		Spring(m_StandHeight, m_StandRate, m_StandTarget, m_StandResponse, dt, slopeRate);
 		if (m_StandRate < rateBefore - 9.81f * dt)
 		{
 			m_StandHeight -= (m_StandRate - (rateBefore - 9.81f * dt)) * dt;
@@ -7692,6 +8473,20 @@ protected:
 	glm::vec3 m_HangHand[2] = {}, m_HangHandFrom[2] = {}, m_HangHandTo[2] = {};
 	float m_HangHandTimer[2] = { -1.0f, -1.0f };
 	uint32_t m_Chained = 0;            // moves started straight from another, for the panel
+	float m_FloorLift = 0.0f;          // m the carried hips have given way upwards to a limb wedged on the floor (UpdateMove)
+	float m_LastDt = 1.0f / 60.0f;     // the last step's length, for what is handed on to the next
+	// Dodging (TryDodge).
+	float m_DodgePush = 3.0f;          // m/s: the most one push changes his velocity by (mu g over a third of a second)
+	float m_DodgeTime = 0.32f;         // s the push takes, standing
+	float m_DodgeSettle = 0.28f;       // s from the push to standing again
+	float m_DodgeCutLoss = 0.12f;      // of the run's speed a cut's plant costs
+	float m_DodgeBrake = 8.5f;         // m/s^2 a brake takes off, at its peak
+	float m_MoveHitThreshold = 3000.0f;   // N from something loose that puts him down mid-move
+	float m_DodgeAsked = 0.0f;         // s a press still waits for a moment it can go
+	glm::vec3 m_DodgeWish{ 0.0f };
+	float m_DodgeCooldown = 0.0f;
+	Dodge m_DodgeKind = Dodge::None;
+	uint32_t m_Dodges = 0;
 	float m_RollSpeed = 6.5f;          // m/s down at landing, scaled by sqrt(s), past which he rolls (about a 2.2 m drop)
 	bool m_ConesStored = false;
 	bool m_JointsClosing = false;     // easing the cones back as built (EaseJointsClosed)

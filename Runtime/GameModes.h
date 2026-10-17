@@ -107,6 +107,19 @@ public:
 	}
 	Mode CurrentMode() const { return m_Mode; }
 
+	// The mouse turns the camera with no button held while a character is
+	// being played -- a game, rather than a scene being looked round --
+	// and the host captures the pointer for it (WantsCursorCaptured).
+	// Off by default: the editor's Play leaves the pointer free.
+	void SetMouseLook(bool on) { m_MouseLookWanted = on; }
+	// Being a character: one taken over, or the game's own player.
+	bool Playing() const
+	{
+		return m_Mode == Mode::Possess
+			|| (m_Mode == Mode::Fly && m_FlyCamera == GS::InvalidEntity && m_Characters.Controlled() != GS::InvalidEntity);
+	}
+	bool WantsCursorCaptured() const { return m_MouseLookWanted && Playing() && !m_Console.IsOpen(); }
+
 	// The keyboard is the game's, not the terminal's.
 	bool KeyboardFree() const { return m_Mode != Mode::Terminal; }
 
@@ -228,6 +241,7 @@ public:
 			m_Focus = GS::InvalidEntity;
 
 		m_Characters.SetInputEnabled(m_Mode == Mode::Fly || m_Mode == Mode::Possess);
+		m_Characters.SetMouseLook(WantsCursorCaptured());
 		PublishHud();
 	}
 
@@ -820,6 +834,7 @@ private:
 	GameUI::Context m_UI;
 
 	Mode m_Mode = Mode::Fly;
+	bool m_MouseLookWanted = false;   // SetMouseLook
 	GS::EntityId m_FlyCamera = GS::InvalidEntity;
 	GS::EntityId m_Terminal = GS::InvalidEntity;
 	float m_Yaw = 0.0f, m_Pitch = 0.0f;

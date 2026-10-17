@@ -397,7 +397,7 @@ public:
 			// Pulled in when something is between the character and where
 			// the camera would be -- a wall, the crates behind the dummy's
 			// mark -- so it is never looking out from inside a box.
-			glm::vec3 back = -Forward(m_Pitch, m_Yaw);
+			glm::vec3 back = -ViewDirection(target);
 			float distance = settings->CameraDistance;
 			std::vector<GS::PhysicsWorld3D::BodyHandle> own = player.Rig ? player.Rig->Bodies()
 				: std::vector<GS::PhysicsWorld3D::BodyHandle>{ player.Handle };
@@ -414,8 +414,48 @@ public:
 			}
 			camera->Position = target + back * distance;
 		}
-		camera->Rotation = RotationLookingAlong(Forward(m_Pitch, m_Yaw));
+		camera->Rotation = RotationLookingAlong(ViewDirection(target));
 	}
+
+	// Where the follow camera looks: the player's pitch and yaw, turned
+	// towards the focus target as far as focusing has got -- by pitch and
+	// yaw, the short way round, so turning to look behind does not pass
+	// through looking at the ground. From behind him, over him, at it: he
+	// stays in the middle of the picture with what is coming beyond him,
+	// tipped down a little so his legs stay in it.
+	glm::vec3 ViewDirection(const glm::vec3& from) const
+	{
+		if (m_FocusAmount <= 0.0f || !m_HasFocusTarget)
+			return Forward(m_Pitch, m_Yaw);
+		glm::vec3 to = m_FocusTarget - from;
+		if (glm::length(to) < 0.5f)
+			return Forward(m_Pitch, m_Yaw);
+		glm::vec2 look = PitchYawOf(glm::normalize(to));
+		float pitch = glm::clamp(look.x - 10.0f, -40.0f, 25.0f);
+		float turn = look.y - m_Yaw;
+		while (turn > 180.0f) turn -= 360.0f;
+		while (turn < -180.0f) turn += 360.0f;
+		float w = glm::smoothstep(0.0f, 1.0f, m_FocusAmount);
+		return Forward(m_Pitch + (pitch - m_Pitch) * w, m_Yaw + turn * w);
+	}
+
+	// What the follow camera turns to while "focus" is held: the game's
+	// say, each step (the most urgent shot, the cannon about to fire).
+	// Without one, holding it does nothing.
+	void SetFocusTarget(const glm::vec3& point, bool has)
+	{
+		m_FocusTarget = point;
+		m_HasFocusTarget = has;
+	}
+	float FocusAmount() const { return m_FocusAmount; }
+	bool FocusHeld() const { return m_FocusHeld; }
+	// The way a dodge goes with no direction held: away from what is
+	// coming, when the game knows what that is. Zero for back.
+	void SetDodgeAssist(const glm::vec3& direction) { m_DodgeAssist = direction; }
+	// The mouse turns the camera without a button held: for a game that
+	// captures the pointer while he is being played (GameModes).
+	void SetMouseLook(bool on) { m_MouseLook = on; }
+	bool MouseLook() const { return m_MouseLook; }
 
 	GS::EntityId CameraEntity() const { return m_Camera; }
 	bool CreatedCamera() const { return m_CreatedCamera; }
@@ -572,6 +612,18 @@ private:
 			control.Run = m_Sprint;
 			if (m_JumpPressed)
 				rig.RequestJump();
+			// A dodge the way the keys say, camera-relative as the walk is
+			// (forward (cos, sin) at the rig's yaw, right (-sin, cos)); with
+			// none held, the way the game suggests (SetDodgeAssist), or back.
+			if (m_DodgePressed)
+			{
+				float r = glm::radians(control.Yaw);
+				glm::vec3 forward(std::cos(r), 0.0f, std::sin(r)), right(-std::sin(r), 0.0f, std::cos(r));
+				glm::vec3 wish = forward * m_MoveInput.y + right * m_MoveInput.x;
+				if (glm::length(wish) < 1e-3f)
+					wish = m_DodgeAssist;
+				rig.RequestDodge(wish);
+			}
 		}
 		else if (auto* npc = scene.GetComponent<GS::NpcComponent>(c.Entity))
 		{
@@ -638,6 +690,8 @@ private:
 		m_MoveInput = glm::vec2(0.0f);
 		m_Sprint = false;
 		bool jumpDown = false;
+		bool dodgeDown = false;
+		m_FocusHeld = false;
 
 		if (!GS::ImGuiLayer::WantsKeyboard() && m_InputEnabled)
 		{
@@ -649,6 +703,8 @@ private:
 			if (map.Down("left")) m_MoveInput.x -= 1.0f;
 			m_Sprint = map.Down("sprint");
 			jumpDown = map.Down("jump");
+			dodgeDown = map.Down("dodge") && !GS::ImGuiLayer::WantsMouse();
+			m_FocusHeld = map.Down("focus");
 
 			// The turn keys turn the camera, 90 degrees a second.
 			const float turn = 90.0f * dt;
@@ -660,11 +716,25 @@ private:
 		// A jump on the press, not while held: holding Space does not bounce.
 		m_JumpPressed = jumpDown && !m_JumpWasDown;
 		m_JumpWasDown = jumpDown;
+		m_DodgePressed = dodgeDown && !m_DodgeWasDown;
+		m_DodgeWasDown = dodgeDown;
 
-		// Right-drag orbits. The difference between this step's pointer and
-		// the last one's, so it is the same however the frames fell.
+		// Looking at what is coming, while it is held and there is
+		// something to look at: eased in over about a tenth of a second and
+		// out over two, so a glance is quick and coming back is not a snap.
+		bool focusing = m_FocusHeld && m_HasFocusTarget;
+		float rate = focusing ? 1.0f / 0.10f : 1.0f / 0.20f;
+		m_FocusAmount = glm::clamp(m_FocusAmount + (focusing ? rate : -rate) * dt, 0.0f, 1.0f);
+
+		// Right-drag orbits -- or, with the mouse looking (SetMouseLook),
+		// any movement does, except while looking at something: then the
+		// view is the threat's, and turning the walk's frame behind it,
+		// unseen, only lost him his way. The difference between this
+		// step's pointer and the last one's, so it is the same however
+		// the frames fell.
 		glm::vec2 mouse(GS::Input::GetMouseX(), GS::Input::GetMouseY());
-		if (GS::InputMap::Active().Down("look") && m_MouseKnown && m_InputEnabled)
+		bool orbit = m_MouseLook ? m_FocusAmount < 0.5f : GS::InputMap::Active().Down("look");
+		if (orbit && m_MouseKnown && m_InputEnabled)
 		{
 			glm::vec2 delta = mouse - m_LastMouse;
 			m_Yaw -= delta.x * 0.25f;
@@ -745,6 +815,13 @@ private:
 	glm::vec2 m_MoveInput{ 0.0f };
 	bool m_Sprint = false;
 	bool m_JumpPressed = false, m_JumpWasDown = false;
+	bool m_DodgePressed = false, m_DodgeWasDown = false;
+	glm::vec3 m_DodgeAssist{ 0.0f };
+	bool m_FocusHeld = false;
+	bool m_HasFocusTarget = false;
+	glm::vec3 m_FocusTarget{ 0.0f };
+	float m_FocusAmount = 0.0f;      // 0 the player's own view, 1 looking at the target
+	bool m_MouseLook = false;
 	glm::vec2 m_LastMouse{ 0.0f };
 	bool m_MouseKnown = false;
 	bool m_InputEnabled = true;

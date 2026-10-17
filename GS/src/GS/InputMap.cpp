@@ -84,7 +84,14 @@ namespace GS {
 			{ "jump",     "Jump / fly up",            "Moving", {}, { Key(GS_KEY_SPACE) } },
 			{ "down",     "Fly down",                 "Moving", {}, { Key(GS_KEY_LEFT_CONTROL), Key(GS_KEY_C) } },
 			{ "sprint",   "Run / fly faster",         "Moving", {}, { Key(GS_KEY_LEFT_SHIFT), Key(GS_KEY_RIGHT_SHIFT) } },
+			// The buttons, while a character is played with the mouse
+			// looking (GameModes' mouse look): the index finger reacts
+			// fastest, and a dodge is a reaction. Left Alt was the first
+			// thought -- the thumb beside Space -- but on KDE Alt and a
+			// right drag resizes the window.
+			{ "dodge",    "Dodge (with a direction)", "Moving", {}, { Mouse(GS_MOUSE_BUTTON_LEFT), Key(GS_KEY_Q) } },
 			{ "look",     "Look (hold)",              "Camera", {}, { Mouse(GS_MOUSE_BUTTON_RIGHT) } },
+			{ "focus",    "Look at what is coming (hold)", "Camera", {}, { Mouse(GS_MOUSE_BUTTON_RIGHT), Key(GS_KEY_TAB) } },
 			{ "turnleft", "Turn left",                "Camera", {}, { Key(GS_KEY_LEFT) } },
 			{ "turnright","Turn right",               "Camera", {}, { Key(GS_KEY_RIGHT) } },
 			{ "turnup",   "Look up",                  "Camera", {}, { Key(GS_KEY_UP) } },
@@ -94,6 +101,8 @@ namespace GS {
 			{ "shoot",    "Fire (at the cannon)", "Using things", {}, { Mouse(GS_MOUSE_BUTTON_LEFT) } },
 			{ "fire",     "Fire the launcher",        "Using things", {}, { Key(GS_KEY_F) } },
 			{ "terminal", "Open the terminal",        "Using things", {}, { Key(GS_KEY_GRAVE_ACCENT) } },
+			{ "restart",  "Start again",              "Playing", {}, { Key(GS_KEY_R) } },
+			{ "next",     "Next / a new one",         "Playing", {}, { Key(GS_KEY_N) } },
 		};
 		ResetToDefaults();
 	}

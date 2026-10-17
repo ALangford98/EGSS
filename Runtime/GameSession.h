@@ -93,6 +93,12 @@ public:
 	// A running humanoid by its entity's name, or null: for a host with
 	// commands of its own about one (the parkour course's `station`).
 	Humanoid* Rig(const std::string& name) { return FindRig(name); }
+	// Bodies made and retired mid-game, as the launcher makes its shots:
+	// for a host firing things of its own (the cannon run's cannons).
+	LauncherHost& BodyHost() { return m_LauncherHost; }
+	// The characters and the player's camera: for a host that tells the
+	// camera what to look at (CharacterController::SetFocusTarget).
+	CharacterController& Characters() { return m_Characters; }
 
 	// Builds every body, installs the physics backend, then prepares and
 	// starts every script. `dependencies`, when given, receives each

@@ -4,8 +4,8 @@
 // station for each thing he can do -- two rows of lanes either side of a
 // walkway, each lane one station, its sign at the walkway end:
 //
-//    north (+z)   1 walking    2 vaults     3 climbing   4 crates      5 hanging      6 drops
-//    south (-z)   7 wall run   8 corner     9 tic-tac   10 cat leap   11 precision   12 knock-downs
+//    north (+z)   1 walking    2 vaults     3 climbing   4 crates      5 hanging      6 drops         13 slopes
+//    south (-z)   7 wall run   8 corner     9 tic-tac   10 cat leap   11 precision   12 knock-downs  14 dodging
 //
 // You are him from the start (E lets go and flies the camera; walk up to
 // him and E takes him again). The panel at the top right says what to do
@@ -28,6 +28,7 @@
 #include <imgui.h>
 
 #include "CrashTest.h"
+#include "DodgeDriver.h"   // TEMPORARY
 
 #include <cctype>
 #include <string>
@@ -57,7 +58,7 @@ namespace ParkourCourseScene
 	{
 		static const std::vector<Station> stations = []()
 		{
-			const float xs[6] = { -17.5f, -10.5f, -3.5f, 3.5f, 10.5f, 17.5f };
+			const float xs[7] = { -17.5f, -10.5f, -3.5f, 3.5f, 10.5f, 17.5f, 24.5f };
 			auto north = [&](int i) { return glm::vec3(xs[i], 0.0f, 3.0f); };
 			auto south = [&](int i) { return glm::vec3(xs[i], 0.0f, -3.0f); };
 			return std::vector<Station>{
@@ -85,6 +86,12 @@ namespace ParkourCourseScene
 					"(not running): a two-footed jump, top to top", "three pillars, then the landing" }, south(4), 180.0f },
 				{ "KNOCK-DOWNS", "knock", { "{keys.fire} fires the cannon at him",
 					"face it: down on his back; turn away: on his front", "he gets up by himself" }, south(5), 180.0f },
+				// Added after the twelve, at the east end of each row, so
+				// the numbers people know stayed where they were.
+				{ "SLOPES", "slope", { "up the ramp, walking or running ({keys.sprint})",
+					"and down the far side: his feet follow the slope", "the last is 30 degrees: steep, but a walk" }, north(6), 0.0f },
+				{ "DODGING", "dodge", { "the cannon fires when it hears the fuse: watch it",
+					"{keys.dodge} with a direction: a sidestep, a cut or a dive", "hold {keys.focus} to look at what is coming" }, south(6), 180.0f },
 			};
 		}();
 		return stations;
@@ -131,6 +138,30 @@ namespace ParkourCourseScene
 	{
 		GS::Entity entity = Box(scene, name, lane.At(0.5f * (from + to), across, 0.5f * top), { width, top, to - from }, colour, 0.7f);
 		entity.Get<GS::TransformComponent>()->Rotation = { 0.0f, lane.Yaw, 0.0f };
+		Static(entity);
+		return entity;
+	}
+
+	// A ramp: a plank `thickness` deep whose top runs from height `h0` at
+	// `from` to `h1` at `to` along the lane, `width` across it. Turned
+	// first about the lane's across axis and then to the lane's yaw, which
+	// the transform's X-then-Y-then-Z angles can only say for a lane along
+	// an axis -- so the angles are read back off the turn itself, as
+	// GameSession writes a body's.
+	inline GS::Entity Ramp(GS::Scene& scene, const char* name, const Lane& lane, float from, float to, float h0, float h1,
+		float across, float width, float thickness = 0.4f, const glm::vec4& colour = Concrete)
+	{
+		float run = to - from, rise = h1 - h0;
+		float slope = std::atan2(rise, run);
+		float length = std::sqrt(run * run + rise * rise);
+		const glm::vec3 up(0.0f, 1.0f, 0.0f);
+		glm::vec3 normal = up * std::cos(slope) - lane.F * std::sin(slope);
+		glm::vec3 centre = lane.At(0.5f * (from + to), across, 0.5f * (h0 + h1)) - normal * (0.5f * thickness);
+		GS::Entity entity = Box(scene, name, centre, { width, thickness, length }, colour, 0.7f);
+		glm::quat turn = glm::angleAxis(glm::radians(lane.Yaw), up) * glm::angleAxis(-slope, glm::vec3(1.0f, 0.0f, 0.0f));
+		float x, y, z;
+		glm::extractEulerAngleXYZ(glm::mat4_cast(turn), x, y, z);
+		entity.Get<GS::TransformComponent>()->Rotation = glm::degrees(glm::vec3(x, y, z));
 		Static(entity);
 		return entity;
 	}
@@ -200,8 +231,8 @@ namespace ParkourCourseScene
 				{ "type": "panel", "anchor": "top-right", "pos": [28, 28], "layout": "vertical", "style": "accent",
 				  "padding": 14, "gap": 3, "visible": "!course.in", "children": [
 					{ "type": "label", "text": "PARKOUR COURSE", "style": "title" },
-					{ "type": "label", "text": "twelve stations: walk into one" },
-					{ "type": "label", "text": "or {keys.terminal} and  station 1 .. station 12", "style": "dim" } ] }
+					{ "type": "label", "text": "fourteen stations: walk into one" },
+					{ "type": "label", "text": "or {keys.terminal} and  station 1 .. station 14", "style": "dim" } ] }
 			] } })json";
 	}
 
@@ -329,6 +360,17 @@ namespace ParkourCourseScene
 				CrashTestScene::Collider(scene, "Cannon Collider", { pivot.x, 0.45f, pivot.z }, { 0.6f, 0.8f, 0.6f });
 				break;
 			}
+			case 12:  // slopes
+				// 15 degrees up to a platform at 1.2 m, 25 down the far side,
+				// and a 30 degree ramp to a block at 0.9 -- the ankles tilt the
+				// soles 25 degrees at most, so on the last the feet stand on
+				// their toes and heels.
+				Ramp(scene, "Ramp", lane, 3.0f, 3.0f + 1.2f / std::tan(glm::radians(15.0f)), 0.0f, 1.2f, 0.0f, 3.0f);
+				Block(scene, "Ramp Top", lane, 3.0f + 1.2f / std::tan(glm::radians(15.0f)), 10.0f, 0.0f, 3.0f, 1.2f);
+				Ramp(scene, "Ramp", lane, 10.0f, 10.0f + 1.2f / std::tan(glm::radians(25.0f)), 1.2f, 0.0f, 0.0f, 3.0f);
+				Ramp(scene, "Steep Ramp", lane, 14.0f, 14.0f + 0.9f / std::tan(glm::radians(30.0f)), 0.0f, 0.9f, 0.0f, 3.0f, 0.4f, Darker);
+				Block(scene, "Steep Top", lane, 14.0f + 0.9f / std::tan(glm::radians(30.0f)), 18.0f, 0.0f, 3.0f, 0.9f, Darker);
+				break;
 			default:
 				break;
 		}
@@ -368,8 +410,8 @@ namespace ParkourCourseScene
 		// The ground, far wider than the yard so nothing walks off it, and
 		// the yard's paving over it: 44 by 46 m, the walkway down its middle.
 		Static(Box(scene, "Ground", { 0.0f, -0.5f, 0.0f }, { 160.0f, 1.0f, 160.0f }, { 0.36f, 0.41f, 0.31f, 1.0f }, 0.9f));
-		Box(scene, "Yard", { 0.0f, 0.002f, 0.0f }, { 44.0f, 0.004f, 46.0f }, { 0.5f, 0.51f, 0.52f, 1.0f }, 0.45f);
-		Box(scene, "Walkway", { 0.0f, 0.004f, 0.0f }, { 44.0f, 0.004f, 4.4f }, { 0.4f, 0.42f, 0.45f, 1.0f }, 0.5f);
+		Box(scene, "Yard", { 3.5f, 0.002f, 0.0f }, { 51.0f, 0.004f, 46.0f }, { 0.5f, 0.51f, 0.52f, 1.0f }, 0.45f);
+		Box(scene, "Walkway", { 3.5f, 0.004f, 0.0f }, { 51.0f, 0.004f, 4.4f }, { 0.4f, 0.42f, 0.45f, 1.0f }, 0.5f);
 
 		for (int i = 0; i < (int)Stations().size(); i++)
 			BuildStation(scene, i);
@@ -445,7 +487,9 @@ public:
 	{
 		if (!m_Session)
 			return;
+		DodgeDriver::Step(*m_Session, *m_Scene);   // TEMPORARY
 		m_Session->FixedUpdate(step);
+		DodgeDriver::PostStep(*m_Session, *m_Scene);   // TEMPORARY
 		PublishStation();
 	}
 
