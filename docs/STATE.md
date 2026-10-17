@@ -37,6 +37,12 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-18 — Set pieces from recordings**: turning round, stopping
+  and setting off are a person's (CMU 47_01, 16_33, 69_01) played on his
+  bodies, hips and feet carried, feet held where they land, joined where
+  his feet are and handed back to the walk smoothly (hips never past 25
+  m/s^2). Cut short by the keys, a jump or a hit; the walk's own where the
+  ground is not flat or there is no room.
 - **2026-10-17 — Modelled on recordings**: CMU motion capture
   (`TestEnv/assets/mocap`, `Runtime/MotionClip.h`), `ghost walk` in the
   parkour yard plays a person on his bodies beside him. Measured against

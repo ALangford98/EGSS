@@ -7,6 +7,118 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-18 (set pieces: turning round, stopping and setting off played from recordings)
+
+"Go ahead": the next step agreed, recorded clips driving the set pieces.
+
+**What plays.** Three stretches of CMU clips, each picked from a timeline
+of the clip (the hips' speed and facing, each foot's speed, every 0.1 s):
+
+- **turning round** (47_01, 1.3 to 3.85 s): walking at 1.1 m/s, a last
+  step in, then three steps round 185 degrees in 1.8 s, the first already
+  turned 75, without stopping, and walking out. Subject 69's turn in place
+  (trial 13) was as clean, but it is 3.8 MB and 47_01 was already here;
+- **stopping** (16_33, 0.7 to 2.3 s): a step, a shorter closing step,
+  standing;
+- **setting off** (69_01, 0.8 to 2.3 s; the clip added, 0.37 MB): from
+  standing, a lean, the left foot, the right, walking at 1 m/s.
+
+**How** (`Humanoid::SetPiece`, `TryPiece`, `UpdatePiece`, `EndPiece`;
+baked by `BakeSetPiece` and `AttachSetPieces` in `MotionClip.h`):
+
+- Each stretch is baked for his body when he is built: every recorded
+  frame of his thirteen bodies, each foot's swing (down under 0.35 m/s,
+  up past 0.8), the facing.
+- Nothing in the humanoid reads a file. Without the clips (an exported
+  game that did not take them), the walk does it all.
+- **The join.** A piece is joined during its entry swing, at the point of
+  the swing his foot is at, mirrored if it is his other foot. With both
+  feet down it is joined at the end of that swing, the foot to lift next
+  being the one the recording lifts next. It is turned to his facing and
+  laid so the recording's planted foot is on his. His hips and joints ease
+  into it over 0.3 s, each foot over its next swing.
+- **Playing.** The hips and feet are carried exactly, as the walk carries
+  them. A foot is held where it landed for as long as the recording has
+  it down, so nothing can slide. The legs are solved between, and the
+  trunk, head and arms are driven by the recording's rotations on their
+  motors.
+- **Pace.** Up to 1.45 times as quick as recorded (stop and start 1.35),
+  to meet his 1.37 m/s walk.
+- **When it plays:**
+  - turning round from a walk, faster than 0.9 m/s;
+  - letting go of the keys while walking, between 0.7 and 2.2 m/s;
+  - setting off straight (within 30 degrees) from standing, not running.
+- **When it does not:**
+  - not where the ground under the hips' way is out of level by 4 cm, or
+    something stands at knee or waist height in it;
+  - not out of the run's brake: brake plus the recorded turn took 2.5 s
+    to face round, brake plus the walk's own turn takes 1.3.
+- **Cut short:**
+  - keys pressed during a stop, let go during a start or a turn, or a start
+    turned more than 50 degrees;
+  - a jump;
+  - a hit, a dodge or a move (whatever lets the feet go ends it).
+  It hands back to the walk where it is.
+- **The hand-off.** At the last frame, facing as the piece faces, at its
+  speed (none if it ends standing), the walk's next step the one the
+  piece had coming.
+
+**What the hand-off needed** (a temporary driver; the hips' worst
+acceleration, measured over two-step spans):
+
+- The walk's hips jumped to where it would have had them, up to 154 m/s^2
+  at the end of a set-off. They now start where the piece left them and
+  ease to the walk's over 0.35 s.
+- Easing from where the hips were, rather than where they were going, held
+  them still for a step (89 m/s^2). Now 13.5 at the end of a set-off and 25
+  at the end of a turn round.
+- A planted foot turned however the recording left it (toes out) was
+  snapped to his facing in one step. It is now brought round over the
+  hand-off.
+- The stop's last 0.09 m/s of settling, handed on, kept the walk's steps
+  turning over. Its narrow closing stance was then "settled" by a fidget
+  step. Ending standing now ends still, and that stance stands until he is
+  asked to move.
+
+**Measured** (eight scenarios, including each piece cut short and two
+turns back in a row):
+
+- walking, turning round: faces round in 1.32 s (the walk's own turn on
+  the spot 0.90, the person's at their pace 1.6);
+- letting go: standing still 1.20 s later, after a closing step;
+- setting off: moving at 1 m/s 0.60 s after the press;
+- cut short: let go mid-turn, still by 1.45 s; let go mid-set-off, still by
+  1.27 s; walking on when pressed again mid-stop;
+- the hips' acceleration never past 25 m/s^2;
+- no foot sliding in any piece (0.03 m/s at most, where a foot slid at
+  0.39 before the stance fix);
+- no falls.
+
+**Checked for regressions.** A course through the yard's stations, walked
+and run, some with the keys let go and turned back mid-station: no falls,
+stumbles as before. Pieces played on flat ground and not on the stairs or
+slopes. Smoke-run with no errors: CannonRun, CrashTest, Ragdoll, Parkour,
+MapBuilding (Release), Parkour and CannonRun (Debug). All three configs
+build.
+
+**Found on the way, not from this:**
+
+- **Split steps.** GameSession now and then splits a step in two, and the
+  walk's hips, which follow their anchor a step behind, then show twice
+  their speed for one sample. A measurement of acceleration step by step
+  sees an 88 m/s^2 spike that is not in a two-step span.
+- **Captures.** The parkour yard's captures at a fixed step are not
+  bit-identical run to run (by less than a pixel). The committed code
+  before this change does the same.
+
+**Still open:**
+
+- A walking turn round is slower than the walk's own was (1.32 s against
+  0.90). That is the person's pace, quickened by up to 1.45.
+- One recording per piece, so every turn round is the same turn.
+- No pieces for 90 degree turns, pivots or the run's stop (subject 69 has
+  90s, smooth turns and turns in place to draw on).
+
 ### 2026-10-17, night (modelled on recordings: CMU motion capture, a ghost to walk beside, a walk and run taken from a person's)
 
 "Lets perhaps try modelling the movements after something real. Can we
