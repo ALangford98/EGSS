@@ -62,6 +62,27 @@ inline glm::vec3 RotationLookingAlong(const glm::vec3& direction)
 	return glm::degrees(glm::vec3(a, b, 0.0f));
 }
 
+// Where a head turned `yaw` about up and tipped `pitch` above the horizon
+// looks (degrees; yaw 0 looks along -z, as ForwardFromRotation's zero
+// does). What a camera driven by a mouse means by pitch and yaw -- and not
+// ForwardFromRotation of (pitch, yaw, 0), which tips about the world's x
+// *after* turning: turned half round, asking it to look down looked up,
+// and turned a quarter round, pitch did nothing at all. A camera's
+// rotation for it is RotationLookingAlong(LookDirection(pitch, yaw)), and
+// PitchYawOf goes back.
+inline glm::vec3 LookDirection(float pitchDegrees, float yawDegrees)
+{
+	float p = glm::radians(pitchDegrees), y = glm::radians(yawDegrees);
+	return glm::vec3(-std::sin(y) * std::cos(p), std::sin(p), -std::cos(y) * std::cos(p));
+}
+
+// The (pitch, yaw) in degrees that LookDirection turns into `direction`.
+inline glm::vec2 PitchYawOf(const glm::vec3& direction)
+{
+	glm::vec3 d = glm::normalize(direction);
+	return glm::degrees(glm::vec2(std::asin(glm::clamp(d.y, -1.0f, 1.0f)), std::atan2(-d.x, -d.z)));
+}
+
 // What a submesh of a built-in model looks like (GS/Procedural/Prefabs),
 // with the entity's colour for the parts that take it. Null for a submesh
 // that names no built-in surface -- a model from a file.
@@ -760,10 +781,12 @@ public:
 			std::shared_ptr<GS::Texture2D> rough = mesh.MaterialPath.empty() ? nullptr : MaterialLibrary::Roughness(mesh.MaterialPath);
 			float emission = mesh.Emission;
 			// A screen shows its texture, glowing.
+			bool glowing = false;
 			if (auto* screen = scene.GetComponent<GS::ScreenComponent>(entity); screen && screen->Texture)
 			{
 				albedo = screen->Texture;
 				emission = screen->Emission;
+				glowing = true;
 			}
 			glm::mat4 model = transform->GetTransform();
 			const std::vector<GS::Submesh>& submeshes = mesh.Geometry->GetSubmeshes();
@@ -776,7 +799,12 @@ public:
 					item.Color = SurfaceColour(*surface, mesh.Color);
 					item.Roughness = surface->Roughness;
 					item.Metallic = surface->Metallic;
-					item.Emission = surface->Emission;
+					// Not a screen's own glow: the built-in screen model's
+					// surface has none, and taking it put every screen out --
+					// lit like card, which a hall's lamps hid and a sign in
+					// the shade outdoors did not.
+					if (!glowing)
+						item.Emission = surface->Emission;
 				}
 				// Glowing things are their own light: they cast no shadow.
 				item.CastShadow = item.Emission < 0.5f;

@@ -137,8 +137,7 @@ public:
 		}
 		if (auto* t = Transform(m_FlyCamera))
 		{
-			m_Pitch = t->Rotation.x;
-			m_Yaw = t->Rotation.y;
+			TakeLook(*t);
 		}
 
 		auto& screens = m_Scene.View<GS::ScreenComponent>();
@@ -387,8 +386,7 @@ private:
 			Ease(dt);
 			if (!m_Easing)
 			{
-				m_Pitch = t->Rotation.x;
-				m_Yaw = t->Rotation.y;
+				TakeLook(*t);
 			}
 			return;
 		}
@@ -412,7 +410,7 @@ private:
 		float speed = fly->Speed;
 		if (keys)
 		{
-			glm::vec3 forward = ForwardFromRotation(glm::vec3(m_Pitch, m_Yaw, 0.0f));
+			glm::vec3 forward = LookDirection(m_Pitch, m_Yaw);
 			glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
 			if (map.Down("forward")) move += forward;
 			if (map.Down("back")) move -= forward;
@@ -426,7 +424,16 @@ private:
 			MakeActive(m_FlyCamera);   // flying takes the view back from a fixed camera
 		if (glm::length(move) > 1e-4f)
 			t->Position += glm::normalize(move) * speed * dt;
-		t->Rotation = glm::vec3(m_Pitch, m_Yaw, 0.0f);
+		t->Rotation = RotationLookingAlong(LookDirection(m_Pitch, m_Yaw));
+	}
+
+	// The fly camera's pitch and yaw from where `t` looks: a head's, not
+	// the rotation's own angles (SceneRenderer's LookDirection says why).
+	void TakeLook(const GS::TransformComponent& t)
+	{
+		glm::vec2 look = PitchYawOf(ForwardFromRotation(t.Rotation));
+		m_Pitch = look.x;
+		m_Yaw = look.y;
 	}
 
 	// The camera eased towards m_Goal: position and look direction, about
@@ -494,8 +501,7 @@ private:
 		m_Mode = Mode::Fly;
 		if (auto* t = Transform(m_FlyCamera))
 		{
-			m_Pitch = t->Rotation.x;
-			m_Yaw = t->Rotation.y;
+			TakeLook(*t);
 		}
 		m_MouseKnown = false;
 	}
@@ -711,6 +717,10 @@ private:
 			std::string jump = rig && rig->ParkourHint()[0] ? rig->ParkourHint() : "jump";
 			hints = move + " walk   " + map.Keys("sprint") + " run   " + map.Keys("jump") + " " + jump + "   hold " + map.Keys("look")
 				+ " to look   " + map.Keys("interact") + " let go";
+			// Hanging, the keys are his: along the edge, up, down.
+			if (rig && rig->IsHanging())
+				hints = map.Keys("left") + " " + map.Keys("right") + " along the edge   " + map.Keys("forward") + " or " + map.Keys("jump")
+					+ " climb up   " + map.Keys("back") + " drop   hold " + map.Keys("look") + " to look   " + map.Keys("interact") + " let go";
 		}
 		m_UI.Set("hud.mode", mode);
 		m_UI.Set("hud.hints", hints);
@@ -777,8 +787,7 @@ private:
 			t->Position = glm::vec3(v[0], v[1], v[2]);
 			if (look)
 				t->Rotation = RotationLookingAlong(glm::vec3(v[3], v[4], v[5]) - t->Position);
-			m_Pitch = t->Rotation.x;
-			m_Yaw = t->Rotation.y;
+			TakeLook(*t);
 			m_Easing = false;
 			MakeActive(m_FlyCamera);
 		});

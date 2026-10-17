@@ -90,6 +90,9 @@ public:
 	LauncherSystem& Launchers() { return m_Launchers; }
 	GS::PhysicsWorld3D& World() { return m_World; }
 	GameUI::Context& UI() { return m_Modes.UI(); }
+	// A running humanoid by its entity's name, or null: for a host with
+	// commands of its own about one (the parkour course's `station`).
+	Humanoid* Rig(const std::string& name) { return FindRig(name); }
 
 	// Builds every body, installs the physics backend, then prepares and
 	// starts every script. `dependencies`, when given, receives each

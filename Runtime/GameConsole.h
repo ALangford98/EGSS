@@ -377,7 +377,9 @@ private:
 		std::string text = m_Status + "      " + GS::InputMap::Active().Keys("terminal") + "  terminal";
 		ImVec2 size = ImGui::CalcTextSize(text.c_str());
 		ImDrawList* draw = ImGui::GetForegroundDrawList();
-		ImVec2 at(x + 10.0f, y + height - size.y - 14.0f);
+		// Above the bottom row a game's HUD gives its hints (GameModes'
+		// hud screen): down beside them it ran under a long line of them.
+		ImVec2 at(x + 10.0f, y + height - size.y - 60.0f);
 		draw->AddRectFilled(ImVec2(at.x - 6.0f, at.y - 4.0f), ImVec2(at.x + size.x + 6.0f, at.y + size.y + 4.0f),
 			IM_COL32(4, 12, 9, 190), 4.0f);
 		draw->AddText(at, IM_COL32(150, 255, 175, 255), text.c_str());

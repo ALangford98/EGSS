@@ -94,14 +94,16 @@ public:
 		return body;
 	}
 
-	// The camera forward GameSession's renderer reads from a rotation
-	// (SceneRenderer's ForwardFromRotation, Rx * Ry * Rz applied to -Z):
-	// with no roll it is (-sin yaw, sin pitch cos yaw, -cos pitch cos yaw),
-	// so pitch and yaw in degrees *are* the rotation (pitch, yaw, 0).
+	// Where the camera looks for this controller's pitch and yaw: a head's
+	// (SceneRenderer's LookDirection), written to the camera as the
+	// rotation that looks that way. It used to *be* the rotation (pitch,
+	// yaw, 0), which the renderer reads as a tip about the world's x after
+	// the turn: behind a figure facing +z the camera looked up when the
+	// mouse asked it to look down, and facing along x it could not look up
+	// or down at all.
 	static glm::vec3 Forward(float pitchDegrees, float yawDegrees)
 	{
-		float p = glm::radians(pitchDegrees), y = glm::radians(yawDegrees);
-		return glm::vec3(-std::sin(y), std::sin(p) * std::cos(y), -std::cos(p) * std::cos(y));
+		return LookDirection(pitchDegrees, yawDegrees);
 	}
 
 	// Yaw (degrees) whose forward, level, is `direction` -- the inverse of
@@ -412,7 +414,7 @@ public:
 			}
 			camera->Position = target + back * distance;
 		}
-		camera->Rotation = glm::vec3(m_Pitch, m_Yaw, 0.0f);
+		camera->Rotation = RotationLookingAlong(Forward(m_Pitch, m_Yaw));
 	}
 
 	GS::EntityId CameraEntity() const { return m_Camera; }
@@ -438,14 +440,14 @@ public:
 				m_Camera = camera;
 				// The camera keeps looking the way it was -- walking up to him
 				// from the front and pressing E does not swing the view round
-				// -- and W walks him away from it, as a player is walked. A
-				// camera's rotation (pitch, yaw, 0) is exactly this
-				// controller's (m_Pitch, m_Yaw); see Forward.
+				// -- and W walks him away from it, as a player is walked.
+				// The pitch and yaw are of where it looks (see Forward).
 				Character& c = m_Characters[i];
 				if (auto* view = scene.GetComponent<GS::TransformComponent>(camera))
 				{
-					m_Yaw = view->Rotation.y;
-					m_Pitch = glm::clamp(view->Rotation.x, -60.0f, 20.0f);
+					glm::vec2 look = PitchYawOf(ForwardFromRotation(view->Rotation));
+					m_Yaw = look.y;
+					m_Pitch = glm::clamp(look.x, -60.0f, 20.0f);
 				}
 				else
 				{
