@@ -687,6 +687,11 @@ namespace GS {
 
 		std::unordered_map<unsigned long long, PreviousContact> m_PreviousImpulses;
 
+		// The length of the last step, for carrying its impulses into one of
+		// another length (ScaleCarriedImpulses); zero before the first.
+		float m_LastStepDt = 0.0f;
+		void ScaleCarriedImpulses(float ratio);
+
 		unsigned int m_AwakeBodyCount = 0;
 	};
 

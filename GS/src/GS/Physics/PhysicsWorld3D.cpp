@@ -17,6 +17,21 @@ namespace GS {
 	// same one for warm starting.
 	static const float s_WarmStartRadius = 0.02f;
 
+	// The step a joint's drift is corrected over: the step itself, but never
+	// shorter than a 60th of a second. Baumgarte feeds back a fixed fraction
+	// of the error *per step*, so cutting a step finer made every joint
+	// correct faster in real time -- twice as fast at two substeps, eight at
+	// eight -- and GameSession cuts its steps whenever anything is fast. A
+	// humanoid getting up while cannonballs rolled about the yard, limbs
+	// pressed against the floor, was flung apart in 4 knock-downs of 40,
+	// arms at up to 30,000 deg/s, even with the carried impulses scaled
+	// (Step); corrected at the 60 Hz rate, in none -- the fastest arm under
+	// 4,300. A world stepped at 60 Hz or slower is unchanged.
+	static float JointRateDt(float dt)
+	{
+		return std::max(dt, 1.0f / 60.0f);
+	}
+
 	static unsigned long long ContactKey(unsigned int a, unsigned int b)
 	{
 		return ((unsigned long long)a << 32) | (unsigned long long)b;
@@ -1369,6 +1384,21 @@ namespace GS {
 	{
 		GS_PROFILE_SCOPE("Physics3D::Step");
 
+		// The impulses carried into this step (warm starting) were what the
+		// last step needed over its own length. A step of a different length
+		// needs them in proportion -- the same push over half the time is
+		// half the impulse -- and applied whole they are too strong by the
+		// ratio. GameSession splits a step into up to eight when anything is
+		// fast, so the length jumps (1/60 s to 1/480 at once), and a rolling
+		// cannonball anywhere in the world kept it changing: a humanoid
+		// getting up among them, his limbs under load, was pumped until he
+		// flew apart, in 27 knock-downs of 40 (2 with the step length held
+		// at one; JointRateDt is the rest of it). Scaled by the ratio, as
+		// Box2D's dtRatio is.
+		if (m_LastStepDt > 0.0f && dt > 0.0f && dt != m_LastStepDt)
+			ScaleCarriedImpulses(dt / m_LastStepDt);
+		m_LastStepDt = dt;
+
 		IntegrateVelocities(dt);
 
 		// Against the positions the bodies ended the last step at, which is
@@ -2272,7 +2302,7 @@ namespace GS {
 			// than all at once. Correcting all of it adds energy -- the same
 			// reason CorrectPositions uses a percentage.
 			const float beta = 0.2f;
-			joint.Bias = dt > 0.0f ? (beta / dt) * error : glm::vec3(0.0f);
+			joint.Bias = dt > 0.0f ? (beta / JointRateDt(dt)) * error : glm::vec3(0.0f);
 
 			if (joint.Type != JointType3D::Hinge)
 			{
@@ -2412,7 +2442,7 @@ namespace GS {
 
 					joint.SwingState = 1;
 					joint.SwingBias = dt > 0.0f
-						? (beta / dt) * std::max(joint.SwingAngle - joint.ConeAngle, 0.0f)
+						? (beta / JointRateDt(dt)) * std::max(joint.SwingAngle - joint.ConeAngle, 0.0f)
 						: 0.0f;
 				}
 				else
@@ -2430,14 +2460,14 @@ namespace GS {
 				{
 					joint.TwistState = 1;
 					joint.TwistBias = dt > 0.0f
-						? (beta / dt) * std::max(joint.TwistAngle - joint.TwistUpper, 0.0f)
+						? (beta / JointRateDt(dt)) * std::max(joint.TwistAngle - joint.TwistUpper, 0.0f)
 						: 0.0f;
 				}
 				else if (joint.TwistAngle <= joint.TwistLower + slop)
 				{
 					joint.TwistState = -1;
 					joint.TwistBias = dt > 0.0f
-						? (beta / dt) * std::min(joint.TwistAngle - joint.TwistLower, 0.0f)
+						? (beta / JointRateDt(dt)) * std::min(joint.TwistAngle - joint.TwistLower, 0.0f)
 						: 0.0f;
 				}
 				else
@@ -2485,7 +2515,7 @@ namespace GS {
 				: glm::mat2(0.0f);
 
 			joint.AngularBias = dt > 0.0f
-				? (beta / dt) * glm::vec2(glm::dot(misalignment, joint.AxisTangent[0]),
+				? (beta / JointRateDt(dt)) * glm::vec2(glm::dot(misalignment, joint.AxisTangent[0]),
 					glm::dot(misalignment, joint.AxisTangent[1]))
 				: glm::vec2(0.0f);
 
@@ -2541,14 +2571,14 @@ namespace GS {
 				{
 					joint.LimitState = -1;
 					joint.LimitBias = dt > 0.0f
-						? (beta / dt) * std::min(joint.Angle - joint.LowerLimit + slop, 0.0f)
+						? (beta / JointRateDt(dt)) * std::min(joint.Angle - joint.LowerLimit + slop, 0.0f)
 						: 0.0f;
 				}
 				else if (joint.Angle >= joint.UpperLimit - slop)
 				{
 					joint.LimitState = 1;
 					joint.LimitBias = dt > 0.0f
-						? (beta / dt) * std::max(joint.Angle - joint.UpperLimit - slop, 0.0f)
+						? (beta / JointRateDt(dt)) * std::max(joint.Angle - joint.UpperLimit - slop, 0.0f)
 						: 0.0f;
 				}
 
@@ -2755,6 +2785,27 @@ namespace GS {
 					? -restitution * approach
 					: 0.0f;
 			}
+		}
+	}
+
+	void PhysicsWorld3D::ScaleCarriedImpulses(float ratio)
+	{
+		for (auto& [key, stored] : m_PreviousImpulses)
+			for (int p = 0; p < stored.PointCount; p++)
+			{
+				stored.NormalImpulse[p] *= ratio;
+				stored.TangentImpulse[p][0] *= ratio;
+				stored.TangentImpulse[p][1] *= ratio;
+			}
+		for (Joint3D& joint : m_Joints)
+		{
+			joint.AccumulatedImpulse *= ratio;
+			joint.AccumulatedAngularImpulse *= ratio;
+			joint.AccumulatedLimitImpulse *= ratio;
+			joint.AccumulatedSwingImpulse *= ratio;
+			joint.AccumulatedTwistImpulse *= ratio;
+			joint.AccumulatedMotorImpulse *= ratio;
+			joint.AccumulatedMotorImpulse3 *= ratio;
 		}
 	}
 
