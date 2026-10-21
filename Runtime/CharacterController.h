@@ -138,12 +138,8 @@ public:
 		// Seeded by the entity, so every humanoid in a scene walks a little
 		// differently, and the same one the same way every time it is played.
 		rig->Spawn(transform->Position, glm::radians(transform->Rotation.y), (uint32_t)entity * 2654435761u + 1u);
-		// Walking, running and turning posed from recordings, where they are
-		// to hand (Runtime/Locomotion.h); the old physical walk otherwise.
+		// Walking, running and turning posed from recordings (Runtime/Locomotion.h).
 		AttachLocomotion(*rig);
-		// The old walk's recorded turning round, stopping and setting off,
-		// for when it is the one walking (`locomotion old`, or no clips).
-		AttachSetPieces(*rig);
 		Add(scene, entity, rig->PelvisBody());
 		Character& c = m_Characters.back();
 		c.Kind = HumanoidBody;

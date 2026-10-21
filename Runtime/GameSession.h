@@ -495,28 +495,6 @@ private:
 			rig->SetGait(*chosen);
 			m_Console.Good(name + " now walks " + chosen->Preset);
 		});
-		c.Register("locomotion", "[old|new]", "how humanoids are moved: new (posed from recordings) or old (the physical walk)", [this](const GameConsole::Args& a)
-		{
-			if (a.empty())
-			{
-				bool any = false;
-				for (Humanoid* rig : AllRigs())
-				{
-					any = true;
-					m_Console.Print(std::string(rig->LocomotionActive() ? "new" : "old")
-						+ (rig->LocomotionReady() ? "" : " (no clips: assets/mocap/cmu missing)"), GameConsole::Tone::Dim);
-					break;
-				}
-				if (!any)
-					m_Console.Bad("no humanoids");
-				return;
-			}
-			std::string want = GameConsole::Lower(a[0]);
-			if (want != "old" && want != "new") { m_Console.Bad("locomotion old|new"); return; }
-			for (Humanoid* rig : AllRigs())
-				rig->SetLocomotion(want == "new");
-			m_Console.Good("locomotion: " + want);
-		});
 		c.Register("camera", "[name]", "look through another camera; no name lists them", [this](const GameConsole::Args& a)
 		{
 			auto& cameras = m_Scene.View<GS::CameraComponent>();
@@ -548,16 +526,6 @@ private:
 		c.Print("GS game terminal -- type help", GameConsole::Tone::Title);
 		if (m_Launchers.Active())
 			c.Print("a launcher is ready: " + GS::InputMap::Active().Keys("fire") + " fires it; try  preset car, fire  or  slowmo 0.25", GameConsole::Tone::Dim);
-	}
-
-	// Every humanoid in the scene.
-	std::vector<Humanoid*> AllRigs()
-	{
-		std::vector<Humanoid*> out;
-		for (GS::EntityId id : m_Scene.GetEntities())
-			if (Humanoid* rig = m_Characters.RigOf(id))
-				out.push_back(rig);
-		return out;
 	}
 
 	// A humanoid by its entity's name.

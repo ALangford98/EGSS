@@ -92,6 +92,14 @@ struct LocoState
 	float Drop = 0.0f, DropRate = 0.0f;
 	float Dip = 0.0f, DipRate = 0.0f;
 	float AirTimer = 0.0f, AirVelocity = 0.0f, PushDip = 0.0f;
+	float JumpRun = 0.0f;           // how much of a running jump this one is
+	float JumpDip = 0.0f;
+	LocoPose TakeOff;               // the pose he left the ground in
+	LocoPose GroundPose;            // the last pose on the ground
+	float LeapPhase[2] = { -1.0f, -1.0f };   // the run's flight with each foot ahead
+	int LeapLead = 0;               // which of them this leap is
+	LocoPose LandFrom;              // the pose he landed in, blended out of
+	float LandBlend = 0.0f;
 	float LastDown[2] = { 1.0f, 1.0f };
 	LocoPose AirPose;
 
@@ -118,6 +126,12 @@ struct LocoState
 	glm::quat FromQ[LocoPose::Bodies];
 	float Blend = 1.0f;
 	glm::vec3 Spin[LocoPose::Bodies];   // each body's last turning rate, for the hand-over
+	float Touched[LocoPose::Bodies] = {};   // s since each limb last touched the scenery, in a move
+	LocoClips Fallback;             // standing as built, for when there are no clips
+	// The arms, following their recorded turns on springs (his own frame).
+	glm::quat Arm[4];
+	glm::vec3 ArmRate[4];
+	bool ArmsSet = false;
 };
 
 inline void Humanoid::SetLocomotionClips(std::shared_ptr<const LocoClips> clips)
@@ -178,8 +192,7 @@ inline void Humanoid::LocoRelease()
 	for (int side = 0; side < 2; side++)
 	{
 		m_Planted[side] = AnkleWorld(side);
-		m_SwingFrom[side] = m_SwingTo[side] = m_Planted[side];
-		m_Swinging[side] = false;
+		m_SwingFrom[side] = m_Planted[side];
 	}
 }
 
@@ -200,6 +213,7 @@ inline void Humanoid::LocoEnter()
 		L.Spin[i] = glm::vec3(0.0f);
 	}
 	L.Blend = 0.0f;
+	L.ArmsSet = false;
 	float ground = GroundY(pelvis.Position, -1000.0f);
 	L.Origin = glm::vec3(pelvis.Position.x, ground, pelvis.Position.z);
 	L.OriginRate = 0.0f;
@@ -228,7 +242,10 @@ inline void Humanoid::DriveLocomotion(float dt)
 	if (m_LocoEntering || !m_Loco)
 		LocoEnter();
 	LocoState& L = *m_Loco;
-	const LocoClips& C = *m_LocoClips;
+	// Without the clips: standing as built, no strides -- he steps to keep up.
+	if (!m_LocoClips && L.Fallback.Idle.Root.y <= 0.0f)
+		L.Fallback.Idle.Root = glm::vec3(0.0f, 0.5f * (m_Rest.Hip[0].y + m_Rest.Hip[1].y), 0.0f);
+	const LocoClips& C = m_LocoClips ? *m_LocoClips : L.Fallback;
 	const float s = m_Proportions.Scale;
 	const glm::vec3 up(0.0f, 1.0f, 0.0f);
 	dt = std::max(dt, 1e-4f);
@@ -269,7 +286,6 @@ inline void Humanoid::DriveLocomotion(float dt)
 	m_Facing = wrap(m_Facing + turnStep);
 	float turnNow = turnStep / dt;
 	m_TurnToGo = wants ? facingError : 0.0f;
-	m_TurnRateNow = turnNow;
 
 	// --- speed and the way he is going ------------------------------------
 	// Up to a run in a third of a second, down from one in about the same.
@@ -449,12 +465,23 @@ inline void Humanoid::DriveLocomotion(float dt)
 	// leaves the ground at the jump's speed, a = v^2 / 2d (about 0.04 s):
 	// an eighth of a second from the press to the air, and the hips never
 	// change speed in one step -- the take-off at once was a 250 m/s^2 pop.
-	const float jumpDip = 0.07f * s;
+	// Standing, a real dip -- 13 cm over 0.11 s -- since a jump from nothing
+	// has to load the legs; running, a runner jumps out of the stride, 8 cm
+	// over 0.05 s (at 5 cm the push to take-off speed was 109 m/s^2, v^2/2d). The owner: snappy, but the legs barely moved (it was 7 cm
+	// over 0.08 s whatever the speed). An eighth to a sixth of a second from
+	// the press to the air.
+	if (m_Air == Air::Crouching && L.AirTimer == 0.0f)
+	{
+		L.JumpRun = glm::clamp((L.Speed - m_WalkSpeed) / std::max(m_RunSpeed - m_WalkSpeed, 0.1f), 0.0f, 1.0f);
+		L.JumpDip = glm::mix(0.13f, 0.08f, L.JumpRun) * s;
+	}
+	const float jumpDip = std::max(L.JumpDip, 0.02f * s);
+	const float crouchTime = glm::mix(0.11f, 0.05f, L.JumpRun);
 	if (m_Air == Air::Crouching)
 	{
 		L.AirTimer += dt;
-		crouchDip = jumpDip * glm::smoothstep(0.0f, 0.08f, L.AirTimer);
-		if (L.AirTimer >= 0.08f)
+		crouchDip = jumpDip * glm::smoothstep(0.0f, crouchTime, L.AirTimer);
+		if (L.AirTimer >= crouchTime)
 		{
 			m_Air = Air::Pushing;
 			L.AirVelocity = 0.0f;
@@ -486,11 +513,19 @@ inline void Humanoid::DriveLocomotion(float dt)
 			L.Origin.y = groundHere;
 			L.OriginRate = 0.0f;
 			m_Air = Air::Grounded;
-			// Landing goes into the legs: the hips carry on down at 60% of
-			// the speed they landed with and spring back -- 9 cm deep off a
-			// 0.85 m ledge. At 35%, a hard landing stopped the hips at 240
-			// m/s^2.
-			L.DipRate = -0.6f * impact;
+			// Out of a leap the stride carries on from the leap's own moment
+			// of the run -- the leading foot coming down -- and whatever the
+			// air pose was is blended out over 0.15 s. Snapped back to the
+			// stride he took off from, a body moved at 42 m/s for a step.
+			if (L.JumpRun > 0.05f)
+				L.Phase = L.LeapPhase[L.LeapLead];
+			L.LandFrom = L.AirPose;
+			L.LandBlend = 1.0f;
+			// Landing goes into the legs: the hips carry on down at 75% of
+			// the speed they landed with and spring back -- 9 cm deep from a
+			// jump. At 35%, a hard landing stopped the hips at 240 m/s^2, at
+			// 60% a running jump's at 148.
+			L.DipRate = -0.75f * impact;
 			// Higher than about four metres is not landed.
 			if (impact > 9.0f)
 			{
@@ -501,20 +536,29 @@ inline void Humanoid::DriveLocomotion(float dt)
 	}
 	else
 	{
-		// Off an edge: down to a hang or a landing if parkour can, falling
-		// otherwise -- not a ragdoll, which a drop of a metre does not earn.
+		// Off an edge. Run off it, and it is a leap: in the air, parkour's
+		// drop and roll for a big one. Walk off it -- or drift off it standing
+		// -- and he has stepped onto nothing: he falls, physics has him, the
+		// arms reach out for the ground, and he gets up where he lands. The
+		// owner, 2026-10-21: walking off a pillar he went down neatly on his
+		// feet, where stepping onto nothing should make you fall. (Walking off
+		// something tall used to lower him into a hang; that is for parkour
+		// to be asked for, not for a step into nothing.)
 		float drop = L.Origin.y - groundHere;
 		if (drop > 0.5f * s)
 		{
-			float topHere = L.Origin.y + m_Crouch;
-			bool walking = !running;
-			if (m_Parkour && walking && drop > 2.0f * s && PlanDropToHang(topHere))
+			bool runningOff = running && L.Speed > 1.3f * m_WalkSpeed;
+			if (!runningOff)
+			{
+				GoRagdoll("stepped off", true);
 				return;
+			}
 			if (drop > m_FallHeight && PlanDrop())
 				return;
 			m_Air = Air::Flying;
 			L.AirVelocity = std::min(L.OriginRate, 0.0f);
 			L.AirTimer = 0.0f;
+			L.JumpRun = 0.0f;
 		}
 		else
 		{
@@ -635,16 +679,88 @@ inline void Humanoid::DriveLocomotion(float dt)
 	// stopping waits on.
 	L.LastDown[0] = strideSum > 0.0f ? strideDown[0] / strideSum : 1.0f;
 	L.LastDown[1] = strideSum > 0.0f ? strideDown[1] / strideSum : 1.0f;
-	// In the air: the pose he left the ground in, held, the feet tucked below.
+	// In the air. Off a run, a leap: the recorded run's own moment of flight
+	// with its legs split furthest, the foot that was coming through leading,
+	// blended in over 0.12 s from the pose he left the ground in. Standing,
+	// that pose held with the knees tucked up (below, at the feet).
+	if (L.LeapPhase[0] < 0.0f && cycles > 0)
+	{
+		// Once: where in the fastest stride each foot is furthest ahead with
+		// both off the ground.
+		const LocoCycle& run = C.Cycles[(size_t)cycles - 1];
+		float best[2] = { 0.0f, 0.0f };
+		const glm::vec3 centre = 0.5f * (m_Rest.Hip[0] + m_Rest.Hip[1]);
+		for (size_t k = 0; k < run.Frames.size(); k++)
+		{
+			if (run.Down[k * 2] || run.Down[k * 2 + 1])
+				continue;
+			const LocoPose& f = run.Frames[k];
+			float z[2];
+			for (int side = 0; side < 2; side++)
+				z[side] = (f.D[0] * (m_Rest.Hip[side] - centre) + f.D[3 + side] * (m_Rest.Knee[side] - m_Rest.Hip[side])
+					+ f.D[5 + side] * (m_Rest.Ankle[side] - m_Rest.Knee[side])).z;
+			for (int lead = 0; lead < 2; lead++)
+				if (z[lead] - z[1 - lead] > best[lead])
+				{
+					best[lead] = z[lead] - z[1 - lead];
+					L.LeapPhase[lead] = (float)k / (float)run.Frames.size();
+				}
+		}
+		for (float& p : L.LeapPhase)
+			if (p < 0.0f)
+				p = 0.0f;
+	}
 	if (airborne)
 	{
 		if (L.AirTimer <= dt)
-			L.AirPose = pose;
-		pose = L.AirPose;
+			L.TakeOff = L.GroundPose;
+		pose = L.TakeOff;
+		if (L.JumpRun > 0.05f && cycles > 0)
+		{
+			// The leap that comes next in the stride, so the legs carry on.
+			auto ahead = [&](float p) { float d = p - L.Phase; return d < 0.0f ? d + 1.0f : d; };
+			int lead = L.AirTimer <= dt ? (ahead(L.LeapPhase[0]) < ahead(L.LeapPhase[1]) ? 0 : 1) : L.LeapLead;
+			L.LeapLead = lead;
+			LocoPose leap;
+			float d[2];
+			C.Cycles[(size_t)cycles - 1].Sample(L.LeapPhase[lead], leap, d);
+			float w = glm::smoothstep(0.0f, 0.12f, L.AirTimer) * L.JumpRun;
+			pose.Root = glm::mix(pose.Root, glm::vec3(pose.Root.x, leap.Root.y, pose.Root.z), w);
+			for (int i = 0; i < LocoPose::Bodies; i++)
+			{
+				glm::quat q = glm::dot(pose.D[i], leap.D[i]) < 0.0f ? -leap.D[i] : leap.D[i];
+				pose.D[i] = glm::normalize(glm::slerp(pose.D[i], q, w));
+			}
+		}
 		down[0] = down[1] = 0.0f;
+		L.AirPose = pose;
 	}
 	else
+	{
+		if (L.LandBlend > 0.0f)
+		{
+			float w = glm::smoothstep(0.0f, 1.0f, L.LandBlend);
+			pose.Root = glm::mix(pose.Root, L.LandFrom.Root, w);
+			for (int i = 0; i < LocoPose::Bodies; i++)
+			{
+				glm::quat q = glm::dot(pose.D[i], L.LandFrom.D[i]) < 0.0f ? -L.LandFrom.D[i] : L.LandFrom.D[i];
+				pose.D[i] = glm::normalize(glm::slerp(pose.D[i], q, w));
+			}
+			L.LandBlend = std::max(L.LandBlend - dt / 0.15f, 0.0f);
+		}
 		L.AirPose = pose;
+		L.GroundPose = pose;
+	}
+
+	// How soon he lands: the legs reach for the ground in the last 0.15 s.
+	float landing = 1.0f;
+	if (airborne && L.AirVelocity < 0.0f)
+	{
+		float height = std::max(L.Origin.y - groundHere, 0.0f);
+		float v = -L.AirVelocity;
+		float t = (-v + std::sqrt(v * v + 2.0f * 9.81f * height)) / 9.81f;
+		landing = glm::clamp(t / 0.15f, 0.0f, 1.0f);
+	}
 
 	// --- his own way of moving, on top -------------------------------------
 	// The walking styles' numbers that still mean something here: how much
@@ -671,6 +787,60 @@ inline void Humanoid::DriveLocomotion(float dt)
 			* glm::angleAxis(headPitch, glm::vec3(1.0f, 0.0f, 0.0f))
 			* glm::angleAxis(m_HeadTilt, glm::vec3(0.0f, 0.0f, 1.0f));
 		pose.D[2] = glm::normalize(look * pose.D[2]);
+	}
+
+	// The arms in a jump: back as he dips, thrown forward and up as he
+	// pushes, easing out over the flight (the springs below smooth it).
+	{
+		float swing = 0.0f;
+		if (m_Air == Air::Crouching)
+			swing = 0.6f;
+		else if (m_Air == Air::Pushing)
+			swing = -1.1f;
+		else if (airborne)
+			swing = glm::mix(-1.1f, -0.35f, glm::smoothstep(0.0f, 0.3f, L.AirTimer)) * landing;
+		swing *= glm::mix(1.0f, 0.4f, L.JumpRun);
+		if (std::fabs(swing) > 1e-4f)
+		{
+			glm::quat arms = glm::angleAxis(swing, glm::vec3(1.0f, 0.0f, 0.0f));
+			for (int i = 9; i < 13; i++)
+				pose.D[i] = glm::normalize(arms * pose.D[i]);
+		}
+	}
+
+	// Follow-through in the arms. Copied exactly from the recording, upper
+	// arm and forearm moved as one stiff piece, frame for frame, and the
+	// owner read the walk's arms as robotic. Each follows its recorded turn
+	// on a spring a little short of critically damped -- the upper arm at
+	// 14 rad/s, the forearm looser at 10, so it trails the upper arm and
+	// settles a touch past it -- in his own frame, so turning round does
+	// not drag them.
+	{
+		const float omega[2] = { 14.0f, 10.0f }, damping = 0.7f;
+		for (int k = 0; k < 4; k++)
+		{
+			int body = 9 + k;
+			glm::quat target = pose.D[body];
+			if (!L.ArmsSet)
+			{
+				L.Arm[k] = target;
+				L.ArmRate[k] = glm::vec3(0.0f);
+				continue;
+			}
+			glm::quat error = glm::normalize(target * glm::conjugate(L.Arm[k]));
+			if (error.w < 0.0f)
+				error = -error;
+			glm::vec3 axis(error.x, error.y, error.z);
+			float length = glm::length(axis);
+			glm::vec3 toGo = length > 1e-6f ? axis / length * (2.0f * std::atan2(length, error.w)) : glm::vec3(0.0f);
+			float w = omega[k / 2];
+			L.ArmRate[k] += (w * w * toGo - 2.0f * damping * w * L.ArmRate[k]) * dt;
+			float turnBy = glm::length(L.ArmRate[k]) * dt;
+			if (turnBy > 1e-7f)
+				L.Arm[k] = glm::normalize(glm::angleAxis(turnBy, L.ArmRate[k] / glm::length(L.ArmRate[k])) * L.Arm[k]);
+			pose.D[body] = L.Arm[k];
+		}
+		L.ArmsSet = true;
 	}
 	pose.Root.y -= m_Crouch + crouchDip - L.Dip;
 
@@ -727,7 +897,7 @@ inline void Humanoid::DriveLocomotion(float dt)
 	// --- the bodies, built from the turns (as ClipRetarget::PoseFrom does) ---
 	const RestSkeleton& R = m_Rest;
 	const glm::vec3 hipCentre = 0.5f * (R.Hip[0] + R.Hip[1]);
-	glm::vec3 P[LocoPose::Bodies], hip[2], knee[2], ankle[2];
+	glm::vec3 P[LocoPose::Bodies], hip[2], knee[2], ankle[2], recordedAnkle[2];
 	glm::quat Q[LocoPose::Bodies], D[LocoPose::Bodies];
 	{
 		auto toWorld = [&](const glm::vec3& p) { return L.Origin + turn * p; };
@@ -755,6 +925,7 @@ inline void Humanoid::DriveLocomotion(float dt)
 			hip[side] = carry(0, root, hipCentre, R.Hip[side]);
 			knee[side] = carry(3 + side, hip[side], R.Hip[side], R.Knee[side]);
 			ankle[side] = carry(5 + side, knee[side], R.Knee[side], R.Ankle[side]);
+			recordedAnkle[side] = ankle[side];
 			// A wider or narrower stance: the feet moved out from under the
 			// hips; the legs are solved to them below.
 			if (std::fabs(stance - 1.0f) > 1e-3f)
@@ -834,7 +1005,11 @@ inline void Humanoid::DriveLocomotion(float dt)
 		}
 		else
 		{
-			footTarget[side] += up * (0.18f * s * glm::smoothstep(0.0f, 0.15f, L.AirTimer));
+			// The knees come up -- 30 cm of tuck standing, 8 off a run whose
+			// leap already has the legs where they go -- and reach back down
+			// for the ground as it comes.
+			float tuck = glm::mix(0.30f, 0.08f, L.JumpRun) * s;
+			footTarget[side] += up * (tuck * glm::smoothstep(0.0f, 0.15f, L.AirTimer) * landing);
 			// Kept on the ground below while he flies, or he lands reaching
 			// for the height he left (a foot leapt 46 cm on landing off a
 			// 0.85 m ledge).
@@ -1039,19 +1214,34 @@ inline void Humanoid::DriveLocomotion(float dt)
 		glm::vec3 dir = d > 1e-5f ? toEnd / d : -up;
 		d = glm::clamp(d, std::fabs(thigh - shin) + 0.01f, (thigh + shin) * 0.999f);
 		// The knee bends the way the stride bent it.
-		glm::vec3 pole = knee[side] - hip[side];
-		// The knees a little further out than recorded for a masculine body
-		// (a nudge: at 0.35 of the leg he went bow-legged, knees 36 cm apart
-		// over feet 15 cm apart), as recorded for a feminine one.
+		// Which way the knee bends: over the toes, as a knee does. Taken from
+		// the recording's knee alone, a leg nearly straight has almost no
+		// knee to take a direction from, and it swung sideways when he set
+		// off from standing -- 138 degrees in a step. The recording's is
+		// used only as far as it bends the knee clearly (2 cm to 6 cm off the
+		// line from hip to ankle). A masculine body's knees a little further
+		// out (a nudge: at 0.35 of the leg he went bow-legged).
+		glm::vec3 toes = footTurn[side] * glm::vec3(0.0f, 0.0f, 1.0f);
+		glm::vec3 overToes = toes - dir * glm::dot(toes, dir);
+		if (glm::length(overToes) < 1e-3f)
+			overToes = forward - dir * glm::dot(forward, dir);
+		overToes = glm::normalize(overToes);
+		// The recorded knee's way off the recorded leg's own line: off the
+		// line to where the foot is now -- moved out by the stance, held where
+		// it landed -- it read as the knee pointing in (45 degrees, standing).
+		glm::vec3 recordedLine = glm::normalize(recordedAnkle[side] - hip[side]);
+		glm::vec3 recorded = (knee[side] - hip[side]) - recordedLine * glm::dot(knee[side] - hip[side], recordedLine);
+		recorded -= dir * glm::dot(recorded, dir);
+		float clearly = glm::smoothstep(0.02f, 0.06f, glm::length(recorded));
+		glm::vec3 perp = glm::length(recorded) > 1e-4f
+			? glm::mix(overToes, glm::normalize(recorded), clearly) : overToes;
 		{
 			float sideSign = side == 1 ? 1.0f : -1.0f;
 			glm::vec3 across = turn * glm::vec3(1.0f, 0.0f, 0.0f);
-			pole += across * (sideSign * (1.0f - femininity) * 0.08f * glm::length(pole));
+			perp += across * (sideSign * (1.0f - femininity) * 0.08f);
 		}
-		glm::vec3 perp = pole - dir * glm::dot(pole, dir);
-		if (glm::length(perp) < 1e-4f)
-			perp = forward - dir * glm::dot(forward, dir);
-		perp = glm::normalize(perp);
+		perp = perp - dir * glm::dot(perp, dir);
+		perp = glm::length(perp) > 1e-4f ? glm::normalize(perp) : overToes;
 		float cosA = glm::clamp((thigh * thigh + d * d - shin * shin) / (2.0f * thigh * d), -1.0f, 1.0f);
 		float a = std::acos(cosA);
 		glm::vec3 kneeAt = hip[side] + thigh * (cosA * dir + std::sin(a) * perp);
@@ -1067,21 +1257,76 @@ inline void Humanoid::DriveLocomotion(float dt)
 		P[7 + side] = ankleReached + footTurn[side] * footFromAnkle[side];
 		Q[7 + side] = glm::normalize(footTurn[side] * m_BuildPose[(size_t)(7 + side)].second);
 		m_Planted[side] = ankleReached;
-		m_Swinging[side] = L.Feet[side].State != LocoState::FootState::Planted;
 	}
 
 	// --- on to the bodies -------------------------------------------------------
-	// Kinematic, the position reached through the velocity (so what he walks
-	// into is pushed by something moving, not teleported through), the turn
-	// set outright. Out of whatever had him, eased over a quarter second.
-	const float enterTime = 0.25f;
+	LocoPlace(P, Q, dt, true, 0.25f, false);
+
+	// What the rest of him reads of where he is.
+	m_StandHeight = P[0].y;
+	m_RootAnchor = P[0];
+}
+
+
+// The bodies put where P and Q say, kinematic: the position reached through
+// the velocity (so what he walks into is pushed by something moving, not
+// teleported through), the turn set outright, each body's turning rate kept
+// for the hand-over to physics. Out of whatever had him, eased over
+// `enterTime`.
+//
+// `colliding`: in a move, where a shin goes over a box and a hand onto a
+// ledge. The limbs stay dynamic, steered onto the pose by their velocity and
+// spin (gravity paid in advance) -- but one touching the scenery is left to
+// its motor and the contact, as the moves always had it, until it comes
+// free. Placed outright, a posed limb went 10-25 cm into what it met;
+// steered regardless, an arm whose target lay inside a wall was driven
+// back into it every step against the contact (16-19 cm, where the motors
+// alone had 6).
+inline void Humanoid::LocoPlace(const glm::vec3* P, const glm::quat* Q, float dt, bool pelvisToo, float enterTime, bool colliding)
+{
+	LocoState& L = *m_Loco;
+	if (!m_LocoPosed)
+	{
+		// Taken from physics this step: start from where the bodies lie.
+		for (int i = 0; i < LocoPose::Bodies; i++)
+		{
+			L.Touched[i] = 1.0f;
+			const GS::RigidBody3D& body = m_World.GetBody(m_CharacterBodies[(size_t)i]);
+			L.FromP[i] = body.Position;
+			L.FromQ[i] = body.Orientation;
+		}
+		L.Blend = 0.0f;
+	}
 	float blend = 1.0f;
 	if (L.Blend < 1.0f)
 	{
-		L.Blend = std::min(L.Blend + dt / enterTime, 1.0f);
+		L.Blend = std::min(L.Blend + dt / std::max(enterTime, 1e-3f), 1.0f);
 		blend = glm::smoothstep(0.0f, 1.0f, L.Blend);
 	}
-	for (int i = 0; i < LocoPose::Bodies; i++)
+	bool touching[LocoPose::Bodies] = {};
+	if (colliding)
+		for (const GS::Contact3D& contact : m_World.GetContacts())
+		{
+			if (contact.PointCount == 0)
+				continue;
+			bool mineA = IsCharacter(contact.A), mineB = IsCharacter(contact.B);
+			if (mineA == mineB)
+				continue;
+			unsigned int mine = mineA ? contact.A : contact.B;
+			for (int i = 1; i < LocoPose::Bodies; i++)
+				if (m_CharacterBodies[(size_t)i] == mine)
+					L.Touched[i] = 0.0f;
+		}
+	// Held to physics for 0.15 s after it last touched: freed the step it was
+	// pushed clear, it was steered straight back through the ledge's corner,
+	// in and out every other step (an upper arm 18 cm into the climb's block).
+	if (colliding)
+		for (int i = 1; i < LocoPose::Bodies; i++)
+		{
+			touching[i] = L.Touched[i] < 0.15f;
+			L.Touched[i] += dt;
+		}
+	for (int i = pelvisToo ? 0 : 1; i < LocoPose::Bodies; i++)
 	{
 		GS::RigidBody3D& body = m_World.GetBody(m_CharacterBodies[(size_t)i]);
 		glm::vec3 p = P[i];
@@ -1098,20 +1343,94 @@ inline void Humanoid::DriveLocomotion(float dt)
 		glm::vec3 axis(delta.x, delta.y, delta.z);
 		float length = glm::length(axis);
 		L.Spin[i] = length > 1e-6f ? axis / length * (2.0f * std::atan2(length, delta.w) / dt) : glm::vec3(0.0f);
-		body.Type = GS::BodyType::Kinematic;
-		body.Velocity = (p - body.Position) / dt;
-		body.Orientation = q;
-		body.AngularVelocity = glm::vec3(0.0f);
-		body.UpdateInertiaWorld();
+		if (colliding && i > 0 && touching[i])
+		{
+			body.Type = GS::BodyType::Dynamic;
+			continue;
+		}
+		if (colliding && i > 0)
+		{
+			// Back onto the pose no faster than 8 m/s and 30 rad/s: a limb
+			// coming free of the scenery eases back rather than snapping (a
+			// body at 36 m/s for a step), and one swinging at a ledge meets
+			// it before it is deep in (at 12 m/s, 20 cm a step, an upper arm
+			// went 13 cm into the climb's corner before its contact stopped
+			// it).
+			glm::vec3 v = (p - body.Position) / dt;
+			if (glm::length(v) > 8.0f)
+				v *= 8.0f / glm::length(v);
+			glm::vec3 w = L.Spin[i];
+			if (glm::length(w) > 30.0f)
+				w *= 30.0f / glm::length(w);
+			body.Type = GS::BodyType::Dynamic;
+			body.Velocity = v - m_World.Gravity * (body.GravityScale * dt);
+			body.AngularVelocity = w;
+		}
+		else
+		{
+			body.Type = GS::BodyType::Kinematic;
+			body.Velocity = (p - body.Position) / dt;
+			body.Orientation = q;
+			body.AngularVelocity = glm::vec3(0.0f);
+			body.UpdateInertiaWorld();
+		}
 		body.Awake = true;
 		body.SleepTimer = 0.0f;
 	}
 	m_LocoPosed = true;
-
-	// What the rest of him reads of where he is.
-	m_StandHeight = P[0].y;
-	m_RootAnchor = P[0];
-	m_StandTarget = m_StandHeight;
-	m_TravelYaw = L.Travel;
 }
 
+// A move -- a vault, a climb, a wall run, a dodge, a hang -- poses him as the
+// walk does. The moves were written as joint targets for motors to pull the
+// limbs to, and motors lag, overshoot, and lose to anything the limb hits:
+// the climb's legs kicked about behind him, on the old walk as on the new
+// (the owner, 2026-10-21). The targets are the pose the move means, so the
+// body is built from them -- down the joints from the pelvis the move
+// carries: each body turned as its parent is and then by its joint's target
+// (a ball joint's is the child's turn in the parent's frame; a hinge's, its
+// angle about the hinge's axis from how it was built), and put where the
+// two anchors of its joint meet.
+inline void Humanoid::PoseFromMotors(float dt)
+{
+	if (!m_Loco)
+		m_Loco = std::make_shared<LocoState>();
+	dt = std::max(dt, 1e-4f);
+	glm::vec3 P[LocoPose::Bodies];
+	glm::quat Q[LocoPose::Bodies];
+	auto index = [&](unsigned int handle)
+	{
+		for (int i = 0; i < LocoPose::Bodies; i++)
+			if (m_CharacterBodies[(size_t)i] == handle)
+				return i;
+		return 0;
+	};
+	const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+	P[0] = pelvis.Position + pelvis.Velocity * dt;
+	Q[0] = pelvis.Orientation;
+	auto place = [&](GS::PhysicsWorld3D::JointHandle handle)
+	{
+		const GS::Joint3D& j = m_World.GetJoint(handle);
+		int a = index(j.A), b = index(j.B);
+		glm::quat turn;
+		if (j.Type == GS::JointType3D::Ball)
+			turn = Q[a] * j.MotorTargetRotation;
+		else
+		{
+			glm::quat built = glm::conjugate(m_BuildPose[(size_t)a].second) * m_BuildPose[(size_t)b].second;
+			turn = Q[a] * glm::angleAxis(j.MotorTargetAngle, glm::normalize(j.LocalAxisA)) * built;
+		}
+		Q[b] = glm::normalize(turn);
+		P[b] = P[a] + Q[a] * j.LocalAnchorA - Q[b] * j.LocalAnchorB;
+	};
+	place(m_SpineJoint);
+	place(m_NeckJoint);
+	for (int side = 0; side < 2; side++)
+	{
+		place(m_HipJoint[side]);
+		place(m_KneeJoint[side]);
+		place(m_AnkleJoint[side]);
+		place(m_ShoulderJoint[side]);
+		place(m_ElbowJoint[side]);
+	}
+	LocoPlace(P, Q, dt, false, 0.12f, true);
+}

@@ -481,143 +481,6 @@ private:
 	float m_Ground = 0.0f;
 };
 
-// A stretch of a clip baked for one body as a Humanoid::SetPiece: every
-// recorded frame from `from` to `to` seconds, his thirteen bodies in the
-// recording's frame, each foot's swing (down while the foot is nearly
-// still -- under 0.35 m/s, up again past 0.8), the facing (halfway between
-// the pelvis and the chest, whose turns with the stride cancel), and the
-// hips' speed where it is joined and where it ends. `entrySwing` and
-// `exitLift` are CMU's 'l' or 'r' (his side 1 or 0), or 0 for none.
-inline Humanoid::SetPiece BakeSetPiece(const MotionClip& clip, const Humanoid& rig, Humanoid::SetPiece::Kind kind,
-	const std::string& name, float from, float to, float entryFrom, float entryTo, char entrySwing, char exitLift)
-{
-	Humanoid::SetPiece sp;
-	sp.What = kind;
-	sp.Name = name;
-	ClipRetarget map;
-	if (!map.Setup(clip, rig))
-		return sp;
-	sp.FrameRate = clip.FrameRate();
-	int first = (int)std::lround(from * sp.FrameRate), last = std::min((int)std::lround(to * sp.FrameRate), clip.Frames() - 1);
-	int n = last - first + 1;
-	if (n < 3)
-		return sp;
-	sp.P.resize((size_t)n * 13);
-	sp.Q.resize((size_t)n * 13);
-	sp.Facing.resize((size_t)n);
-	glm::vec3 position[ClipRetarget::BodyCount];
-	glm::quat orientation[ClipRetarget::BodyCount];
-	float unwrapped = 0.0f, previous = 0.0f;
-	for (int k = 0; k < n; k++)
-	{
-		map.Pose((first + k) / sp.FrameRate, position, orientation);
-		for (int i = 0; i < 13; i++)
-		{
-			sp.P[(size_t)(k * 13 + i)] = position[i];
-			sp.Q[(size_t)(k * 13 + i)] = orientation[i];
-		}
-		glm::vec3 f = glm::normalize(glm::slerp(orientation[0], orientation[1], 0.5f)) * glm::vec3(0.0f, 0.0f, 1.0f);
-		float yaw = std::atan2(f.x, f.z);
-		if (k == 0)
-			unwrapped = yaw;
-		else
-		{
-			float d = yaw - previous;
-			while (d > glm::pi<float>()) d -= glm::two_pi<float>();
-			while (d < -glm::pi<float>()) d += glm::two_pi<float>();
-			unwrapped += d;
-		}
-		previous = yaw;
-		sp.Facing[(size_t)k] = unwrapped;
-	}
-	// Each foot down or swinging, and how far through each swing.
-	sp.SwingT.assign((size_t)n * 2, -1.0f);
-	for (int side = 0; side < 2; side++)
-	{
-		std::vector<bool> down((size_t)n, true);
-		bool isDown = true;
-		for (int k = 1; k < n; k++)
-		{
-			float speed = glm::length(sp.P[(size_t)(k * 13 + 7 + side)] - sp.P[(size_t)((k - 1) * 13 + 7 + side)]) * sp.FrameRate;
-			if (isDown && speed > 0.8f) isDown = false;
-			else if (!isDown && speed < 0.35f) isDown = true;
-			down[(size_t)k] = isDown;
-		}
-		down[0] = down[1];
-		for (int k = 0; k < n;)
-		{
-			if (down[(size_t)k]) { k++; continue; }
-			int lift = k;
-			while (k < n && !down[(size_t)k]) k++;
-			int land = k;   // first frame down again (or n)
-			for (int j = lift; j < land; j++)
-				sp.SwingT[(size_t)(j * 2 + side)] = (float)(j - lift + 1) / (float)(land - lift + 1);
-		}
-	}
-	auto sideOf = [](char c) { return c == 'l' ? 1 : c == 'r' ? 0 : -1; };
-	sp.EntryFrom = glm::clamp((int)std::lround(entryFrom * sp.FrameRate) - first, 0, n - 1);
-	sp.EntryTo = glm::clamp((int)std::lround(entryTo * sp.FrameRate) - first, sp.EntryFrom, n - 1);
-	sp.EntrySwing = std::max(sideOf(entrySwing), 0);
-	sp.ExitLift = sideOf(exitLift);
-	sp.TurnSign = sp.Facing.back() > sp.Facing.front() + 0.5f ? 1.0f : sp.Facing.back() < sp.Facing.front() - 0.5f ? -1.0f : 0.0f;
-	auto speedOver = [&](int a, int b)
-	{
-		a = glm::clamp(a, 0, n - 1);
-		b = glm::clamp(b, a + 1, n - 1);
-		glm::vec3 d = sp.P[(size_t)(b * 13)] - sp.P[(size_t)(a * 13)];
-		d.y = 0.0f;
-		return glm::length(d) / ((float)(b - a) / sp.FrameRate);
-	};
-	sp.SpeedIn = speedOver(sp.EntryFrom, std::max(sp.EntryTo, sp.EntryFrom + 12));
-	sp.SpeedOut = speedOver(n - 1 - 24, n - 1);
-	return sp;
-}
-
-// The set pieces a humanoid plays (Humanoid::SetPiece), baked for its body
-// whenever it is built, from the CMU clips in assets/mocap/cmu -- none if
-// they are not there (an exported game that did not take them), and the
-// walk does everything itself. The stretches, each chosen from the clip's
-// footfalls (a frame-by-frame timeline of the hips' speed and facing and
-// each foot's speed):
-//
-//  - turning round: 47_01, 1.3 to 3.85 s. Walking at 1.1 m/s, the left
-//    foot's last step in, then three steps -- the right turned 75 degrees,
-//    the left, the right -- round 185 degrees in 1.8 s without stopping,
-//    and walking out, the left lifting.
-//  - stopping: 16_33, 0.7 to 2.3 s. Walking at 0.9-1 m/s: the right foot's
-//    step, a shorter closing step with the left, standing by 2.3 s.
-//  - setting off: 69_01, 0.8 to 2.3 s. From standing: a lean, the left foot
-//    first, then the right, walking at 1 m/s with the left lifting.
-inline void AttachSetPieces(Humanoid& rig, const std::string& folder = "assets/mocap/cmu")
-{
-	rig.SetSetPieceBaker([folder](Humanoid& r)
-	{
-		static std::map<std::string, MotionClip> cache;
-		auto clip = [&](const char* skeleton, const char* frames) -> const MotionClip*
-		{
-			std::string key = std::string(skeleton) + "/" + frames;
-			auto it = cache.find(key);
-			if (it == cache.end())
-			{
-				MotionClip c;
-				if (!c.Load(folder + "/" + skeleton, folder + "/" + frames))
-					return nullptr;
-				it = cache.emplace(key, std::move(c)).first;
-			}
-			return &it->second;
-		};
-		using Kind = Humanoid::SetPiece::Kind;
-		std::vector<Humanoid::SetPiece> pieces;
-		if (const MotionClip* c = clip("47.asf", "47_01.amc"))
-			pieces.push_back(BakeSetPiece(*c, r, Kind::TurnRound, "turn round", 1.3f, 3.85f, 1.3f, 1.88f, 'l', 'l'));
-		if (const MotionClip* c = clip("16.asf", "16_33.amc"))
-			pieces.push_back(BakeSetPiece(*c, r, Kind::Stop, "stop", 0.7f, 2.3f, 0.7f, 1.25f, 'r', 0));
-		if (const MotionClip* c = clip("69.asf", "69_01.amc"))
-			pieces.push_back(BakeSetPiece(*c, r, Kind::Start, "set off", 0.8f, 2.3f, 0.8f, 0.8f, 'r', 'l'));
-		r.SetSetPieces(std::move(pieces));
-	});
-}
-
 // --- Locomotion: the strides his walk, jog and run are posed from ----------
 //
 // One stride of a recording -- two steps, from his side 1's foot landing to
@@ -684,10 +547,10 @@ inline bool BakeLocoCycle(const MotionClip& clip, const Humanoid& rig, const std
 	}
 
 	// Each foot down or swinging: down while low and slow, up again once it
-	// rises or speeds away. Not BakeSetPiece's walking rule alone (under
-	// 0.35 m/s down, past 0.8 up): a running foot rolls from heel to toe at
-	// more than that while it is planted, and was down for 8% of a stride
-	// where a runner's stance is about a third. So the bar rises with the
+	// rises or speeds away. Not a walking rule alone (under 0.35 m/s down,
+	// past 0.8 up, as the old set pieces had it): a running foot rolls from
+	// heel to toe at more than that while it is planted, and was down for 8%
+	// of a stride where a runner's stance is about a third. So the bar rises with the
 	// clip's pace, and the foot must be near the floor as well.
 	float lowest = 1e9f;
 	for (int k = 0; k < n; k++)

@@ -94,8 +94,6 @@ public:
 		m_ShiftTimer = 0.0f;
 		m_WaitingForTrough = false;
 		m_WaitTimer = 0.0f;
-		m_TroughsUsed = 0;
-		m_TroughsMissed = 0;
 		m_StepsTaken = 0;
 		m_StepTimer = 0.0f;
 
@@ -584,13 +582,6 @@ public:
 		ImGui::SliderFloat("Recovery steps", &m_CatchSteps, 0.5f, 5.0f);
 		ImGui::Text("Can still catch %.2f m/s; carrying %.2f", CatchableSpeed(),
 			glm::length(m_StaggerVelocity));
-		// TRY: walk with this off -- the old feet, held by the leg motors
-		// alone, skate through every stance (0.17 m/s at a walk, 0.44 at a
-		// run) and trip on stairs. On, each foot goes where the gait puts it,
-		// heel to toe, and the legs between stay physical.
-		if (ImGui::Checkbox("Driven feet", &m_DriveFeet) && !m_DriveFeet)
-			UnpinFeet();
-
 		// TRY: R with different seeds -- each is a different walker: speed,
 		// stride, arm swing, posture. Stand still to see the breathing, the
 		// weight shifting between the feet and the glances. 0 is the design.

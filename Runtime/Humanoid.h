@@ -128,8 +128,6 @@ public:
 			m_Facing = yaw;
 			GoControlled();
 		}
-		if (m_PieceBaker)
-			m_PieceBaker(*this);
 		if (m_LocoBaker)
 			m_LocoBaker(*this);
 	}
@@ -163,8 +161,6 @@ public:
 		{
 			m_Planted[side] = AnkleWorld(side);
 			m_SwingFrom[side] = m_Planted[side];
-			m_SwingTo[side] = m_Planted[side];
-			m_Swinging[side] = false;
 			m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation = m_ShoulderRest[side];
 			m_World.GetJoint(m_ElbowJoint[side]).MotorTargetAngle = 0.0f;
 		}
@@ -174,7 +170,6 @@ public:
 		m_DodgeAsked = 0.0f;
 		m_DodgeCooldown = 0.0f;
 		CloseJointsNow();
-		m_ArmEase = 1.0f;
 		m_FreshSpawn = true;
 		m_Mode = Mode::Ragdoll;   // so GoControlled does the whole hand-back
 		GoControlled();
@@ -194,49 +189,14 @@ public:
 	// Each body's centre and turn as built, in the order of Bodies().
 	const std::vector<std::pair<glm::vec3, glm::quat>>& BuildPose() const { return m_BuildPose; }
 
-	// --- Set pieces: recorded movements played on his bodies ---------------
-	//
-	// Turning round, stopping and setting off are not worked out step by
-	// step: they are a person's, recorded (MotionClip.h bakes a stretch of a
-	// CMU clip onto his bodies -- his lengths, its rotations), and played
-	// with the hips and feet carried exactly, as the walk carries them, and
-	// the trunk, head and arms following on their motors. Nothing here reads
-	// a file; with no pieces given, everything is the walk's own.
-	struct SetPiece
-	{
-		enum class Kind { TurnRound, Stop, Start };
-		Kind What = Kind::Stop;
-		std::string Name;
-		float FrameRate = 120.0f;
-		std::vector<glm::vec3> P;        // 13 bodies a frame, the recording's own frame, his size, its floor at 0
-		std::vector<glm::quat> Q;
-		std::vector<float> SwingT;       // 2 a frame: how far through a swing that foot is, or -1 down
-		std::vector<float> Facing;       // a frame: the yaw of halfway between pelvis and chest, unwrapped
-		int EntryFrom = 0, EntryTo = 0;  // the frames of the swing it can be joined during
-		int EntrySwing = 0;              // which of his sides swings then (as recorded; mirrored, the other)
-		int ExitLift = -1;               // which side is lifting at the last frame; -1 standing
-		float TurnSign = 0.0f;           // which way it turns, as recorded
-		float SpeedIn = 1.0f, SpeedOut = 0.0f;   // m/s of the hips at the join and the end
-		int Frames() const { return (int)Facing.size(); }
-	};
-	void SetSetPieces(std::vector<SetPiece> pieces) { m_Pieces = std::move(pieces); m_Piece = -1; }
-	// Bakes the pieces for this body, now and whenever it is built again.
-	void SetSetPieceBaker(std::function<void(Humanoid&)> bake)
-	{
-		m_PieceBaker = std::move(bake);
-		if (m_PieceBaker)
-			m_PieceBaker(*this);
-	}
-	bool InSetPiece() const { return m_Piece >= 0; }
-
 	// --- Locomotion: walking, running and turning, posed from recordings ---
 	//
 	// While he is someone's to move, where he goes is decided by the keys
 	// alone and his body is posed to match, every step, from recorded strides
 	// (Runtime/Locomotion.h) -- not simulated, so nothing lags and nothing
 	// sinks. Physics has him again the moment anything hits him, and for
-	// every move, fall and get-up. With no clips (or `locomotion old`), the
-	// walk below (DriveWalk) does it, as it did before.
+	// every move, fall and get-up. Without the clips (assets/mocap/cmu
+	// missing) he stands as he was built and steps to keep up.
 	void SetLocomotionClips(std::shared_ptr<const LocoClips> clips);
 	void SetLocomotionBaker(std::function<void(Humanoid&)> bake)
 	{
@@ -244,13 +204,9 @@ public:
 		if (m_LocoBaker)
 			m_LocoBaker(*this);
 	}
-	void SetLocomotion(bool on) { m_LocoOn = on; }
-	bool GetLocomotion() const { return m_LocoOn; }
 	bool LocomotionReady() const { return m_LocoClips != nullptr; }
-	bool LocomotionActive() const { return m_LocoOn && m_LocoClips != nullptr; }
 	// His limbs placed by the locomotion this step, rather than simulated.
 	bool LocomotionPosed() const { return m_LocoPosed; }
-	const char* SetPieceName() const { return m_Piece >= 0 ? m_Pieces[(size_t)m_Piece].Name.c_str() : ""; }
 	GS::PhysicsWorld3D::BodyHandle PelvisBody() const { return m_Pelvis; }
 	// His foot box, for laying a recorded floor under his own soles.
 	glm::vec3 FootHalfExtents() const { return m_World.GetBody(m_Foot[0]).HalfExtents; }
@@ -381,7 +337,6 @@ public:
 		m_LastDt = dt;
 		m_MoveGrace = std::max(m_MoveGrace - dt, 0.0f);
 		m_DodgeCooldown = std::max(m_DodgeCooldown - dt, 0.0f);
-		m_PieceCooldown = std::max(m_PieceCooldown - dt, 0.0f);
 		RefreshStandable();
 		EaseJointsClosed(dt);
 		m_Balance = ComputeBalance();
@@ -405,8 +360,6 @@ public:
 			// it did to him, not by the size of the number.
 			if (hit > m_StaggerThreshold)
 			{
-				if (m_Piece >= 0)
-					EndPiece(false);
 				if (StumblesPhysically())
 				{
 					// The root was kinematic when it was hit, so the hit went
@@ -432,16 +385,7 @@ public:
 			}
 
 			if (m_Mode == Mode::Controlled)
-			{
-				if (LocomotionActive())
-					DriveLocomotion(dt);
-				else
-				{
-					if (m_LocoPosed)
-						LocoRelease();
-					DriveWalk(dt);
-				}
-			}
+				DriveLocomotion(dt);
 		}
 		else if (m_Mode == Mode::Stumbling)
 		{
@@ -473,6 +417,10 @@ public:
 				if (m_DodgeAsked > 0.0f)
 					m_DodgeAsked -= dt;
 				UpdateMove(dt);
+				// Still in it: the limbs placed where the move's joint targets
+				// put them, not pulled there by motors (Runtime/Locomotion.h).
+				if (m_Mode == Mode::Moving)
+					PoseFromMotors(dt);
 			}
 		}
 		else
@@ -646,9 +594,6 @@ public:
 		float shift = Noise(m_Clock / 7.0f, 21u);
 		m_IdleRoll = idle * 0.08f * shift;
 
-		// And the arms are never quite still.
-		for (int side = 0; side < 2; side++)
-			m_IdleArm[side] = idle * 0.08f * Noise(m_Clock / 3.1f, 51u + (uint32_t)side);
 		return idle * 0.035f * shift;
 	}
 
@@ -1165,8 +1110,6 @@ public:
 				m_AnkleHeight = ankleWorld.y - origin.y;
 				m_Planted[side] = ankleWorld;
 				m_SwingFrom[side] = m_Planted[side];
-				m_SwingTo[side] = m_Planted[side];
-				m_Swinging[side] = false;
 			}
 		}
 
@@ -1403,7 +1346,6 @@ public:
 				m_WaitingForTrough = false;
 				m_Stepping = true;
 				m_StepTimer = 0.0f;
-				m_TroughsUsed++;
 			}
 			else if (m_WaitTimer >= m_MaxWait)
 			{
@@ -1411,7 +1353,6 @@ public:
 				// going -- it is the loaded lift that never worked -- so the
 				// step is abandoned and the ankles carry on.
 				m_WaitingForTrough = false;
-				m_TroughsMissed++;
 				m_StepCooldown = m_StepCooldownTime;
 			}
 			return;
@@ -1701,7 +1642,10 @@ public:
 	// having to is what makes a playable character tractable.
 	enum class Mode { Controlled, Ragdoll, GettingUp, Stumbling, Moving };
 
-	void GoRagdoll(const char* why)
+	// `brace`: reach for the ground with the arms whatever he was doing (as a
+	// lost stumble always does) -- stepping off an edge, he knows he is
+	// falling.
+	void GoRagdoll(const char* why, bool brace = false)
 	{
 		if (m_Mode == Mode::Ragdoll)
 			return;
@@ -1709,7 +1653,7 @@ public:
 
 		// A stumble that is lost goes down with its arms out: falling from
 		// one, he knows which way he is going.
-		bool braced = m_Bracing && m_Mode == Mode::Stumbling;
+		bool braced = m_Bracing && (m_Mode == Mode::Stumbling || brace);
 
 		UnpinFeet();
 		m_Mode = Mode::Ragdoll;
@@ -1804,8 +1748,6 @@ public:
 		pelvis.Type = GS::BodyType::Kinematic;
 		pelvis.AngularVelocity = glm::vec3(0.0f);
 
-		m_StandTarget = m_StandHeight;
-		m_StandRate = 0.0f;
 
 		// The character stands up where it is lying, not where it fell from.
 		m_RootAnchor = pelvis.Position;
@@ -1813,9 +1755,6 @@ public:
 		m_Speed = 0.0f;
 		m_SpeedRate = 0.0f;
 		m_GaitPhase = 0.0f;
-		m_TurnSign = 0.0f;
-		m_TurnStartFromRest = true;
-		m_TravelYaw = m_Facing;
 
 		// Whatever knocked him over does not follow him back up. Left behind,
 		// the stagger that felled him is still there the instant he stands and
@@ -1823,14 +1762,8 @@ public:
 		// it was found: every case after the first fall reported a fall.
 		m_StaggerVelocity = glm::vec3(0.0f);
 		m_StaggerTimer = 0.0f;
-		m_LastSpeed = 0.0f;
-		m_LeanAccel = 0.0f;
 		m_JumpPending = false;
-		m_JumpLead = -1;
 		m_Air = Air::Grounded;
-		m_JumpOffset = 0.0f;
-		m_JumpVelocity = 0.0f;
-		m_LandSpeed = 0.0f;
 
 		for (auto handle : m_Joints)
 		{
@@ -1901,7 +1834,6 @@ public:
 		// Face down is -1, face up is +1, and near zero is lying on a side,
 		// where a roll is neither needed nor wanted.
 		glm::vec3 front = pelvis.Orientation * glm::vec3(0.0f, 0.0f, 1.0f);
-		m_GetUpFaceDown = front.y < -0.5f;
 		m_GetUpSupine = front.y > 0.5f;
 
 		// Keep whatever heading it ended up facing, flattened. Standing up
@@ -2058,7 +1990,6 @@ public:
 			// Planted where they were gathered, so the walk picks up from a
 			// stance that is actually under him rather than snapping.
 			m_Planted[side] = foot;
-			m_Swinging[side] = false;
 		}
 
 		// Standing again at the height it got up to -- the ground it lay on
@@ -2193,7 +2124,6 @@ public:
 		glm::vec3 fallback(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
 		bool supine = front.y > 0.35f;
 		m_GetUpSupine = supine;
-		m_GetUpFaceDown = !supine;
 		uint32_t n = m_GetUpCount++;
 		int lead = (int)((m_Seed + n) & 1u);   // which foot comes forward
 		m_GetUpLead = lead;
@@ -2592,11 +2522,10 @@ public:
 			for (int side = 0; side < 2; side++)
 			{
 				m_Planted[side] = last.Foot[side];
-				m_SwingFrom[side] = m_SwingTo[side] = last.Foot[side];
+				m_SwingFrom[side] = last.Foot[side];
 			}
 			m_StandHeight = last.Pelvis.y;
 			m_JointsClosing = true;
-			EaseArmsFromHere();
 			GoControlled();
 		}
 	}
@@ -2762,7 +2691,6 @@ public:
 				}
 			}
 			m_Planted[side] = ankle;
-			m_Swinging[side] = false;
 		}
 	}
 
@@ -3865,22 +3793,6 @@ public:
 	// left and right are along the edge. Camera-relative, as the walk is,
 	// they turned round with him when he dropped to a hang facing back the
 	// way he came -- back climbed and forward let go.
-	glm::vec3 WishDirection() const
-	{
-		float camYaw = glm::radians(m_Control.Yaw);
-		glm::vec3 camForward(std::cos(camYaw), 0.0f, std::sin(camYaw));
-		glm::vec3 camRight(-std::sin(camYaw), 0.0f, std::cos(camYaw));
-		glm::vec3 wish(0.0f);
-		if (m_Control.Enabled)
-		{
-			if (m_Control.Forward) wish += camForward;
-			if (m_Control.Back) wish -= camForward;
-			if (m_Control.Left) wish -= camRight;
-			if (m_Control.Right) wish += camRight;
-		}
-		return glm::length(wish) > 1e-4f ? glm::normalize(wish) : wish;
-	}
-
 	float HangY() const
 	{
 		const Measures M = BodyMeasures();
@@ -4003,7 +3915,6 @@ public:
 						m_HangCornerTimer = 0.0f;
 						m_WallNormal = n2;
 						m_HangEdge = edge2;
-						m_HangCorners++;
 					}
 				}
 			}
@@ -4465,9 +4376,13 @@ public:
 	//
 	// Close in; if the edge is out of reach standing, jump for it -- a
 	// projectile that tops out where the hands are on the edge with the
-	// arms straight; hang; pull until the chest is at the edge; press over
-	// it (the hips come up past the hands, the trunk over the top); a foot
-	// on; stand. A low ledge skips the jump and the hang.
+	// arms straight; hang; pull until the chest is at the edge; press up on
+	// straight arms, the trunk fairly upright; the lead foot up onto the
+	// edge beside the hands, squatting on top; stand. A low ledge skips the
+	// jump and the hang. (It pressed over with the trunk 55 degrees forward
+	// and the hips 17 cm above the edge -- lying across the top, a belly
+	// flop over it, which the owner saw on 2026-10-21. A climb as Assassin's
+	// Creed has it is a mantle and a step up, and quicker.)
 	// `fromHang`: he is hanging from this edge already, so the climb starts
 	// at the pull.
 	void PlanClimb(const Obstacle& o, bool fromHang = false)
@@ -4522,20 +4437,23 @@ public:
 		}
 		float pullFrom = ways.back().Position.y;
 		float pullTo = H - 0.16f * s;
-		float tPull = 0.55f * rs * glm::clamp((pullTo - pullFrom) / (0.6f * s), 0.3f, 1.3f);
+		float tPull = 0.42f * rs * glm::clamp((pullTo - pullFrom) / (0.6f * s), 0.3f, 1.3f);
 		t += tPull;
 		float tPulled = t;
-		ways.push_back({ t, fr.At(f - 0.24f * s, 0.0f, pullTo), fr.Lean(18.0f) });
-		t += 0.36f * rs;
+		ways.push_back({ t, fr.At(f - 0.24f * s, 0.0f, pullTo), fr.Lean(15.0f) });
+		// The mantle: up on straight arms, the hips just over the edge and
+		// still in front of it, the trunk only a little forward.
+		t += 0.28f * rs;
 		float tPressed = t;
-		ways.push_back({ t, fr.At(f + 0.02f * s, 0.0f, H + 0.17f * s), fr.Lean(55.0f) });
-		t += 0.42f * rs;
-		float tKnee = t;
-		ways.push_back({ t, fr.At(f + 0.14f * s, 0.0f, H + 0.34f * s), fr.Lean(38.0f) });
-		t += 0.46f * rs;
-		float tRise = t;
-		ways.push_back({ t, fr.At(f + 0.30f * s, SideSign(lead) * 0.3f * M.HipX, H + 0.86f * stand), fr.Lean(12.0f) });
+		ways.push_back({ t, fr.At(f - 0.10f * s, 0.0f, H + 0.12f * s), fr.Lean(25.0f) });
+		// The lead foot up beside the hands: squatting on the top.
 		t += 0.30f * rs;
+		float tKnee = t;
+		ways.push_back({ t, fr.At(f + 0.12f * s, 0.0f, H + 0.38f * s), fr.Lean(20.0f) });
+		t += 0.34f * rs;
+		float tRise = t;
+		ways.push_back({ t, fr.At(f + 0.30f * s, SideSign(lead) * 0.3f * M.HipX, H + 0.86f * stand), fr.Lean(10.0f) });
+		t += 0.22f * rs;
 		float total = t;
 		ways.push_back({ t, fr.At(f + 0.32f * s, 0.0f, H + stand), fr.Lean(3.0f) });
 		BuildTrack(ways, fr.F * m_Speed, glm::vec3(0.0f));
@@ -4599,19 +4517,23 @@ public:
 		pulled.Spine = glm::radians(12.0f);
 		m_GetUpKeys.push_back(pulled);
 
+		// Pressed up, the lead knee already coming up the wall towards the
+		// edge: left low, both legs trailed out behind as the hips went
+		// forward, and he lay across the top.
 		GetUpKey pressed = pulled;
 		pressed.T = tPressed;
 		for (int side = 0; side < 2; side++)
 		{
-			float y = std::max(g0 + m_AnkleHeight, H - 0.62f * s);
+			float y = std::max(g0 + m_AnkleHeight, H - (side == lead ? 0.28f : 0.62f) * s);
 			pressed.Foot[side] = fr.At(f - 0.12f * s, SideSign(side) * M.HipX, y);
 		}
-		pressed.Spine = glm::radians(18.0f);
+		pressed.Spine = glm::radians(8.0f);
 		m_GetUpKeys.push_back(pressed);
 
-		// The lead foot over the edge and onto the top.
+		// The lead foot over the edge and onto the top, beside the hands, the
+		// knee up by the chest.
 		GetUpKey over = pressed;
-		over.T = 0.5f * (tPressed + tKnee);
+		over.T = tPressed + 0.35f * (tKnee - tPressed);
 		over.Foot[lead] = fr.At(f - 0.04f * s, SideSign(lead) * M.Stance, H + m_AnkleHeight + 0.12f * s);
 		over.Kneeling[lead] = false;
 		over.Pole[lead] = fr.F;
@@ -4619,8 +4541,8 @@ public:
 
 		GetUpKey footOn = over;
 		footOn.T = tKnee;
-		footOn.Foot[lead] = fr.At(f + 0.30f * s, SideSign(lead) * M.Stance, H + m_AnkleHeight);
-		footOn.Spine = glm::radians(14.0f);
+		footOn.Foot[lead] = fr.At(f + 0.14f * s, SideSign(lead) * M.Stance, H + m_AnkleHeight);
+		footOn.Spine = glm::radians(6.0f);
 		m_GetUpKeys.push_back(footOn);
 
 		GetUpKey trail = footOn;
@@ -5673,7 +5595,6 @@ public:
 						int corners = m_WallRunCorners + 1;
 						PlanWallRun(w2, std::max(pelvis.Velocity.y, 0.6f * std::sqrt(s)));
 						m_WallRunCorners = corners;
-						m_Chained++;
 						return;
 					}
 				}
@@ -5693,7 +5614,6 @@ public:
 			if (TryDodge(m_DodgeWish))
 			{
 				m_DodgeAsked = 0.0f;
-				m_Chained++;
 				return;
 			}
 		}
@@ -5709,7 +5629,6 @@ public:
 			m_Ahead = Sense(F);
 			if (m_Ahead.Type != Obstacle::None && TryMove(m_Ahead, F))
 			{
-				m_Chained++;
 				return;
 			}
 			m_Speed = speedBefore;
@@ -5728,11 +5647,8 @@ public:
 		m_StandHeight = pelvis.Position.y;
 		OpenJoints(false);
 		m_Move = Move::None;
-		EaseArmsFromHere();
 		GoControlled();
-		m_StandTarget = ground + m_StandClearance - m_Crouch;
 		m_Speed = m_MoveExit;
-		m_LastSpeed = m_MoveExit;
 		// The walk's hips follow its anchor a step behind, and GoControlled
 		// puts the anchor where the hips are: the first step out of every
 		// move stood still, a 7 cm hitch at a run. A step ahead, as the walk
@@ -5741,8 +5657,7 @@ public:
 		for (int side = 0; side < 2; side++)
 		{
 			m_Planted[side] = AnkleWorld(side);
-			m_SwingFrom[side] = m_SwingTo[side] = m_Planted[side];
-			m_Swinging[side] = false;
+			m_SwingFrom[side] = m_Planted[side];
 		}
 		m_MoveGrace = 0.4f;
 	}
@@ -6043,8 +5958,7 @@ public:
 		// walk's body; handed a posed walk mid-stride it ran away forward --
 		// 2.3 m/s, the trunk 25 degrees over -- and a 20 N s nudge felled him
 		// 12 times in 32, where the old walk caught all 32.
-		float entry = LocomotionActive() ? 0.3f : m_StumbleEntrySpeed;
-		return m_PhysicalStumble && m_Speed <= entry && m_Air == Air::Grounded;
+		return m_PhysicalStumble && m_Speed <= m_StumbleEntrySpeed && m_Air == Air::Grounded;
 	}
 
 	// The crouch -- how far below standing the centre of mass is wanted --
@@ -6095,7 +6009,6 @@ public:
 		for (int side = 0; side < 2; side++)
 		{
 			m_Planted[side] = AnkleWorld(side);
-			m_Swinging[side] = false;
 		}
 		m_StumbleGround = std::min(SoleHeight(0), SoleHeight(1));
 		m_StumbleComHeight = m_StandComHeight;
@@ -6282,7 +6195,6 @@ public:
 					m_StumbleGathering = true;
 					m_StumbleSwingTimer = 0.0f;
 					m_SwingFrom[side] = AnkleWorld(side);
-					m_Swinging[side] = true;
 					break;
 				}
 			}
@@ -6324,7 +6236,6 @@ public:
 				m_StumbleLastSwing = swing;
 				m_StumbleSwingTimer = 0.0f;
 				m_SwingFrom[swing] = AnkleWorld(swing);
-				m_Swinging[swing] = true;
 				m_StumbleSteps++;
 			}
 		}
@@ -6412,7 +6323,6 @@ public:
 			if (landed)
 			{
 				m_Planted[swing] = AnkleWorld(swing);
-				m_Swinging[swing] = false;
 				m_StumbleSwing = -1;
 				m_StumbleCooldown = m_StumbleSettle;
 			}
@@ -6507,14 +6417,11 @@ public:
 			m_Facing = std::atan2(m_StumbleCarry.x, m_StumbleCarry.y);
 			m_Speed = carried;
 			m_SpeedRate = 0.0f;
-			m_LastSpeed = carried;
 		}
 		for (int side = 0; side < 2; side++)
 		{
 			m_Planted[side] = planted[side];
 			m_SwingFrom[side] = planted[side];
-			m_SwingTo[side] = planted[side];
-			m_Swinging[side] = false;
 		}
 		for (int side = 0; side < 2; side++)
 		{
@@ -6524,15 +6431,10 @@ public:
 	}
 
 	// ---------------------------------------------------------------------
-	// Walking
+	// Springs
 	// ---------------------------------------------------------------------
 	//
-	// The pelvis is driven straight from input, and the legs are a gait rather
-	// than a controller: hips swing in antiphase, knees bend on the half of
-	// the cycle their foot is coming through. It is an animation, driven
-	// through the motors so the legs are still physical -- they collide with
-	// the world and are pushed about by it, and they are dragged back towards
-	// the gait rather than snapped to it.
+	// (The walk itself is Runtime/Locomotion.h.)
 	// x'' = w^2 (target - x) - 2 w x': reaches the target without
 	// overshoot, and with no step in its acceleration anywhere.
 	static void Spring(float& x, float& rate, float target, float omega, float dt)
@@ -6549,1586 +6451,15 @@ public:
 		x += rate * dt;
 	}
 
-	// --- turning on his feet ------------------------------------------------
-	//
-	// The hips used to turn and the feet to follow only as far as walking
-	// happened to move them, so a turn on the spot, or back from a walk,
-	// wound the legs round each other. These three make a turn something
-	// the feet do: which way round to go, how far the hips may turn over a
-	// planted foot, and how quickly to step to keep up.
-
-	// How far he could turn one way (sign +1 towards side 1's side, -1
-	// towards side 0's) before a planted foot came round past the middle of
-	// him: a foot planted behind him swings across as he turns away from
-	// its side, one ahead as he turns towards it -- a trailing foot 25 cm
-	// back is under the other hip after 20 degrees. In radians, to pi.
-	float TurnRoom(float sign) const
-	{
-		float room = glm::pi<float>();
-		for (int side = 0; side < 2; side++)
-		{
-			if (m_Swinging[side] || !m_Pinned[side])
-				continue;
-			glm::vec3 d = m_Planted[side] - m_RootAnchor;
-			for (float a = 0.0f; a < room; a += glm::radians(5.0f))
-			{
-				float f = m_Facing + sign * a;
-				glm::vec3 R(std::cos(f), 0.0f, -std::sin(f));
-				if (glm::dot(d, R) * SideSign(side) < 0.0f)
-				{
-					room = a;
-					break;
-				}
-			}
-		}
-		return room;
-	}
-
-	// Turning back, which way round: the way his planted feet let him turn
-	// furthest before one comes past the middle of him. Chosen as the
-	// side of the free foot, it turned away from the trailing one half the
-	// time, and that foot was across under the other hip within 20 degrees
-	// (forwards, back, forwards again: the feet crossed by 9 cm). When the
-	// two ways are much the same, as standing they are, towards the foot
-	// that is free or lifts next -- it opens the turn -- and standing with
-	// both down, the way the wish leans, however little.
-	float ReverseTurnSign(float error) const
-	{
-		// Only for a turn nearly all the way back: the long way round a
-		// 135 degree turn is 225, and slower by 0.4 s for the sake of the feet.
-		if (std::fabs(error) < m_ReverseFree)
-			return error < 0.0f ? -1.0f : 1.0f;
-		float left = TurnRoom(-1.0f), right = TurnRoom(1.0f);
-		if (std::fabs(left - right) > glm::radians(10.0f))
-			return right > left ? 1.0f : -1.0f;
-		int side = -1;
-		if (m_Swinging[0] != m_Swinging[1])
-			side = m_Swinging[0] ? 0 : 1;
-		else if (m_Speed > 0.05f && !m_TurnStartFromRest)
-			side = CyclePosition(0) > CyclePosition(1) ? 0 : 1;
-		if (side < 0)
-			return error < 0.0f ? -1.0f : 1.0f;
-		// Facing grows towards side 1's side (+x of the rig's own frame).
-		return side == 1 ? 1.0f : -1.0f;
-	}
-
-	// The hips turn at most m_TurnLead past the yaw a planted foot was put
-	// down at, and slow as they near it: past about a quarter turn a foot
-	// that stays put is on the far side of the other one. The turn waits
-	// for the next step instead.
-	float FeetAllowTurn(float step) const
-	{
-		for (int side = 0; side < 2; side++)
-		{
-			if (m_Swinging[side] || !m_Pinned[side])
-				continue;
-			float off = m_Facing - m_PlantYaw[side];
-			while (off > glm::pi<float>()) off -= glm::two_pi<float>();
-			while (off < -glm::pi<float>()) off += glm::two_pi<float>();
-			if (std::fabs(off + step) <= std::fabs(off))
-				continue;
-			float room = std::max(m_TurnLead - std::fabs(off), 0.0f);
-			float most = std::min(std::fabs(step) * glm::clamp(room / m_TurnSoft, 0.2f, 1.0f), room);
-			step = glm::sign(step) * most;
-		}
-		// Turning back, where he turns over his feet with next to no speed,
-		// also not so far that a planted foot comes past the middle of him
-		// (TurnRoom): the short way round 135 degrees, the trailing foot
-		// did, and the thighs met. Not in an ordinary turn on the move: a
-		// foot planted ahead of him is past the middle after 20 degrees of
-		// turning towards it, and nothing touches -- the legs are a stride
-		// apart -- so it would only make every walking turn stutter.
-		if (m_TurnSign != 0.0f && step != 0.0f)
-		{
-			auto across = [&](int side, float f)
-			{
-				glm::vec3 R(std::cos(f), 0.0f, -std::sin(f));
-				return glm::dot(m_Planted[side] - m_RootAnchor, R) * SideSign(side);
-			};
-			for (int side = 0; side < 2; side++)
-			{
-				if (m_Swinging[side] || !m_Pinned[side])
-					continue;
-				float keep = std::min(across(side, m_Facing), m_TurnAcross * m_Proportions.Scale);
-				if (across(side, m_Facing + step) >= keep)
-					continue;
-				float low = 0.0f, high = 1.0f;
-				for (int i = 0; i < 8; i++)
-				{
-					float mid = 0.5f * (low + high);
-					(across(side, m_Facing + step * mid) >= keep ? low : high) = mid;
-				}
-				step *= low;
-			}
-		}
-		return step;
-	}
-
-	// How fast the gait's phase must go for the feet to keep up with a
-	// turn, in rad/s (0: no need). A step -- half a cycle -- for every
-	// m_StepTurn of turning, and never slower than a step each
-	// m_SettleStepTime. Slow, the same for a planted foot left turned more
-	// than m_SettleYaw from him or more than m_SettleReach from where it
-	// stands: one step puts it right. A small turn on the spot is a pivot
-	// on the feet, as it is for a person, not a shuffle.
-	float TurnStepRate(float gaitSpeed) const
-	{
-		bool need = std::fabs(m_TurnWanted) > 0.05f && std::fabs(m_TurnToGo) > m_SettleYaw;
-		// Stood by a set piece, the stance it left is a person's and is kept
-		// until he is asked to go somewhere: the stop closes the feet to 10-15
-		// cm, not the walk's 20, and stepping them back out was a fidget.
-		if (gaitSpeed < 0.3f && !m_PieceStood)
-		{
-			glm::vec3 right(std::cos(m_Facing), 0.0f, -std::sin(m_Facing));
-			for (int side = 0; side < 2 && !need; side++)
-			{
-				if (m_Swinging[side] || !m_Pinned[side])
-					continue;
-				float off = m_Facing - m_PlantYaw[side];
-				while (off > glm::pi<float>()) off -= glm::two_pi<float>();
-				while (off < -glm::pi<float>()) off += glm::two_pi<float>();
-				glm::vec3 home = m_RootAnchor + right * (SideSign(side) * m_StanceWidth);
-				glm::vec2 out(m_Planted[side].x - home.x, m_Planted[side].z - home.z);
-				need = std::fabs(off) > m_SettleYaw || glm::length(out) > m_SettleReach * m_Proportions.Scale;
-			}
-		}
-		if (!need)
-			return 0.0f;
-		return std::max(glm::pi<float>() * std::fabs(m_TurnWanted) / m_StepTurn, glm::pi<float>() / m_SettleStepTime);
-	}
-
-	// --- set pieces, played -------------------------------------------------
-
-	static int MirrorBody(int i) { return i >= 3 ? (i % 2 == 1 ? i + 1 : i - 1) : i; }
-
-	// Frame `frame` of the piece being played, in the world: each body, and
-	// how far through a swing each foot is (-1 down). Mirrored, the left and
-	// right bodies trade places and the recording is reflected across its
-	// own x (a turn rotation (w, x, y, z) reflects to (w, x, -y, -z)).
-	void PieceSample(float frame, glm::vec3* P, glm::quat* Q, float* swingT, float* facing) const
-	{
-		const SetPiece& sp = m_Pieces[(size_t)m_Piece];
-		int n = sp.Frames();
-		float f = glm::clamp(frame, 0.0f, (float)(n - 1));
-		int a = (int)f, b = std::min(a + 1, n - 1);
-		float w = f - (float)a;
-		for (int i = 0; i < 13; i++)
-		{
-			int src = m_PieceMirror ? MirrorBody(i) : i;
-			glm::vec3 p = glm::mix(sp.P[(size_t)(a * 13 + src)], sp.P[(size_t)(b * 13 + src)], w);
-			glm::quat q = glm::normalize(glm::slerp(sp.Q[(size_t)(a * 13 + src)], sp.Q[(size_t)(b * 13 + src)], w));
-			if (m_PieceMirror)
-			{
-				p.x = -p.x;
-				q = glm::quat(q.w, q.x, -q.y, -q.z);
-			}
-			P[i] = m_PieceOffset + m_PieceTurn * p;
-			Q[i] = glm::normalize(m_PieceTurn * q);
-		}
-		for (int side = 0; side < 2; side++)
-		{
-			int src = m_PieceMirror ? 1 - side : side;
-			float ta = sp.SwingT[(size_t)(a * 2 + src)], tb = sp.SwingT[(size_t)(b * 2 + src)];
-			swingT[side] = (ta < 0.0f || tb < 0.0f) ? (w < 0.5f ? ta : tb) : glm::mix(ta, tb, w);
-		}
-		float yaw = glm::mix(sp.Facing[(size_t)a], sp.Facing[(size_t)b], w);
-		*facing = (m_PieceMirror ? -yaw : yaw) + m_PieceYaw;
-	}
-
-	static float YawOfTurn(const glm::quat& q)
-	{
-		glm::vec3 f = q * glm::vec3(0.0f, 0.0f, 1.0f);
-		return std::atan2(f.x, f.z);
-	}
-
-	// Starts a piece of this kind, joined where his feet are: during its
-	// entry swing at the same point of the swing his foot is at (mirrored
-	// if it is his other foot), or, both feet down, at the end of it, the
-	// foot that lifts next being the one the recording lifts next. Laid so
-	// the recording's planted foot is on his. Not where the ground under
-	// the way it goes is not flat, or something stands in it: the walk's
-	// own then. True if it started.
-	bool TryPiece(SetPiece::Kind kind, float rateScale)
-	{
-		if (m_PieceCooldown > 0.0f || !m_DriveFeet || !m_Pinned[0] || !m_Pinned[1])
-			return false;
-		int index = -1;
-		for (size_t i = 0; i < m_Pieces.size(); i++)
-			if (m_Pieces[i].What == kind && m_Pieces[i].Frames() > 2)
-				index = (int)i;
-		if (index < 0)
-			return false;
-		const SetPiece& sp = m_Pieces[(size_t)index];
-
-		int swinging = m_Swinging[0] != m_Swinging[1] ? (m_Swinging[0] ? 0 : 1) : -1;
-		bool mirror;
-		float entry;
-		if (swinging >= 0)
-		{
-			float t = glm::clamp((CyclePosition(swinging) - m_Duty) / std::max(1.0f - m_Duty, 0.01f), 0.0f, 1.0f);
-			mirror = swinging != sp.EntrySwing;
-			entry = glm::mix((float)sp.EntryFrom, (float)sp.EntryTo, t);
-		}
-		else
-		{
-			int next = m_TurnStartFromRest ? (int)((m_Seed + m_StepCount[0] + m_StepCount[1]) & 1u)
-				: (CyclePosition(0) > CyclePosition(1) ? 0 : 1);
-			mirror = next != 1 - sp.EntrySwing;
-			entry = (float)sp.EntryTo;
-		}
-		if (kind == SetPiece::Kind::TurnRound && m_TurnToGo != 0.0f
-			&& std::fabs(m_TurnToGo) < m_ReverseFree && sp.TurnSign * (mirror ? -1.0f : 1.0f) * m_TurnToGo < 0.0f)
-			return false;   // a turn of 120-150 degrees that the piece would take the long way round
-
-		// Lay it down: turned so its facing at the join is his, moved so its
-		// planted foot (or the middle of both) is where his is.
-		int saved = m_Piece;
-		bool savedMirror = m_PieceMirror;
-		m_Piece = index;
-		m_PieceMirror = mirror;
-		m_PieceTurn = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-		m_PieceOffset = glm::vec3(0.0f);
-		m_PieceYaw = 0.0f;
-		glm::vec3 P[13];
-		glm::quat Q[13];
-		float swingT[2], facing;
-		PieceSample(entry, P, Q, swingT, &facing);
-		m_PieceYaw = m_Facing - facing;
-		m_PieceTurn = glm::angleAxis(m_PieceYaw, glm::vec3(0.0f, 1.0f, 0.0f));
-		glm::vec3 clipAnchor(0.0f), hisAnchor(0.0f);
-		int anchors = 0;
-		for (int side = 0; side < 2; side++)
-		{
-			if (side == swinging)
-				continue;
-			clipAnchor += m_PieceTurn * (P[7 + side] + Q[7 + side] * m_FootToAnkle);
-			hisAnchor += m_FootTarget[side];
-			anchors++;
-		}
-		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
-		float ground = GroundY(pelvis.Position, -1000.0f);
-		m_PieceOffset = (hisAnchor - clipAnchor) / (float)std::max(anchors, 1);
-		m_PieceOffset.y = ground;
-
-		// Room: the ground under the hips' way flat to 4 cm, and nothing at
-		// knee or waist height between one point of it and the next.
-		bool room = true;
-		glm::vec3 last = pelvis.Position;
-		const SetPiece& piece = m_Pieces[(size_t)index];
-		for (int k = (int)entry; k < piece.Frames() && room; k += 10)
-		{
-			PieceSample((float)k, P, Q, swingT, &facing);
-			float g = GroundY(glm::vec3(P[0].x, pelvis.Position.y + 0.3f, P[0].z), -1000.0f);
-			if (std::fabs(g - ground) > 0.04f * m_Proportions.Scale)
-				room = false;
-			glm::vec3 step = P[0] - last;
-			step.y = 0.0f;
-			float length = glm::length(step);
-			if (length > 1e-3f)
-				for (float h : { 0.35f, 0.9f })
-				{
-					GS::PhysicsWorld3D::RayHit hit = m_World.Raycast(glm::vec3(last.x, ground + h * m_Proportions.Scale, last.z),
-						step / length, length + 0.25f * m_Proportions.Scale, m_CharacterBodies);
-					if (hit.Hit && hit.Normal.y < 0.6f && Solid(hit.Body))
-						room = false;
-				}
-			last = P[0];
-		}
-		if (!room)
-		{
-			m_Piece = saved;
-			m_PieceMirror = savedMirror;
-			return false;
-		}
-
-		// Where each part of him is now against where the piece has it,
-		// eased out: the hips and joints over 0.3 s, each foot over its next
-		// swing (one in the air now, over what is left of it).
-		m_PieceFrame = entry;
-		m_PieceRate = sp.FrameRate * rateScale;
-		m_PieceClock = 0.0f;
-		PieceSample(entry, P, Q, swingT, &facing);
-		m_PiecePelvisFrom = pelvis.Position - P[0];
-		m_PiecePelvisTurnFrom = glm::normalize(pelvis.Orientation * glm::conjugate(Q[0]));
-		for (int side = 0; side < 2; side++)
-		{
-			const GS::RigidBody3D& foot = m_World.GetBody(m_Foot[side]);
-			m_PieceFootFrom[side] = foot.Position - P[7 + side];
-			m_PieceFootTurnFrom[side] = glm::normalize(foot.Orientation * glm::conjugate(Q[7 + side]));
-			m_PieceFootStartT[side] = swingT[side] >= 0.0f ? swingT[side] : 0.0f;
-			m_PieceFootCorrect[side] = 1.0f;
-			m_PieceHolding[side] = false;
-		}
-		m_PieceSpineFrom = m_World.GetJoint(m_SpineJoint).MotorTargetRotation;
-		m_PieceNeckFrom = m_World.GetJoint(m_NeckJoint).MotorTargetRotation;
-		for (int side = 0; side < 2; side++)
-		{
-			m_PieceShoulderFrom[side] = m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation;
-			m_PieceElbowFrom[side] = m_World.GetJoint(m_ElbowJoint[side]).MotorTargetAngle;
-		}
-		m_TurnSign = 0.0f;
-		m_StaggerVelocity = glm::vec3(0.0f);
-		return true;
-	}
-
-	// The piece's next frame: hips carried, feet carried and pinned (held
-	// where they landed while the recording has them down, so they cannot
-	// slide), legs solved between, trunk, head and arms on their motors.
-	void UpdatePiece(float dt)
-	{
-		const SetPiece& sp = m_Pieces[(size_t)m_Piece];
-		m_PieceClock += dt;
-		m_PieceFrame += m_PieceRate * dt;
-		if (m_PieceFrame >= (float)(sp.Frames() - 1))
-		{
-			EndPiece(true);
-			return;
-		}
-		glm::vec3 P[13];
-		glm::quat Q[13];
-		float swingT[2], facing;
-		PieceSample(m_PieceFrame, P, Q, swingT, &facing);
-		float ease = 1.0f - glm::smoothstep(0.0f, 0.3f, m_PieceClock);
-
-		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
-		glm::vec3 hips = P[0] + m_PiecePelvisFrom * ease;
-		pelvis.Velocity = (hips - pelvis.Position) / std::max(dt, 1e-4f);
-		pelvis.Orientation = glm::normalize(glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), m_PiecePelvisTurnFrom, ease) * Q[0]);
-		pelvis.UpdateInertiaWorld();
-		m_Facing = facing;
-		// What a dodge or a hit reads of how fast he is going: the hips' own.
-		m_Speed = glm::length(glm::vec2(pelvis.Velocity.x, pelvis.Velocity.z));
-		m_TravelYaw = m_Facing;
-
-		for (int side = 0; side < 2; side++)
-		{
-			// The correction from where his foot was to where the piece has
-			// it goes while the foot is in the air -- by 85% of the swing it
-			// is in or the next one -- and stays while it is down.
-			if (swingT[side] >= 0.0f)
-			{
-				float s0 = m_PieceFootStartT[side];
-				m_PieceFootCorrect[side] = std::min(m_PieceFootCorrect[side],
-					1.0f - glm::smoothstep(s0, std::max(s0 + 0.05f, 0.85f), swingT[side]));
-				m_PieceHolding[side] = false;
-			}
-			else
-				m_PieceFootStartT[side] = 0.0f;
-			float c = m_PieceFootCorrect[side];
-			glm::vec3 at = P[7 + side] + m_PieceFootFrom[side] * c;
-			glm::quat turn = glm::normalize(glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), m_PieceFootTurnFrom[side], c) * Q[7 + side]);
-			if (swingT[side] < 0.0f)
-			{
-				if (!m_PieceHolding[side])
-				{
-					m_PieceHolding[side] = true;
-					m_PieceHold[side] = at;
-				}
-				at.x = m_PieceHold[side].x;
-				at.z = m_PieceHold[side].z;
-			}
-			PinFootPose(side, at, turn, dt);
-		}
-		for (int side = 0; side < 2; side++)
-			SolveDrivenLeg(side, HipWorld(side) + pelvis.Velocity * dt, dt);
-
-		auto relative = [&](int a, int b) { return glm::normalize(glm::conjugate(Q[a]) * Q[b]); };
-		auto hinge = [&](int a, int b)
-		{
-			glm::quat q = relative(a, b);
-			return 2.0f * std::atan2(q.x, q.w);
-		};
-		auto blendTo = [&](const glm::quat& from, const glm::quat& to) { return glm::normalize(glm::slerp(to, from, ease)); };
-		m_World.GetJoint(m_SpineJoint).MotorTargetRotation = blendTo(m_PieceSpineFrom, relative(0, 1));
-		m_World.GetJoint(m_NeckJoint).MotorTargetRotation = blendTo(m_PieceNeckFrom, relative(1, 2));
-		for (int side = 0; side < 2; side++)
-		{
-			m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation = blendTo(m_PieceShoulderFrom[side], relative(1, 9 + side));
-			float elbow = glm::clamp(hinge(9 + side, 11 + side), -glm::radians(135.0f), 0.0f);
-			m_World.GetJoint(m_ElbowJoint[side]).MotorTargetAngle = glm::mix(elbow, m_PieceElbowFrom[side], ease);
-		}
-	}
-
-	// A foot put exactly where the piece has it, as the walk's are.
-	void PinFootPose(int side, const glm::vec3& at, const glm::quat& turn, float dt)
-	{
-		GS::RigidBody3D& foot = m_World.GetBody(m_Foot[side]);
-		if (!m_Pinned[side])
-		{
-			m_Pinned[side] = true;
-			foot.Type = GS::BodyType::Kinematic;
-			foot.AngularVelocity = glm::vec3(0.0f);
-			GS::Joint3D& ankleJoint = m_World.GetJoint(m_AnkleJoint[side]);
-			ankleJoint.ConeTwistEnabled = false;
-			ankleJoint.MotorEnabled = false;
-			SetLegsColliding(false);
-		}
-		foot.Orientation = turn;
-		foot.UpdateInertiaWorld();
-		foot.Velocity = (at - foot.Position) / std::max(dt, 1e-4f);
-		m_FootTarget[side] = at + turn * m_FootToAnkle;
-		m_PinYaw[side] = YawOfTurn(turn);
-	}
-
-	// Back to the walk: from the piece's last frame (`finished`), or now,
-	// cut short -- facing as the piece faces, at its speed, the feet where
-	// they are and the walk's step to come the one the piece had coming.
-	void EndPiece(bool finished)
-	{
-		if (m_Piece < 0)
-			return;
-		const SetPiece& sp = m_Pieces[(size_t)m_Piece];
-		int lift = finished && sp.ExitLift >= 0 ? (m_PieceMirror ? 1 - sp.ExitLift : sp.ExitLift) : -1;
-		// Ending standing is ending still: the last of a stop's settling
-		// (0.09 m/s) handed on kept the walk's steps turning over, slowly.
-		float speed = finished && sp.ExitLift >= 0 ? sp.SpeedOut * m_PieceRate / std::max(sp.FrameRate, 1.0f) : 0.0f;
-		m_PieceStood = finished && sp.ExitLift < 0;
-		if (!finished)
-		{
-			// Cut short, at the speed the hips have now.
-			const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
-			speed = glm::length(glm::vec2(pelvis.Velocity.x, pelvis.Velocity.z));
-		}
-		m_Piece = -1;
-		m_PieceCooldown = 0.3f;
-		const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
-		m_TravelYaw = m_Facing;
-		m_TurnSign = 0.0f;
-		m_Speed = speed;
-		m_SpeedRate = 0.0f;
-		m_LastSpeed = speed;
-		m_LeanAccel = 0.0f;
-		m_RunBlend = 0.0f;
-		m_RunBlendRate = 0.0f;
-		m_RootAnchor = glm::vec3(pelvis.Position.x, m_StandHeight, pelvis.Position.z)
-			+ glm::vec3(std::sin(m_Facing), 0.0f, std::cos(m_Facing)) * (speed * m_LastDt);
-		m_StandHeight = pelvis.Position.y;
-		m_StandRate = 0.0f;
-		m_StandTarget = GroundY(pelvis.Position, -1000.0f) + m_StandClearance - m_Crouch;
-		for (int side = 0; side < 2; side++)
-		{
-			m_Planted[side] = m_FootTarget[side];
-			m_SwingFrom[side] = m_SwingTo[side] = m_Planted[side];
-			m_Swinging[side] = false;
-			// The stance the piece ends in counts as settled: toes turned out
-			// as a person's are is not a foot to step round straight.
-			m_PlantYaw[side] = m_Facing;
-		}
-		m_GaitPhase = lift >= 0
-			? glm::two_pi<float>() * m_Duty + (lift == 0 ? 1.5f : 0.5f) * glm::pi<float>() - 1e-3f
-			: 1.5f * glm::pi<float>();
-		m_TurnStartFromRest = lift < 0 && speed < 0.05f;
-		m_PhaseRate = 0.0f;
-		m_HandoffPending = true;
-		EaseArmsFromHere();
-	}
-
-	void DriveWalk(float dt)
-	{
-		GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
-
-		// --- steering, with momentum ----------------------------------------
-		//
-		// Nothing here is instant. A body with mass does not change direction
-		// on a key press, and snapping the velocity or the facing is most of
-		// what makes a character feel like a cursor rather than a person.
-		// Camera-relative, which is what a third-person control scheme means:
-		// W goes away from the camera whichever way it is pointing, not along
-		// some fixed world axis. Steering in world space is the thing that
-		// makes a follow camera feel like it is fighting you.
-		float camYaw = glm::radians(m_Control.Yaw);
-		glm::vec3 camForward(std::cos(camYaw), 0.0f, std::sin(camYaw));
-		glm::vec3 camRight(-std::sin(camYaw), 0.0f, std::cos(camYaw));
-
-		if (glm::length(camForward) > 0.0f) camForward = glm::normalize(camForward);
-		if (glm::length(camRight) > 0.0f) camRight = glm::normalize(camRight);
-
-		glm::vec3 wish(0.0f);
-		if (m_Control.Enabled)
-		{
-			if (m_Control.Forward) wish += camForward;
-			if (m_Control.Back) wish -= camForward;
-			if (m_Control.Left) wish -= camRight;
-			if (m_Control.Right) wish += camRight;
-		}
-		wish.y = 0.0f;
-
-		float wishLength = glm::length(wish);
-		if (wishLength > 0.0f)
-			wish /= wishLength;
-		if (wishLength > 0.0f)
-			m_PieceStood = false;
-
-		// A set piece playing goes on unless what he is asked for no longer
-		// fits it: keys pressed again while he stops, let go or turned well
-		// away while he sets off, let go while he turns round. Then it hands
-		// back to the walk where it is, and the walk carries on from there.
-		if (m_Piece >= 0)
-		{
-			SetPiece::Kind kind = m_Pieces[(size_t)m_Piece].What;
-			float off = 0.0f;
-			if (wishLength > 0.0f)
-			{
-				off = std::atan2(wish.x, wish.z) - m_Facing;
-				while (off > glm::pi<float>()) off -= glm::two_pi<float>();
-				while (off < -glm::pi<float>()) off += glm::two_pi<float>();
-			}
-			bool keep = kind == SetPiece::Kind::Stop ? wishLength <= 0.0f
-				: kind == SetPiece::Kind::Start ? (wishLength > 0.0f && std::fabs(off) < glm::radians(50.0f))
-				: wishLength > 0.0f;
-			// A jump pressed cuts it short too, so the jump goes when pressed.
-			if (keep && m_Air == Air::Grounded && !m_WantsJump)
-			{
-				UpdatePiece(dt);
-				if (m_Piece >= 0)
-					return;
-			}
-			else
-				EndPiece(false);
-		}
-
-		// The heading turns towards where it is going at a limited rate, the
-		// short way round. A character that pivots instantly reads as weightless
-		// however good the rest of the gait is.
-		float turnLeft = 0.0f;
-		if (wishLength > 0.0f)
-		{
-			float wanted = std::atan2(wish.x, wish.z);
-			// A drunk's wander: the heading he holds drifts either side of
-			// where he means to go, on a slow noise, more the faster he goes.
-			if (m_GaitApplied && m_Gait.Wander > 0.0f)
-				wanted += m_Gait.Wander * Noise(m_Clock / 1.6f, 61u)
-					* glm::clamp(m_Speed / std::max(m_WalkSpeed, 0.01f), 0.0f, 1.0f);
-			float error = wanted - m_Facing;
-			while (error >  glm::pi<float>()) error -= glm::two_pi<float>();
-			while (error < -glm::pi<float>()) error += glm::two_pi<float>();
-
-			// Turning back the way he came, which way round is a choice, and
-			// it is made once (ReverseTurnSign). Left to "the short way", a
-			// wish dead behind him flipped between +180 and -180 on the
-			// wander's noise or a hair of facing, and the hips swung one way
-			// and then the other. Held until the turn is all but done, not
-			// just past its middle: let go at a quarter turn to go, the
-			// planted foot was free to drift under the other hip while the
-			// last swing went past it.
-			if (m_TurnSign != 0.0f && std::fabs(error) < m_SettleYaw)
-				m_TurnSign = 0.0f;
-			if (m_TurnSign == 0.0f && std::fabs(error) > m_ReverseAngle)
-				m_TurnSign = ReverseTurnSign(error);
-			if (m_TurnSign != 0.0f && error * m_TurnSign < 0.0f)
-				error += m_TurnSign * glm::two_pi<float>();
-
-			// Running and turning back: the brake first, as a runner does --
-			// the rear foot through and planted ahead, leaning back against
-			// it (PlanBrake, the run's dodge back). Turned at a run's turn
-			// rate instead, with the speed falling as the turn grows, he
-			// either ran a wide loop or, braked hard enough not to, came off
-			// 4 m/s in a quarter of a second, 1.6 g with nothing to push on,
-			// the run's long strides wheeling at a walking pace. The turn
-			// then goes on from a walk, on the feet.
-			if (m_TurnSign != 0.0f && m_Speed > m_TurnBrakeSpeed * std::sqrt(m_Proportions.Scale)
-				&& m_Air == Air::Grounded && m_LandSpeed <= 0.0f
-				&& glm::length(m_StaggerVelocity) < 0.1f && m_DodgeCooldown <= 0.0f)
-			{
-				glm::vec3 F(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
-				if (PlanBrake(F * m_Speed, F, m_TurnBrakeDecel))
-				{
-					// He comes out of it at a walk, and which way round to go
-					// is chosen again from where the brake leaves his feet.
-					m_RunBlend = 0.0f;
-					m_RunBlendRate = 0.0f;
-					m_TurnSign = 0.0f;
-					return;
-				}
-			}
-
-			// Slower turning the faster he goes: m_TurnRate times
-			// m_SpotTurn on the spot, about 2.5 rad/s at a walk. At full rate
-			// while walking the hips swung round faster than the legs could
-			// follow them. Quicker on the spot than it was (4 rad/s), now
-			// that the feet step round with the turn rather than the hips
-			// turning over them: a half turn on the spot takes about 0.6 s.
-			float boost = m_SpotTurn;
-			float turnRate = m_TurnRate * boost / (1.0f + boost * m_Speed / std::max(m_WalkSpeed, 0.01f));
-			float step = glm::clamp(error, -turnRate * dt, turnRate * dt);
-			m_TurnWanted = step / std::max(dt, 1e-4f);
-			m_TurnToGo = error;
-			step = FeetAllowTurn(step);
-			m_Facing += step;
-			m_TurnRateNow = step / std::max(dt, 1e-4f);
-			turnLeft = std::fabs(error);
-		}
-		else
-		{
-			m_TurnSign = 0.0f;
-			m_TurnWanted = 0.0f;
-			m_TurnToGo = 0.0f;
-			m_TurnRateNow = 0.0f;
-		}
-
-		// A set piece instead, where there is one for what he is doing: turning
-		// round from a walk (out of the run's brake too), stopping from a walk,
-		// setting off straight from standing. Played a little quicker than it
-		// was recorded to match his pace -- his walk is 1.37 m/s, the people
-		// recorded walked at 0.8-1.1 -- but not much past 1.35 times, beyond
-		// which a person's movement starts to look hurried.
-		if (m_Piece < 0 && !m_Pieces.empty() && m_Air == Air::Grounded && m_LandSpeed <= 0.0f
-			&& glm::length(m_StaggerVelocity) < 0.1f && m_RunBlend < 0.5f)
-		{
-			auto pace = [&](SetPiece::Kind kind, float most)
-			{
-				for (const SetPiece& sp : m_Pieces)
-					if (sp.What == kind)
-						return glm::clamp(m_Speed / std::max(sp.SpeedIn, 0.1f), 1.0f, most);
-				return 1.0f;
-			};
-			bool started = false;
-			// Not out of the run's brake (0.7 m/s and falling): brake and the
-			// recorded turn after it took 2.5 s to face round, where brake and
-			// the walk's own turn on the spot take 1.3. Turning round from a
-			// walk, up to 1.45 times as quick as recorded: 1.25 s to face round,
-			// against the person's 1.6 at their pace and the walk's own 0.9.
-			if (m_TurnSign != 0.0f && m_Speed > 0.9f && m_Speed < 2.2f)
-				started = TryPiece(SetPiece::Kind::TurnRound, pace(SetPiece::Kind::TurnRound, 1.45f));
-			else if (wishLength <= 0.0f && m_Speed > 0.7f && m_Speed < 2.2f)
-				started = TryPiece(SetPiece::Kind::Stop, pace(SetPiece::Kind::Stop, 1.35f));
-			else if (wishLength > 0.0f && turnLeft < glm::radians(30.0f) && m_Speed < 0.05f
-				&& !m_Swinging[0] && !m_Swinging[1] && m_TurnStartFromRest && !(m_Control.Enabled && m_Control.Run))
-				started = TryPiece(SetPiece::Kind::Start, 1.25f);
-			if (started)
-			{
-				UpdatePiece(dt);
-				return;
-			}
-		}
-
-		// Speed eases towards the target and coasts to a stop, and the figure
-		// walks along its *facing* rather than along the input -- so a turn is
-		// a curve rather than a sidestep.
-		// Not while the way he wants to go is well off the way he faces:
-		// a run's stride and cadence are no way to turn round in, and held
-		// through a turn back they wheeled at a walking speed.
-		bool wantsRun = m_Control.Enabled && m_Control.Run
-			&& (wishLength <= 0.0f || turnLeft < m_RunTurnAngle);
-
-		// Eased, because everything about the run differs from the walk --
-		// stride, stance fraction, arm swing, lean -- and snapping between two
-		// gaits mid-step is exactly the tearing that a blend exists to avoid.
-		// On a critically damped spring, like the speed below.
-		Spring(m_RunBlend, m_RunBlendRate, wantsRun ? 1.0f : 0.0f, m_RunBlendResponse, dt);
-		m_RunBlend = glm::clamp(m_RunBlend, 0.0f, 1.0f);
-
-		float topSpeed = glm::mix(m_WalkSpeed, m_RunSpeed, m_RunBlend);
-
-		// Slower the more there is still to turn: full speed straight ahead,
-		// half at a right angle, a turn on the spot to go back the way he
-		// came. Turning at full speed, the hips ran a 0.33 m circle (v / turn
-		// rate) and left the planted foot 1.5 m behind them.
-		float wantedSpeed = wishLength > 0.0f ? topSpeed * 0.5f * (1.0f + std::cos(turnLeft)) : 0.0f;
-		// Turning back, not at all until he is within a quarter turn of the
-		// way he wants to go. The walk goes along his facing, so anything
-		// kept through the turn carried the hips round an arc -- and across
-		// the planted foot: out of a brake at 0.7 m/s, the foot he turned on
-		// ended up 0.67 m on the wrong side of him. A person turning back
-		// turns over their feet, then goes.
-		if (m_TurnSign != 0.0f && turnLeft > glm::half_pi<float>())
-			wantedSpeed = 0.0f;
-		// Speed follows a critically damped spring rather than ramping at a
-		// fixed rate. A ramp switches its acceleration on and off in a single
-		// step, and everything scaled by speed -- the bob above all -- kinks
-		// there: the hips took a 10-16 m/s^2 jolt at every start, stop and
-		// change of direction, which is the hitch a ramp reads as. The spring
-		// eases in and out; at m_SpeedResponse = 6 a walk is reached at a
-		// peak of about 2.9 m/s^2 (omega * dv / e), where the ramp used 3.
-		// Braking into a turn is quicker than setting off: the foot that
-		// opens the turn plants and stops him, as a person turning back
-		// does, rather than him coasting round a curve for half a second.
-		float response = m_SpeedResponse;
-		if (wantedSpeed < m_Speed && turnLeft > glm::half_pi<float>())
-			response *= m_TurnBrake;
-		float speedRateBefore = m_SpeedRate;
-		Spring(m_Speed, m_SpeedRate, wantedSpeed, response, dt);
-		// And never quicker than the feet can stop him, about 0.8 g of
-		// grip. Only when slowing: setting off, the spring never comes
-		// near it.
-		if (m_SpeedRate < -m_MaxBrake && m_SpeedRate < speedRateBefore)
-		{
-			float capped = std::min(speedRateBefore, -m_MaxBrake);
-			m_Speed -= (m_SpeedRate - capped) * dt;
-			m_SpeedRate = capped;
-		}
-		if (m_Speed < 0.0f)
-		{
-			m_Speed = 0.0f;
-			m_SpeedRate = std::max(m_SpeedRate, 0.0f);
-		}
-
-		glm::vec3 forward(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
-		// A wall ahead stops him; a jump (or a run) at something he can get
-		// over or onto starts the move instead of the walk.
-		if (ParkourStep(forward))
-			return;
-
-		// Which way the speed he has carries him. Along his facing, as it
-		// always was -- except turning back, when what is left of the way he
-		// was going carries on straight while it dies away. Momentum does
-		// not turn because the hips do, and swung round with them it walked
-		// the hips in an arc round the planted foot (a 1.3 m/s walk, turned
-		// back, crossed the feet by 8 cm). Brought back to the facing
-		// quickly once the turn back is done.
-		if (m_TurnSign == 0.0f || std::fabs(m_TurnToGo) < glm::half_pi<float>())
-		{
-			float off = m_Facing - m_TravelYaw;
-			while (off > glm::pi<float>()) off -= glm::two_pi<float>();
-			while (off < -glm::pi<float>()) off += glm::two_pi<float>();
-			float most = m_TravelTurnRate * dt;
-			m_TravelYaw = m_Speed < 0.3f ? m_Facing : m_TravelYaw + glm::clamp(off, -most, most);
-		}
-		glm::vec3 travel(std::sin(m_TravelYaw), 0.0f, std::cos(m_TravelYaw));
-		glm::vec3 wanted = travel * m_Speed;
-
-		// --- catching himself ------------------------------------------------
-		//
-		// A shove moves the body before it moves the feet, which is what being
-		// off balance *is*. The root carries the push and bleeds it off; the
-		// legs are already placed relative to the root, so they chase it
-		// without being told to -- and because the gait phase advances with
-		// distance covered, being shoved fast makes the steps quick on its own.
-		if (glm::length(m_StaggerVelocity) > 1e-4f)
-		{
-			// Can he still catch this? Asked every frame rather than once at
-			// the moment of impact, so a stagger that is decaying stays
-			// survivable and one that arrives too fast goes down at once.
-			if (glm::length(m_StaggerVelocity) > CatchableSpeed())
-			{
-				GoRagdoll("outrun");
-				return;
-			}
-
-			wanted += m_StaggerVelocity;
-
-			// Exponential bleed-off: this is the recovery, and how fast it
-			// runs is the difference between a stumble and a fall.
-			m_StaggerVelocity *= std::max(1.0f - m_StaggerRecovery * dt, 0.0f);
-
-			if (glm::length(m_StaggerVelocity) < m_StaggerSettle)
-				m_StaggerVelocity = glm::vec3(0.0f);
-		}
-
-		if (m_StaggerTimer > 0.0f)
-			m_StaggerTimer = std::max(m_StaggerTimer - dt, 0.0f);
-
-		// --- the gait --------------------------------------------------------
-		// Phase advances with distance covered, not with time, so the legs do
-		// not cycle while standing still and do not moonwalk when the speed
-		// changes.
-		float gaitSpeed = m_Speed + glm::length(m_StaggerVelocity);
-		float phaseRate = (gaitSpeed / std::max(CurrentStride(), 0.01f)) * glm::two_pi<float>();
-
-		// Turning steps, too. The phase used to advance with distance alone,
-		// so turning on the spot -- and turning back from a walk, which
-		// brakes to nearly nothing first -- turned the hips over two planted
-		// feet: past a quarter turn each leg was on the other's side, and
-		// the shins went through each other by up to 12 cm (and stayed
-		// crossed, standing, after a turn back and stop). Now a turn sets
-		// a cadence of its own, a step for each m_StepTurn of it, so the
-		// feet come round with him; and a foot left turned or out of place
-		// when he stops gets a step to put it right.
-		m_StepDemand = TurnStepRate(gaitSpeed);
-		phaseRate = std::max(phaseRate, m_StepDemand);
-		bool swingInHand = m_Swinging[0] || m_Swinging[1];
-		if (gaitSpeed < 0.05f && m_StepDemand <= 0.0f)
-		{
-			// Stopping: a step already in the air is finished, not dropped
-			// where it is, and then he stands with the phase at a moment
-			// both feet are down -- side 0 or side 1 just landed.
-			if (swingInHand)
-				phaseRate = glm::pi<float>() / m_SettleStepTime;
-			else
-			{
-				phaseRate = 0.0f;
-				m_GaitPhase = CyclePosition(0) < 0.5f ? 1.5f * glm::pi<float>() : 0.5f * glm::pi<float>();
-			}
-		}
-		else if (!swingInHand && m_StepDemand > 0.0f && m_TurnStartFromRest)
-		{
-			// Setting off round from standing, or out of a move: the foot on
-			// the side of the turn lifts first, now, and opens it.
-			int inside = m_TurnToGo < 0.0f ? 0 : 1;
-			m_GaitPhase = glm::two_pi<float>() * m_Duty + (inside == 0 ? 1.5f : 0.5f) * glm::pi<float>() - 1e-3f;
-		}
-		// Easing down, never dropping: the end of a turn took a swing from a
-		// turn's cadence to a slow walk's in one step, and the foot in the
-		// air finished its swing at a third of the speed it began it.
-		if (swingInHand && phaseRate < m_PhaseRate)
-			phaseRate = std::max(phaseRate, m_PhaseRate - m_PhaseEase * dt);
-		m_TurnStartFromRest = gaitSpeed < 0.05f && m_StepDemand <= 0.0f && !swingInHand;
-		m_PhaseRate = phaseRate;
-		m_GaitPhase = std::fmod(m_GaitPhase + phaseRate * dt, glm::two_pi<float>() * 4.0f);
-
-		float stride = std::min(gaitSpeed / std::max(m_WalkSpeed, 0.01f), 1.0f);
-
-		// Stance fraction. A person walks with about 62% of each leg's cycle
-		// on the ground -- the overlap is double support -- and runs with
-		// about 35%, where the gaps are flight.
-		m_Duty = glm::mix(m_WalkDuty, m_RunDuty, m_RunBlend);
-
-		// --- weight ----------------------------------------------------------
-		//
-		// Three things sell a walk as having mass, and none of them are the
-		// legs. All are driven off the same phase so they cannot drift apart.
-		//
-		//   * **Bob.** The body is lowest when both feet are down and the
-		//     weight transfers, highest at mid-stance over a straight leg.
-		//     That is twice per stride, hence the doubled phase.
-		//   * **Sway.** The hips move over whichever foot is carrying, once
-		//     per stride. Without it a walk looks like a puppet slid along a
-		//     rail.
-		//   * **The drop.** A short, sharp downward nudge as the foot lands,
-		//     which is what actually reads as the step *hitting* the ground --
-		//     a smooth sinusoid alone feels like floating.
-		// The dip is not a style choice, it is geometry. With the feet half a
-		// stride apart the hip *cannot* stay at full leg length -- the leg is
-		// the hypotenuse of a triangle whose base is half the stride -- so the
-		// body has to drop by the difference or the foot target is out of
-		// reach and the leg just extends and falls short. It grows as the
-		// square of the stride, which is why a long stride sinks so much more
-		// than a short one.
-		// How far the hips dip at double support so the legs reach the
-		// stride. The feet roll heel to toe now (DriveFoot), which is reach
-		// the hips no longer have to find by dropping: the dip is worked out
-		// for a foot m_RollReach nearer. With a flat foot it was 5.1 cm and,
-		// with the bob on top, the hips went up and down 7 cm a step at up
-		// to 12 m/s^2 -- a walk of lurches.
-		float half = std::max(FootReach(stride) - m_RollReach * stride, 0.0f);
-		float legMax = (m_ThighLength + m_ShinLength) * 0.999f;
-		float needed = legMax - std::sqrt(std::max(legMax * legMax - half * half, 0.0f));
-
-		// Walking: zero at mid-stance, full at double support -- the vault
-		// over a straight stance leg. (The other way round is a waddle.)
-		float low = 0.5f * (1.0f - std::cos(2.0f * m_GaitPhase));
-		float walkBob = -(needed + m_BobAmount * stride) * low;
-
-		// Running: the spring-mass run, which is what a runner's hips
-		// actually do. In stance they dip on a half sine of depth B; in flight
-		// they are a projectile. Matching velocities where the two meet
-		// fixes B instead of leaving it a knob: flight of T_f leaves the
-		// ground at v = g T_f / 2, the half sine leaves at B pi / T_s, so
-		// B = v T_s / pi, and the apex is v^2 / 2g. At 4 m/s that is a 3.0 cm
-		// dip, a 1 cm arc and 6.6 m/s^2 at the bottom. The previous version
-		// put the walk's sine under a flight parabola that started with a
-		// kink, and peaked at 44 m/s^2.
-		float runBob = 0.0f;
-		float running = glm::clamp((0.5f - m_Duty) / std::max(0.5f - m_RunDuty, 0.01f), 0.0f, 1.0f);
-		if (running > 0.0f)
-		{
-			// Never from less than a walk's speed. Run held standing still
-			// (Shift, in the demo) put the speed at 0.01 into this: a cycle
-			// of minutes, a flight to match, and a take-off speed that threw
-			// the hips 50 m in a sixth of a second. Slower than a walk the
-			// bob is a walk's, scaled down with the stride.
-			float cycle = CurrentStride() / std::max(m_Speed, m_WalkSpeed);
-			float stanceTime = m_Duty * cycle;
-			float flightTime = (0.5f - m_Duty) * cycle;
-			float takeoff = 9.81f * flightTime * 0.5f;
-			float depth = takeoff * stanceTime / glm::pi<float>();
-			float apex = takeoff * takeoff / (2.0f * 9.81f);
-			float air = Airborne();
-			if (air >= 0.0f)
-				runBob = apex * 4.0f * air * (1.0f - air);
-			else
-			{
-				int stance = CyclePosition(0) < m_Duty ? 0 : 1;
-				float t = glm::clamp(CyclePosition(stance) / std::max(m_Duty, 0.01f), 0.0f, 1.0f);
-				runBob = -depth * std::sin(glm::pi<float>() * t);
-			}
-			runBob = runBob * glm::clamp(m_Speed / std::max(m_WalkSpeed, 0.01f), 0.0f, 1.0f) - needed;
-		}
-		float bob = glm::mix(walkBob, runBob, running);
-
-		// A limp: the hips drop while the bad leg (side 1) carries -- the
-		// leg is not straightened under the load -- and are hurried off it.
-		if (m_GaitApplied && m_Gait.Limp > 0.0f && CyclePosition(1) < m_Duty)
-		{
-			float t = CyclePosition(1) / std::max(m_Duty, 0.01f);
-			bob -= m_Gait.Limp * 0.045f * m_Proportions.Scale * std::sin(glm::pi<float>() * t) * stride;
-		}
-
-		glm::vec3 right(std::cos(m_Facing), 0.0f, -std::sin(m_Facing));
-		// Sway follows *which foot is carrying*, not the raw phase.
-		//
-		// Tied to sin(gaitPhase) it was right for one gait and wrong for the
-		// other, because which foot is down at a given phase depends on the
-		// duty factor: measured, the pelvis sat 0.1033 m from the stance foot
-		// and 0.0955 from the swing foot at a walk -- leaning away from the leg
-		// carrying it -- while the run happened to come out correct. Keyed to
-		// the cycle position it is right for both by construction.
-		//
-		// Peaks towards side 0 at side 0's mid-stance, which is a quarter of
-		// the way through its stance either side of it.
-		float carry = -std::cos(glm::two_pi<float>()
-			* (CyclePosition(0) - m_Duty * 0.5f));
-
-		m_Carry = carry;
-		glm::vec3 sway = right * (m_SwayAmount * carry * stride);
-
-		// --- the ground under him, and the ground he is about to meet --------
-		//
-		// Two probes. One under the root sets how high he stands; one a stride
-		// ahead tells him a step is coming, so the foot is already lifting
-		// before it would have hit the riser.
-		glm::vec3 under = m_RootAnchor;
-
-		// Fired from the hips rather than from the anchor, and that is not a
-		// detail. `m_RootAnchor.y` is written once when control begins and only
-		// ever moved *horizontally* afterwards, so walking uphill leaves the
-		// origin behind: once the surface rises past it, a probe for "ground
-		// below this point" correctly answers that there is none, the sentinel
-		// comes back, and the fall test below ragdolls a character who is
-		// standing on solid ground.
-		//
-		// That put a hard ceiling of one standing height on how far he could
-		// climb above wherever he spawned, at any angle. Measured on a 15 degree
-		// ramp: spawn ground 1.61 m, anchor 2.70 m, and he went down at z =
-		// -9.92 -- which is the z where the ramp surface reaches 2.70 m, to the
-		// centimetre. It never showed up on the flat demo because the floor
-		// there never rises, and never showed up on the generated map because
-		// the spawn picks the flattest spot going and he had not yet been walked
-		// far enough uphill from it.
-		//
-		// The pelvis is the honest origin: it cannot be inside the ground while
-		// he is standing on it. The foot probes in PlaceFeet lift their own
-		// origins for the same reason.
-		under.y = pelvis.Position.y;
-
-		// Probed against a floor far below rather than the default zero, so
-		// "there is nothing here" is answerable at all. With the default the
-		// probe reports y = 0 off the edge of the world and the character
-		// walks out over the void on an invisible floor.
-		float groundHere;
-		glm::vec3 groundNormal;
-		GroundUnder(under, groundHere, groundNormal, -1000.0f);
-
-		// --- the jump --------------------------------------------------------
-		//
-		// The root is kinematic, so the jump is not a force applied to a mass:
-		// it is the height being integrated ballistically instead of being
-		// pinned to the ground. Which is the same arithmetic, and lands in a
-		// predictable place -- the apex is v^2/2g and nothing else touches it.
-		// A jump has to come off a foot that is on the ground. Standing still
-		// that is always true and the press launches at once -- the two-foot
-		// hop, which is what a person does from a standstill. Moving, it waits
-		// for the next foot-plant, which is what turns the jump from a lift
-		// into a hurdle.
-		//
-		// The wait cannot be unconditional: m_GaitPhase stands still below
-		// 0.05 m/s, so standing still there is no plant coming and a press
-		// would hang forever.
-		if (m_WantsJump && m_Air == Air::Grounded)
-			m_JumpPending = true;
-		m_WantsJump = false;
-
-		// Pressed with a move just ahead and not yet in reach -- the hint is
-		// up a stride early -- the jump waits for the move instead of going
-		// off as a hop in front of the wall, which is what pressing as the
-		// hint came up used to do (measured in the course: a hop, then a
-		// stop at the wall, every time). Not for ever: he may turn away.
-		if (!m_JumpPending)
-			m_JumpWait = 0.0f;
-		bool waiting = m_JumpPending && m_Parkour && ParkourHint()[0] && m_JumpWait < 0.6f;
-		if (waiting)
-			m_JumpWait += dt;
-
-		if (m_JumpPending && m_Air == Air::Grounded && !waiting)
-		{
-			bool moving = m_Speed > m_JumpGateSpeed;
-			int planting = -1;
-
-			if (moving)
-			{
-				// Just landed: within the first sliver of its stance.
-				for (int side = 0; side < 2; side++)
-					if (CyclePosition(side) < m_JumpGateWindow)
-						planting = side;
-			}
-
-			if (!moving || planting >= 0)
-			{
-				// The leg that is *not* pushing off is the one that swings
-				// through in front, which is what a hurdle looks like.
-				m_JumpLead = planting >= 0 ? 1 - planting : -1;
-				m_Air = Air::Crouching;
-				m_AirTimer = 0.0f;
-				m_JumpPending = false;
-			}
-		}
-
-		if (m_Air == Air::Crouching)
-		{
-			// You cannot jump without dipping first -- the legs have to be
-			// bent to have anything to extend. Skipping this is most of what
-			// makes a jump look like a lift.
-			m_AirTimer += dt;
-			if (m_AirTimer >= m_JumpCrouchTime)
-			{
-				// Down in the crouch: now the push. The hips rise from the
-				// crouch's depth d to standing height under a constant
-				// acceleration that leaves them at the take-off speed for
-				// the jump's height, a = v^2 / 2d = g h / d (38 m/s^2, about
-				// 4 g, at h = 0.55 and d = 0.14). The take-off used to be
-				// instant: the hips popped up out of the crouch and reached
-				// 3.3 m/s in one step, 560 m/s^2.
-				m_Air = Air::Pushing;
-				m_JumpOffset = -m_JumpCrouchDepth;
-				m_JumpVelocity = 0.0f;
-			}
-		}
-		else if (m_Air == Air::Pushing)
-		{
-			float takeoff = std::sqrt(2.0f * 9.81f * m_JumpHeight);
-			float push = takeoff * takeoff / (2.0f * std::max(m_JumpCrouchDepth, 0.01f));
-			m_JumpVelocity += push * dt;
-			m_JumpOffset += m_JumpVelocity * dt;
-			if (m_JumpOffset >= 0.0f)
-				m_Air = Air::Flying;
-		}
-		else if (m_Air == Air::Flying)
-		{
-			m_JumpVelocity -= 9.81f * dt;
-			m_JumpOffset += m_JumpVelocity * dt;
-
-			if (m_JumpOffset <= 0.0f && m_JumpVelocity < 0.0f)
-			{
-				// Landing absorbs: the hips carry on down at the speed they
-				// landed with and settle, d(t) = v t e^(-t/tau) -- continuous
-				// in speed, deepest (v tau / e) at t = tau. Stopped dead, as
-				// they were, the landing was another one-step jolt.
-				m_LandSpeed = -m_JumpVelocity;
-				// Starting from however far this step went past the ground,
-				// so the hips carry on from where they are rather than being
-				// lifted back to it (a one-step jolt of -112 m/s^2). The
-				// clock gains dt again below, before it is used.
-				m_LandClock = -m_JumpOffset / std::max(m_LandSpeed, 0.1f) - dt;
-				m_JumpOffset = 0.0f;
-				m_JumpVelocity = 0.0f;
-				m_Air = Air::Grounded;
-				// Landing is absorbed rather than stopped dead.
-				m_LandTimer = m_LandTime;
-
-				// And the gait resumes with the lead foot arriving, rather
-				// than wherever the phase had wandered to while he was in the
-				// air. That is what makes a running jump land *into* the next
-				// stride instead of stumbling back into step -- and it does
-				// the job a per-foot landing timer was going to do, without
-				// needing one.
-				if (m_JumpLead >= 0)
-				{
-					m_GaitPhase = 1.5f * glm::pi<float>()
-						- (m_JumpLead == 0 ? 0.0f : glm::pi<float>());
-				}
-				m_JumpLead = -1;
-			}
-		}
-
-		if (m_LandTimer > 0.0f)
-			m_LandTimer = std::max(m_LandTimer - dt, 0.0f);
-		if (m_LandSpeed > 0.0f)
-		{
-			m_LandClock += dt;
-			if (m_LandClock > 6.0f * m_LandAbsorb)
-				m_LandSpeed = 0.0f;
-		}
-
-		// A drop with nothing under it. Measured against the height he is
-		// holding rather than the pelvis, so a jump does not read as a fall,
-		// and skipped outright while airborne.
-		if (m_Air == Air::Grounded
-			&& m_StandHeight - (groundHere + m_StandClearance) > m_FallHeight)
-		{
-			// Nothing to stand on: a drop he can land, if it is not too far;
-			// otherwise the same door the shove and the impact use -- stop
-			// driving him and let the physics have him.
-			// Walking, not running, off something taller than he is: he
-			// lowers himself over it and hangs, rather than jumping down.
-			float top = m_StandHeight - m_StandClearance + m_Crouch;
-			bool walking = !(m_Control.Enabled && m_Control.Run);
-			if (m_Parkour && walking && top - groundHere > 2.0f * m_Proportions.Scale && PlanDropToHang(top))
-				return;
-			if (PlanDrop())
-				return;
-			GoRagdoll("fell");
-			return;
-		}
-
-		// Eased rather than snapped. The probe is a step function at the edge
-		// of a box and following it exactly makes the hips jump by the height
-		// of the step in one frame, which is the opposite of weighty.
-		// Slightly bent, always.
-		//
-		// The rig was built with the leg dead straight -- hip 0.90 m above the
-		// ankle, and a leg of exactly 0.90 m -- so the foot could not be placed
-		// a centimetre ahead of the hip without the target going out of reach.
-		// The IK dutifully extended the leg as far as it went and the foot
-		// finished 0.4 m short every stride, which is what the scuffing was.
-		// A person walks with bent knees for the same reason.
-		float wantedStand = groundHere + m_StandClearance - m_Crouch;
-		// Eased twice: the ground under the hips is a step function at a
-		// riser's edge, so the target is smoothed first and then followed
-		// on a spring. Rate-limited, as it was, the hips' climb switched from
-		// still to 1.2 m/s in one step -- a 72 m/s^2 jolt at every stair.
-		// Not with the target's rate fed forward, which was tried: it cut
-		// the lag on a long climb, but at a riser the smoothed target's rate
-		// spikes and was fed straight in -- 358 m/s^2 on the stairs. The lag
-		// that remains on a sustained climb is about 2 r / w + 0.08 r.
-		//
-		// On a slope the ground under him is not a step but a ramp, and
-		// the rate it rises at is known exactly -- the slope along the way
-		// he is going, -(n.x v.x + n.z v.z) / n.y -- so it is fed forward
-		// to both: running up 15 degrees the hips trailed the climb by
-		// 27 cm, crouching up the ramp. A riser's top is level (n is up),
-		// so steps feed nothing, and the stairs are as they were.
-		float slopeRate = 0.0f;
-		if (groundHere > -999.0f && groundNormal.y > 0.3f)
-			slopeRate = -(groundNormal.x * wanted.x + groundNormal.z * wanted.z) / groundNormal.y;
-		m_StandTarget += (wantedStand - m_StandTarget) * (1.0f - std::exp(-dt / m_StandSmoothing)) + slopeRate * dt;
-		// Never pulled down faster than he would fall: stepping off a 1.2 m
-		// ledge, the spring dropped the hips at 47 m/s^2.
-		float rateBefore = m_StandRate;
-		Spring(m_StandHeight, m_StandRate, m_StandTarget, m_StandResponse, dt, slopeRate);
-		if (m_StandRate < rateBefore - 9.81f * dt)
-		{
-			m_StandHeight -= (m_StandRate - (rateBefore - 9.81f * dt)) * dt;
-			m_StandRate = rateBefore - 9.81f * dt;
-		}
-
-		// How much higher the next foothold is, as a fraction of the tallest
-		// step worth lifting for, is worked out per leg in PlaceFeet -- the
-		// foot's own landing spot is the honest place to ask. This is only
-		// the larger of the two, for the panel to show.
-		m_StepUp = std::max(m_Climb[0], m_Climb[1]);
-
-		// The crouch before the launch, and the absorb after the landing --
-		// both dips, both on the way to or from the same jump.
-		// Eased down into the crouch (linear, it started at full speed).
-		float crouch = m_Air == Air::Crouching
-			? m_JumpCrouchDepth * glm::smoothstep(0.0f, 1.0f, glm::clamp(m_AirTimer / m_JumpCrouchTime, 0.0f, 1.0f))
-			: 0.0f;
-		if (m_LandSpeed > 0.0f)
-			crouch += m_LandSpeed * m_LandClock * std::exp(-m_LandClock / m_LandAbsorb);
-
-		// Dropping while recovering is not a flourish. The capture point sits
-		// v*sqrt(h/g) ahead, so taking height out of h shortens the reach the
-		// feet have to make -- it is the one thing a body can do about its own
-		// balance without moving its feet at all.
-		crouch += m_RecoverCrouch * glm::clamp(
-			glm::length(m_StaggerVelocity) / std::max(CatchableSpeed(), 0.01f), 0.0f, 1.0f);
-
-		glm::vec3 drift = right * Idle(dt, stride, right);
-		glm::vec3 target = m_RootAnchor + sway + drift;
-		target.y = m_StandHeight + bob + m_JumpOffset - crouch;
-
-		// The anchor is where the character would be with no gait on top; the
-		// bob and sway are an offset from it rather than something the root
-		// integrates, or they would accumulate into a drift.
-		m_RootAnchor += wanted * dt;
-
-		// Out of a set piece, the walk's hips start where the piece left
-		// them and ease to its own over a third of a second: handed straight
-		// over, the hips jumped to where the walk would have had them -- the
-		// stand height, the sway, the bob -- at up to 154 m/s^2.
-		if (m_HandoffPending)
-		{
-			m_HandoffPending = false;
-			// From where they are going, not where they are: measured from
-			// the position, the first step of the walk held them still.
-			m_HandoffOffset = pelvis.Position + pelvis.Velocity * dt - target;
-			m_HandoffClock = 0.0f;
-		}
-		float handoff = 0.0f;
-		if (m_HandoffClock < m_HandoffTime)
-		{
-			m_HandoffClock += dt;
-			handoff = 1.0f - glm::smoothstep(0.0f, m_HandoffTime, m_HandoffClock);
-			target += m_HandoffOffset * handoff;
-		}
-		float toTarget = 1.0f / std::max(dt, 1e-4f);
-		pelvis.Velocity = (target - pelvis.Position) * toTarget;
-
-		// Lean into acceleration, and roll slightly with the sway. Small
-		// angles, but a perfectly upright pelvis is the other half of looking
-		// weightless.
-		// Two different leans, and only one of them is about speed.
-		//
-		// The steady one grows with how fast he is going. The other is the
-		// transient lean *into acceleration*, and that one is not a taste
-		// parameter: a body accelerating at `a` has to put its weight `atan(a/g)`
-		// ahead of its feet or the acceleration has nothing to come from. It
-		// reverses under braking, which is why stopping looks like leaning back.
-		float accel = (m_Speed - m_LastSpeed) / std::max(dt, 1e-4f);
-		m_LastSpeed = m_Speed;
-
-		// Smoothed, because the raw derivative of a per-step speed is noise.
-		m_LeanAccel += glm::clamp(accel - m_LeanAccel, -m_LeanAccelRate * dt,
-			m_LeanAccelRate * dt);
-
-		float lean = (m_Speed / std::max(m_WalkSpeed, 0.01f)) * m_LeanAmount
-			+ std::atan(m_LeanAccel / 9.81f) * m_LeanFromAccel;
-
-		lean = glm::clamp(lean + m_Posture, -m_LeanBack, m_LeanForward);
-
-		// **Positive tips the top of the body towards +z, which is the way the
-		// figure faces.** This was negated, so he leaned *backwards* the whole
-		// time -- measured at -5.7 deg walking and -17.6 deg running, which is
-		// exactly the magnitude asked for, pointing the wrong way.
-		glm::quat facing = glm::angleAxis(m_Facing, glm::vec3(0.0f, 1.0f, 0.0f));
-		glm::quat pitch = glm::angleAxis(lean * m_LeanPelvisShare,
-			glm::vec3(1.0f, 0.0f, 0.0f));
-		// Same signal, so the tilt and the shift cannot drift apart. Positive
-		// about +z tips the top of the body towards -x, which is the same side
-		// the hips have just moved away from -- the trunk leans over the leg
-		// that is carrying.
-		// Leaning into a turn, as anything going round a curve must to keep
-		// its weight over its feet: atan(v w / g), the pelvis taking
-		// m_BankShare of it. Turning towards +x tips the top that way, the
-		// negative way about +z. A runner going round 82 degrees leans in 9
-		// (measured); he stayed upright.
-		float bank = -std::atan(m_Speed * m_TurnRateNow / 9.81f) * m_BankShare;
-		m_Bank += (bank - m_Bank) * (1.0f - std::exp(-dt / 0.15f));
-		glm::quat roll = glm::angleAxis(-m_RollAmount * m_Carry * stride - m_IdleRoll + m_Bank,
-			glm::vec3(0.0f, 0.0f, 1.0f));
-
-		// The hips turn with the stride, the leading leg's side forward --
-		// most at each heel strike -- and the chest turns back against them,
-		// so the shoulders stay nearly square. Measured: a walker's pelvis
-		// turns 8 degrees either way and the chest 9 against it; running 11
-		// and 15. His did neither, which is half of what made the walk look
-		// like a mannequin's on a rail. Positive yaw brings side 0's hip
-		// forward, and side 0 leads at its heel strike (CyclePosition 0).
-		float hipTurn = glm::mix(m_PelvisTurn, m_RunPelvisTurn, m_RunBlend) * stride
-			* std::cos(glm::two_pi<float>() * CyclePosition(0));
-		m_HipTurn = hipTurn;
-		glm::quat swivel = glm::angleAxis(hipTurn, glm::vec3(0.0f, 1.0f, 0.0f));
-		glm::quat walkTurn = glm::normalize(facing * swivel * pitch * roll);
-		if (m_HandoffClock <= dt && handoff > 0.0f)
-			m_HandoffTurn = glm::normalize(pelvis.Orientation * glm::conjugate(walkTurn));
-		pelvis.Orientation = handoff > 0.0f
-			? glm::normalize(glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), m_HandoffTurn, handoff) * walkTurn) : walkTurn;
-		pelvis.UpdateInertiaWorld();
-
-		// The remainder is carried by the spine, so the lean is a *bend* rather
-		// than a plank tipping over. Measuring found the torso tracking the
-		// pelvis to within 0.1 deg -- the spine motor is strong enough at 260
-		// N.m to carry it rigidly -- so leaning the pelvis alone moved the
-		// whole figure as one piece, which is not what a person does. The cone
-		// limit here is 25 deg, so the share has to stay well inside that.
-		// The breath lifts the chest: the spine eases back a touch on the
-		// in-breath.
-		m_World.GetJoint(m_SpineJoint).MotorTargetRotation = glm::normalize(
-			glm::angleAxis(-m_HipTurn * glm::mix(m_ChestCounter, m_RunChestCounter, m_RunBlend), glm::vec3(0.0f, 1.0f, 0.0f))
-			* glm::angleAxis(lean * (1.0f - m_LeanPelvisShare) - m_Breath, glm::vec3(1.0f, 0.0f, 0.0f))
-			* glm::angleAxis(0.7f * m_IdleRoll, glm::vec3(0.0f, 0.0f, 1.0f))
-			* m_SpineRest);
-
-		PlaceFeet(dt, forward, right, stride);
-		SwingArms(stride, dt);
-	}
-
-	// Arms swing opposite the leg on the same side. That is not decoration:
-	// the legs are throwing angular momentum about the vertical axis every
-	// step and the arms are what cancels it, which is why walking with your
-	// arms folded feels like work. Antiphase is the whole trick -- in phase
-	// looks like a toy soldier.
-	void SwingArms(float stride, float dt)
-	{
-		// Out of a get-up or a move the arms come from wherever it left
-		// them, over a third of a second. They used to be handed straight to
-		// the walk, and the get-up's last pose had the elbows bent 36
-		// degrees (a hanging hand is aimed at 95% of the arm's length):
-		// both forearms flicked straight at 415 deg/s the moment he stood.
-		m_ArmEase = std::min(m_ArmEase + dt / 0.35f, 1.0f);
-		float ease = glm::smoothstep(0.0f, 1.0f, m_ArmEase);
-		for (int side = 0; side < 2; side++)
-		{
-			// Same phase the leg on this side uses, turned half a cycle round.
-			float phase = m_GaitPhase + (side == 0 ? 0.0f : glm::pi<float>())
-				+ glm::pi<float>();
-
-			// Each arm's swing wanders a little, and differently.
-			float wander = 1.0f + 0.12f * VariationAmount() * Noise(m_Clock / 1.7f, 41u + (uint32_t)side);
-			// Measured (CMU walk and run on his bodies): a walker's arm
-			// swings through about 18 degrees and a runner's through 88, held
-			// 15 back; his swung 58 walking. The run's swing is the walk's
-			// times m_RunArmSwing, and leans back by m_RunArmBack.
-			float swing = m_ArmSwing * wander * glm::mix(1.0f, m_RunArmSwing, m_RunBlend) * std::sin(phase) * stride
-				+ m_RunArmBack * m_RunBlend * stride;   // positive about the shoulder's x swings the arm back
-
-			// About the shoulder's pitch axis, in the torso's frame, on top of
-			// the pose the rig was built in.
-			glm::quat turn = glm::angleAxis(swing + m_IdleArm[side], glm::vec3(1.0f, 0.0f, 0.0f));
-			// Held away from the body (a swagger, a drunk's balance):
-			// about the torso's forward axis, outwards on each side.
-			if (m_GaitApplied && m_Gait.ArmsOut != 0.0f)
-				turn = turn * glm::angleAxis((side == 0 ? -1.0f : 1.0f) * m_Gait.ArmsOut, glm::vec3(0.0f, 0.0f, 1.0f));
-			glm::quat shoulder = glm::normalize(turn * m_ShoulderRest[side]);
-
-			// A little more bend on the forward swing than the back, which is
-			// what an arm actually does -- it does not stay straight. And bent
-			// even standing a little, then more with speed: a walker's elbow
-			// is at 30 degrees on average and 39 at most, a runner's at 91
-			// (measured); his were at 15 and 31, so he ran with straight arms.
-			float bend = m_ElbowBend * glm::mix(1.0f, m_RunElbowBend, m_RunBlend)
-				* (0.75f + 0.25f * std::sin(phase)) * glm::mix(0.35f, 1.0f, stride);
-			float elbow = -bend;
-			if (ease < 1.0f)
-			{
-				shoulder = glm::normalize(glm::slerp(m_ArmFrom[side], shoulder, ease));
-				elbow = glm::mix(m_ElbowFrom[side], elbow, ease);
-			}
-			m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation = shoulder;
-			m_World.GetJoint(m_ElbowJoint[side]).MotorTargetAngle = elbow;
-		}
-	}
-
-	// The walk's arms to start from where they are driven now.
-	void EaseArmsFromHere()
-	{
-		for (int side = 0; side < 2; side++)
-		{
-			m_ArmFrom[side] = m_World.GetJoint(m_ShoulderJoint[side]).MotorTargetRotation;
-			m_ElbowFrom[side] = m_World.GetJoint(m_ElbowJoint[side]).MotorTargetAngle;
-		}
-		m_ArmEase = 0.0f;
-	}
-
 	// ---------------------------------------------------------------------
 	// Feet
 	// ---------------------------------------------------------------------
 	//
-	// The gait used to swing the hips and bend the knees on a sine wave and
-	// let the feet fall where they might. It reads as walking from a distance
-	// and falls apart up close: the feet slide along the ground through the
-	// stance, because nothing was holding them anywhere.
-	//
-	// Now the *foot* is what the gait describes, and the leg is solved to
-	// reach it. Through the stance half of the cycle a foot is pinned to the
-	// spot it landed on and the body travels over it -- which is what walking
-	// actually is -- and through the swing half it arcs to where it will land
-	// next. Two-link inverse kinematics turns that world position back into a
-	// hip direction and a knee angle.
-	// Driven feet. While he is under control, each foot is kinematic and
-	// goes exactly where the gait puts it; the thighs and shins between
-	// the driven hips and the driven feet stay physical, so the legs still
-	// swing, collide and react. When he is hit, falls or gets up the feet
-	// are let go (UnpinFoot) and are bodies again.
-	//
-	// Why: held by the leg motors alone, a foot lagged everything. Planted,
-	// it was dragged along by the hips -- measured, it slid at 0.52 m/s of a
-	// 1.3 m/s walk and 3.25 of a 4 m/s run, and standing he never touched
-	// the floor. Pinned in stance but motor-driven in the swing, it landed
-	// short of where it was aimed, out of reach, and tore loose again.
-	//
-	// In stance the foot rolls as a person's does: on its heel while the
-	// hips are behind it (toe up, the heel strike), flat under them, and on
-	// its toes once they have gone past (heel up) -- each only as far as
-	// keeps the hip within reach. Worked out on the walk's own numbers, a
-	// flat foot 0.44 m behind a hip 0.85 m up is 0.96 m from it on a 0.90 m
-	// leg; rolling onto the toes is the difference.
-	void DriveFoot(int side, glm::vec3 ankle, bool stance, float swingT, float dt)
-	{
-		if (!m_DriveFeet)
-		{
-			UnpinFoot(side);
-			m_FootTarget[side] = ankle;
-			return;
-		}
-		GS::RigidBody3D& foot = m_World.GetBody(m_Foot[side]);
-		const glm::vec3 up(0.0f, 1.0f, 0.0f);
-		if (!m_Pinned[side])
-		{
-			m_Pinned[side] = true;
-			m_PinYaw[side] = m_Facing;
-			m_PlantYaw[side] = m_Facing;
-			foot.Type = GS::BodyType::Kinematic;
-			foot.AngularVelocity = glm::vec3(0.0f);
-
-			// The foot's turn is decided, so the ankle has nothing to hold:
-			// its cone and motor only fought the knee and hip. A flat foot
-			// under a shin leaning past the 35 degree cone opened the knee
-			// joint by 8-14 cm.
-			GS::Joint3D& ankleJoint = m_World.GetJoint(m_AnkleJoint[side]);
-			ankleJoint.ConeTwistEnabled = false;
-			ankleJoint.MotorEnabled = false;
-			SetLegsColliding(false);
-		}
-
-		// Turning on a planted foot: it pivots once the body has turned more
-		// than m_PinTwist past it (held at the yaw it landed with, the hips
-		// turned over it and wrenched the knee backwards). In the air it
-		// simply turns with him.
-		float twist = m_Facing - m_PinYaw[side];
-		while (twist > glm::pi<float>()) twist -= glm::two_pi<float>();
-		while (twist < -glm::pi<float>()) twist += glm::two_pi<float>();
-		float allowed = stance ? m_PinTwist : 0.0f;
-		// Out of a set piece a planted foot is turned however the recording
-		// left it -- a person stands with the toes out -- and is brought
-		// round to his facing over the hand-off, not in one step.
-		float take = m_HandoffClock < m_HandoffTime ? std::min(1.0f, dt / std::max(m_HandoffTime - m_HandoffClock, dt)) : 1.0f;
-		if (std::fabs(twist) > allowed)
-			m_PinYaw[side] += (twist - glm::sign(twist) * allowed) * take;
-
-		glm::quat flat = glm::normalize(ConformToGround(ankle, side) * glm::angleAxis(m_PinYaw[side], up));
-		glm::vec3 axis = flat * glm::vec3(1.0f, 0.0f, 0.0f);
-		glm::vec3 ahead = flat * glm::vec3(0.0f, 0.0f, 1.0f);
-		float legLength = m_ThighLength + m_ShinLength;
-		float limit = 0.97f * legLength;
-		glm::vec3 hip = HipWorld(side) + m_World.GetBody(m_Pelvis).Velocity * dt;
-
-		// Positive pitch lifts the heel (rotating about the foot's +x turns
-		// +z towards -y), negative lifts the toe.
-		float pitch = 0.0f;
-		if (stance)
-		{
-			m_StanceTime[side] += dt;
-			bool behind = glm::dot(hip - ankle, ahead) > 0.05f;
-			glm::vec3 toeLocal(0.0f, -foot.HalfExtents.y, foot.HalfExtents.z);
-			glm::vec3 heelLocal(0.0f, -foot.HalfExtents.y, -foot.HalfExtents.z);
-			glm::vec3 pivotLocal = behind ? toeLocal : heelLocal;
-			float sign = behind ? 1.0f : -1.0f;
-			glm::vec3 pivot = ankle + flat * (pivotLocal - m_FootToAnkle);
-			auto ankleAt = [&](float angle)
-			{
-				return pivot + glm::angleAxis(sign * angle, axis) * flat * (m_FootToAnkle - pivotLocal);
-			};
-			float angle = 0.0f;
-			if (glm::length(hip - ankleAt(0.0f)) > limit && std::fabs(glm::dot(hip - ankle, ahead)) > 0.05f)
-			{
-				float low = 0.0f, high = behind ? m_MaxHeelLift : m_MaxToeLift;
-				for (int i = 0; i < 12; i++)
-				{
-					float mid = 0.5f * (low + high);
-					(glm::length(hip - ankleAt(mid)) > limit ? low : high) = mid;
-				}
-				angle = high;
-			}
-			// Late in stance the heel comes up whether reach needs it or not
-			// (m_HeelRise, set by PlaceFeet): a person's foot rolls onto its
-			// toes before it leaves, which bends the knee before the swing
-			// starts -- 23 degrees at toe-off, measured, against his 5.
-			// The foot is behind the hip by then, so rising onto the toes
-			// only ever brings the ankle nearer it: never out of reach.
-			if (behind && m_HeelRise[side] > angle)
-				angle = std::min(m_HeelRise[side], m_MaxHeelLift);
-			// Just landed, heel first: the toe comes down about the heel over
-			// the first tenth of a second rather than slapping flat.
-			if (!behind)
-				angle = std::max(angle, m_LandingToeUp * (1.0f - glm::smoothstep(0.0f, 0.12f, m_StanceTime[side])));
-			pitch = sign * angle;
-			ankle = ankleAt(angle);
-			m_PinLift[side] = pitch;
-		}
-		else
-		{
-			// The swing: leaving toe-down from the push-off and easing level,
-			// then toe-up for the heel to land first.
-			pitch = m_PinLift[side] * (1.0f - glm::smoothstep(0.0f, 0.4f, swingT))
-				- m_LandingToeUp * glm::smoothstep(0.6f, 1.0f, swingT);
-		}
-
-		// Never further from the hip than the leg is long: past it the
-		// joints would fight the two driven ends. A stance foot held here
-		// slides, which is the honest failure of a stride the legs cannot
-		// make, and it is counted.
-		// Past the leg's full length, not short of it: he stands with the
-		// knee on its extension stop (m_Crouch), and clamping at 99.5% pulled
-		// both feet up 4.5 mm every frame and set the knees shivering.
-		glm::vec3 fromHip = ankle - hip;
-		float reach = glm::length(fromHip);
-		if (reach > 1.003f * legLength)
-		{
-			ankle = hip + fromHip * (1.003f * legLength / reach);
-			if (stance)
-				m_PinTears++;
-		}
-
-		// In stance the pose follows from the geometry, which is continuous,
-		// and is taken as it is: easing it turned the foot about its ankle and
-		// dragged the corner that should stay on the ground. In the air the
-		// foot eases towards its pose.
-		// And never outside the hip's cone. The hip is a ball joint limited
-		// to 55 degrees from straight down; in a sharp turn a planted foot
-		// ended up behind and to the side of a pelvis that had swung round,
-		// where no thigh can point, and the ankle joint opened by up to
-		// 39 cm. The line from hip to ankle is held inside m_HipCone (the
-		// knee bend puts the thigh itself a little further round).
-		{
-			const glm::quat& pelvisTurn = m_World.GetBody(m_Pelvis).Orientation;
-			glm::vec3 local = glm::conjugate(pelvisTurn) * (ankle - hip);
-			float length = glm::length(local);
-			const glm::vec3 straightDown(0.0f, -1.0f, 0.0f);
-			if (length > 1e-4f)
-			{
-				glm::vec3 direction = local / length;
-				float angle = std::acos(glm::clamp(glm::dot(direction, straightDown), -1.0f, 1.0f));
-				if (angle > m_HipCone)
-				{
-					glm::vec3 turnAxis = glm::cross(straightDown, direction);
-					if (glm::length(turnAxis) > 1e-5f)
-					{
-						direction = glm::angleAxis(m_HipCone, glm::normalize(turnAxis)) * straightDown;
-						ankle = hip + pelvisTurn * (direction * length);
-						if (stance)
-							m_PinTears++;
-					}
-				}
-			}
-		}
-
-		glm::quat pose = glm::normalize(glm::angleAxis(pitch, axis) * flat);
-		foot.Orientation = stance ? pose : glm::normalize(glm::slerp(foot.Orientation, pose, 0.6f));
-		foot.UpdateInertiaWorld();
-		glm::vec3 at = ankle - foot.Orientation * m_FootToAnkle;
-		foot.Velocity = (at - foot.Position) / std::max(dt, 1e-4f);
-		m_FootTarget[side] = ankle;
-	}
-
-	void SolveDrivenLeg(int side, const glm::vec3& hip, float dt)
-	{
-		if (!m_Pinned[side])
-		{
-			SolveLeg(side, hip, m_FootTarget[side], dt);
-			return;
-		}
-		glm::vec3 pole = glm::angleAxis(m_PinYaw[side], glm::vec3(0.0f, 1.0f, 0.0f)) * glm::vec3(0.0f, 0.0f, 1.0f);
-		SolveLegPole(side, hip, m_FootTarget[side], pole);
-	}
-
-	void UnpinFoot(int side)
-	{
-		if (!m_Pinned[side])
-			return;
-		m_Pinned[side] = false;
-		GS::Joint3D& ankleJoint = m_World.GetJoint(m_AnkleJoint[side]);
-		ankleJoint.ConeTwistEnabled = true;
-		ankleJoint.MotorEnabled = m_MotorsEnabled;
-		GS::RigidBody3D& foot = m_World.GetBody(m_Foot[side]);
-		foot.Type = GS::BodyType::Dynamic;
-		// Keeping the motion it had: a swinging foot let go mid-stride
-		// carries on rather than stopping dead in the air. Capped, because
-		// a driven foot's velocity also carries the occasional correction.
-		float speed = glm::length(foot.Velocity);
-		if (speed > 6.0f)
-			foot.Velocity *= 6.0f / speed;
-		foot.Awake = true;
-		foot.SleepTimer = 0.0f;
-	}
-
+	// Whatever takes him -- a move, a stumble, a fall, a get-up -- has his
+	// legs colliding again. (The old walk pinned the feet kinematically and
+	// let them go here; nothing pins them now.)
 	void UnpinFeet()
 	{
-		// A set piece carries the feet; whatever lets them go -- a move, a
-		// stumble, a fall, a get-up -- ends it.
-		m_Piece = -1;
-		UnpinFoot(0);
-		UnpinFoot(1);
 		SetLegsColliding(true);
 	}
 
@@ -8147,319 +6478,6 @@ public:
 			for (auto handle : { m_UpperLeg[side], m_LowerLeg[side] })
 				m_World.GetBody(handle).IgnoreStatic = !colliding;
 		}
-	}
-
-	// A swing foot's path, measured: the CMU walk (16_15, 1.17 m/s) and run
-	// (16_55, 3.2 m/s) on his bodies, every swing resampled from lift-off
-	// (0) to landing (1) in tenths and averaged (6 and 4 swings). Progress
-	// is how far along from where it lifted to where it lands, over the
-	// ground; lift is its height above the straight line between the two,
-	// over its peak (walking 10 cm, running 15 for his leg). The walk's
-	// small rise at 0.8 -- the toes coming up before the heel lands -- is
-	// smoothed a little.
-	static constexpr float kWalkProgress[11] = { 0.0f, 0.048f, 0.127f, 0.249f, 0.378f, 0.549f, 0.706f, 0.853f, 0.954f, 0.986f, 1.0f };
-	static constexpr float kRunProgress[11] = { 0.0f, 0.029f, 0.107f, 0.251f, 0.426f, 0.643f, 0.814f, 0.951f, 1.0f, 1.0f, 1.0f };
-	static constexpr float kWalkLift[11] = { 0.0f, 0.385f, 0.803f, 1.0f, 0.855f, 0.462f, 0.18f, 0.12f, 0.12f, 0.06f, 0.0f };
-	static constexpr float kRunLift[11] = { 0.0f, 0.258f, 0.618f, 0.978f, 1.0f, 0.78f, 0.526f, 0.328f, 0.153f, 0.046f, 0.0f };
-
-	// A curve at t (0..1), between its tenths with a smooth (Catmull-Rom)
-	// join so the foot's speed has no corners, the walk's and the run's
-	// blended as the gait is.
-	float SwingCurve(float t, const float* walk, const float* run) const
-	{
-		auto sample = [](const float* c, float t)
-		{
-			float x = glm::clamp(t, 0.0f, 1.0f) * 10.0f;
-			int i = std::min((int)x, 9);
-			float u = x - (float)i;
-			float p0 = c[std::max(i - 1, 0)], p1 = c[i], p2 = c[i + 1], p3 = c[std::min(i + 2, 10)];
-			return 0.5f * (2.0f * p1 + (p2 - p0) * u + (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * u * u
-				+ (3.0f * p1 - p0 - 3.0f * p2 + p3) * u * u * u);
-		};
-		return glm::mix(sample(walk, t), sample(run, t), m_RunBlend);
-	}
-
-	void PlaceFeet(float dt, const glm::vec3& forward, const glm::vec3& right, float stride)
-	{
-		for (int side = 0; side < 2; side++)
-		{
-			float phase = m_GaitPhase + (side == 0 ? 0.0f : glm::pi<float>());
-
-			// Planted for the first m_Duty of its cycle, swinging for the
-			// rest. This used to be a bare cos(phase) < 0, which is exactly
-			// half and half -- and half and half is neither a walk nor a run.
-			// A walk overlaps (both feet down through the hand-over) and a run
-			// has gaps (neither foot down at all).
-			// In the air both feet are off the ground by definition, and they
-			// tuck rather than reaching for a floor that is not there.
-			// A step under way is finished even if he has stopped; a turn or
-			// a foot out of place steps with no speed at all (TurnStepRate).
-			bool swinging = m_Air == Air::Flying
-				|| (CyclePosition(side) >= m_Duty && (stride > 0.05f || m_StepDemand > 0.0f || m_Swinging[side]));
-
-			// Where the hip will be at the end of this step, not where it is:
-			// the kinematic pelvis moves by its velocity during the step, and
-			// legs solved for its old position chased a target one step stale
-			// -- the hip joints sat 2-3 cm open all through a walk, which is
-			// v dt = 1.3 / 60.
-			glm::vec3 hip = HipWorld(side) + m_World.GetBody(m_Pelvis).Velocity * dt;
-
-			// Where this foot will land: half a stride ahead of the root,
-			// offset to its own side, on whatever the ground is there.
-			// A quarter of the cycle ahead. One cycle is two steps, so at
-			// heel strike the leading foot is half a step -- a quarter of a
-			// stride -- in front of the body, and the trailing one the same
-			// behind. This was half a stride, which placed the foot twice as
-			// far forward as the phase said it should be and forced the stride
-			// down to 0.45 m to keep it reachable: 0.22 m steps at seven a
-			// second. A person walks at two.
-			//
-			// Turning, it lands where he will be facing when it is down, not
-			// where he faces as it lifts: the rest of the swing's worth of
-			// the turn, as far as there is turn left. A foot put down in the
-			// frame he was leaving was a step behind the turn from the start.
-			float landingYaw = m_Facing;
-			if (swinging && m_Air != Air::Flying && m_TurnToGo != 0.0f && m_PhaseRate > 1e-3f)
-			{
-				float t = glm::clamp((CyclePosition(side) - m_Duty) / std::max(1.0f - m_Duty, 0.01f), 0.0f, 1.0f);
-				float left = (1.0f - t) * (1.0f - m_Duty) * glm::two_pi<float>() / m_PhaseRate;
-				float ahead = std::min({ std::fabs(m_TurnWanted) * left, std::fabs(m_TurnToGo), m_StepTurn });
-				landingYaw += glm::sign(m_TurnToGo) * ahead;
-			}
-			glm::vec3 landForward(std::sin(landingYaw), 0.0f, std::cos(landingYaw));
-			glm::vec3 landRight(std::cos(landingYaw), 0.0f, -std::sin(landingYaw));
-			glm::vec3 landing = m_RootAnchor
-				+ landForward * (FootReach(stride) + m_StepJitter[side].x * stride)
-				+ m_StaggerVelocity * m_StaggerStep
-				+ landRight * (SideSign(side) * m_StanceWidth * glm::mix(1.0f, m_WalkNarrow, stride) + m_StepJitter[side].y);
-			// The ankle rides above the sole, so a target on the ground is a
-			// target with the foot buried in it.
-			landing.y = GroundY(landing + glm::vec3(0.0f, 1.0f, 0.0f)) + m_AnkleHeight;
-
-			// How much higher this foot's next foothold is than the one it is
-			// standing on. This used to be a single probe a stride ahead of
-			// the root, along the way the character was facing -- which asks
-			// the question in the wrong place twice over. The root is not what
-			// has to clear the riser, and facing lags the direction of travel
-			// while turning, so walking onto a step out of a turn got the
-			// warning late or not at all. The landing spot is already computed
-			// right here, on the ground that is actually there.
-			// Looked at one stride out as well as at the landing spot, and the
-			// higher of the two wins. The landing spot alone is only half a
-			// stride ahead, which is half the warning the old root probe gave,
-			// and a lift that starts once the foot is already over the riser
-			// arrives after the swing has passed its peak.
-			glm::vec3 beyond = landing + forward * (CurrentStride() * 0.5f * stride);
-			float ahead = GroundY(beyond + glm::vec3(0.0f, 1.0f, 0.0f)) + m_AnkleHeight;
-
-			float climb = glm::clamp(
-				(std::max(landing.y, ahead) - m_Planted[side].y) / m_MaxStepUp, 0.0f, 1.0f);
-
-			// Latched for the length of the swing. The target is recomputed
-			// every frame, so without this a foot that clears the riser stops
-			// seeing a step and drops its lift halfway over -- catching the
-			// obstacle it had just cleared.
-			m_Climb[side] = swinging ? std::max(m_Climb[side], climb) : climb;
-
-			if (swinging && !m_Swinging[side])
-			{
-				// No two steps land alike: a few centimetres along and across,
-				// chosen as the foot lifts and held for the swing.
-				uint32_t n = m_StepCount[side]++;
-				float amount = VariationAmount();
-				m_StepJitter[side] = amount * glm::vec2(0.035f * Signed(m_Seed * 53u + (uint32_t)side, n),
-					0.015f * Signed(m_Seed * 59u + (uint32_t)side, n));
-				if (m_GaitApplied)
-				{
-					// The style: steps as regular as a march or as ragged as a
-					// drunk's, in proportion to the figure; a limp takes a
-					// short step onto the bad leg (side 1), sparing it.
-					float s = m_Proportions.Scale;
-					m_StepJitter[side] *= m_Gait.Jitter * s;
-					if (side == 1)
-						m_StepJitter[side].x -= m_Gait.Limp * 0.09f * s;
-				}
-				// Just left the ground: remember where from, and where to --
-				// from where the ankle is, up on the toes, not from where the
-				// foot was planted flat; from there the swing first dropped the
-				// ankle back to the ground line and the reach clamp lifted it
-				// again, along an arc, on a straight leg.
-				m_SwingFrom[side] = m_Pinned[side] ? m_FootTarget[side] : m_Planted[side];
-				m_SwingTo[side] = landing;
-			}
-			else if (!swinging && m_Swinging[side])
-			{
-				// Planted where the driven foot was put down.
-				glm::vec3 landed = m_FootTarget[side];
-				m_StanceTime[side] = 0.0f;
-				// Just landed. Pinned here until it swings again.
-				m_Planted[side] = glm::vec3(landed.x, m_SwingTo[side].y, landed.z);
-				m_PlantYaw[side] = m_LandingYaw[side];
-			}
-			if (swinging)
-				m_LandingYaw[side] = landingYaw;
-			m_Swinging[side] = swinging;
-
-			glm::vec3 target;
-			float swingT = 0.0f;
-
-			if (m_Air == Air::Flying)
-			{
-				// Standing still this is a symmetric tuck -- knees up, under
-				// the body, a two-foot hop. With speed it opens into a stride:
-				// the lead leg reaches forward and stays fairly straight, the
-				// trailing leg folds up behind. Blended by speed, so there is
-				// no moment where the pose changes character.
-				float open = m_JumpLead >= 0
-					? glm::clamp(m_Speed / std::max(m_WalkSpeed, 0.01f), 0.0f, 1.0f)
-					: 0.0f;
-
-				bool lead = side == m_JumpLead;
-				float towards = lead ? 1.0f : -1.0f;
-
-				// A leg reaching forward is a leg that is *less* tucked; the
-				// one folding up behind is more.
-				float tucked = m_TuckFraction
-					+ towards * open * m_JumpLegSplitReach;
-
-				glm::vec3 tuck = hip;
-				tuck.y -= (m_ThighLength + m_ShinLength) * tucked;
-				tuck += forward * (m_StrideLength * 0.05f
-					+ towards * open * m_JumpLegSplit * 0.5f);
-
-				// Reaching for the ground on the way down, so the feet are on it
-				// at touchdown: planted from the tuck instead, a foot dropped
-				// 0.35 m to the floor in one step and opened the leg by 15 cm.
-				if (m_JumpVelocity < 0.0f)
-				{
-					float fall = glm::clamp(1.0f - m_JumpOffset / std::max(m_JumpHeight, 0.05f), 0.0f, 1.0f);
-					glm::vec3 floor = tuck;
-					floor.y = GroundY(tuck + glm::vec3(0.0f, 1.0f, 0.0f)) + m_AnkleHeight;
-					tuck = glm::mix(tuck, floor, glm::smoothstep(0.0f, 1.0f, fall));
-				}
-
-				// Eased into the tuck rather than put there: a driven foot goes
-				// exactly where it is told, and told to jump to the tuck in one
-				// step at take-off it tore the leg open by 33 cm.
-				if (m_Pinned[side])
-					tuck = m_FootTarget[side] + (tuck - m_FootTarget[side]) * (1.0f - std::exp(-dt / 0.06f));
-				DriveFoot(side, tuck, false, 0.5f, dt);
-				SolveDrivenLeg(side, hip, dt);
-				continue;
-			}
-
-			if (swinging)
-			{
-				// Progress through the swing, whatever fraction of the cycle
-				// the swing happens to be at this gait.
-				float t = glm::clamp((CyclePosition(side) - m_Duty)
-					/ std::max(1.0f - m_Duty, 0.01f), 0.0f, 1.0f);
-				swingT = t;
-
-				// Keep the target moving with the aim point rather than the
-				// one computed when the foot left the ground, or a turn mid
-				// stride plants the foot where the character used to be going.
-				m_SwingTo[side] = landing;
-
-				// The swing's path is a person's: how far along the step the
-				// foot is, and how high, through the swing, read off the CMU
-				// walk and run (16_15, 16_55; MotionClip.h) put on his bodies
-				// -- see SwingCurve. His own, a smoothstep along and a sine of
-				// 6 cm up (32 running, pulled back by a heel kick), lifted the
-				// foot too little too late: the leg swung back straight to
-				// reach a foot that low behind him, the knee *straightening* to
-				// 11 degrees in early swing where a person's bends to 67, and
-				// running the foot went 60 cm behind his hips on a straight
-				// knee where a runner's is tucked under the hip at 95.
-				float along = SwingCurve(t, kWalkProgress, kRunProgress);
-				target = glm::mix(m_SwingFrom[side], m_SwingTo[side], along);
-				// Height changes early: up onto (or down to) the next foothold
-				// in the first half of the swing, while the foot is still near
-				// where it left -- rising evenly across the stride, it met the
-				// riser halfway and drew the shin through it.
-				target.y = glm::mix(m_SwingFrom[side].y, m_SwingTo[side].y,
-					glm::smoothstep(0.0f, m_SwingTo[side].y > m_Planted[side].y + 0.02f ? 0.5f : 1.0f, t));
-
-				// The lift, peaking a third of the way through (walking) and
-				// two fifths (running), from the heel coming up behind as the
-				// knee folds. Higher when there is a step to clear, which is
-				// what the look-ahead probe is for. A slow step lifts less, a
-				// step on the spot about two thirds as much.
-				float over = SwingCurve(t, kWalkLift, kRunLift);
-				float lift = glm::mix(m_FootLift, m_RunFootLift, m_RunBlend) * glm::mix(0.65f, 1.0f, stride);
-				target.y += over * lift * (1.0f + m_Climb[side] * m_ClimbKnee);
-
-				// And never trailing more than m_SwingBehind behind its hip.
-				// The curves are a 3 m/s runner's; at his 4 the hips ran away
-				// from a foot following them, and it trailed 55 cm back on a
-				// straight knee -- the thigh 32 degrees behind him where a
-				// runner's goes 18, the knee folding to 77 where theirs folds to
-				// 106. Brought in, the foot rises behind him and the knee folds
-				// as a runner's does. A walking foot leaves 36-41 cm back and is
-				// all but untouched. Eased in over the first sixth of the swing
-				// so the foot does not jump as it lifts.
-				{
-					float behind = -glm::dot(target - hip, forward);
-					float most = m_SwingBehind * m_Proportions.Scale;
-					if (behind > most)
-						target += forward * ((behind - most) * glm::smoothstep(0.0f, 0.16f, t));
-				}
-
-				// Never through the other leg. The swing goes in a straight
-				// line from where the foot left to where it lands, and in a
-				// turn that line can run through the planted foot -- turning
-				// back, each foot's landing is on the far side of the other.
-				// Kept out on its own side of the planted one, in the frame he
-				// faces now, wherever the two are level along the way; a
-				// straight walk passes them 12 cm apart and is untouched.
-				int other = 1 - side;
-				if (!m_Swinging[other])
-				{
-					glm::vec3 d = target - m_Planted[other];
-					float lat = glm::dot(d, right) * SideSign(side);
-					float along = std::fabs(glm::dot(d, forward));
-					float pass = m_FootPass * m_Proportions.Scale;
-					float level = 1.0f - glm::smoothstep(0.6f * m_FootPassAlong, m_FootPassAlong, along / std::max(m_Proportions.Scale, 0.01f));
-					if (lat < pass && level > 0.0f)
-						target += right * (SideSign(side) * (pass - lat) * level);
-				}
-			}
-			else
-			{
-				// Planted. The body moves; this does not.
-				target = m_Planted[side];
-			}
-
-			// Up onto the toes over the last two fifths of stance, as far as
-			// m_PreSwingHeel by toe-off; none standing still.
-			m_HeelRise[side] = swinging ? 0.0f
-				: m_PreSwingHeel * glm::smoothstep(0.6f, 1.0f, CyclePosition(side) / std::max(m_Duty, 0.01f)) * stride;
-			DriveFoot(side, target, !swinging, swingT, dt);
-			SolveDrivenLeg(side, hip, dt);
-		}
-	}
-
-	// One cycle of travel at the current gait. A run covers twice the ground
-	// per cycle that a walk does, and most of the extra is flight, not reach.
-	float CurrentStride() const
-	{
-		// The stride breathes a few percent, slowly, so the cadence is never
-		// a metronome.
-		float breathe = 1.0f + 0.03f * VariationAmount() * Noise(m_Clock / 2.5f, 31u);
-		return glm::mix(m_StrideLength, m_RunStride, m_RunBlend) * breathe;
-	}
-
-	// How far ahead of the body a foot lands. Capped, and the cap is the point:
-	// a quarter of a running stride would put the foot 0.60 m in front, which
-	// needs the hip 0.23 m lower to be reachable at all -- and reaching that
-	// far forward is overstriding, which is a braking force, not a run. Real
-	// running gets its length from the flight phase instead.
-	float FootReach(float stride) const
-	{
-		// A runner lands nearly under the hips with the knee bent; reaching
-		// the walk's 0.32 m ahead at a run was a straight-legged overstride.
-		float most = glm::mix(m_MaxFootReach, m_RunFootReach, m_RunBlend);
-		return std::min(CurrentStride() * 0.25f, most) * stride;
 	}
 
 	// Where this foot is in its own cycle: 0 the instant it lands, wrapping
@@ -9082,8 +7100,6 @@ protected:
 	// Left as a knob because the failure is instructive and cheap to see.
 	float m_LeadTime = 0.0f;
 	float m_PreviousSwingLoad = 0.0f;
-	int m_TroughsUsed = 0;
-	int m_TroughsMissed = 0;
 	// The reactive step: no weight shift, a short swing, and a foot thrown at
 	// the capture point. The deliberate version is still in here behind this
 	// flag, because the two are genuinely different manoeuvres rather than one
@@ -9229,7 +7245,11 @@ protected:
 	// kinematic stagger, for comparing the two.
 	bool m_PhysicalStumble = true;
 	bool m_SteppingCatch = true;          // off: the ankles alone, for measuring
-	float m_StumbleEntrySpeed = 2.0f;     // m/s; faster than this (a run) a hit staggers the old way
+	// m/s; faster than this a hit staggers him (pushed off his line, keeping
+	// his feet) rather than stumbling him physically. Standing only: from the
+	// posed walk the physical stumble ran away forward and felled him with a
+	// 20 N s nudge (Runtime/Locomotion.h, 2026-10-21); it was 2.0, a walk.
+	float m_StumbleEntrySpeed = 0.3f;
 	glm::vec2 m_StumbleCarry = glm::vec2(0.0f);
 	float m_GetUpMaxGap = 0.3f;           // lowest body's centre above the ground, at most, to get up
 	bool m_Bracing = true;
@@ -9247,44 +7267,8 @@ protected:
 	int m_StumbleSwing = -1;              // the foot in the air, or -1
 	int m_StumbleLastSwing = -1;
 	float m_TouchMemory[2] = { 0.0f, 0.0f };   // seconds off the ground
-	bool m_Pinned[2] = { false, false };
-	float m_PinYaw[2] = { 0.0f, 0.0f };
 	RestSkeleton m_Rest;
-	// The set pieces and the one being played (-1 none).
-	std::vector<SetPiece> m_Pieces;
-	std::function<void(Humanoid&)> m_PieceBaker;
-	int m_Piece = -1;
-	bool m_PieceMirror = false;
-	float m_PieceFrame = 0.0f, m_PieceRate = 120.0f, m_PieceClock = 0.0f, m_PieceCooldown = 0.0f;
-	glm::quat m_PieceTurn{ 1.0f, 0.0f, 0.0f, 0.0f };
-	float m_PieceYaw = 0.0f;
-	glm::vec3 m_PieceOffset{ 0.0f }, m_PiecePelvisFrom{ 0.0f };
-	glm::quat m_PiecePelvisTurnFrom{ 1.0f, 0.0f, 0.0f, 0.0f };
-	glm::vec3 m_PieceFootFrom[2] = {}, m_PieceHold[2] = {};
-	glm::quat m_PieceFootTurnFrom[2] = { glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f) };
-	float m_PieceFootStartT[2] = { 0.0f, 0.0f }, m_PieceFootCorrect[2] = { 1.0f, 1.0f };
-	bool m_PieceHolding[2] = { false, false };
-	glm::quat m_PieceSpineFrom{ 1.0f, 0.0f, 0.0f, 0.0f }, m_PieceNeckFrom{ 1.0f, 0.0f, 0.0f, 0.0f };
-	glm::quat m_PieceShoulderFrom[2] = { glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f) };
-	float m_PieceElbowFrom[2] = { 0.0f, 0.0f };
-	bool m_PieceStood = false;         // a piece left him standing: its stance stands until he moves
-	bool m_HandoffPending = false;     // a piece just ended: the walk's next hips start from its
-	glm::vec3 m_HandoffOffset{ 0.0f };
-	glm::quat m_HandoffTurn{ 1.0f, 0.0f, 0.0f, 0.0f };
-	float m_HandoffClock = 1e9f, m_HandoffTime = 0.35f;
-	float m_PinLift[2] = { 0.0f, 0.0f };
-	float m_HipCone = glm::radians(45.0f);
-	bool m_DriveFeet = true;              // off: the old motor-only feet, for comparing
-	int m_PinTears = 0;                   // pins let go because the leg could not reach
-	float m_PinTwist = glm::radians(0.0f);   // the hip twists 25 and the ankle 15; at 35 the knee took the rest, backwards
-	float m_MaxHeelLift = glm::radians(45.0f);
-	float m_MaxToeLift = glm::radians(25.0f);
-	float m_LandingToeUp = glm::radians(12.0f);   // the swing foot arrives heel first
-	float m_PreSwingHeel = glm::radians(40.0f);   // the heel's rise by toe-off (a walker's foot is at 56, measured)
-	float m_HeelRise[2] = { 0.0f, 0.0f };
-	glm::vec3 m_FootTarget[2] = {};
 	glm::quat m_ThighRestLocal[2] = { glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f) };
-	float m_StanceTime[2] = { 1.0f, 1.0f };
 	float m_FootGround[2] = { 0.0f, 0.0f };
 	bool m_StumbleGathering = false;
 	float m_StumbleStance = 0.22f;
@@ -9341,50 +7325,12 @@ protected:
 	// Momentum. Braking is quicker than acceleration, which is true of people
 	// and stops the character feeling like it is on ice.
 	float m_Speed = 0.0f;
-	float m_SpeedResponse = 6.0f;     // rad/s: the speed's spring
 	float m_SpeedRate = 0.0f;
 	float m_TurnRate = 4.0f;          // radians a second
-	float m_PelvisTurn = glm::radians(7.0f);      // the hips' turn with the stride, either way, walking
-	float m_RunPelvisTurn = glm::radians(11.0f);  // and running
-	float m_ChestCounter = 1.1f;      // the chest's turn against the hips, as a share of theirs (9 / 8, measured)
-	float m_RunChestCounter = 1.35f;  // running (15 / 11)
-	float m_HipTurn = 0.0f;           // this step's
 	float m_HeadLeadShare = 0.6f;     // the head turns ahead into a turn by this share of what is left of it
 	float m_HeadLeadMax = glm::radians(45.0f);
 	float m_HeadLead = 0.0f;
-	float m_BankShare = 0.45f;        // of atan(v w / g), leaning into a turn
-	float m_Bank = 0.0f;
-	float m_TurnRateNow = 0.0f;       // rad/s the facing turned this step
-	float m_SpotTurn = 1.75f;         // on the spot, the turn rate times this (it tails off with speed)
-	float m_TurnBrake = 1.8f;         // the speed's spring stiffer by this, braking to turn back
-	float m_MaxBrake = 8.0f;          // m/s^2, the most the walk ever slows him by
-	float m_TurnBrakeSpeed = 2.4f;    // m/s: turning back faster than this, he brakes first (PlanBrake)
-	float m_TurnBrakeDecel = 11.0f;   // m/s^2 at its peak, a mean of 0.75 g: firmer than the dodge's, as it is meant
-	float m_RunTurnAngle = glm::radians(60.0f);   // the run eases off while the wish is further round than this
-	float m_ReverseAngle = glm::radians(120.0f);   // a wish further round than this is a turn back, its side chosen once
-	float m_TurnSign = 0.0f;          // that choice: +1, -1, or 0 for none
-	float m_TurnAcross = 0.04f;       // m a planted foot keeps on its own side of him, turning back
-	float m_ReverseFree = glm::radians(150.0f);   // past this either way round is as quick, and the feet choose
-	float m_TurnWanted = 0.0f;        // rad/s the hips want to turn this step, before the feet have their say
 	float m_TurnToGo = 0.0f;          // rad still to turn
-	float m_StepTurn = glm::radians(100.0f);   // turned per step at most, which sets a turn's cadence (a person turns round in two or three steps, measured)
-	float m_TurnLead = glm::radians(95.0f);    // how far the hips may turn past a planted foot
-	float m_TurnSoft = glm::radians(30.0f);    // and they slow over this much before it
-	float m_SettleYaw = glm::radians(25.0f);   // a foot turned further than this from him gets a step
-	float m_SettleReach = 0.12f;      // m, and one this far from where it stands (stopped)
-	float m_SettleStepTime = 0.30f;   // s a step, at slowest, turning or settling
-	float m_StepDemand = 0.0f;        // rad/s the phase is being asked for by a turn or a settle
-	float m_PhaseRate = 0.0f;         // rad/s the phase went at last step
-	bool m_TurnStartFromRest = true;
-	float m_PhaseEase = 20.0f;        // rad/s^2: how fast a step in the air may slow
-	float m_TravelYaw = 0.0f;         // the way his speed carries him (his facing, but for a turn back)
-	float m_TravelTurnRate = 8.0f;    // rad/s it comes back round to the facing at
-	float m_PlantYaw[2] = { 0.0f, 0.0f };     // the yaw each planted foot was put down for
-	float m_LandingYaw[2] = { 0.0f, 0.0f };   // and the one a swinging foot is going to be
-	float m_SwingBehind = 0.40f;      // m a swinging foot may trail its hip, at most
-	float m_FootPass = 0.10f;         // m between the feet, across, while a swing passes the planted one
-	float m_WalkNarrow = 0.6f;        // the feet's spacing walking, at full stride, over standing's: 12 cm (a walker's is 6, a runner's 13, measured; his was 19)
-	float m_FootPassAlong = 0.30f;    // m along, within which the two count as level
 	glm::vec3 m_RootAnchor{ 0.0f };
 
 	// Weight.
@@ -9402,10 +7348,6 @@ protected:
 	// which is roughly what a person does. It was 0.10, giving 17.6 deg at a
 	// run -- too much even before it was pointing the wrong way.
 	float m_LeanAmount = 0.07f;
-	float m_LeanFromAccel = 1.0f;     // 1.0 means exactly atan(a/g)
-	float m_LeanAccel = 0.0f;
-	float m_LeanAccelRate = 12.0f;    // how fast the smoothed acceleration follows
-	float m_LastSpeed = 0.0f;
 	float m_LeanForward = 0.45f;
 	float m_LeanBack = 0.20f;         // braking leans back, but not as far
 	float m_LeanPelvisShare = 0.45f;  // the rest is spine, so it bends
@@ -9416,20 +7358,12 @@ protected:
 	// StandClearance is how far the pelvis rides above whatever it is standing
 	// on, taken from the pose the rig was built in rather than typed in.
 	float m_StandClearance = 1.09f;
-	float m_StandTarget = 0.0f;
-	float m_StandRate = 0.0f;
-	float m_StandSmoothing = 0.08f;  // s
-	float m_StandResponse = 12.0f;   // rad/s
 	float m_MaxStepUp = 0.35f;
 	float m_StepUp = 0.0f;           // 0 flat, 1 the tallest step worth lifting for
-	float m_ClimbKnee = 1.1f;        // extra knee bend at a full step
 
 	// Feet.
-	float m_Climb[2] = { 0.0f, 0.0f };  // per leg: how much higher its next foothold is
 	glm::vec3 m_Planted[2] = {};      // where each foot is pinned while it carries
 	glm::vec3 m_SwingFrom[2] = {};
-	glm::vec3 m_SwingTo[2] = {};
-	bool m_Swinging[2] = { false, false };
 	glm::vec3 m_HipLocal[2] = {};     // hip joint in the pelvis's own frame
 	glm::vec3 m_ShoulderLocal[2] = {};
 	float m_UpperArmLength = 0.35f;
@@ -9447,15 +7381,9 @@ protected:
 	enum class Air { Grounded, Crouching, Pushing, Flying };
 	Air m_Air = Air::Grounded;
 	bool m_WantsJump = false;
-	float m_AirTimer = 0.0f;
-	float m_JumpVelocity = 0.0f;
-	float m_JumpOffset = 0.0f;        // height above the stand height
 	float m_JumpHeight = 0.55f;       // apex, and it is exactly v^2/2g
 	float m_JumpCrouchTime = 0.18f;   // eased: at 0.12 the descent peaked at 6 d / T^2 = 58 m/s^2
 	float m_JumpCrouchDepth = 0.14f;
-	float m_LandTimer = 0.0f;
-	float m_LandSpeed = 0.0f;         // m/s the hips landed at, absorbing
-	float m_LandClock = 0.0f;
 	float m_LandAbsorb = 0.12f;       // s: tau of the landing's give
 
 	// The body and its gait (see Proportions, GaitPresets).
@@ -9490,35 +7418,22 @@ protected:
 	float m_GlanceYaw = 0.0f, m_GlancePitch = 0.0f, m_GlanceTilt = 0.0f;
 	float m_HeadYaw = 0.0f, m_HeadPitch = 0.0f, m_HeadTilt = 0.0f;
 	float m_IdleRoll = 0.0f;           // radians the hips tilt with the weight shift
-	float m_IdleArm[2] = { 0.0f, 0.0f };
-	uint32_t m_StepCount[2] = { 0, 0 };
-	glm::vec2 m_StepJitter[2] = {};   // this step's landing offset: along, across
 	GS::PhysicsWorld3D::JointHandle m_NeckJoint = {};
 	glm::quat m_NeckRest = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 	std::vector<std::pair<glm::vec3, glm::quat>> m_BuildPose;   // each body, relative to the feet
 	float m_LandTime = 0.18f;
-	float m_TuckFraction = 0.72f;     // how far the tucked leg reaches down
 	bool m_JumpPending = false;       // pressed, waiting for a foot to push off
 	float m_JumpWait = 0.0f;          // seconds a press has waited for a move ahead to come in reach
-	int m_JumpLead = -1;              // which leg swings through in front, -1 for a hop
-	float m_JumpGateSpeed = 0.5f;     // below this it is a standing hop, no waiting
-	float m_JumpGateWindow = 0.10f;   // how soon after a plant counts as "on it"
 	float m_JumpLegSplit = 0.34f;     // fore-aft separation of the feet at full speed
 	float m_JumpLegSplitReach = 0.16f;
 	float m_RunSpeed = 4.0f;
 	float m_RunStride = 2.4f;         // m per cycle: 3.3 steps/s at 4 m/s
 	float m_RunBlend = 0.0f;
-	float m_RunBlendRate = 0.0f;
-	float m_RunBlendResponse = 5.0f;
 	float m_WalkDuty = 0.62f;         // fraction of its cycle a foot is down
-	float m_RunDuty = 0.30f;
 	float m_Duty = 0.62f;
 	float m_MaxFootReach = 0.32f;     // how far ahead a foot may land
 	float m_ArmSwing = 0.17f;         // radians at full stride, either way: 10 degrees (it was 24, and a person's is 9)
 	float m_ElbowBend = 0.84f;        // radians at the forward swing, walking; three quarters of it at the back
-	float m_RunArmSwing = 4.0f;       // running, the walk's swing times this
-	float m_RunArmBack = 0.20f;       // and held this far back, radians
-	float m_RunElbowBend = 2.6f;      // running, the walk's elbow times this: 2.2 rad asked, about 90 degrees got (the forearm hangs back)
 	float m_AnkleHeight = 0.10f;      // ankle joint above the sole
 
 	// How far the sole follows the ground it is landing on, and the most it
@@ -9574,7 +7489,6 @@ protected:
 	float m_WallRunFrom = 0.0f;   // how far off the wall the run began: a corner's
 	bool m_SpeedVault = false;
 	int m_WallRunCorners = 0;
-	uint32_t m_HangCorners = 0;
 	glm::vec3 m_HangCornerOut{ 0.0f };
 	float m_HangCornerTimer = -1.0f;
 	// Hanging (UpdateHang): the edge under the hands' middle, its top.
@@ -9583,7 +7497,6 @@ protected:
 	float m_ClimbHangAt = -1.0f;      // in a climb, when the jump reaches the hang
 	glm::vec3 m_HangHand[2] = {}, m_HangHandFrom[2] = {}, m_HangHandTo[2] = {};
 	float m_HangHandTimer[2] = { -1.0f, -1.0f };
-	uint32_t m_Chained = 0;            // moves started straight from another, for the panel
 	float m_FloorLift = 0.0f;          // m the carried hips have given way upwards to a limb wedged on the floor (UpdateMove)
 	float m_LastDt = 1.0f / 60.0f;     // the last step's length, for what is handed on to the next
 	// Dodging (TryDodge).
@@ -9607,10 +7520,6 @@ protected:
 	bool m_HipsHeavy = false;
 	float m_PelvisInverseMass = 0.0f;
 	glm::mat3 m_PelvisInverseInertia = glm::mat3(1.0f);
-	// The walk's arms easing in from a get-up or a move (SwingArms).
-	float m_ArmEase = 1.0f;
-	glm::quat m_ArmFrom[2] = { glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f) };
-	float m_ElbowFrom[2] = { 0.0f, 0.0f };
 	float m_HipConeBuilt[2] = { 0.0f, 0.0f }, m_SpineCone = 0.0f;
 	float m_SpineTwistBuilt[2] = { 0.0f, 0.0f };   // lower, upper
 	bool m_NaturalGetUp = true;       // the choreographed one (PlanGetUp); off, the old three-waypoint lift
@@ -9631,7 +7540,6 @@ protected:
 	float m_GetUpRoll = 0.6f;
 	float m_GetUpFootLift = 0.18f;         // extra roll when face up
 	float m_GetUpGround = 0.0f;
-	bool m_GetUpFaceDown = true;
 	bool m_GetUpSupine = false;
 	float m_GetUpTimer = 0.0f;
 	glm::vec3 m_GetUpFrom{ 0.0f };
@@ -9648,8 +7556,6 @@ protected:
 	// drop 0.051 m for that to be reachable, and both of those are human
 	// numbers too. It was 0.45, which is a 0.22 m step at seven a second.
 	float m_StrideLength = 1.2f;
-	float m_StrideAngle = 0.45f;
-	float m_GaitKnee = 0.9f;
 
 	BalanceState m_Balance;
 	bool m_BalanceEnabled = true;
@@ -9669,10 +7575,11 @@ protected:
 	void DriveLocomotion(float dt);
 	void LocoEnter();
 	void LocoRelease();
+	void PoseFromMotors(float dt);
+	void LocoPlace(const glm::vec3* P, const glm::quat* Q, float dt, bool pelvisToo, float enterTime, bool colliding);
 	std::shared_ptr<const LocoClips> m_LocoClips;
 	std::shared_ptr<LocoState> m_Loco;
 	std::function<void(Humanoid&)> m_LocoBaker;
-	bool m_LocoOn = true;        // `locomotion new`; off, the walk (DriveWalk) as before
 	bool m_LocoPosed = false;    // his limbs kinematic, placed by the locomotion
 	bool m_LocoEntering = true;  // taken back from whatever had him: start from his bodies
 };
