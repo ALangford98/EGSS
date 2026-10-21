@@ -24,6 +24,7 @@
 //   5. Archive with the system tar.
 #include <GS.h>
 
+#include "MotionClip.h"
 #include "ProjectManifest.h"
 #include "ScriptEngine.h"
 
@@ -488,6 +489,24 @@ namespace GameExporter {
 			if (ec)
 			{
 				result.Error = "could not copy the game UI's fonts: " + ec.message();
+				return result;
+			}
+		}
+
+		// The recordings humanoids walk and run from (Runtime/Locomotion.h),
+		// at the path they are asked for under the game's root, where
+		// GS::Assets::Resolve finds them. 1 MB; without them a humanoid falls
+		// back to the old physical walk.
+		{
+			fs::path from = fs::path("assets") / "mocap" / "cmu";
+			fs::path to = package / "game" / "assets" / "mocap" / "cmu";
+			fs::create_directories(to, ec);
+			for (const std::string& file : LocomotionClipFiles())
+				if (!ec)
+					fs::copy_file(from / file, to / file, fs::copy_options::overwrite_existing, ec);
+			if (ec)
+			{
+				result.Error = "could not copy the locomotion clips: " + ec.message();
 				return result;
 			}
 		}

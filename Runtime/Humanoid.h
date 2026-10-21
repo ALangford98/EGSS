@@ -33,8 +33,15 @@
 #include <functional>
 #include <cmath>
 #include <string>
+#include <memory>
 #include <unordered_map>
 #include <vector>
+
+// The controller that drives him while he is someone's to move, posed from
+// recordings (Runtime/Locomotion.h, included at the end of this file; its
+// state lives there so this file does not grow by another thousand lines).
+struct LocoClips;
+struct LocoState;
 
 class Humanoid
 {
@@ -123,6 +130,8 @@ public:
 		}
 		if (m_PieceBaker)
 			m_PieceBaker(*this);
+		if (m_LocoBaker)
+			m_LocoBaker(*this);
 	}
 
 	// Standing again at `origin`, facing `yaw`, in the pose it was built
@@ -219,8 +228,32 @@ public:
 			m_PieceBaker(*this);
 	}
 	bool InSetPiece() const { return m_Piece >= 0; }
+
+	// --- Locomotion: walking, running and turning, posed from recordings ---
+	//
+	// While he is someone's to move, where he goes is decided by the keys
+	// alone and his body is posed to match, every step, from recorded strides
+	// (Runtime/Locomotion.h) -- not simulated, so nothing lags and nothing
+	// sinks. Physics has him again the moment anything hits him, and for
+	// every move, fall and get-up. With no clips (or `locomotion old`), the
+	// walk below (DriveWalk) does it, as it did before.
+	void SetLocomotionClips(std::shared_ptr<const LocoClips> clips);
+	void SetLocomotionBaker(std::function<void(Humanoid&)> bake)
+	{
+		m_LocoBaker = std::move(bake);
+		if (m_LocoBaker)
+			m_LocoBaker(*this);
+	}
+	void SetLocomotion(bool on) { m_LocoOn = on; }
+	bool GetLocomotion() const { return m_LocoOn; }
+	bool LocomotionReady() const { return m_LocoClips != nullptr; }
+	bool LocomotionActive() const { return m_LocoOn && m_LocoClips != nullptr; }
+	// His limbs placed by the locomotion this step, rather than simulated.
+	bool LocomotionPosed() const { return m_LocoPosed; }
 	const char* SetPieceName() const { return m_Piece >= 0 ? m_Pieces[(size_t)m_Piece].Name.c_str() : ""; }
 	GS::PhysicsWorld3D::BodyHandle PelvisBody() const { return m_Pelvis; }
+	// His foot box, for laying a recorded floor under his own soles.
+	glm::vec3 FootHalfExtents() const { return m_World.GetBody(m_Foot[0]).HalfExtents; }
 	GS::PhysicsWorld3D::BodyHandle HeadBody() const { return m_Head; }
 	bool IsFoot(GS::PhysicsWorld3D::BodyHandle handle) const { return handle == m_Foot[0] || handle == m_Foot[1]; }
 
@@ -399,7 +432,16 @@ public:
 			}
 
 			if (m_Mode == Mode::Controlled)
-				DriveWalk(dt);
+			{
+				if (LocomotionActive())
+					DriveLocomotion(dt);
+				else
+				{
+					if (m_LocoPosed)
+						LocoRelease();
+					DriveWalk(dt);
+				}
+			}
 		}
 		else if (m_Mode == Mode::Stumbling)
 		{
@@ -1663,6 +1705,7 @@ public:
 	{
 		if (m_Mode == Mode::Ragdoll)
 			return;
+		LocoRelease();
 
 		// A stumble that is lost goes down with its arms out: falling from
 		// one, he knows which way he is going.
@@ -1750,6 +1793,9 @@ public:
 	void GoControlled()
 	{
 		m_Mode = Mode::Controlled;
+		// Whatever had him -- a move, a stumble, a get-up, a respawn -- the
+		// locomotion picks him up from where his bodies are now.
+		m_LocoEntering = true;
 		m_RagdollTimer = 0.0f;
 		m_GetUpTimer = 0.0f;
 
@@ -1809,6 +1855,7 @@ public:
 	{
 		if (m_Mode == Mode::GettingUp)
 			return;
+		LocoRelease();
 
 		// Only from the ground. Asked in mid-air -- G pressed while falling
 		// off the demo's platform -- it used to hoist the body to standing
@@ -3098,7 +3145,13 @@ public:
 	{
 		bool jump = m_WantsJump || m_JumpPending;
 		bool running = m_Control.Enabled && m_Control.Run && m_RunBlend > 0.5f;
-		if (!jump || !running || m_Air != Air::Grounded || m_Speed < 0.5f * m_RunSpeed)
+		// From the jump's crouch too: the press that missed the wall on its
+		// first step (a sense ray a hair short) found it on the next, by when
+		// the crouch had begun and the wall run was refused -- the press went
+		// off as a hop alongside the wall, which is most of why wall runs
+		// "hardly work".
+		bool onGround = m_Air == Air::Grounded || m_Air == Air::Crouching;
+		if (!jump || !running || !onGround || m_Speed < 0.5f * m_RunSpeed)
 			return false;
 		SideWall w = SenseSideWall(forward);
 		if (!w.Found)
@@ -3307,6 +3360,7 @@ public:
 		m_MoveExit = exitSpeed;
 		m_TrackIndex = 0;
 		m_FloorLift = 0.0f;
+		LocoRelease();
 		m_Mode = Mode::Moving;
 		m_Blocked = glm::vec3(0.0f);
 		m_WantsJump = false;
@@ -3376,7 +3430,9 @@ public:
 		for (float side : { -1.0f, 1.0f })
 		{
 			glm::vec3 at(pelvis.Position.x, g + 1.1f * s, pelvis.Position.z);
-			GS::PhysicsWorld3D::RayHit hit = m_World.Raycast(at, R * side, 1.0f * s, m_CharacterBodies);
+			// A metre and a quarter: at 1.0 a wall a stride's sway off was
+			// found on one step and not the next.
+			GS::PhysicsWorld3D::RayHit hit = m_World.Raycast(at, R * side, 1.25f * s, m_CharacterBodies);
 			if (!fixedWall(hit) || std::fabs(glm::dot(hit.Normal, F)) > 0.5f)
 				continue;
 			// Taller than he is.
@@ -5763,6 +5819,23 @@ public:
 			// the top they were on.
 			if (m_MoveGrace > 0.0f && !Loose(other))
 				continue;
+			// Posed, his limbs are immovable, so a crate he walks into takes
+			// the whole of the contact and the impulse it reports is his own
+			// walking. What tells the two apart is what the contact did to
+			// the other body: impulse over its mass is the velocity it was
+			// given. Walked into, a crate is given about his own speed; a
+			// cannonball bouncing off him, twice its own. (Asked which way
+			// the thing was moving instead, every hit was missed: contacts
+			// are read a step after they were solved, and by then the ball
+			// has already rebounded and is going away.)
+			if (m_LocoPosed && Loose(other))
+			{
+				const GS::RigidBody3D& thing = m_World.GetBody(other);
+				float given = thing.InverseMass * contact.TotalNormalImpulse();
+				float walking = glm::length(m_World.GetBody(mine).Velocity);
+				if (given < 1.5f * walking + 2.0f)
+					continue;
+			}
 
 			float force = contact.TotalNormalImpulse() / dt;
 			if (force > worst)
@@ -5964,7 +6037,14 @@ public:
 	// 20 Ns felled him (64 of 64), so a run stays kinematic.
 	bool StumblesPhysically() const
 	{
-		return m_PhysicalStumble && m_Speed <= m_StumbleEntrySpeed && m_Air == Air::Grounded;
+		// From the locomotion, standing only: walking on, he keeps his feet
+		// and the keys and is pushed off his line (the stagger, as a run's
+		// hit always was). The physical stumble was tuned against the old
+		// walk's body; handed a posed walk mid-stride it ran away forward --
+		// 2.3 m/s, the trunk 25 degrees over -- and a 20 N s nudge felled him
+		// 12 times in 32, where the old walk caught all 32.
+		float entry = LocomotionActive() ? 0.3f : m_StumbleEntrySpeed;
+		return m_PhysicalStumble && m_Speed <= entry && m_Air == Air::Grounded;
 	}
 
 	// The crouch -- how far below standing the centre of mass is wanted --
@@ -5986,6 +6066,7 @@ public:
 
 	void BeginStumble()
 	{
+		LocoRelease();
 		UnpinFeet();
 		m_Mode = Mode::Stumbling;
 		m_StumbleTimer = 0.0f;
@@ -9583,4 +9664,17 @@ protected:
 
 	bool m_MotorsEnabled = true;
 	float m_MotorStiffness = 14.0f;
+
+	// Locomotion (Runtime/Locomotion.h).
+	void DriveLocomotion(float dt);
+	void LocoEnter();
+	void LocoRelease();
+	std::shared_ptr<const LocoClips> m_LocoClips;
+	std::shared_ptr<LocoState> m_Loco;
+	std::function<void(Humanoid&)> m_LocoBaker;
+	bool m_LocoOn = true;        // `locomotion new`; off, the walk (DriveWalk) as before
+	bool m_LocoPosed = false;    // his limbs kinematic, placed by the locomotion
+	bool m_LocoEntering = true;  // taken back from whatever had him: start from his bodies
 };
+
+#include "Locomotion.h"

@@ -34,9 +34,11 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -367,6 +369,19 @@ public:
 		PoseFrom(p, position, orientation);
 	}
 
+	// The recording's moment as Humanoid::LocoPose holds it: where his hip
+	// centre is (scaled to him, its floor at 0) and the turn D of each of his
+	// bodies from how it was built -- what PoseFrom places them with. Turns,
+	// unlike positions, can be blended without stretching a limb.
+	void Turns(const MotionClip::Pose& p, glm::vec3& root, glm::quat* D) const
+	{
+		root = p.Root * m_Scale;
+		root.y -= m_Ground;
+		D[0] = p.RootTurn;
+		for (int i = 1; i < BodyCount; i++)
+			D[i] = glm::normalize(p.Turn[(size_t)m_Link[i].Bone] * m_Link[i].Align);
+	}
+
 	void PoseFrom(const MotionClip::Pose& p, glm::vec3* position, glm::quat* orientation) const
 	{
 		glm::vec3 root = p.Root * m_Scale;
@@ -600,5 +615,301 @@ inline void AttachSetPieces(Humanoid& rig, const std::string& folder = "assets/m
 		if (const MotionClip* c = clip("69.asf", "69_01.amc"))
 			pieces.push_back(BakeSetPiece(*c, r, Kind::Start, "set off", 0.8f, 2.3f, 0.8f, 0.8f, 'r', 'l'));
 		r.SetSetPieces(std::move(pieces));
+	});
+}
+
+// --- Locomotion: the strides his walk, jog and run are posed from ----------
+//
+// One stride of a recording -- two steps, from his side 1's foot landing to
+// its landing again -- chosen where the person goes straightest, nearest the
+// middle of the clip, and made into a loop he can play at any speed
+// (Runtime/Locomotion.h). Each frame is his hip centre and every body's turn
+// in a frame that travels with the stride at its average velocity, facing +z:
+// what is left is the stride itself -- the bob, the sway, the legs going
+// back under him -- and the controller supplies the travel. The ends of a
+// stride never meet exactly (a person does not repeat), so what separates
+// them is spread over the stride, a little each frame, rather than left as
+// a jump at the seam.
+// The lowest corner of either of his feet, posed so. ClipRetarget's floor
+// assumes a sole 5 cm under the foot's centre and a foot held flat; his box
+// and a recorded foot's tilt put the corners lower than that, by enough
+// that every recorded pose had his soles under the ground -- pushed up out
+// of it, the knees took up the difference, and he stood with them bent 41
+// degrees (5 in the old walk), too crouched to step when shoved.
+inline float LowestSole(const Humanoid& rig, const glm::vec3* P, const glm::quat* Q)
+{
+	const glm::vec3 he = rig.FootHalfExtents();
+	float lowest = 1e9f;
+	for (int side = 0; side < 2; side++)
+		for (float x : { -he.x, he.x })
+			for (float z : { -he.z, he.z })
+				lowest = std::min(lowest, (P[7 + side] + Q[7 + side] * glm::vec3(x, -he.y, z)).y);
+	return lowest;
+}
+
+inline bool BakeLocoCycle(const MotionClip& clip, const Humanoid& rig, const std::string& name, LocoCycle& out)
+{
+	ClipRetarget map;
+	if (!map.Setup(clip, rig))
+		return false;
+	const float rate = clip.FrameRate();
+	const int n = clip.Frames();
+	if (n < 60)
+		return false;
+	const glm::vec3 up(0.0f, 1.0f, 0.0f);
+	std::vector<glm::vec3> root((size_t)n), foot[2] = { std::vector<glm::vec3>((size_t)n), std::vector<glm::vec3>((size_t)n) };
+	std::vector<std::array<glm::quat, LocoPose::Bodies>> turns((size_t)n);
+	std::vector<float> facing((size_t)n), sole((size_t)n);
+	MotionClip::Pose p;
+	glm::vec3 P[ClipRetarget::BodyCount];
+	glm::quat Q[ClipRetarget::BodyCount];
+	for (int k = 0; k < n; k++)
+	{
+		clip.Evaluate((float)k / rate, p);
+		map.Turns(p, root[(size_t)k], turns[(size_t)k].data());
+		map.PoseFrom(p, P, Q);
+		foot[0][(size_t)k] = P[7];
+		foot[1][(size_t)k] = P[8];
+		sole[(size_t)k] = LowestSole(rig, P, Q);
+		glm::vec3 f = glm::normalize(glm::slerp(Q[0], Q[1], 0.5f)) * glm::vec3(0.0f, 0.0f, 1.0f);
+		float yaw = std::atan2(f.x, f.z);
+		if (k > 0)
+		{
+			float d = yaw - facing[(size_t)k - 1];
+			while (d > glm::pi<float>()) d -= glm::two_pi<float>();
+			while (d < -glm::pi<float>()) d += glm::two_pi<float>();
+			yaw = facing[(size_t)k - 1] + d;
+		}
+		facing[(size_t)k] = yaw;
+	}
+
+	// Each foot down or swinging: down while low and slow, up again once it
+	// rises or speeds away. Not BakeSetPiece's walking rule alone (under
+	// 0.35 m/s down, past 0.8 up): a running foot rolls from heel to toe at
+	// more than that while it is planted, and was down for 8% of a stride
+	// where a runner's stance is about a third. So the bar rises with the
+	// clip's pace, and the foot must be near the floor as well.
+	float lowest = 1e9f;
+	for (int k = 0; k < n; k++)
+		lowest = std::min(lowest, std::min(foot[0][(size_t)k].y, foot[1][(size_t)k].y));
+	glm::vec3 overall = root[(size_t)n - 1] - root[0];
+	overall.y = 0.0f;
+	const float pace = glm::length(overall) / clip.Duration();
+	const float scale = rig.GetProportions().Scale;
+	const float slow = std::max(0.35f, 0.3f * pace), fast = std::max(0.8f, 0.6f * pace);
+	std::vector<uint8_t> down[2] = { std::vector<uint8_t>((size_t)n, 1), std::vector<uint8_t>((size_t)n, 1) };
+	for (int side = 0; side < 2; side++)
+	{
+		bool isDown = true;
+		for (int k = 1; k < n; k++)
+		{
+			float speed = glm::length(foot[side][(size_t)k] - foot[side][(size_t)k - 1]) * rate;
+			float height = foot[side][(size_t)k].y - lowest;
+			if (isDown && (speed > fast || height > 0.07f * scale)) isDown = false;
+			else if (!isDown && speed < slow && height < 0.04f * scale) isDown = true;
+			down[side][(size_t)k] = isDown ? 1 : 0;
+		}
+		down[side][0] = down[side][1];
+	}
+	std::vector<int> lands;
+	for (int k = 1; k < n; k++)
+		if (down[1][(size_t)k] && !down[1][(size_t)k - 1])
+			lands.push_back(k);
+
+	int a = -1, b = -1;
+	float best = 1e9f;
+	for (size_t i = 0; i + 1 < lands.size(); i++)
+	{
+		int s = lands[i], e = lands[i + 1];
+		float T = (float)(e - s) / rate;
+		if (T < 0.4f || T > 2.0f)
+			continue;
+		int otherLands = 0;
+		for (int k = s + 1; k < e; k++)
+			otherLands += down[0][(size_t)k] && !down[0][(size_t)k - 1];
+		if (otherLands != 1)
+			continue;
+		float turn = std::fabs(facing[(size_t)e] - facing[(size_t)s]);
+		if (turn > glm::radians(10.0f))
+			continue;
+		float score = 4.0f * turn + std::fabs(0.5f * (float)(s + e) - 0.5f * (float)n) / (float)n;
+		if (score < best)
+		{
+			best = score;
+			a = s;
+			b = e;
+		}
+	}
+	if (a < 0)
+		return false;
+
+	const int N = b - a;
+	glm::vec3 travel = root[(size_t)b] - root[(size_t)a];
+	travel.y = 0.0f;
+	glm::quat R = glm::angleAxis(-std::atan2(travel.x, travel.z), up);
+	std::vector<LocoPose> frames((size_t)N + 1);
+	for (int k = 0; k <= N; k++)
+	{
+		float t = (float)k / (float)N;
+		glm::vec3 v = root[(size_t)(a + k)] - root[(size_t)a] - travel * t;
+		v.y = 0.0f;
+		LocoPose& f = frames[(size_t)k];
+		f.Root = R * v;
+		f.Root.y = root[(size_t)(a + k)].y;
+		for (int i = 0; i < LocoPose::Bodies; i++)
+			f.D[i] = glm::normalize(R * turns[(size_t)(a + k)][(size_t)i]);
+	}
+	glm::vec3 rootError = frames[(size_t)N].Root - frames[0].Root;
+	glm::quat turnError[LocoPose::Bodies];
+	for (int i = 0; i < LocoPose::Bodies; i++)
+	{
+		glm::quat e = glm::normalize(frames[0].D[i] * glm::conjugate(frames[(size_t)N].D[i]));
+		turnError[i] = e.w < 0.0f ? -e : e;
+	}
+	// His soles on the floor: the stride's lowest soles, his own foot boxes
+	// at their corners, at a low percentile over the stride, laid on 0.
+	std::vector<float> lows(sole.begin() + a, sole.begin() + b);
+	std::sort(lows.begin(), lows.end());
+	const float lift = -lows[lows.size() / 10];
+	for (LocoPose& f : frames)
+		f.Root.y += lift;
+
+	out = LocoCycle{};
+	out.Name = name;
+	out.Duration = (float)N / rate;
+	out.Speed = glm::length(travel) / out.Duration;
+	out.Frames.resize((size_t)N);
+	out.Down.resize((size_t)N * 2);
+	for (int k = 0; k < N; k++)
+	{
+		float t = (float)k / (float)N;
+		LocoPose f = frames[(size_t)k];
+		f.Root -= rootError * t;
+		for (int i = 0; i < LocoPose::Bodies; i++)
+			f.D[i] = glm::normalize(glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), turnError[i], t) * f.D[i]);
+		out.Frames[(size_t)k] = f;
+		out.Down[(size_t)k * 2 + 0] = down[0][(size_t)(a + k)];
+		out.Down[(size_t)k * 2 + 1] = down[1][(size_t)(a + k)];
+	}
+	return true;
+}
+
+// Standing: a stretch of a recording where the person stands, averaged so
+// the pose is still, turned to face +z, its hips over the origin.
+inline bool BakeLocoIdle(const MotionClip& clip, const Humanoid& rig, float from, float to, LocoPose& out)
+{
+	ClipRetarget map;
+	if (!map.Setup(clip, rig))
+		return false;
+	MotionClip::Pose p;
+	glm::vec3 P[ClipRetarget::BodyCount];
+	glm::quat Q[ClipRetarget::BodyCount];
+	LocoPose sum;
+	float yaw = 0.0f, soleSum = 0.0f;
+	int count = 0;
+	for (float t = from; t <= std::min(to, clip.Duration()); t += 1.0f / 30.0f)
+	{
+		clip.Evaluate(t, p);
+		LocoPose f;
+		map.Turns(p, f.Root, f.D);
+		map.PoseFrom(p, P, Q);
+		soleSum += LowestSole(rig, P, Q);
+		glm::vec3 fwd = glm::normalize(glm::slerp(Q[0], Q[1], 0.5f)) * glm::vec3(0.0f, 0.0f, 1.0f);
+		yaw += std::atan2(fwd.x, fwd.z);
+		count++;
+		float w = 1.0f / (float)count;
+		sum.Root = glm::mix(sum.Root, f.Root, w);
+		for (int i = 0; i < LocoPose::Bodies; i++)
+		{
+			glm::quat q = glm::dot(sum.D[i], f.D[i]) < 0.0f ? -f.D[i] : f.D[i];
+			sum.D[i] = count == 1 ? q : glm::normalize(glm::slerp(sum.D[i], q, w));
+		}
+	}
+	if (count == 0)
+		return false;
+	glm::quat R = glm::angleAxis(-yaw / (float)count, glm::vec3(0.0f, 1.0f, 0.0f));
+	out.Root = glm::vec3(0.0f, sum.Root.y - soleSum / (float)count, 0.0f);
+	for (int i = 0; i < LocoPose::Bodies; i++)
+		out.D[i] = glm::normalize(R * sum.D[i]);
+
+	// Standing up straight. Both people recorded standing (69_01's start,
+	// 16_33's end) come out on him with their knees bent 24-35 degrees --
+	// how they stood, or what retargeting does to a leg that is nearly
+	// straight; either way he stood in a crouch, with no reach left to step
+	// with when shoved (17 of 32 shoves caught at 80 N s, against the old
+	// walk's 26). Each knee is opened to 5 degrees about its own hinge, the
+	// feet kept as they were turned, and the hips raised by what the legs
+	// gained, so the soles stay on the floor.
+	const Humanoid::RestSkeleton& rest = rig.Rest();
+	float gained = 0.0f;
+	for (int side = 0; side < 2; side++)
+	{
+		glm::vec3 thigh = rest.Knee[side] - rest.Hip[side], shin = rest.Ankle[side] - rest.Knee[side];
+		glm::vec3 a = glm::normalize(out.D[3 + side] * thigh);
+		glm::vec3 b = glm::normalize(out.D[5 + side] * shin);
+		float bend = std::acos(glm::clamp(glm::dot(a, b), -1.0f, 1.0f));
+		glm::vec3 axis = glm::cross(a, b);
+		if (glm::length(axis) < 1e-5f || bend < glm::radians(5.0f))
+			continue;
+		glm::vec3 before = out.D[5 + side] * shin;
+		out.D[5 + side] = glm::normalize(glm::angleAxis(-(bend - glm::radians(5.0f)), glm::normalize(axis)) * out.D[5 + side]);
+		gained += (before.y - (out.D[5 + side] * shin).y) * 0.5f;
+	}
+	out.Root.y += gained;
+	return true;
+}
+
+// What a humanoid's locomotion is posed from, baked for its body whenever it
+// is built (Humanoid::SetLocomotionBaker), from the CMU clips in
+// assets/mocap/cmu: the walk (16_15), the jog (16_35) and the run (16_55),
+// one stride each, and standing from the half second before 69_01 sets off.
+// None if the clips are not there, and the humanoid walks as it did before
+// (DriveWalk).
+//
+// Found through GS::Assets, so an exported game finds the copies its export
+// put beside it (GameExporter, LocomotionClipFiles) and the editor finds its
+// own beside the executable.
+inline const std::vector<std::string>& LocomotionClipFiles()
+{
+	static const std::vector<std::string> files = { "16.asf", "16_15.amc", "16_35.amc", "16_55.amc", "69.asf", "69_01.amc", "clips.txt" };
+	return files;
+}
+
+inline void AttachLocomotion(Humanoid& rig, const std::string& folder = "assets/mocap/cmu")
+{
+	rig.SetLocomotionBaker([folder](Humanoid& r)
+	{
+		static std::map<std::string, MotionClip> cache;
+		auto clip = [&](const char* skeleton, const char* frames) -> const MotionClip*
+		{
+			std::string key = std::string(skeleton) + "/" + frames;
+			auto it = cache.find(key);
+			if (it == cache.end())
+			{
+				MotionClip c;
+				if (!c.Load(GS::Assets::Resolve(folder + "/" + skeleton), GS::Assets::Resolve(folder + "/" + frames)))
+					return nullptr;
+				it = cache.emplace(key, std::move(c)).first;
+			}
+			return &it->second;
+		};
+		auto clips = std::make_shared<LocoClips>();
+		const struct { const char* Name; const char* Frames; } strides[] = {
+			{ "walk", "16_15.amc" }, { "jog", "16_35.amc" }, { "run", "16_55.amc" } };
+		for (const auto& s : strides)
+		{
+			LocoCycle cycle;
+			if (const MotionClip* c = clip("16.asf", s.Frames); c && BakeLocoCycle(*c, r, s.Name, cycle))
+				clips->Cycles.push_back(std::move(cycle));
+		}
+		const MotionClip* standing = clip("69.asf", "69_01.amc");
+		if (clips->Cycles.empty() || !standing || !BakeLocoIdle(*standing, r, 0.1f, 0.6f, clips->Idle))
+		{
+			r.SetLocomotionClips(nullptr);
+			return;
+		}
+		std::sort(clips->Cycles.begin(), clips->Cycles.end(),
+			[](const LocoCycle& x, const LocoCycle& y) { return x.Speed < y.Speed; });
+		r.SetLocomotionClips(clips);
 	});
 }

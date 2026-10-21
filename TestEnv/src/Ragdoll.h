@@ -38,6 +38,7 @@
 
 #include "Demo.h"
 #include "Humanoid.h"
+#include "MotionClip.h"
 
 class Ragdoll : public DemoLayer, public Humanoid
 {
@@ -109,6 +110,9 @@ public:
 		BuildGround();
 		BuildRagdoll(SpawnPoint());
 		SetSeed((uint32_t)m_DemoSeed);
+		// Moved as games move him: walking, running and turning posed from
+		// recordings (Runtime/Locomotion.h). Baked for the body just built.
+		AttachLocomotion(*this);
 		m_CameraFocus = m_World.GetBody(m_Torso).Position;
 	}
 
