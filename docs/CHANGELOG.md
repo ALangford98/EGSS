@@ -7,6 +7,180 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-21 (locomotion: the keys decide, the body is posed from recordings)
+
+The owner, on playing the 10-18 humanoid: turning shuffles where a person
+would pivot, the legs still clip heavily, running looks comically like speed
+walking, wall runs hardly work -- "it actually seems like a massive
+regression". And the direction: tone the realism back, make it snappy; GTA /
+Red Dead for how he moves and is hit, Assassin's Creed for parkour's flow; the
+player's control first. Agreed in brainstorming: three projects --
+locomotion, then parkour on it, then hits -- this is the first, approach A
+(clip-posed) of three offered.
+
+**Why it had regressed.** Three sessions running had optimised for "moves
+like a measured person", each at the cost of response: turns stepped round
+the feet (a step per 100 degrees standing, the hips waiting for the feet),
+turning round from a walk played a recording (1.32 s, from 0.90), and the
+run's arm swing was cut 24 -> 10 degrees and the feet narrowed to match
+measured angles -- the arm pump and flight are what make a run read as one.
+The clipping was structural: driven hips and feet, physical thighs and shins
+between them lagging into the floor, and the 10-16 sweep (force-driven hips,
+leg motors, solver iterations) had shown nothing tuned it out.
+
+**What changed** (`Runtime/Locomotion.h`, new; baked by `BakeLocoCycle`,
+`BakeLocoIdle` and `AttachLocomotion` in `MotionClip.h`):
+
+- *The keys decide where he goes*, at once, on curves chosen to feel good:
+  speed up at 11 m/s^2, down at 13; facing turns at 11 rad/s standing, 7 at a
+  run; asked to go back the way he came at speed he plants and pivots (brakes
+  at 20 m/s^2 while he swings round, then builds again). Nothing waits on the
+  legs.
+- *The body is posed, not simulated.* While he is someone's to move, all
+  thirteen bodies are kinematic, placed every step: positions through their
+  velocity (so a crate he walks into is pushed by something moving), turns
+  set outright. Nothing can lag into the ground.
+- *From recordings.* One stride each of the CMU walk (16_15, 1.20 m/s), jog
+  (16_35, 2.99) and run (16_55, 4.49), cut where the person goes straightest
+  and made into loops (the seam's mismatch spread over the stride, worst
+  frame-to-frame step after it ~1 cm), and standing from 69_01. Blended by
+  speed at a shared phase (every stride starts with the same foot landing),
+  each played at the pace that keeps a planted foot still. Turns, not
+  positions, are blended, and the bodies built from them, so no limb
+  stretches.
+- *Feet* are pinned where they land and let go when the stride lifts them;
+  a swing that touches down before the stride says lands there. Standing and
+  turning, a foot left behind steps across (0.2 s, one at a time) while the
+  other pivots on its ball; a pivot turns him about the planted foot, not his
+  middle. Every sole corner is kept on the ground under it, a swinging foot
+  clears what is under its toes and 20 cm past them (eased, never further
+  down than a step), and the legs are solved to reach (two-link IK), the hips
+  lowered where they cannot.
+- *On top*: lean into acceleration and into the path's curve, on springs;
+  the head looks into turns; breath, glances and weight shifts from `Idle`;
+  the walking styles' arm swing, posture, head, crouch and stance width.
+- *Walls* are felt a fifth of a second out at three heights and three
+  angles and slid along; a riser whose next step up goes further is a stair.
+- *A jump* is 0.08 s of crouch and a 0.04 s push (an eighth of a second to
+  the air); edges are walked off into a fall (parkour's drop and hang where
+  they apply), landings absorbed.
+- *Physics has him back* the moment it should: `LocoRelease` at the top of
+  `BeginStumble`, `GoRagdoll`, `BeginMove` and `BeginGetUp` makes the limbs
+  dynamic, moving as they were, each joint's motor holding the pose it is in;
+  `GoControlled` hands back and the pose is blended in over 0.25 s from
+  wherever the bodies lie.
+- `locomotion old|new` in the terminal switches every humanoid back to the
+  physical walk (`DriveWalk`, set pieces and all), which is also what walks
+  when the clips are missing. The Ragdoll demo (and Map Building) now use the
+  new locomotion too. Exports carry the six clip files (1 MB) under
+  `game/assets/mocap/cmu`, found through `GS::Assets::Resolve`.
+
+**Measured** (a temporary driver: a world with a floor, five 17 cm stairs to
+a landing, a wall, parkour pieces; the same scripted keys through old and
+new; limb depth by true overlap with the scenery; speeds over a quarter
+second, since a posed pelvis carries the stride's own surge, so times to a
+speed read about 0.12 s late):
+
+| | old walk | new |
+| --- | --- | --- |
+| to 90% of a run | 1.27 s | 0.45 s |
+| to 90% of a walk | 0.73 s | 0.22 s |
+| still after letting go, run | 1.35 s | 0.98 s |
+| turned back from a walk / run | 1.30 / 1.27 s | 0.30 / 0.33 s |
+| going back at 1 m/s, from a run | 1.47 s | 0.42 s |
+| standing 90 / 180 | 0.32 / 0.72 s | 0.13 / 0.32 s |
+| limb depth, flat ground | 3-5 cm | 0 |
+| into the stairs, walking | -- | 1.5 cm at worst |
+| planted foot sliding, straight walk / run (p95) | -- | 0 / 0 |
+| shove caught, standing 80 N s (32 trials) | 26 | 26 |
+| shove caught, walking 20 / 40 N s | 32 / 28 | 32 / 32 |
+| shove caught, walking 150 / 300 N s | 3 / 0 | 16 / 0 |
+| vault, climb, wall run | fire | fire, posed again 0.02 s after |
+
+Captured from the side in the Ragdoll demo (`--lockstep --capture-every`):
+the run reads as a run -- forward lean, heel kicked up, knee drive, elbows
+at about 90 -- the walk rolls heel to toe, a turn back plants and swings
+round in about 0.2 s, and he walks and runs over Map Building's hills.
+
+**What the measuring found, in order:**
+
+- *Leaning about the feet carries the hips.* Following a key's step change
+  in acceleration within 0.08 s, the lean threw the hips 10-20 cm in a step
+  (480 m/s^2); rate-limited it still started at full rate. On a spring now.
+  Banking on the facing's turn rate rather than the path's threw them 30 cm
+  turning on the spot.
+- *A running foot was "down" 8% of a stride*: the walk's contact rule (under
+  0.35 m/s) fails a foot rolling heel to toe at 4 m/s. The bar now rises with
+  the clip's pace and the foot must be near the floor; 20-28%.
+- *The toes met the stairs* before the ankle knew they were there (11 cm in);
+  a foot then reached half a metre up in one step for a riser the look-ahead
+  found, and leapt for the height it had left when landing off the landing.
+  Toe and corner probes, an eased clearance, a reach-down limit.
+- *The third riser up read as a wall* from a run's reach and stopped him at
+  the foot of the stairs; asking the ground on top of what was hit instead
+  let him through a tall wall (from inside it the ground below is the floor).
+  The recede test (a step higher, the ray goes further) tells them apart.
+- *He stood with his knees bent 41 degrees* (the old walk 5): ClipRetarget's
+  floor assumes a sole 5 cm under the foot's centre and his corners go
+  lower, and both people recorded standing come out at 24-35 degrees anyway.
+  The floor is now laid under his own foot box, and standing's knees opened
+  to 5 degrees with the hips raised to match. Standing shoves caught: 12 ->
+  26 of 32.
+- *A physical stumble from a posed walk ran away forward* -- 2.3 m/s, the
+  trunk 25 degrees over -- and never handed back: a 20 N s nudge felled him
+  12 times in 32. The stumble was tuned against the old walk's body. From the
+  new locomotion a hit while walking is the kinematic stagger a run's always
+  was (he keeps his feet and the keys); standing is still physical.
+  Physical hits on a posed walk belong to the hits project.
+- *Eight trials at the edge of what he can catch said "better than the old
+  walk"; thirty-two said half as good.* Shove survival is now always 32.
+- *Wall runs*: the press that missed the wall on its first step (a side ray
+  a hair short) found it on the next, by when the jump's crouch had begun and
+  a wall run was refused -- the press went off as a hop. Allowed from the
+  crouch, and the side ray reaches 1.25 m. Part of why they "hardly work";
+  the rest is the parkour project.
+
+**The owner tried it** (same day) and found three things:
+
+- *Cannonballs bounced off him; nothing knocked him down.* My own filter: a
+  posed limb is immovable, so a crate he walks into reports his walking as an
+  impulse, and the filter counted a loose body only if it was moving towards
+  him. But contacts are read a step after they are solved, and by then a ball
+  has already rebounded off the immovable limb and is going away -- every hit
+  was filtered out. Now the test is what the contact gave the other body
+  (impulse over its mass): a crate walked into gets about his speed, a
+  rebounding ball twice its own. 12 kg at 16 m/s fells him 8/8 standing, 6/8
+  walking, 3/8 running (old walk 8, 8, 2); a 1 kg ball at 6 m/s and a 20 kg
+  crate walked or run into do not.
+- *The walk read as feminine* -- knees close, hips moving. Measured from the
+  front over a steady walk: the recording's knees were not knocked in (4-5 cm
+  wider than the feet, as the old walk's), but its pelvis rolled +-5.7
+  degrees against the old walk's 2.9, and swung and swayed with it. The hips
+  now follow the body: at Femininity 0 (the default) about half the recorded
+  roll, swing and sway (+-2.6 degrees), at 1 all of it, the walking style's
+  Hip Roll and Sway on top; the walking stance at least 18 cm (masculine) to
+  12 cm (feminine) between the feet; the knees nudged out a little for a
+  masculine body (pushed out at 0.35 of the leg he went bow-legged, knees 36
+  cm apart over feet 15 cm apart; at 0.08, 23 over 15).
+- *Climbing up things still throws the legs about.* Filmed both ways from
+  the side: the climb is the old move, unchanged, and does the same thing on
+  the old walk -- pulled up chest first, over the top on his front, legs
+  kicking behind. The parkour project's first job.
+
+**Still open:**
+
+- Physical stumbles from a walk (above); the hits project.
+- The climb (above); the parkour project.
+- A few frames of a free foot skimming the ground at heel strike (p95 1-6
+  m/s over 8-30 samples a scenario); hips at up to 100 m/s^2 landing a
+  running jump or taking 17 cm stairs at a run.
+- `DriveWalk` and the set pieces stay as the clip-less fallback and
+  `locomotion old`; whether to delete them is the owner's.
+- One stride per speed, so every walk is the same walk; no start, stop or
+  pivot recordings yet (the pivot is procedural).
+- Parkour on the new base (forgiving triggers, AC-style chaining, the wall
+  run rebuilt) is the next project.
+
 ### 2026-10-18 (set pieces: turning round, stopping and setting off played from recordings)
 
 "Go ahead": the next step agreed, recorded clips driving the set pieces.

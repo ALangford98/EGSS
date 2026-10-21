@@ -84,6 +84,32 @@ its own spec, in dependency order -- see
 
 ## Humanoid: RAGE / Euphoria-style physical character (owner priority, 2026-10-14)
 
+**Direction changed 2026-10-21.** The owner: tone the realism back, make it
+snappy -- GTA / Red Dead for moving and being hit, Assassin's Creed for
+parkour's flow, the player's control first. Three projects, in order:
+
+1. ~~**Locomotion**~~ -- done 2026-10-21 (`Runtime/Locomotion.h`; changelog,
+   same date): the keys decide, the body is posed from CMU strides,
+   kinematic while controlled. `locomotion old` keeps the physical walk.
+   Open: more than one stride per speed; start, stop and pivot recordings
+   (the pivot is procedural); a free foot skimming at heel strike.
+2. **Parkour on the new base** -- next, the climb first (it pulls him up
+   chest first and over on his front, legs kicking -- the owner's report,
+   2026-10-21, and the same on the old walk). Forgiving triggers and generous
+   snapping, moves chaining as AC's do, the wall run rebuilt (two fixes
+   landed: a wall run may start from the jump's crouch, the side ray reaches
+   1.25 m). Mixamo has the clips CMU lacks (vaults, wall runs; royalty-free
+   in a game, needs an FBX reader).
+3. **Hits** -- a physical stumble from a posed walk ran away forward and
+   never handed back, so walking hits are the kinematic stagger for now;
+   standing ones stay physical. Make walking hits physical again from the
+   posed body.
+
+Decision for the owner: delete the old walk (`DriveWalk`, `PlaceFeet`, the
+set pieces, turn-stepping) or keep it as the clip-less fallback.
+
+Everything below predates the change and describes the physical walk.
+
 The owner wants GTA IV-style ragdoll behaviour: balancing, stumbling,
 catching yourself, falling realistically. Where it stands:
 

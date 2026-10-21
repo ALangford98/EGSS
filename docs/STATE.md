@@ -26,17 +26,25 @@ work between sessions and sometimes while a reply is being written, so any git
 state you did not just observe is stale — including the branch name below.
 ## Where the work is
 
-The live area is **the editor** — `TestEnv/src/Editor*.h`, `PlayMode.h`,
-`ScriptEngine.h` (GSS runtime and the GSS-to-C++ transpiler) — not
-`TerrainLab.h`, which was the live area before the editor pivot of 2026-09-07
-and is now quiet. `editor_roadmap.md` is the todo list: its wishlist is
-ordered easiest to hardest, and each item says what it still needs from the
-owner before it can be scoped.
+The live area is **the humanoid** — `Runtime/Humanoid.h`, `Locomotion.h`,
+`MotionClip.h`, tried in the Parkour, CannonRun and Ragdoll demos. Since
+2026-10-21 the direction is snappy and player-first (GTA / Red Dead for
+moving and being hit, Assassin's Creed for parkour) in three projects:
+locomotion (landed), parkour on it (next), hits. `editor_roadmap.md`'s
+"Humanoid" section holds the detail; its wishlist is still the editor's
+todo list, ordered easiest to hardest.
 
 Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-21 — Locomotion**: the keys decide where he goes (a run in
+  0.45 s, turned back in 0.33), the body is posed every step from CMU walk,
+  jog and run strides (`Runtime/Locomotion.h`) -- no limb into the ground,
+  a real run, pivots not shuffles; physics has him back for hits, moves and
+  falls. `locomotion old` for the physical walk. Walking hits are the
+  stagger now; standing ones still physical. The hips follow the body's
+  Femininity and the walking style.
 - **2026-10-18 — Set pieces from recordings**: turning round, stopping
   and setting off are a person's (CMU 47_01, 16_33, 69_01) played on his
   bodies, hips and feet carried, feet held where they land, joined where
@@ -194,7 +202,11 @@ write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
 ## What is next
 
-Nothing is in progress. Open threads, none started:
+Nothing is in progress. Next agreed: **parkour on the new locomotion** --
+forgiving triggers, AC-style chaining, the wall run rebuilt -- then **hits**
+(physical stumbles from a posed walk). Whether to delete the old walk
+(`DriveWalk`, set pieces) is the owner's call. Older open threads, none
+started:
 
 - **GSS transpiler follow-ups** — `.find` (needs an optional/no-match type),
   a collection-returning native call such as `scene.findAllByTag`, array

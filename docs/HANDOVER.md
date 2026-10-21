@@ -401,6 +401,9 @@ the trap that explains it. **Do not edit by hand.**
 - A work budget has to count the work, not the successes
 - A budget whose atom is expensive needs a fractional allowance
 - Anything the physics reads is part of the simulation, however much it looks like scenery
+- A kinematic body makes no contact with a static one
+- A retargeted recording is on his bones, not on his feet
+- Eight trials at the edge of what he can catch is not a measurement
 - A near plane derived from the height above the *mean radius* clips the ground you are standing on
 - `shape * Amplitude - bias` is skewed, so ±A/2 does not bound it
 - A bit mask does not overflow, it wraps
@@ -1130,6 +1133,25 @@ the trap that explains it. **Do not edit by hand.**
   somebody is playing and wrong under `--lockstep`, where how much got done by a
   given step has to be a property of the step. `Application::IsLockstep()` is
   what such a budget asks.
+
+- **A kinematic body makes no contact with a static one.** `TestPair` skips
+  any pair the solver cannot move, so a posed (kinematic) foot standing on the
+  floor reports no contact: no support polygon, `FootTouching` false. Anything
+  that judges balance from contacts sees no feet until they are dynamic again
+  and have settled a hair into the ground -- the first stumble steps out of
+  the locomotion run with support 0.
+
+- **A retargeted recording is on his bones, not on his feet.** ClipRetarget
+  lays the clip's floor 5 cm under the foot's centre, assuming a flat foot;
+  his box's corners go lower, and every pose came out with his soles under
+  the ground. Pushed out of it, the knees took up the difference: he stood
+  bent 41 degrees and could not step when shoved. Lay a recorded floor under
+  his own sole corners (`LowestSole`), and check a standing pose's knees.
+
+- **Eight trials at the edge of what he can catch is not a measurement.**
+  Shove survival near the limit is a coin with a bias: 8 trials said the new
+  locomotion caught more than the old walk, 32 said half as many. Thirty-two,
+  from four sides, at varied moments of the stride.
 
 - **A near plane derived from the height above the *mean radius* clips the
   ground you are standing on.** `near = 0.4 * altitude` is fine while the relief
