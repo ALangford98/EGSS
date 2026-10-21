@@ -1054,7 +1054,7 @@ def prune(keep, delete):
 
 # --- The trap index ---------------------------------------------------------
 #
-# `docs/HANDOVER.md` carries 257 traps and costs ~31k tokens to read whole,
+# `docs/HANDOVER.md` carries 258 traps and costs ~31k tokens to read whole,
 # which is why sessions skipped it and hit the same walls again. The index is
 # one line per trap -- ~4k tokens -- so the list can be *scanned* cheaply and
 # the body reached with `grep -n` for the phrase.

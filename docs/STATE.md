@@ -38,6 +38,11 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-21 — Old walk deleted; parkour posed**: `DriveWalk`, the set
+  pieces and turn-stepping gone (Humanoid.h 9,586 -> 7,570 lines). Knees
+  over the toes, arms with follow-through, a jump that crouches, tucks and
+  leaps, walking off an edge falls. Every move built from its joint targets
+  and steered (no flailing); the climb is a mantle and a step up.
 - **2026-10-21 — Locomotion**: the keys decide where he goes (a run in
   0.45 s, turned back in 0.33), the body is posed every step from CMU walk,
   jog and run strides (`Runtime/Locomotion.h`) -- no limb into the ground,
@@ -202,11 +207,10 @@ write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
 ## What is next
 
-Nothing is in progress. Next agreed: **parkour on the new locomotion** --
-forgiving triggers, AC-style chaining, the wall run rebuilt -- then **hits**
-(physical stumbles from a posed walk). Whether to delete the old walk
-(`DriveWalk`, set pieces) is the owner's call. Older open threads, none
-started:
+In progress: **parkour on the new locomotion** -- moves posed, the climb
+reworked; next the wall run's steps, forgiving triggers, AC-style chaining.
+Then **hits** (physical stumbles from a posed walk). Older open threads,
+none started:
 
 - **GSS transpiler follow-ups** — `.find` (needs an optional/no-match type),
   a collection-returning native call such as `scene.findAllByTag`, array

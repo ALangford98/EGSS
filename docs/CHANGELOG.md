@@ -7,6 +7,93 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-21, evening (the old walk gone; knees, arms, a real jump, falling off edges; parkour posed, the climb a mantle)
+
+The owner, after trying the locomotion: delete the old walk, start the
+parkour; the walk is good but a knee sometimes moves on its own and the arms
+look robotic; the run looks like RDR2; walking off a ledge should be a fall,
+not a neat drop onto the feet; the jump triggers at once but the legs barely
+move -- find a middle ground. "Build what you can without pausing."
+
+**The old walk is deleted.** `DriveWalk` and everything only it used --
+the set pieces (`SetPiece`, `TryPiece`, `UpdatePiece`, `BakeSetPiece`,
+`AttachSetPieces`), turn-stepping (`TurnRoom`, `ReverseTurnSign`,
+`FeetAllowTurn`, `TurnStepRate`), `PlaceFeet`, `DriveFoot`,
+`SolveDrivenLeg`, `SwingArms`, `EaseArmsFromHere`, the swing curves -- and 98
+members nothing read any more, found by a call graph from those seeds (uses
+counted across every source with comments stripped) and a read/write count
+per member. `Humanoid.h` 9,586 -> 7,570 lines. `locomotion old|new` is gone;
+without the clips he stands as built and steps to keep up. The physical
+stumble is for standing only now (`m_StumbleEntrySpeed` 2.0 -> 0.3), as the
+locomotion already had it. One thing the scripted deletion broke and the
+compiler did not see: removing `m_IdleArm`'s line left `Idle()`'s loop with
+no body, so it looped over the `return` (trap added).
+
+**A knee that moved on its own.** Measured as how fast the direction the
+knee points in turns (from the true joint positions, when the knee is more
+than 2 cm off the hip-ankle line): 138 degrees in one step, setting off from
+standing. The bend direction came from the recording's knee measured off the
+line to where the foot *is* -- moved out by the stance, held where it landed
+-- so a widened stance read as the knee pointing in. Now from the recorded
+leg's own line, blended with "over the toes" when the recorded knee is
+barely bent. Worst turn 8,277 -> 773 deg/s (now at a sudden 90-degree
+turn), p99 1,080 -> 396.
+
+**Arms with follow-through.** Copied frame for frame, upper arm and forearm
+moved as one stiff piece. Each now follows its recorded turn on a spring a
+little short of critically damped (upper arm 14 rad/s, forearm 10), in his
+own frame.
+
+**The jump.** Standing: 0.11 s down 13 cm with the arms back, a push with
+the arms thrown forward and up, the knees tucked 30 cm in the air, the legs
+reaching for the ground in the last 0.15 s. Running: out of the stride (8 cm
+over 0.05 s) into a leap -- the recorded run's own moment of flight with the
+legs split furthest, the foot coming through leading -- and back into the
+stride from that moment of it on landing. The first landing out of a leap
+snapped to the take-off stride (a body at 42 m/s for a step); now the
+stride resumes at the leap's phase and any air pose is blended out over
+0.15 s. Landings absorb 75% of the landing speed (60% stopped the hips at
+148 m/s^2); a 5 cm running dip pushed at 109 m/s^2 (v^2/2d).
+
+**Walking off an edge falls.** Walked (or drifted) off a drop of more than
+half a metre, he has stepped onto nothing: physics has him (`GoRagdoll`
+with `brace`, the arms reaching as a lost stumble's do) and games stand him
+up after 2 s. Run off it and it is a leap, with parkour's drop and roll for
+a big one. Walking off something tall no longer lowers him into a hang
+(`PlanDropToHang` is kept for parkour to ask for). Filmed off a 1.2 m
+ledge: the trailing foot catches the edge, he pitches over and lands face
+first, arms out.
+
+**Parkour, posed** (`PoseFromMotors`, `LocoPlace`). The moves were written
+as joint targets for motors; motors lag, overshoot and lose to whatever the
+limb hits -- the climb's legs kicked about on the old walk and the new. Now,
+in any move, the body is built from those targets down the joint tree (a
+ball joint's target is the child's turn in its parent's frame, a hinge's its
+angle about the axis from how it was built) and each limb steered onto it --
+dynamic, its velocity and spin set to arrive (gravity paid in advance),
+capped at 8 m/s and 30 rad/s, and left to its motor and the contact while it
+touches the scenery (and 0.15 s after). Placed outright, limbs went 10-25 cm
+into what they met; steered regardless, 16-19. Into the scenery now (old
+motor-driven moves in brackets): vault 7.3 cm (8.7), climb 6.2 (5.6), wall
+run 7.8 (5.4), step on 2.3 (2.7), roll off 3 m 6.5 (6.3), sidestep 1.4
+(2.5), dive 7.0 (5.3); every move finishes on his feet and hands back to
+the locomotion. (A sphere in the test's overlap check was sampled as a
+capsule half a metre long; the 48 cm "head in the floor" was that.)
+
+**The climb is a mantle and a step up.** It pressed over with the trunk 55
+degrees forward and the hips 17 cm above the edge -- lying across the top.
+Now: pull until the chest is at the edge, press up on straight arms with the
+trunk at 25 degrees and the lead knee already coming up the wall, the lead
+foot onto the edge beside the hands into a squat (hips 38 cm up, 20
+degrees), stand; about a quarter quicker.
+
+**Still open:**
+
+- The wall run's legs hold a tucked pose rather than stepping along the
+  wall -- the next parkour job, then the vault's look and the rest.
+- The hang is only reached from a ledge too high to mantle.
+- Physical hits on a posed walk (the hits project).
+
 ### 2026-10-21 (locomotion: the keys decide, the body is posed from recordings)
 
 The owner, on playing the 10-18 humanoid: turning shuffles where a person

@@ -401,6 +401,7 @@ the trap that explains it. **Do not edit by hand.**
 - A work budget has to count the work, not the successes
 - A budget whose atom is expensive needs a fractional allowance
 - Anything the physics reads is part of the simulation, however much it looks like scenery
+- A statement deleted by script can leave a brace-less loop holding the next line
 - A kinematic body makes no contact with a static one
 - A retargeted recording is on his bones, not on his feet
 - Eight trials at the edge of what he can catch is not a measurement
@@ -1133,6 +1134,14 @@ the trap that explains it. **Do not edit by hand.**
   somebody is playing and wrong under `--lockstep`, where how much got done by a
   given step has to be a property of the step. `Application::IsLockstep()` is
   what such a budget asks.
+
+- **A statement deleted by script can leave a brace-less loop holding the
+  next line.** Removing dead members' assignments line by line took
+  `m_IdleArm[side] = ...;` out from under `for (int side = 0; side < 2;
+  side++)`, and the loop then held `return idle * 0.035f * shift;` -- it
+  compiled, and returned on its first pass by luck. After any scripted
+  deletion, list every removed line whose previous line is an `if`, `for`,
+  `while` or `else` without a brace.
 
 - **A kinematic body makes no contact with a static one.** `TestPair` skips
   any pair the solver cannot move, so a posed (kinematic) foot standing on the

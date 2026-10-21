@@ -93,9 +93,11 @@ parkour's flow, the player's control first. Three projects, in order:
    kinematic while controlled. `locomotion old` keeps the physical walk.
    Open: more than one stride per speed; start, stop and pivot recordings
    (the pivot is procedural); a free foot skimming at heel strike.
-2. **Parkour on the new base** -- next, the climb first (it pulls him up
-   chest first and over on his front, legs kicking -- the owner's report,
-   2026-10-21, and the same on the old walk). Forgiving triggers and generous
+2. **Parkour on the new base** -- under way. Done 2026-10-21: every move
+   built from its joint targets and steered (no flailing, no more into the
+   scenery than the motors had); the climb a mantle and a step up. Next:
+   the wall run's legs stepping along the wall (they hold a tucked pose),
+   the vault's look, the hang from a mantle-height ledge. Forgiving triggers and generous
    snapping, moves chaining as AC's do, the wall run rebuilt (two fixes
    landed: a wall run may start from the jump's crouch, the side ray reaches
    1.25 m). Mixamo has the clips CMU lacks (vaults, wall runs; royalty-free
@@ -105,8 +107,8 @@ parkour's flow, the player's control first. Three projects, in order:
    standing ones stay physical. Make walking hits physical again from the
    posed body.
 
-Decision for the owner: delete the old walk (`DriveWalk`, `PlaceFeet`, the
-set pieces, turn-stepping) or keep it as the clip-less fallback.
+The old walk (`DriveWalk`, `PlaceFeet`, the set pieces, turn-stepping) was
+deleted on the owner's word, 2026-10-21.
 
 Everything below predates the change and describes the physical walk.
 
