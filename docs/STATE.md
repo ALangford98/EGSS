@@ -39,6 +39,9 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-22 — Fullscreen scene, staff aimed**: F11 (View >
+  Fullscreen scene) gives the game the whole screen; a captured pointer no
+  longer reaches the panels; the staff's bolts go at the crosshair.
 - **2026-10-22 — Loadouts**: sword and shield, longsword, katana,
   greatsword, twin daggers, staff (bolts, nova, barrier), fists -- keys
   1-7, each its own combo, guard lunge, running attack, guard and parry,

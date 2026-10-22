@@ -7,6 +7,47 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-22, night (the staff aimed by hand; the scene full screen; the pointer the game's while it has it)
+
+The owner: the staff should be aimed manually; and a way to fullscreen the
+scene view to test properly -- playing, the mouse kept going over to the
+toolbar and clicking other demos.
+
+**Why the clicks landed.** The cannon run captures the pointer (hidden,
+unbounded) for mouse look -- and the GLFW backend of ImGui still feeds
+ImGui that hidden cursor's position, on purpose (its changelog, 2023-07-18:
+"user may set ImGuiConfigFlags_NoMouse if desired"). So turning walked an
+invisible cursor across the panels, and the left button, now the attack,
+clicked whatever demo it was over. `ImGuiLayer::Begin` now sets NoMouse for
+as long as the window has the pointer captured, and clears it after (probed:
+captured 1, NoMouse 1, in a run with the panels up).
+
+**The scene full screen** (F11, or View > Fullscreen scene). Hides every
+panel -- `--hide-ui`, at any moment now (`Application::SetUIHidden`) --
+gives the demo the whole window, and puts the window over the monitor it is
+on (`Window::SetFullscreen`, GLFW's `glfwSetWindowMonitor`, back to where
+and how big it was after). A reminder of F11 shows for three seconds. One
+thing that had to change with it: the demo's rect is only ever recomputed
+by the editor shell's OnImGuiRender, which does not run while the panels
+are hidden, so hidden mid-session the demo kept drawing into the old pane
+(a comment there said it reverted; nothing reset it). The toggle resets it.
+Probed: 717x516 in the pane, the whole window once hidden, the game's own
+HUD still drawn. Not probed: the window going over the monitor -- doing
+that unattended takes over the screen of whoever is at the machine.
+
+**The staff aimed by hand.** Its bolts went at a ball coming at him or the
+nearest cannon ahead. Now a crosshair sits in the middle of the picture and
+a bolt flies from the staff's head to whatever is under it: the camera's
+ray into the world (`Control::AimPoint`, from the follow camera, his own
+bodies ignored), so the two cross at the point aimed at rather than running
+parallel a shoulder apart. With the staff he faces the camera's way, not
+what is coming. Worked out first: at the camera's default pitch (-15
+degrees, 4.9 m behind and 1.65 m up) the ray meets the floor 6.2 m ahead,
+short of a cannon at 14 m; 9 degrees higher (36 px of mouse) it meets the
+cannon. Measured: 6.21 m, five bolts and no damage; 13.70 m (the cannon's
+base), five bolts and the cannon wrecked. A bolt still shoots down a ball it
+passes within 30 cm of.
+
 ### 2026-10-22, evening (loadouts: seven weapons, each its own moveset)
 
 The owner: shield and short sword as the standard, plus a longsword, a
