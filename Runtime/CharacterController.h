@@ -22,6 +22,7 @@
 #include "Mannequin.h"
 
 #include <memory>
+#include <string>
 
 #include <cmath>
 #include <unordered_map>
@@ -632,6 +633,8 @@ private:
 				rig.RequestAttack();
 			if (m_SheathePressed)
 				rig.RequestSheathe();
+			if (m_LoadoutPressed >= 0)
+				rig.SetLoadout((Humanoid::Loadout)m_LoadoutPressed);
 			// A dodge the way the keys say, camera-relative as the walk is
 			// (forward (cos, sin) at the rig's yaw, right (-sin, cos)); with
 			// none held, the way the game suggests (SetDodgeAssist), or back.
@@ -713,6 +716,7 @@ private:
 		bool dodgeDown = false;
 		bool attackDown = false;
 		bool sheatheDown = false;
+		bool loadoutDown[7] = {};
 		m_FocusHeld = false;
 		m_GuardHeld = false;
 
@@ -732,6 +736,8 @@ private:
 			attackDown = armed && map.Down("attack") && mouseFree;
 			m_GuardHeld = armed && map.Down("block") && mouseFree;
 			sheatheDown = armed && map.Down("sheathe");
+			for (int i = 0; i < 7; i++)
+				loadoutDown[i] = armed && map.Down("loadout" + std::to_string(i + 1));
 			m_FocusHeld = map.Down("focus");
 
 			// The turn keys turn the camera, 90 degrees a second.
@@ -750,6 +756,13 @@ private:
 		m_AttackWasDown = attackDown;
 		m_SheathePressed = sheatheDown && !m_SheatheWasDown;
 		m_SheatheWasDown = sheatheDown;
+		m_LoadoutPressed = -1;
+		for (int i = 0; i < 7; i++)
+		{
+			if (loadoutDown[i] && !m_LoadoutWasDown[i])
+				m_LoadoutPressed = i;
+			m_LoadoutWasDown[i] = loadoutDown[i];
+		}
 
 		// Looking at what is coming, while it is held and there is
 		// something to look at: eased in over about a tenth of a second and
@@ -850,6 +863,8 @@ private:
 	bool m_DodgePressed = false, m_DodgeWasDown = false;
 	bool m_AttackPressed = false, m_AttackWasDown = false;
 	bool m_SheathePressed = false, m_SheatheWasDown = false;
+	int m_LoadoutPressed = -1;          // a loadout key pressed this step
+	bool m_LoadoutWasDown[7] = {};
 	bool m_GuardHeld = false;
 	glm::vec3 m_DodgeAssist{ 0.0f };
 	bool m_FocusHeld = false;

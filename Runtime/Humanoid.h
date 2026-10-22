@@ -43,6 +43,10 @@
 struct LocoClips;
 struct LocoState;
 
+// The weapons' movesets (Runtime/Armament.h).
+struct ArmamentKit;
+struct ArmamentStrike;
+
 class Humanoid
 {
 public:
@@ -72,7 +76,7 @@ public:
 		bool Enabled = true;
 		bool Forward = false, Back = false, Left = false, Right = false;
 		bool Run = false;
-		// Sword and shield (Runtime/Armament.h): the shield up while held,
+		// Weapons (Runtime/Armament.h): the guard up while held,
 		// and the way he guards and swings -- degrees, as Yaw is.
 		bool Guard = false;
 		float AimYaw = -90.0f;
@@ -86,26 +90,30 @@ public:
 	Control& GetControl() { return m_Control; }
 	void RequestJump() { m_WantsJump = true; }
 
-	// --- Sword and shield (Runtime/Armament.h) ----------------------------
+	// --- Weapons (Runtime/Armament.h) --------------------------------------
 	//
-	// A sword in his right hand, a round shield on his left forearm. Hold
-	// the guard (Control::Guard) and the shield comes up and he faces his
-	// aim, walking under it -- sideways, backpedalling, never running; press
-	// attack and he swings, forehand then backhand if pressed again --
-	// lunging instead from the guard (a step in behind the shield) or from a
-	// run (a long leaping thrust). What reaches him is asked of WardOff by
-	// whoever threw it: a ball meeting the shield is blocked (he is shoved
-	// back a little), one meeting it within ParryWindow of raising it is
-	// parried (glanced off at speed, no shove), and one met by the sword's
-	// cut is struck back. Sheathed -- the sword at his hip, the shield on his
-	// back -- he can do parkour; drawn he cannot (ParkourOn).
+	// A loadout -- sword and shield, longsword, katana, greatsword, twin
+	// daggers, a staff, or his fists -- each with its own moveset: a combo
+	// for presses of attack, a lunge from the guard, an attack from a run, and
+	// a guard of its own (a shield, a blade, crossed daggers, a barrier, his
+	// fists up). Holding the guard he faces his aim and walks under it --
+	// sideways, backpedalling, never running. What reaches him is asked of
+	// WardOff by whoever threw it: met by the guard it is blocked (he is
+	// shoved back by however much that guard lets through), met within the
+	// loadout's parry window of raising it it is parried (glanced away, or for
+	// some struck back), met by a strike it is struck back. A staff casts
+	// (TakeCasts: bolts, a nova) for the game to make real. Sheathed he can do
+	// parkour; drawn he cannot (ParkourOn) -- his fists need no sheathing.
+	enum class Loadout { SwordShield, Longsword, Katana, Greatsword, Daggers, Staff, Unarmed, Count };
 	void SetArmed(bool armed);
 	bool Armed() const { return m_Armed; }
+	void SetLoadout(Loadout loadout);
+	Loadout GetLoadout() const { return m_Loadout; }
+	static const char* LoadoutName(Loadout loadout);
 	void RequestAttack() { if (m_Armed) m_WantsAttack = true; }
 	void RequestSheathe() { if (m_Armed) m_WantsSheathe = true; }
-	// In his hands (not on the way to or from the hip and back).
+	// In his hands (not on the way to or from where they are carried).
 	bool Drawn() const { return m_Armed && m_Drawn && m_Stow < 0.0f; }
-	bool Lunging() const { return m_Armed && m_Lunge >= 0.0f; }
 	enum class Ward { None, Blocked, Parried, Struck };
 	struct WardResult
 	{
@@ -114,21 +122,26 @@ public:
 		glm::vec3 Point{ 0.0f };      // where it was met
 	};
 	WardResult WardOff(const glm::vec3& at, const glm::vec3& velocity, float radius, float mass, float dt);
-	// The cutting part of a swing, and which swing it is (to hit a thing once per swing).
-	bool SwordCutting() const
-	{
-		return m_Armed && ((m_Swing >= kSwingCutFrom && m_Swing <= kSwingCutTo) || (m_Lunge >= kLungeCutFrom && m_Lunge <= kLungeCutTo));
-	}
+	// The cutting part of a strike, which strike it is (to hit a thing once
+	// per strike), what it does to what it hits, and where its edges are:
+	// returns how many (two for both daggers at once).
+	bool SwordCutting() const;
 	uint32_t SwingId() const { return m_Swings; }
-	void SwordEdge(glm::vec3& hilt, glm::vec3& tip) const;
+	float StrikeDamage() const;
+	const char* StrikeName() const;
+	int StrikeEdges(glm::vec3 hilt[2], glm::vec3 tip[2]) const;
 	float GuardAmount() const { return m_Guard; }
-	// Where to draw them: the grip (+y up the blade) and the shield's middle
-	// (+y out of its face), from his forearms -- held, swinging or limp.
-	glm::mat4 SwordFrame() const;
-	glm::mat4 ShieldFrame() const;
-	// The scabbard at his left hip, where the sword goes (+y down the blade).
-	glm::mat4 ScabbardFrame() const { return StowedSwordFrame(); }
-	static constexpr float kSwordLength = 0.92f, kShieldRadius = 0.31f;
+	// What a staff has cast since last asked: a bolt from `At` along
+	// `Direction`, or a nova about `At`.
+	struct Cast { bool Nova = false; glm::vec3 At{ 0.0f }, Direction{ 0.0f }; float Damage = 0.0f; };
+	void TakeCasts(std::vector<Cast>& out) { out.insert(out.end(), m_Casts.begin(), m_Casts.end()); m_Casts.clear(); }
+	// Where to draw what he carries: each hand's weapon (+y up the blade, or
+	// out of a shield's face), from his forearms or where it is put away --
+	// held, striking or limp; the scabbards and sheaths; a staff's barrier.
+	glm::mat4 PropFrame(int hand) const;
+	int HolderCount() const;
+	glm::mat4 HolderFrame(int index) const;
+	bool BarrierFrame(glm::mat4& frame) const;
 
 	// The body to build: set before Spawn (it is what Spawn builds).
 	void SetPhysique(const GS::PhysiqueSettings& physique) { m_Physique = physique; }
@@ -7632,41 +7645,51 @@ protected:
 	bool m_LocoPosed = false;    // his limbs kinematic, placed by the locomotion
 	bool m_LocoEntering = true;  // taken back from whatever had him: start from his bodies
 
-	// --- sword and shield (Runtime/Armament.h) ---
-	static constexpr float kSwingCutFrom = 0.05f, kSwingCutTo = 0.24f, kSwingTime = 0.40f;
-	static constexpr float kLungeWindup = 0.08f, kLungeCutFrom = 0.09f, kLungeCutTo = 0.34f, kLungeReach = 0.32f, kLungeTime = 0.48f;
+	// --- weapons (Runtime/Armament.h) ---
 	static constexpr float kStowTime = 0.5f;
-	static constexpr float kParryWindow = 0.20f;
-	bool ParkourOn() const { return m_Parkour && !(m_Armed && (m_Drawn || m_Stow >= 0.0f)); }
-	glm::mat4 HandSwordFrame() const;
-	glm::mat4 HandShieldFrame() const;
-	glm::mat4 StowedSwordFrame() const;
-	glm::mat4 StowedShieldFrame() const;
+	bool ParkourOn() const;
+	const ArmamentKit& Kit() const;
+	const ArmamentStrike* CurrentStrike() const;
+	glm::mat4 HandFrame(int hand, const glm::vec3& forearmAt, const glm::quat& forearm) const;
+	glm::mat4 StowedFrame(int hand) const;
 	float StowAmount() const;
+	void BeginStrike(int slot, int index);
 	void UpdateArmament(float dt);
 	void PoseArmament(glm::vec3* P, glm::quat* Q, float dt);
 	void ArmTurns(int side, const glm::vec3& shoulder, const glm::vec3& wrist, const glm::vec3& pole,
 		glm::quat& upper, glm::quat& fore) const;
 	glm::vec3 RestWrist(int side) const;
+	// Speed, the run's flight for the legs, a whole-body spin and how low:
+	// what the strike asks of the locomotion this step.
+	bool StrikeSurge(float& speed) const;
+	float StrikeLeap() const;
+	float StrikeSpin() const;
+	float StrikeDip() const;
+	float GuardSpeed() const;      // of his walk, under the guard
 	bool m_Armed = false;
+	Loadout m_Loadout = Loadout::SwordShield;
+	int m_PendingLoadout = -1;      // to change to once what he holds is put away
 	bool m_WantsAttack = false;
-	float m_Guard = 0.0f;           // 0 the shield down, 1 up
+	float m_Guard = 0.0f;           // 0 the guard down, 1 up
 	float m_GuardHeld = -1.0f;      // s since the guard was raised, or -1 while it is not
-	float m_Swing = -1.0f;          // s into a swing, or -1
-	float m_SwingWay = 1.0f;        // 1 forehand (right to left), -1 backhand
-	bool m_SwingQueued = false;
+	int m_StrikeSlot = -1;          // 0 the combo, 1 from the guard, 2 from a run; -1 none
+	int m_StrikeIndex = 0;          // which of the combo
+	float m_Strike = -1.0f;         // s into it
+	float m_StrikeBase = 0.0f;      // m/s he was going when it began
+	bool m_StrikeQueued = false;
+	float m_ComboGrace = 0.0f;      // s left in which a press carries the combo on
+	bool m_Cast = false;            // this strike's cast has gone
 	uint32_t m_Swings = 0;
-	float m_Lunge = -1.0f;          // s into a lunge, or -1
-	bool m_LungeRunning = false;    // the long one, from a run (else from the guard)
-	float m_LungeBase = 0.0f;       // m/s he was going when it began
-	bool m_Drawn = true;            // sword and shield in his hands (else at his hip and on his back)
+	std::vector<Cast> m_Casts;
+	bool m_Drawn = true;            // in his hands (else carried)
 	float m_Stow = -1.0f;           // s into drawing or sheathing them, or -1
 	bool m_WantsSheathe = false;
 	bool m_GuardWas = false;        // the guard held last step: a press of it draws them
 	float m_LegYaw = 0.0f;          // the way his legs face: his facing, but under a guard turned to where he goes
 	float m_LegRate = 0.0f;
-	float m_Wrist = 0.75f;          // the blade's angle off the forearm's fold, radians
-	float m_Recoil = 0.0f, m_RecoilRate = 0.0f;   // the shield knocked back by a block, m
+	float m_Wrist[2] = { 0.75f, 0.75f };   // each blade's angle off its forearm's fold, radians
+	glm::vec3 m_BladeLocal[2] = { { 0.0f, -0.68f, 0.73f }, { 0.0f, -0.68f, 0.73f } };   // each blade's way in its forearm's frame
+	float m_Recoil = 0.0f, m_RecoilRate = 0.0f;   // the guard knocked back by a block, m
 	glm::vec3 m_Strap{ 0.0f, 0.0f, -1.0f };       // the shield's face, in the forearm's frame
 };
 

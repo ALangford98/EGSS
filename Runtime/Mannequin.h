@@ -196,47 +196,48 @@ namespace Mannequin {
 		}
 	}
 
-	// The sword and shield (Runtime/Armament.h), from the frames the rig
-	// gives them. Steel, a leather grip, a wooden shield with an iron rim
-	// and boss. Unit primitives scaled: the cube 1 m a side, the cylinder 1 m
-	// across and 1 m along +y, the sphere 1 m across.
+	// What he carries (Runtime/Armament.h): each hand's weapon, the
+	// scabbards and sheaths, a staff's barrier -- the parts each loadout is
+	// made of, in the frames the rig gives them. Unit primitives scaled: the
+	// cube 1 m a side, the cylinder 1 m across and 1 m along +y, the sphere
+	// 1 m across.
 	inline void AppendArmament(const Humanoid& rig, GS::EntityId entity, std::vector<ExtraDraw>& out)
 	{
 		if (!rig.Armed())
 			return;
 		const float s = rig.GetProportions().Scale;
-		static std::shared_ptr<GS::Mesh> cube = GS::MeshCache::Get("primitive:cube");
-		static std::shared_ptr<GS::Mesh> cylinder = GS::MeshCache::Get("primitive:cylinder");
-		static std::shared_ptr<GS::Mesh> sphere = GS::MeshCache::Get("primitive:sphere");
-		auto add = [&](const std::shared_ptr<GS::Mesh>& mesh, const glm::mat4& frame, const glm::vec3& at, const glm::vec3& size,
-			const glm::vec4& colour, float roughness, float metallic)
+		static std::shared_ptr<GS::Mesh> meshes[3] = { GS::MeshCache::Get("primitive:cube"), GS::MeshCache::Get("primitive:cylinder"),
+			GS::MeshCache::Get("primitive:sphere") };
+		auto add = [&](const std::vector<ArmamentPart>& parts, const glm::mat4& frame)
 		{
-			ExtraDraw d;
-			d.Mesh = mesh;
-			d.Model = frame * glm::translate(glm::mat4(1.0f), at * s) * glm::scale(glm::mat4(1.0f), size * s);
-			d.Color = colour;
-			d.Entity = entity;
-			d.Roughness = roughness;
-			d.Metallic = metallic;
-			out.push_back(d);
+			for (const ArmamentPart& part : parts)
+			{
+				ExtraDraw d;
+				d.Mesh = meshes[glm::clamp(part.Shape, 0, 2)];
+				d.Model = frame * glm::translate(glm::mat4(1.0f), part.At * s)
+					* glm::rotate(glm::mat4(1.0f), part.Tilt, glm::vec3(0.0f, 0.0f, 1.0f)) * glm::scale(glm::mat4(1.0f), part.Size * s);
+				d.Color = part.Colour;
+				d.Entity = entity;
+				d.Roughness = part.Roughness;
+				d.Metallic = part.Metallic;
+				d.Emission = part.Emission;
+				d.CastShadow = part.Emission <= 0.0f;
+				out.push_back(d);
+			}
 		};
-		const glm::vec4 steel(0.78f, 0.80f, 0.84f, 1.0f), iron(0.30f, 0.30f, 0.32f, 1.0f);
-		const glm::vec4 leather(0.30f, 0.18f, 0.10f, 1.0f), wood(0.52f, 0.33f, 0.17f, 1.0f);
-		glm::mat4 sword = rig.SwordFrame();
-		const float blade = Humanoid::kSwordLength;
-		// The scabbard, at his hip whether the sword is in it or not.
-		glm::mat4 scabbard = rig.ScabbardFrame();
-		add(cube, scabbard, { 0.0f, 0.08f + 0.5f * (blade + 0.02f), 0.0f }, { 0.07f, blade + 0.02f, 0.03f }, leather, 0.7f, 0.0f);
-		add(cube, scabbard, { 0.0f, 0.085f, 0.0f }, { 0.08f, 0.03f, 0.04f }, iron, 0.4f, 0.8f);
-		add(cube, sword, { 0.0f, 0.08f + 0.5f * blade, 0.0f }, { 0.048f, blade, 0.010f }, steel, 0.25f, 0.9f);
-		add(cube, sword, { 0.0f, 0.075f, 0.0f }, { 0.20f, 0.025f, 0.035f }, iron, 0.4f, 0.8f);
-		add(cylinder, sword, { 0.0f, 0.0f, 0.0f }, { 0.034f, 0.15f, 0.034f }, leather, 0.8f, 0.0f);
-		add(sphere, sword, { 0.0f, -0.085f, 0.0f }, { 0.05f, 0.05f, 0.05f }, iron, 0.4f, 0.8f);
-		glm::mat4 shield = rig.ShieldFrame();
-		const float across = 2.0f * Humanoid::kShieldRadius;
-		add(cylinder, shield, { 0.0f, 0.0f, 0.0f }, { across, 0.03f, across }, wood, 0.75f, 0.0f);
-		add(cylinder, shield, { 0.0f, -0.002f, 0.0f }, { across + 0.025f, 0.022f, across + 0.025f }, iron, 0.45f, 0.7f);
-		add(sphere, shield, { 0.0f, 0.02f, 0.0f }, { 0.13f, 0.07f, 0.13f }, iron, 0.35f, 0.8f);
+		const Humanoid::Loadout loadout = rig.GetLoadout();
+		for (int i = 0; i < rig.HolderCount(); i++)
+			add(ArmamentHolder(loadout), rig.HolderFrame(i));
+		for (int hand = 0; hand < 2; hand++)
+		{
+			std::vector<ArmamentPart> parts = ArmamentProp(loadout, hand);
+			if (!parts.empty())
+				add(parts, rig.PropFrame(hand));
+		}
+		glm::mat4 barrier;
+		if (rig.BarrierFrame(barrier))
+			add({ { 1, glm::vec3(0.0f), { 1.1f, 0.012f, 1.1f }, glm::vec4(0.35f, 0.65f, 1.0f, 1.0f), 0.2f, 0.0f, 2.5f },
+				{ 1, { 0.0f, -0.012f, 0.0f }, { 1.16f, 0.008f, 1.16f }, glm::vec4(0.7f, 0.9f, 1.0f, 1.0f), 0.2f, 0.0f, 5.0f } }, barrier);
 	}
 
 	inline void AppendLive(const Humanoid& rig, const GS::PhysicsWorld3D& world, const glm::vec4& colour,

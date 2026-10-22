@@ -280,7 +280,7 @@ inline void Humanoid::DriveLocomotion(float dt)
 	// way, or what is coming -- whichever way the keys take him, and goes
 	// no faster than a guarded walk.
 	bool guarding = Drawn() && m_Control.Enabled && m_Control.Guard;
-	bool aiming = guarding || (m_Armed && (m_Swing >= 0.0f || m_Lunge >= 0.0f));
+	bool aiming = guarding || (m_Armed && m_Strike >= 0.0f);
 	float aimYaw = glm::radians(m_Control.AimYaw);
 	float faceYaw = aiming ? std::atan2(std::cos(aimYaw), std::sin(aimYaw)) : wishYaw;
 	bool running = m_Control.Enabled && m_Control.Run && !guarding;
@@ -303,7 +303,7 @@ inline void Humanoid::DriveLocomotion(float dt)
 	// speed goes hard (a fifth of a second from a run) while he swings round,
 	// and then it builds again the new way. From a standstill he simply goes
 	// where he is asked.
-	float top = running ? m_RunSpeed : guarding ? 0.6f * m_WalkSpeed : m_WalkSpeed;
+	float top = running ? m_RunSpeed : guarding ? GuardSpeed() * m_WalkSpeed : m_WalkSpeed;
 	float travelError = wrap(wishYaw - L.Travel);
 	// Braked nearly to nothing before the way he goes flips: flipped at
 	// 0.6 m/s, the hips' velocity reversed in one step (72 m/s^2).
@@ -335,16 +335,19 @@ inline void Humanoid::DriveLocomotion(float dt)
 		L.Speed = std::min(target, L.Speed + rise * dt);
 	else
 		L.Speed = std::max(target, L.Speed - fall * dt);
-	// A lunge (Armament.h) drives him itself: straight along his facing, at
-	// what he was going plus a surge, 0.24 s of it -- about 1.1 m from the
-	// guard, 2.4 m from a run.
-	if (m_Lunge >= 0.0f && !airborne)
+	// A lunging strike (Armament.h) drives him itself: straight along his
+	// facing, at what he was going plus a surge over its cut -- 1.2 m from
+	// the sword and shield's guard, 2.4 m from a run.
+	bool surging = false;
+	if (!airborne)
 	{
-		L.Travel = m_Facing;
-		float u = glm::clamp((m_Lunge - kLungeWindup) / (kLungeReach - kLungeWindup), 0.0f, 1.0f);
-		float surge = m_Lunge < kLungeWindup || u >= 1.0f ? 0.0f : std::sin(glm::pi<float>() * u);
-		float base = m_Lunge < kLungeReach ? m_LungeBase : std::min(L.Speed, m_LungeBase);
-		L.Speed = base + (m_LungeRunning ? 4.0f : 8.0f) * std::sqrt(s) * surge;
+		float driven = L.Speed;
+		if (StrikeSurge(driven))
+		{
+			surging = true;
+			L.Travel = m_Facing;
+			L.Speed = driven;
+		}
 	}
 	m_Speed = L.Speed;
 	m_SpeedRate = 0.0f;
@@ -622,7 +625,7 @@ inline void Humanoid::DriveLocomotion(float dt)
 		float drop = L.Origin.y - groundHere;
 		if (drop > 0.5f * s)
 		{
-			bool runningOff = (running || m_Lunge >= 0.0f) && L.Speed > 1.3f * m_WalkSpeed;
+			bool runningOff = (running || surging) && L.Speed > 1.3f * m_WalkSpeed;
 			if (!runningOff)
 			{
 				GoRagdoll("stepped off", true);
@@ -835,9 +838,9 @@ inline void Humanoid::DriveLocomotion(float dt)
 	// feet are free of the stride while it lasts; the stride comes back at
 	// that same moment of itself, so the legs carry on from where they are.
 	float lungeW = 0.0f;
-	if (m_Lunge >= 0.0f && !airborne && cycles > 0 && L.LeapPhase[0] >= 0.0f)
+	if (!airborne && cycles > 0 && L.LeapPhase[0] >= 0.0f && StrikeLeap() > 0.0f)
 	{
-		lungeW = glm::smoothstep(0.0f, kLungeWindup, m_Lunge) * (1.0f - glm::smoothstep(kLungeReach, kLungeTime, m_Lunge));
+		lungeW = StrikeLeap();
 		LocoPose leap;
 		float d[2];
 		C.Cycles[(size_t)cycles - 1].Sample(L.LeapPhase[0], leap, d);
@@ -949,7 +952,7 @@ inline void Humanoid::DriveLocomotion(float dt)
 	// whole pose, the feet went down with it and the swing foot scraped the
 	// floor (feet within a centimetre of it at 2 m/s p95, against 0.4 walking).
 	const float guardStance = m_Armed ? glm::smoothstep(0.0f, 1.0f, m_Guard) : 0.0f;
-	const float lower = (0.05f * guardStance + 0.10f * lungeW) * s;
+	const float lower = (0.05f * guardStance + StrikeDip()) * s;
 	pose.Root.y -= m_Crouch + crouchDip - L.Dip;
 
 	// --- how much of the person's hips -------------------------------------
@@ -999,7 +1002,8 @@ inline void Humanoid::DriveLocomotion(float dt)
 	float bank = glm::clamp(std::atan(L.Speed * travelRate / 9.81f) * 0.5f, -0.22f, 0.22f);
 	Spring(L.Bank, L.BankRate, bank, 9.0f, dt);
 	glm::quat lean = glm::angleAxis(L.Bank, glm::vec3(0.0f, 0.0f, -1.0f)) * glm::angleAxis(airborne ? 0.0f : pitch, glm::vec3(1.0f, 0.0f, 0.0f));
-	glm::quat yaw = glm::angleAxis(m_LegYaw, up);
+	// A spinning strike turns the whole of him (its feet are free: it leaps).
+	glm::quat yaw = glm::angleAxis(m_LegYaw + StrikeSpin(), up);
 	glm::quat turn = glm::normalize(yaw * lean);
 
 	// --- the bodies, built from the turns (as ClipRetarget::PoseFrom does) ---

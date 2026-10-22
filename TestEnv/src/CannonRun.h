@@ -12,12 +12,14 @@
 // what is coming (hold Focus), to time your dodge. Markers at the edge of
 // the picture say where a charge or a ball is when it is out of sight.
 //
-// He carries a sword and shield (Runtime/Armament.h): hold the shield up
-// (the right button, which also looks at what is coming) to block a ball,
-// raise it just as one arrives to parry it, swing (the left button) into
-// one to send it back at its cannon -- two of those wreck one, or four
-// cuts up close (or three lunges: the attack from the guard or a run).
-// Sheathe them (X) to vault and climb; `sword off` takes them away.
+// He is armed (Runtime/Armament.h), sword and shield to start with: hold the
+// guard (the right button, which also looks at what is coming) to block a
+// ball, raise it just as one arrives to parry it, strike (the left button)
+// into one to send it back at its cannon -- two of those wreck one, or a
+// few strikes up close. 1-7 change loadout (`loadout katana` in the
+// terminal): sword and shield, longsword, katana, greatsword, twin daggers,
+// staff, fists, each its own moveset. Sheathe (X) to vault and climb;
+// `sword off` takes it all away.
 //
 //   R    start again          N    a new course (from a new seed)
 //   Esc  pause                `    the terminal: `course 4711` runs that
@@ -57,13 +59,14 @@ namespace CannonRunScreens
 					{ "type": "label", "text": "dodges  {run.dodges}", "style": "dim" },
 					{ "type": "label", "text": "blocked {run.blocks}   parried {run.parries}   returned {run.returns}", "style": "dim", "visible": "run.armed" },
 					{ "type": "label", "text": "cannons wrecked  {run.wrecked}", "style": "accent", "visible": "run.armed" },
+					{ "type": "label", "text": "{run.loadout}", "style": "title", "visible": "run.armed" },
 					{ "type": "label", "text": "{run.course}", "style": "dim" } ] },
 				{ "type": "panel", "anchor": "top-left", "pos": [28, 28], "layout": "vertical", "padding": 14, "gap": 2, "visible": "run.move", "children": [
 					{ "type": "label", "text": "{run.move}", "style": "title" } ] },
 				{ "type": "panel", "anchor": "bottom", "pos": [0, 22], "padding": 12, "children": [
 					{ "type": "label", "text": "{keys.dodge} dodge, with a direction     hold {keys.focus} look at what is coming     {keys.sprint} run     {keys.jump} jump / vault / climb     {keys.restart} restart     {keys.cancel} pause", "style": "dim", "visible": "run.unarmed" },
 					{ "type": "panel", "layout": "vertical", "style": "clear", "padding": 0, "gap": 4, "visible": "run.armed", "children": [
-						{ "type": "label", "text": "{keys.attack} swing (from the guard or a run: lunge)     hold {keys.block} shield up (raise it as one lands: parry)     {keys.dodge} dodge     {keys.sheathe} {run.sheathe}", "style": "dim", "align": "center" },
+						{ "type": "label", "text": "{keys.attack} strike (from the guard or a run: its lunge)     hold {keys.block} guard (raise it as one lands: parry)     {keys.dodge} dodge     {keys.sheathe} {run.sheathe}     1-7 loadout", "style": "dim", "align": "center" },
 						{ "type": "label", "text": "{keys.sprint} run     {keys.jump} {run.jump}     {keys.restart} restart     {keys.cancel} pause", "style": "dim", "align": "center" } ] } ] },
 				{ "type": "panel", "anchor": "bottom", "pos": [0, 96], "layout": "vertical", "padding": 22, "gap": 6, "visible": "run.ready", "children": [
 					{ "type": "label", "text": "CANNON RUN", "style": "big", "align": "center" },
@@ -245,6 +248,32 @@ private:
 					rig->SetArmed(m_Armed);
 				m_Session->Console().Print(m_Armed ? "sword and shield: carried" : "sword and shield: put away");
 			});
+		m_Session->Console().Register("loadout", "[name|1-7]", "change what he carries: sword (and shield), longsword, katana, greatsword, daggers, staff, fists",
+			[this](const GameConsole::Args& a)
+			{
+				Humanoid* rig = m_Session->Rig("Runner");
+				if (!rig)
+					return;
+				if (a.empty())
+				{
+					m_Session->Console().Print(std::string("loadout: ") + Humanoid::LoadoutName(rig->GetLoadout()));
+					return;
+				}
+				const char* names[] = { "sword", "longsword", "katana", "greatsword", "daggers", "staff", "fists" };
+				int pick = -1;
+				for (int i = 0; i < 7; i++)
+					if (a[0] == names[i] || a[0] == std::to_string(i + 1))
+						pick = i;
+				if (pick < 0)
+				{
+					m_Session->Console().Bad("loadout sword, longsword, katana, greatsword, daggers, staff or fists (or 1-7)");
+					return;
+				}
+				m_Armed = true;
+				rig->SetArmed(true);
+				rig->SetLoadout((Humanoid::Loadout)pick);
+				m_Session->Console().Good(std::string("loadout: ") + Humanoid::LoadoutName((Humanoid::Loadout)pick));
+			});
 		m_Session->Console().Register("course", "[seed]", "run a course: a number makes one from that seed; none, the one made by hand",
 			[this](const GameConsole::Args& a)
 			{
@@ -374,8 +403,13 @@ private:
 		bool armed = rig && rig->Armed();
 		ui.Set("run.armed", armed ? "1" : "0");
 		ui.Set("run.unarmed", armed ? "0" : "1");
-		ui.Set("run.sheathe", armed && rig->Drawn() ? "sheathe (to vault and climb)" : "draw");
-		ui.Set("run.jump", armed && rig->Drawn() ? "jump (sheathe to vault / climb)" : "jump / vault / climb");
+		bool bare = armed && rig->GetLoadout() == Humanoid::Loadout::Unarmed;
+		ui.Set("run.sheathe", bare ? "(fists: nothing to sheathe)" : armed && rig->Drawn() ? "sheathe (to vault and climb)" : "draw");
+		ui.Set("run.jump", armed && !bare && rig->Drawn() ? "jump (sheathe to vault / climb)" : "jump / vault / climb");
+		std::string loadout = armed ? Humanoid::LoadoutName(rig->GetLoadout()) : "";
+		for (char& ch : loadout)
+			ch = (char)std::toupper((unsigned char)ch);
+		ui.Set("run.loadout", loadout);
 		ui.Set("run.blocks", std::to_string(m_Guns.Blocks()));
 		ui.Set("run.parries", std::to_string(m_Guns.Parries()));
 		ui.Set("run.returns", std::to_string(m_Guns.Returns()));
@@ -389,6 +423,8 @@ private:
 		ui.Set("run.verdict", m_NewBest ? "a new best" : best != m_Best.end() ? "best " + Clock(best->second) : std::string());
 		// The move he is in, as a word: VAULT, DIVE.
 		std::string move = rig ? rig->MoveName() : "";
+		if (move.empty() && rig && rig->Armed())
+			move = rig->StrikeName();
 		for (char& ch : move)
 			ch = (char)std::toupper((unsigned char)ch);
 		ui.Set("run.move", move);

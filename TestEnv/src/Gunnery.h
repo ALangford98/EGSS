@@ -25,13 +25,15 @@
 // makes its balls in; what the game asks of it is what to look at (Focus)
 // and which way is away (Evade), for the camera and an unaimed dodge.
 //
-// And it can be fought (2026-10-22). A runner carrying a sword and shield
-// (Runtime/Armament.h) is asked about every ball about to reach him
-// (Humanoid::WardOff): blocked, it drops in front of him; parried, it glances
-// away; struck, it is sent back at the cannon that fired it, on a ballistic
-// arc solved as the cannon solves its own. Each cannon has Settings::Health:
-// a ball returned into it takes kReturnDamage, a cut of the sword
-// kSwordDamage, a lunge's thrust kLungeDamage. At none it is wrecked -- a blast, the barrel dropped onto its
+// And it can be fought (2026-10-22). An armed runner (Runtime/Armament.h)
+// is asked about every ball about to reach him (Humanoid::WardOff): blocked,
+// it drops in front of him; parried, it glances away; struck, it is sent
+// back at the cannon that fired it, on a ballistic arc solved as the cannon
+// solves its own. Each cannon has Settings::Health: a ball returned into it
+// takes kReturnDamage, a strike what its weapon does (StrikeDamage) -- a
+// staff's casts too: a bolt flies at a ball coming at him or the nearest
+// cannon ahead, a nova throws every ball near him back and hurts a cannon
+// beside him. At none it is wrecked -- a blast, the barrel dropped onto its
 // carriage, smoke -- and fires no more. A bar over each says how it is.
 
 #include <GS.h>
@@ -65,7 +67,7 @@ public:
 	};
 
 	// What hurts a cannon, out of its Health.
-	static constexpr float kReturnDamage = 50.0f, kSwordDamage = 25.0f, kLungeDamage = 40.0f;
+	static constexpr float kReturnDamage = 50.0f;
 
 	struct Zone { glm::vec3 Min{ 0.0f }, Max{ 0.0f }; };
 
@@ -95,7 +97,8 @@ public:
 		m_Hits = 0;
 		m_Shots = 0;
 		m_Held = 0;
-		m_Blocks = m_Parries = m_Returns = m_Wrecked = 0;
+		m_Blocks = m_Parries = m_Returns = m_Wrecked = m_Downed = 0;
+		m_Bolts.clear();
 		m_Clock = 0.0f;
 	}
 
@@ -137,6 +140,8 @@ public:
 	int Parries() const { return m_Parries; }
 	int Returns() const { return m_Returns; }
 	int Wrecked() const { return m_Wrecked; }
+	// Balls a staff's bolt shot down.
+	int Downed() const { return m_Downed; }
 
 	// Every ball gone and every cannon reloading from the start, as for a
 	// new run.
@@ -155,7 +160,8 @@ public:
 		m_Hits = 0;
 		m_Shots = 0;
 		m_Held = 0;
-		m_Blocks = m_Parries = m_Returns = m_Wrecked = 0;
+		m_Blocks = m_Parries = m_Returns = m_Wrecked = m_Downed = 0;
+		m_Bolts.clear();
 		m_SinceDown = 0.0f;
 	}
 
@@ -176,6 +182,7 @@ public:
 			m_SinceDown = rig->CanReact() ? m_SinceDown + dt : 0.0f;
 		}
 		StepBalls(dt, session, scene, rig);
+		StepCasts(dt, session, scene, rig);
 		StepPuffs(dt);
 		StepSword(scene, rig);
 		for (Cannon& c : m_Cannons)
@@ -323,6 +330,17 @@ public:
 				fill.CastShadow = false;
 				out.push_back(fill);
 			}
+		}
+		// A staff's bolts: bright blue, a little bigger than they are.
+		for (const Bolt& b : m_Bolts)
+		{
+			ExtraDraw d;
+			d.Mesh = sphere;
+			d.Model = glm::translate(glm::mat4(1.0f), b.Position) * glm::scale(glm::mat4(1.0f), glm::vec3(0.22f));
+			d.Color = glm::vec4(0.45f, 0.75f, 1.0f, 1.0f);
+			d.Emission = 7.0f;
+			d.CastShadow = false;
+			out.push_back(d);
 		}
 		for (const Puff& p : m_Puffs)
 		{
@@ -496,6 +514,11 @@ private:
 		glm::vec3 Position{ 0.0f }, Velocity{ 0.0f };
 		float Age = 0.0f, Life = 1.0f, Size = 0.2f, Emission = 0.0f;
 		glm::vec4 Color{ 1.0f };
+	};
+	struct Bolt
+	{
+		glm::vec3 Position{ 0.0f }, Velocity{ 0.0f };
+		float Age = 0.0f, Damage = 30.0f;
 	};
 	struct Aim
 	{
@@ -1018,30 +1041,171 @@ private:
 		return glm::length(d - muzzle * along) <= 0.2f + pad;
 	}
 
-	// The sword's cut against the cannons: anywhere along the blade inside
-	// one hurts it, once a swing.
+	// A strike against the cannons: anywhere along an edge inside one hurts
+	// it, by what the strike does, once a strike.
 	void StepSword(GS::Scene& scene, Humanoid* rig)
 	{
 		if (!rig || !rig->Armed() || !rig->SwordCutting())
 			return;
-		glm::vec3 hilt, tip;
-		rig->SwordEdge(hilt, tip);
+		glm::vec3 hilt[2], tip[2];
+		int edges = rig->StrikeEdges(hilt, tip);
 		for (Cannon& c : m_Cannons)
 		{
 			if (c.Wrecked || c.LastSwing == rig->SwingId())
 				continue;
-			for (int k = 0; k <= 6; k++)
-			{
-				glm::vec3 p = glm::mix(hilt, tip, (float)k / 6.0f);
-				if (InCannon(c, p, 0.05f))
+			bool struck = false;
+			for (int e = 0; e < edges && !struck; e++)
+				for (int k = 0; k <= 6; k++)
 				{
-					c.LastSwing = rig->SwingId();
-					PlayOnce(Clips().Clang, p, 0.9f, 0.9f);
-					Hurt(c, rig->Lunging() ? kLungeDamage : kSwordDamage, scene, p);
-					break;
+					glm::vec3 p = glm::mix(hilt[e], tip[e], (float)k / 6.0f);
+					if (InCannon(c, p, 0.05f))
+					{
+						c.LastSwing = rig->SwingId();
+						PlayOnce(Clips().Clang, p, 0.9f, 0.9f);
+						Hurt(c, rig->StrikeDamage(), scene, p);
+						struck = true;
+						break;
+					}
 				}
-			}
 		}
+	}
+
+	// A staff's casts made real. A bolt flies straight at 32 m/s for 1.5 s --
+	// at a ball coming at him within 40 degrees of where he faced, else at the
+	// nearest standing cannon within 30 degrees (aimed by the body's facing
+	// alone it missed: forgiving, as the guard is), else straight on --
+	// hurting the first cannon it is inside, or shooting down the first ball
+	// it meets. A nova, about him:
+	// every ball within 3.5 m struck back at its cannon, every cannon within
+	// it hurt.
+	void StepCasts(float dt, GameSession& session, GS::Scene& scene, Humanoid* rig)
+	{
+		std::vector<Humanoid::Cast> casts;
+		if (rig)
+			rig->TakeCasts(casts);
+		GS::PhysicsWorld3D& world = session.World();
+		for (const Humanoid::Cast& cast : casts)
+		{
+			if (cast.Nova)
+			{
+				for (Ball& b : m_Balls)
+					if (!b.Landed && glm::length(b.Position - cast.At) < 3.5f)
+					{
+						glm::vec3 v = ReturnVelocity(b, glm::normalize(b.Position - cast.At + glm::vec3(0.0f, 0.3f, 0.0f)) * 20.0f);
+						GS::RigidBody3D& body = world.GetBody(b.Body);
+						body.Velocity = v;
+						body.Awake = true;
+						body.SleepTimer = 0.0f;
+						b.Velocity = v;
+						b.Warded = b.Struck = b.Returned = true;
+						m_Returns++;
+					}
+				for (Cannon& c : m_Cannons)
+					if (!c.Wrecked && glm::length(glm::vec2(c.Pivot.x - cast.At.x, c.Pivot.z - cast.At.z)) < 3.5f)
+						Hurt(c, cast.Damage, scene, c.Pivot);
+				for (int k = 0; k < 18; k++)
+				{
+					float a = glm::two_pi<float>() * (float)k / 18.0f;
+					Puff ring;
+					ring.Position = cast.At + glm::vec3(0.0f, -0.6f, 0.0f);
+					ring.Velocity = glm::vec3(std::cos(a), 0.15f, std::sin(a)) * 9.0f;
+					ring.Life = 0.35f;
+					ring.Size = 0.14f;
+					ring.Color = glm::vec4(0.45f, 0.75f, 1.0f, 1.0f);
+					ring.Emission = 6.0f;
+					m_Puffs.push_back(ring);
+				}
+				PlayOnce(Clips().Thump, cast.At, 0.8f, 1.6f);
+				continue;
+			}
+			Bolt bolt;
+			bolt.Position = cast.At;
+			bolt.Damage = cast.Damage;
+			glm::vec3 way = glm::length(cast.Direction) > 1e-4f ? glm::normalize(cast.Direction) : glm::vec3(0.0f, 0.0f, 1.0f);
+			glm::vec3 aim = way;
+			float best = 45.0f;
+			// A ball coming at him ahead first: aimed where it will be when
+			// the bolt gets there (|B + V t - O| = S t, then its fall over t).
+			// Only at the cannon, the bolt crossed a ball's arc 40-60 cm
+			// above or below it and the ball came on.
+			bool atBall = false;
+			for (const Ball& b : m_Balls)
+			{
+				glm::vec3 rel = b.Position - cast.At;
+				glm::vec3 flat(rel.x, 0.0f, rel.z);
+				if (b.Landed || b.Returned || glm::dot(b.Velocity, rel) >= 0.0f || glm::length(flat) < 1e-3f
+					|| glm::dot(glm::normalize(flat), way) < std::cos(glm::radians(40.0f)) || glm::length(rel) > 30.0f)
+					continue;
+				const float S = 32.0f;
+				float qa = glm::dot(b.Velocity, b.Velocity) - S * S, qb = 2.0f * glm::dot(rel, b.Velocity), qc = glm::dot(rel, rel);
+				float disc = qb * qb - 4.0f * qa * qc;
+				if (disc < 0.0f || std::fabs(qa) < 1e-4f)
+					continue;
+				float t = (-qb - std::sqrt(disc)) / (2.0f * qa);
+				if (t < 0.0f)
+					t = (-qb + std::sqrt(disc)) / (2.0f * qa);
+				if (t < 0.0f)
+					continue;
+				glm::vec3 meet = b.Position + b.Velocity * t + glm::vec3(0.0f, -4.905f * t * t, 0.0f);
+				aim = glm::normalize(meet - cast.At);
+				atBall = true;
+				break;
+			}
+			for (const Cannon& c : m_Cannons)
+			{
+				glm::vec3 to = c.Pivot - glm::vec3(0.0f, 0.3f, 0.0f) - cast.At;
+				float distance = glm::length(to);
+				glm::vec3 flat(to.x, 0.0f, to.z);
+				if (atBall || c.Wrecked || distance > best || glm::length(flat) < 1e-3f || glm::dot(glm::normalize(flat), way) < std::cos(glm::radians(30.0f)))
+					continue;
+				best = distance;
+				aim = to / distance;
+			}
+			bolt.Velocity = aim * 32.0f;
+			m_Bolts.push_back(bolt);
+			PlayOnce(Clips().Whistle, cast.At, 0.5f, 1.8f);
+		}
+
+		for (Bolt& bolt : m_Bolts)
+		{
+			glm::vec3 from = bolt.Position;
+			bolt.Position += bolt.Velocity * dt;
+			bolt.Age += dt;
+			// The way it went this step, in a few samples: at 32 m/s it moves
+			// 53 cm a step, more than a ball is across.
+			for (int k = 1; k <= 3 && bolt.Age < 9.0f; k++)
+			{
+				glm::vec3 p = glm::mix(from, bolt.Position, (float)k / 3.0f);
+				for (Cannon& c : m_Cannons)
+					if (!c.Wrecked && InCannon(c, p, 0.12f))
+					{
+						Hurt(c, bolt.Damage, scene, p);
+						bolt.Age = 9.0f;
+						break;
+					}
+				for (Ball& b : m_Balls)
+					if (bolt.Age < 9.0f && !b.Landed && !b.Returned && glm::length(b.Position - p) < b.Radius + 0.25f)
+					{
+						// Shot down: it bursts, and is gone.
+						Sparks(b.Position, 14);
+						PlayOnce(Clips().Clang, b.Position, 0.9f, 1.4f);
+						b.Landed = true;
+						b.SinceLanded = 10.0f;
+						b.Struck = true;
+						StopVoice(b.Whistle);
+						m_Downed++;
+						bolt.Age = 9.0f;
+					}
+			}
+			Puff trail;
+			trail.Position = bolt.Position;
+			trail.Life = 0.18f;
+			trail.Size = 0.10f;
+			trail.Color = glm::vec4(0.45f, 0.75f, 1.0f, 1.0f);
+			trail.Emission = 4.0f;
+			m_Puffs.push_back(trail);
+		}
+		m_Bolts.erase(std::remove_if(m_Bolts.begin(), m_Bolts.end(), [](const Bolt& b) { return b.Age > 1.5f; }), m_Bolts.end());
 	}
 
 	void Hurt(Cannon& c, float damage, GS::Scene& scene, const glm::vec3& at)
@@ -1186,7 +1350,8 @@ private:
 	float m_Clock = 0.0f;
 	float m_SinceDown = 0.0f;
 	int m_Hits = 0, m_Shots = 0, m_Held = 0;
-	int m_Blocks = 0, m_Parries = 0, m_Returns = 0, m_Wrecked = 0;
+	int m_Blocks = 0, m_Parries = 0, m_Returns = 0, m_Wrecked = 0, m_Downed = 0;
+	std::vector<Bolt> m_Bolts;
 	uint32_t m_PuffCount = 0;          // the puffs' hash stream: the same smoke every replay
 	static constexpr float kReturnSpeed = 24.0f;   // m/s, a ball struck back
 	// The rules of fair, in seconds.

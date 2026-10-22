@@ -99,6 +99,15 @@ namespace GS {
 			{ "attack",   "Swing the sword (lunge from the guard or a run)", "Fighting", {}, { Mouse(GS_MOUSE_BUTTON_LEFT), Key(GS_KEY_F) } },
 			{ "block",    "Shield up (hold)",         "Fighting", {}, { Mouse(GS_MOUSE_BUTTON_RIGHT), Key(GS_KEY_V) } },
 			{ "sheathe",  "Sheathe / draw",           "Fighting", {}, { Key(GS_KEY_X) } },
+			// The loadouts, by number: what each is is the game's
+			// (Humanoid::Loadout's order for a humanoid).
+			{ "loadout1", "Loadout 1 (sword and shield)", "Fighting", {}, { Key(GS_KEY_1) } },
+			{ "loadout2", "Loadout 2 (longsword)",    "Fighting", {}, { Key(GS_KEY_2) } },
+			{ "loadout3", "Loadout 3 (katana)",       "Fighting", {}, { Key(GS_KEY_3) } },
+			{ "loadout4", "Loadout 4 (greatsword)",   "Fighting", {}, { Key(GS_KEY_4) } },
+			{ "loadout5", "Loadout 5 (twin daggers)", "Fighting", {}, { Key(GS_KEY_5) } },
+			{ "loadout6", "Loadout 6 (staff)",        "Fighting", {}, { Key(GS_KEY_6) } },
+			{ "loadout7", "Loadout 7 (fists)",        "Fighting", {}, { Key(GS_KEY_7) } },
 			{ "look",     "Look (hold)",              "Camera", {}, { Mouse(GS_MOUSE_BUTTON_RIGHT) } },
 			{ "focus",    "Look at what is coming (hold)", "Camera", {}, { Mouse(GS_MOUSE_BUTTON_RIGHT), Key(GS_KEY_TAB) } },
 			{ "turnleft", "Turn left",                "Camera", {}, { Key(GS_KEY_LEFT) } },
