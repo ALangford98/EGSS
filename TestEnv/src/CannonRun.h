@@ -16,7 +16,8 @@
 // (the right button, which also looks at what is coming) to block a ball,
 // raise it just as one arrives to parry it, swing (the left button) into
 // one to send it back at its cannon -- two of those wreck one, or four
-// cuts up close. `sword off` puts them away.
+// cuts up close (or three lunges: the attack from the guard or a run).
+// Sheathe them (X) to vault and climb; `sword off` takes them away.
 //
 //   R    start again          N    a new course (from a new seed)
 //   Esc  pause                `    the terminal: `course 4711` runs that
@@ -61,7 +62,9 @@ namespace CannonRunScreens
 					{ "type": "label", "text": "{run.move}", "style": "title" } ] },
 				{ "type": "panel", "anchor": "bottom", "pos": [0, 22], "padding": 12, "children": [
 					{ "type": "label", "text": "{keys.dodge} dodge, with a direction     hold {keys.focus} look at what is coming     {keys.sprint} run     {keys.jump} jump / vault / climb     {keys.restart} restart     {keys.cancel} pause", "style": "dim", "visible": "run.unarmed" },
-					{ "type": "label", "text": "{keys.attack} swing     hold {keys.block} shield up (raise it as one lands: parry)     Q dodge     {keys.sprint} run     {keys.jump} jump / vault / climb     {keys.restart} restart     {keys.cancel} pause", "style": "dim", "visible": "run.armed" } ] },
+					{ "type": "panel", "layout": "vertical", "style": "clear", "padding": 0, "gap": 4, "visible": "run.armed", "children": [
+						{ "type": "label", "text": "{keys.attack} swing (from the guard or a run: lunge)     hold {keys.block} shield up (raise it as one lands: parry)     {keys.dodge} dodge     {keys.sheathe} {run.sheathe}", "style": "dim", "align": "center" },
+						{ "type": "label", "text": "{keys.sprint} run     {keys.jump} {run.jump}     {keys.restart} restart     {keys.cancel} pause", "style": "dim", "align": "center" } ] } ] },
 				{ "type": "panel", "anchor": "bottom", "pos": [0, 96], "layout": "vertical", "padding": 22, "gap": 6, "visible": "run.ready", "children": [
 					{ "type": "label", "text": "CANNON RUN", "style": "big", "align": "center" },
 					{ "type": "label", "text": "the clock starts at the line: get round, fast", "align": "center" },
@@ -371,6 +374,8 @@ private:
 		bool armed = rig && rig->Armed();
 		ui.Set("run.armed", armed ? "1" : "0");
 		ui.Set("run.unarmed", armed ? "0" : "1");
+		ui.Set("run.sheathe", armed && rig->Drawn() ? "sheathe (to vault and climb)" : "draw");
+		ui.Set("run.jump", armed && rig->Drawn() ? "jump (sheathe to vault / climb)" : "jump / vault / climb");
 		ui.Set("run.blocks", std::to_string(m_Guns.Blocks()));
 		ui.Set("run.parries", std::to_string(m_Guns.Parries()));
 		ui.Set("run.returns", std::to_string(m_Guns.Returns()));

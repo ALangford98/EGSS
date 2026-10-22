@@ -84,20 +84,21 @@ namespace GS {
 			{ "jump",     "Jump / fly up",            "Moving", {}, { Key(GS_KEY_SPACE) } },
 			{ "down",     "Fly down",                 "Moving", {}, { Key(GS_KEY_LEFT_CONTROL), Key(GS_KEY_C) } },
 			{ "sprint",   "Run / fly faster",         "Moving", {}, { Key(GS_KEY_LEFT_SHIFT), Key(GS_KEY_RIGHT_SHIFT) } },
-			// The buttons, while a character is played with the mouse
-			// looking (GameModes' mouse look): the index finger reacts
-			// fastest, and a dodge is a reaction. Left Alt was the first
-			// thought -- the thumb beside Space -- but on KDE Alt and a
-			// right drag resizes the window.
-			{ "dodge",    "Dodge (with a direction)", "Moving", {}, { Mouse(GS_MOUSE_BUTTON_LEFT), Key(GS_KEY_Q) } },
+			// The dodge on Left Ctrl, the little finger beside the movement
+			// keys (the owner, 2026-10-22): the index finger's left button is
+			// the sword's. Left Alt was the first thought for it -- the thumb
+			// beside Space -- but on KDE Alt and a right drag resizes the
+			// window. Fly down shares Ctrl; it is only read flying.
+			{ "dodge",    "Dodge (with a direction)", "Moving", {}, { Key(GS_KEY_LEFT_CONTROL) } },
 			// The sword and shield (Runtime/Armament.h), where a character
 			// carries them: the index finger swings -- a ball is struck back
 			// on the timing of the press -- and the guard is held on the
 			// button that also looks at what is coming, which is what a
-			// guard is for. Armed, the dodge gives up its left button to the
-			// swing and keeps Q.
-			{ "attack",   "Swing the sword",          "Fighting", {}, { Mouse(GS_MOUSE_BUTTON_LEFT), Key(GS_KEY_F) } },
+			// guard is for. Sheathed, either draws them; sheathing is what
+			// parkour needs.
+			{ "attack",   "Swing the sword (lunge from the guard or a run)", "Fighting", {}, { Mouse(GS_MOUSE_BUTTON_LEFT), Key(GS_KEY_F) } },
 			{ "block",    "Shield up (hold)",         "Fighting", {}, { Mouse(GS_MOUSE_BUTTON_RIGHT), Key(GS_KEY_V) } },
+			{ "sheathe",  "Sheathe / draw",           "Fighting", {}, { Key(GS_KEY_X) } },
 			{ "look",     "Look (hold)",              "Camera", {}, { Mouse(GS_MOUSE_BUTTON_RIGHT) } },
 			{ "focus",    "Look at what is coming (hold)", "Camera", {}, { Mouse(GS_MOUSE_BUTTON_RIGHT), Key(GS_KEY_TAB) } },
 			{ "turnleft", "Turn left",                "Camera", {}, { Key(GS_KEY_LEFT) } },

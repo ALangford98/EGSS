@@ -22,6 +22,17 @@
 // of him -- because a defence that fails on a two-centimetre miss reads as
 // broken, not as hard. Whether the timing was right is the whole skill.
 //
+// Then (the owner, same day): the guard should look right -- no running
+// under it -- with lunges for the sword, and the sword and shield put away
+// before any parkour. So: under the guard he walks at 0.6 of his walk, his
+// chest on the aim, his legs turned towards where he goes or backpedalling
+// (DriveLocomotion), a little lower and wider, the sword held up beside the
+// shield. Attack from the guard is a short lunge behind the shield (1.2 m),
+// from a run a long leaping one (2.4 m): a thrust, the run's moment of
+// flight for the legs. Sheathed -- the sword at the left hip, the shield on
+// his back, half a second of reaching -- he can vault and climb; drawn he
+// cannot (ParkourOn), and a press of attack or the guard draws them.
+//
 // The props are drawn from his forearms, so they go wherever the arms go:
 // held, swinging, or limp in a fall. Nothing of them is simulated. Posed, the
 // arms are put where the guard and the swing say over the stride's own
@@ -43,7 +54,9 @@ inline void ArmamentGuardTarget(float s, float recoil, glm::vec3& wrist, glm::ve
 inline void Humanoid::SetArmed(bool armed)
 {
 	m_Armed = armed;
-	m_WantsAttack = false;
+	m_WantsAttack = m_WantsSheathe = false;
+	m_Drawn = true;
+	m_Stow = m_Lunge = -1.0f;
 	m_Guard = 0.0f;
 	m_GuardHeld = -1.0f;
 	m_Swing = -1.0f;
@@ -108,13 +121,46 @@ inline void Humanoid::UpdateArmament(float dt)
 {
 	if (!m_Armed)
 	{
-		m_WantsAttack = false;
+		m_WantsAttack = m_WantsSheathe = false;
 		return;
 	}
 	const float s = m_Proportions.Scale;
 	// Only posed: in a move, a fall or getting up the arms are the move's.
 	const bool posed = m_Mode == Mode::Controlled;
-	const bool guard = posed && m_Control.Enabled && m_Control.Guard;
+	const bool pressedGuard = m_Control.Enabled && m_Control.Guard && !m_GuardWas;
+	m_GuardWas = m_Control.Enabled && m_Control.Guard;
+
+	// Drawing and sheathing: half a second of reaching, the sword from the
+	// left hip, the shield off his back. Asked for, or by reaching for the
+	// guard or the sword while they are put away. Anything that takes him out
+	// of the walk finishes it at once -- he does not fall with a hand on
+	// the hilt.
+	auto beginStow = [&]()
+	{
+		m_Stow = 0.0f;
+		m_Drawn = !m_Drawn;
+		m_Swing = m_Lunge = -1.0f;
+		m_SwingQueued = false;
+	};
+	if (m_WantsSheathe)
+	{
+		m_WantsSheathe = false;
+		if (posed && m_Stow < 0.0f && m_Swing < 0.0f && m_Lunge < 0.0f)
+			beginStow();
+	}
+	if (!m_Drawn && m_Stow < 0.0f && posed && (m_WantsAttack || pressedGuard))
+	{
+		m_WantsAttack = false;
+		beginStow();
+	}
+	if (m_Stow >= 0.0f)
+	{
+		m_Stow += dt;
+		if (m_Stow >= kStowTime || !posed)
+			m_Stow = -1.0f;
+	}
+
+	const bool guard = posed && m_Control.Enabled && m_Control.Guard && Drawn();
 	// Up in under a tenth of a second -- the guard is a reaction -- and down
 	// a little slower.
 	m_Guard = glm::clamp(m_Guard + (guard ? dt / 0.08f : -dt / 0.15f), 0.0f, 1.0f);
@@ -125,12 +171,23 @@ inline void Humanoid::UpdateArmament(float dt)
 	// A press starts a swing; one late in a swing is held for the next, which
 	// comes back the other way (forehand, then backhand). An early press is
 	// dropped, not queued: mashing should not lock him into a string of them.
+	// From the guard it is a lunge instead -- a step in behind the shield --
+	// and at a run a long one, leaping.
 	if (m_WantsAttack)
 	{
 		m_WantsAttack = false;
-		if (posed)
+		if (posed && Drawn() && m_Lunge < 0.0f)
 		{
-			if (m_Swing < 0.0f)
+			bool fromGuard = guard;
+			bool fromRun = !guard && m_Air == Air::Grounded && m_Speed > 1.25f * m_WalkSpeed;
+			if (m_Swing < 0.0f && (fromGuard || fromRun) && m_Air == Air::Grounded)
+			{
+				m_Lunge = 0.0f;
+				m_LungeRunning = fromRun;
+				m_LungeBase = fromRun ? m_Speed : 0.0f;
+				m_Swings++;
+			}
+			else if (m_Swing < 0.0f)
 			{
 				m_Swing = 0.0f;
 				m_SwingWay = 1.0f;
@@ -161,11 +218,18 @@ inline void Humanoid::UpdateArmament(float dt)
 				m_Swing = -1.0f;
 		}
 	}
+	if (m_Lunge >= 0.0f)
+	{
+		m_Lunge += dt;
+		if (!posed || m_Lunge >= kLungeTime)
+			m_Lunge = -1.0f;
+	}
 	// The wrist: the blade nearly in line with the forearm for the cut, so the
-	// whole arm and blade sweep as one lever; carried, 43 degrees down from
-	// straight out of the fist -- at 20 he carried it like a lance, and at 43
-	// the tip stays 28 cm off the floor walking and running, measured.
-	float wristWant = m_Swing >= 0.0f && m_Swing < 0.30f ? 1.45f : 0.75f;
+	// whole arm and blade sweep as one lever, and exactly in line for a
+	// thrust; carried, 43 degrees down from straight out of the fist -- at 20
+	// he carried it like a lance, and at 43 the tip stays 28 cm off the floor
+	// walking and running, measured.
+	float wristWant = m_Lunge >= 0.0f && m_Lunge < 0.40f ? 1.57f : m_Swing >= 0.0f && m_Swing < 0.30f ? 1.45f : 0.75f;
 	float most = 25.0f * dt;
 	m_Wrist += glm::clamp(wristWant - m_Wrist, -most, most);
 
@@ -186,10 +250,31 @@ inline void Humanoid::UpdateArmament(float dt)
 	}
 }
 
-// The guard and the swing, over the arms the stride posed: the left arm up
-// with the shield, the right swept across in front of him with the
-// shoulders turning into it. Each blended in by how far into it he is, so
-// raising the shield or finishing a swing never snaps an arm.
+// Where the sword sits sheathed: the grip in front of the left hip, the
+// blade down and back past it, 42 degrees below level -- at 29 the scabbard
+// stuck out behind him like a tail, at 55 the run's forward-pitched hips
+// swung its tip to the floor -- in the pelvis's frame (+x his left).
+inline glm::mat4 ArmamentFrame(const glm::vec3& at, const glm::vec3& y, const glm::vec3& xHint)
+{
+	glm::vec3 x = glm::normalize(xHint - y * glm::dot(xHint, y));
+	glm::mat4 m(1.0f);
+	m[0] = glm::vec4(x, 0.0f);
+	m[1] = glm::vec4(y, 0.0f);
+	m[2] = glm::vec4(glm::cross(x, y), 0.0f);
+	m[3] = glm::vec4(at, 1.0f);
+	return m;
+}
+inline glm::mat4 ArmamentHipFrame(const glm::vec3& pelvis, const glm::quat& q, float s)
+{
+	return ArmamentFrame(pelvis + q * glm::vec3(0.20f * s, 0.03f * s, 0.10f * s),
+		glm::normalize(q * glm::vec3(0.10f, -0.90f, -1.0f)), q * glm::vec3(0.0f, 1.0f, 0.0f));
+}
+
+// The guard, the swing, the lunge and the reach for the hip and the back,
+// over the arms the stride posed: the left arm up with the shield, the right
+// ready beside it, swept across in front of him or thrust straight out with
+// the shoulders turning into it. Each laid over what is there, blended in by
+// how far into it he is, so nothing snaps an arm.
 inline void Humanoid::PoseArmament(glm::vec3* P, glm::quat* Q, float dt)
 {
 	(void)dt;
@@ -200,13 +285,34 @@ inline void Humanoid::PoseArmament(glm::vec3* P, glm::quat* Q, float dt)
 	const glm::quat yaw = glm::angleAxis(m_Facing, up);
 	const RestSkeleton& R = m_Rest;
 	auto turnOf = [&](int b) { return glm::normalize(Q[b] * glm::conjugate(m_BuildPose[(size_t)b].second)); };
+	auto spineAt = [&]() { return P[1] - turnOf(1) * (m_BuildPose[1].first - R.Spine); };
+	// Turn the trunk and arms about the spine -- and the head with them, or
+	// only carried (it keeps watching what it was watching).
+	auto turnTrunk = [&](const glm::quat& r, bool head)
+	{
+		glm::vec3 spine = spineAt();
+		for (int b : { 1, 2, 9, 10, 11, 12 })
+		{
+			P[b] = spine + r * (P[b] - spine);
+			if (b != 2 || head)
+				Q[b] = glm::normalize(r * Q[b]);
+		}
+	};
+
+	// The chest back on his aim, over legs turned to where he is going (the
+	// guard's walk, in DriveLocomotion).
+	float waist = m_Facing - m_LegYaw;
+	while (waist > glm::pi<float>()) waist -= glm::two_pi<float>();
+	while (waist < -glm::pi<float>()) waist += glm::two_pi<float>();
+	if (std::fabs(waist) > 1e-4f)
+		turnTrunk(glm::angleAxis(waist, up), true);
 
 	// The swing: the hand on an arc about the right shoulder, from out to
 	// his right and high to across his front and low (the backhand from
 	// across to out), nearly at full reach. Angles are about up from ahead,
 	// towards his right -- the backhand's start is kept short of straight
 	// across, where the hand would be inside his chest.
-	float swingW = 0.0f, arc = 0.0f, height = 0.0f, twist = 0.0f;
+	float swingW = 0.0f, arc = 0.0f, height = 0.0f, twist = 0.0f, lean = 0.0f;
 	if (m_Swing >= 0.0f)
 	{
 		float t = m_Swing;
@@ -218,47 +324,33 @@ inline void Humanoid::PoseArmament(glm::vec3* P, glm::quat* Q, float dt)
 		// Turning towards his right is a falling yaw.
 		twist = m_SwingWay * glm::mix(-0.35f, 0.40f, u) * swingW;
 	}
-
-	// The shoulders into the swing: the trunk and arms turned about the spine.
-	// The head is carried but keeps its own turn -- he watches what he is
-	// swinging at.
-	if (std::fabs(twist) > 1e-4f)
+	// The lunge: the hand drawn back to the hip, then thrust straight out at
+	// shoulder height, the right shoulder driven forward and the trunk
+	// leaning into it.
+	float lungeW = 0.0f, thrust = 0.0f;
+	if (m_Lunge >= 0.0f)
 	{
-		glm::quat Dt = turnOf(1);
-		glm::vec3 spine = P[1] - Dt * (m_BuildPose[1].first - R.Spine);
-		glm::quat r = glm::angleAxis(twist, up);
-		for (int b : { 1, 2, 9, 10, 11, 12 })
-		{
-			P[b] = spine + r * (P[b] - spine);
-			if (b != 2)
-				Q[b] = glm::normalize(r * Q[b]);
-		}
+		float t = m_Lunge;
+		thrust = glm::smoothstep(kLungeWindup, kLungeWindup + 0.10f, t);
+		lungeW = glm::smoothstep(0.0f, 0.06f, t) * (1.0f - glm::smoothstep(kLungeReach, kLungeTime, t));
+		twist += glm::mix(-0.30f, 0.45f, thrust) * lungeW;
+		lean = (m_LungeRunning ? 0.30f : 0.22f) * thrust * lungeW;
 	}
+	if (std::fabs(twist) > 1e-4f)
+		turnTrunk(glm::angleAxis(twist, up), false);
+	if (lean > 1e-4f)
+		turnTrunk(glm::angleAxis(lean, yaw * glm::vec3(1.0f, 0.0f, 0.0f)), false);
 
-	const float armLength = glm::length(R.Elbow[0] - R.Shoulder[0]) + glm::length(RestWrist(0) - R.Elbow[0]);
-	for (int side = 0; side < 2; side++)
+	// One arm towards a wrist and an elbow's way, by `w`, over what it has.
+	auto reach = [&](int side, const glm::vec3& wrist, const glm::vec3& pole, float w)
 	{
-		float w = side == 0 ? swingW : glm::smoothstep(0.0f, 1.0f, m_Guard);
 		if (w < 1e-4f)
-			continue;
+			return;
 		const int upperBody = 9 + side, foreBody = 11 + side;
 		glm::quat upper0 = turnOf(upperBody), fore0 = turnOf(foreBody);
 		glm::vec3 shoulder = P[upperBody] - upper0 * (m_BuildPose[(size_t)upperBody].first - R.Shoulder[side]);
-		glm::vec3 wrist, pole;
-		if (side == 0)
-		{
-			glm::vec3 along(-std::sin(arc), 0.0f, std::cos(arc));
-			wrist = shoulder + yaw * (along * (0.92f * armLength) + glm::vec3(0.0f, height, 0.0f));
-			pole = yaw * glm::vec3(0.0f, -1.0f, -0.35f);
-		}
-		else
-		{
-			ArmamentGuardTarget(s, m_Recoil, wrist, pole);
-			wrist = shoulder + yaw * wrist;
-			pole = yaw * pole;
-		}
 		glm::quat upper, fore;
-		ArmTurns(side, shoulder, wrist, pole, upper, fore);
+		ArmTurns(side, shoulder, shoulder + wrist, pole, upper, fore);
 		upper = glm::normalize(glm::slerp(upper0, upper, w));
 		fore = glm::normalize(glm::slerp(fore0, fore, w));
 		P[upperBody] = shoulder + upper * (m_BuildPose[(size_t)upperBody].first - R.Shoulder[side]);
@@ -266,47 +358,117 @@ inline void Humanoid::PoseArmament(glm::vec3* P, glm::quat* Q, float dt)
 		glm::vec3 elbow = shoulder + upper * (R.Elbow[side] - R.Shoulder[side]);
 		P[foreBody] = elbow + fore * (m_BuildPose[(size_t)foreBody].first - R.Elbow[side]);
 		Q[foreBody] = glm::normalize(fore * m_BuildPose[(size_t)foreBody].second);
+	};
+	auto shoulderOf = [&](int side) { return P[9 + side] - turnOf(9 + side) * (m_BuildPose[(size_t)(9 + side)].first - R.Shoulder[side]); };
+	// The trunk's own frame now (turned, leaning), for poses held against it.
+	const glm::quat trunk = glm::normalize(turnOf(1));
+
+	const float guardW = glm::smoothstep(0.0f, 1.0f, m_Guard);
+	const float armLength = glm::length(R.Elbow[0] - R.Shoulder[0]) + glm::length(RestWrist(0) - R.Elbow[0]);
+	// The shield up; the sword ready beside it, the hand at the waist in
+	// front, the blade up and forward.
+	{
+		glm::vec3 wrist, pole;
+		ArmamentGuardTarget(s, m_Recoil, wrist, pole);
+		reach(1, trunk * wrist, trunk * pole, guardW);
+		reach(0, trunk * glm::vec3(0.0f, -0.33f * s, 0.26f * s), trunk * glm::vec3(-1.0f, -0.6f, -0.4f), guardW);
+	}
+	if (swingW > 1e-4f)
+	{
+		glm::vec3 along(-std::sin(arc), 0.0f, std::cos(arc));
+		reach(0, yaw * (along * (0.92f * armLength) + glm::vec3(0.0f, height, 0.0f)), yaw * glm::vec3(0.0f, -1.0f, -0.35f), swingW);
+	}
+	if (lungeW > 1e-4f)
+	{
+		glm::vec3 back = trunk * glm::vec3(0.0f, -0.25f * s, -0.04f * s);
+		glm::vec3 out = trunk * glm::vec3(0.10f * s, -0.06f * s, 0.95f * armLength);
+		glm::vec3 pole = glm::mix(trunk * glm::vec3(-1.0f, -0.2f, -0.6f), trunk * glm::vec3(0.0f, -1.0f, -0.2f), thrust);
+		reach(0, glm::mix(back, out, thrust), pole, lungeW);
+	}
+	// Drawing or sheathing: the right hand across to the hilt at the left
+	// hip, the left up behind its shoulder for the shield's strap, there at
+	// the half-way mark and back -- the props change hands as they get there
+	// (StowAmount).
+	if (m_Stow >= 0.0f)
+	{
+		float w = std::sin(glm::pi<float>() * glm::clamp(m_Stow / kStowTime, 0.0f, 1.0f));
+		glm::mat4 hip = ArmamentHipFrame(P[0], turnOf(0), s);
+		reach(0, glm::vec3(hip[3]) - shoulderOf(0), yaw * glm::vec3(-1.0f, -0.3f, -0.5f), w);
+		reach(1, trunk * glm::vec3(0.02f * s, 0.10f * s, -0.14f * s), trunk * glm::vec3(1.0f, 0.3f, 0.6f), w);
 	}
 }
 
 // The grip: the fist just past the right wrist, +y along the blade -- the
 // forearm's fold turned by the wrist's angle about the elbow's hinge (+x),
 // so the blade's edges lie along the hinge, the way a cut moves.
-inline glm::mat4 Humanoid::SwordFrame() const
+inline glm::mat4 Humanoid::HandSwordFrame() const
 {
 	const float s = m_Proportions.Scale;
 	const GS::RigidBody3D& forearm = m_World.GetBody(m_LowerArm[0]);
 	const glm::quat& q = forearm.Orientation;
 	glm::vec3 grip = forearm.Position + q * glm::vec3(0.0f, -0.5f * m_ForearmLength - 0.05f * s, 0.0f);
-	glm::vec3 y = q * glm::vec3(0.0f, -std::sin(m_Wrist), std::cos(m_Wrist));
-	glm::vec3 x = q * glm::vec3(1.0f, 0.0f, 0.0f);
-	glm::vec3 z = glm::cross(x, y);
-	glm::mat4 m(1.0f);
-	m[0] = glm::vec4(x, 0.0f);
-	m[1] = glm::vec4(y, 0.0f);
-	m[2] = glm::vec4(z, 0.0f);
-	m[3] = glm::vec4(grip, 1.0f);
-	return m;
+	return ArmamentFrame(grip, q * glm::vec3(0.0f, -std::sin(m_Wrist), std::cos(m_Wrist)), q * glm::vec3(1.0f, 0.0f, 0.0f));
 }
 
 // The shield's middle: on the strap side of the left forearm, a little
 // towards the wrist, +y out of its face.
-inline glm::mat4 Humanoid::ShieldFrame() const
+inline glm::mat4 Humanoid::HandShieldFrame() const
 {
 	const float s = m_Proportions.Scale;
 	const GS::RigidBody3D& forearm = m_World.GetBody(m_LowerArm[1]);
 	const glm::quat& q = forearm.Orientation;
 	glm::vec3 y = glm::normalize(q * m_Strap);
-	glm::vec3 x = q * glm::vec3(0.0f, 1.0f, 0.0f);
-	x = glm::normalize(x - y * glm::dot(x, y));
-	glm::vec3 z = glm::cross(x, y);
 	glm::vec3 at = forearm.Position + q * glm::vec3(0.0f, -0.03f * s, 0.0f) + y * (m_Proportions.ForearmRadius + 0.03f * s);
-	glm::mat4 m(1.0f);
-	m[0] = glm::vec4(x, 0.0f);
-	m[1] = glm::vec4(y, 0.0f);
-	m[2] = glm::vec4(z, 0.0f);
-	m[3] = glm::vec4(at, 1.0f);
+	return ArmamentFrame(at, y, q * glm::vec3(0.0f, 1.0f, 0.0f));
+}
+
+// Put away: the sword in its scabbard at the left hip (ArmamentHipFrame),
+// the shield on his back between the shoulder blades, face out.
+inline glm::mat4 Humanoid::StowedSwordFrame() const
+{
+	const GS::RigidBody3D& pelvis = m_World.GetBody(m_Pelvis);
+	return ArmamentHipFrame(pelvis.Position, glm::normalize(pelvis.Orientation * glm::conjugate(m_BuildPose[0].second)), m_Proportions.Scale);
+}
+
+inline glm::mat4 Humanoid::StowedShieldFrame() const
+{
+	const float s = m_Proportions.Scale;
+	const GS::RigidBody3D& torso = m_World.GetBody(m_Torso);
+	glm::quat q = glm::normalize(torso.Orientation * glm::conjugate(m_BuildPose[1].second));
+	glm::vec3 at = torso.Position + q * glm::vec3(0.0f, 0.03f * s, -(m_Proportions.TorsoHalf.z + 0.035f * s));
+	return ArmamentFrame(at, q * glm::vec3(0.0f, 0.0f, -1.0f), q * glm::vec3(1.0f, 0.0f, 0.0f));
+}
+
+// 0 in his hands, 1 put away. Changing, they cross over while his hands
+// are at the hilt and the strap -- the middle of the reach.
+inline float Humanoid::StowAmount() const
+{
+	if (m_Stow < 0.0f)
+		return m_Drawn ? 0.0f : 1.0f;
+	float crossed = glm::smoothstep(0.15f, 0.35f, m_Stow);
+	return m_Drawn ? 1.0f - crossed : crossed;
+}
+
+inline glm::mat4 ArmamentBlend(const glm::mat4& a, const glm::mat4& b, float t)
+{
+	if (t <= 0.0f) return a;
+	if (t >= 1.0f) return b;
+	glm::quat q = glm::slerp(glm::quat_cast(glm::mat3(a)), glm::quat_cast(glm::mat3(b)), t);
+	glm::mat4 m = glm::mat4_cast(glm::normalize(q));
+	m[3] = glm::vec4(glm::mix(glm::vec3(a[3]), glm::vec3(b[3]), t), 1.0f);
 	return m;
+}
+
+inline glm::mat4 Humanoid::SwordFrame() const
+{
+	float away = StowAmount();
+	return ArmamentBlend(away < 1.0f ? HandSwordFrame() : glm::mat4(1.0f), StowedSwordFrame(), away);
+}
+
+inline glm::mat4 Humanoid::ShieldFrame() const
+{
+	float away = StowAmount();
+	return ArmamentBlend(away < 1.0f ? HandShieldFrame() : glm::mat4(1.0f), StowedShieldFrame(), away);
 }
 
 inline void Humanoid::SwordEdge(glm::vec3& hilt, glm::vec3& tip) const
@@ -321,7 +483,7 @@ inline void Humanoid::SwordEdge(glm::vec3& hilt, glm::vec3& tip) const
 inline Humanoid::WardResult Humanoid::WardOff(const glm::vec3& at, const glm::vec3& velocity, float radius, float mass, float dt)
 {
 	WardResult r;
-	if (!m_Armed || m_Mode != Mode::Controlled)
+	if (!Drawn() || m_Mode != Mode::Controlled)
 		return r;
 	float speed = glm::length(velocity);
 	if (speed < 2.0f)

@@ -31,7 +31,7 @@
 // away; struck, it is sent back at the cannon that fired it, on a ballistic
 // arc solved as the cannon solves its own. Each cannon has Settings::Health:
 // a ball returned into it takes kReturnDamage, a cut of the sword
-// kSwordDamage. At none it is wrecked -- a blast, the barrel dropped onto its
+// kSwordDamage, a lunge's thrust kLungeDamage. At none it is wrecked -- a blast, the barrel dropped onto its
 // carriage, smoke -- and fires no more. A bar over each says how it is.
 
 #include <GS.h>
@@ -65,7 +65,7 @@ public:
 	};
 
 	// What hurts a cannon, out of its Health.
-	static constexpr float kReturnDamage = 50.0f, kSwordDamage = 25.0f;
+	static constexpr float kReturnDamage = 50.0f, kSwordDamage = 25.0f, kLungeDamage = 40.0f;
 
 	struct Zone { glm::vec3 Min{ 0.0f }, Max{ 0.0f }; };
 
@@ -1037,7 +1037,7 @@ private:
 				{
 					c.LastSwing = rig->SwingId();
 					PlayOnce(Clips().Clang, p, 0.9f, 0.9f);
-					Hurt(c, kSwordDamage, scene, p);
+					Hurt(c, rig->Lunging() ? kLungeDamage : kSwordDamage, scene, p);
 					break;
 				}
 			}

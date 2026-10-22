@@ -224,6 +224,10 @@ namespace Mannequin {
 		const glm::vec4 leather(0.30f, 0.18f, 0.10f, 1.0f), wood(0.52f, 0.33f, 0.17f, 1.0f);
 		glm::mat4 sword = rig.SwordFrame();
 		const float blade = Humanoid::kSwordLength;
+		// The scabbard, at his hip whether the sword is in it or not.
+		glm::mat4 scabbard = rig.ScabbardFrame();
+		add(cube, scabbard, { 0.0f, 0.08f + 0.5f * (blade + 0.02f), 0.0f }, { 0.07f, blade + 0.02f, 0.03f }, leather, 0.7f, 0.0f);
+		add(cube, scabbard, { 0.0f, 0.085f, 0.0f }, { 0.08f, 0.03f, 0.04f }, iron, 0.4f, 0.8f);
 		add(cube, sword, { 0.0f, 0.08f + 0.5f * blade, 0.0f }, { 0.048f, blade, 0.010f }, steel, 0.25f, 0.9f);
 		add(cube, sword, { 0.0f, 0.075f, 0.0f }, { 0.20f, 0.025f, 0.035f }, iron, 0.4f, 0.8f);
 		add(cylinder, sword, { 0.0f, 0.0f, 0.0f }, { 0.034f, 0.15f, 0.034f }, leather, 0.8f, 0.0f);
