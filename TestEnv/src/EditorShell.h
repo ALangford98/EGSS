@@ -90,6 +90,53 @@ public:
 		m_ForceDefault = true;
 	}
 
+	// **The scene, full screen** (F11, or View > Fullscreen scene). The owner,
+	// 2026-10-22: playing in the editor's pane, the pointer kept wandering
+	// onto the toolbar and clicking other demos. This hides every panel --
+	// what `--hide-ui` does at startup, now at any moment -- gives the demo
+	// the whole window, and puts the window over the whole monitor. F11 again
+	// puts all of it back. The rect is reset here, at once: OnImGuiRender
+	// does not run while the panels are hidden, so it would never get to.
+	void SetFullscreenScene(bool on)
+	{
+		GS::Application& app = GS::Application::Get();
+		app.SetUIHidden(on);
+		app.GetWindow().SetFullscreen(on);
+		if (on)
+			g_Viewport = ViewportRect();
+		m_FullscreenHint = on ? 3.0f : 0.0f;
+	}
+	bool FullscreenScene() const { return GS::Application::Get().IsUIHidden(); }
+
+	void OnEvent(GS::Event& event) override
+	{
+		if (event.GetEventType() != GS::EventType::KeyPressed)
+			return;
+		auto& key = static_cast<GS::KeyPressedEvent&>(event);
+		if (key.GetKeyCode() == GS_KEY_F11 && key.GetRepeatCount() == 0)
+		{
+			SetFullscreenScene(!FullscreenScene());
+			event.SetHandled(true);
+		}
+	}
+
+	// How to get back, for the first few seconds of it.
+	void OnGameOverlay() override
+	{
+		if (m_FullscreenHint <= 0.0f)
+			return;
+		m_FullscreenHint -= ImGui::GetIO().DeltaTime;
+		if (!FullscreenScene())
+			return;
+		ImDrawList* list = ImGui::GetForegroundDrawList();
+		const char* text = "F11  leave fullscreen";
+		ImVec2 size = ImGui::CalcTextSize(text);
+		ImVec2 at(ImGui::GetIO().DisplaySize.x * 0.5f - size.x * 0.5f, 24.0f);
+		int alpha = (int)(255.0f * glm::clamp(m_FullscreenHint, 0.0f, 1.0f));
+		list->AddRectFilled(ImVec2(at.x - 12.0f, at.y - 8.0f), ImVec2(at.x + size.x + 12.0f, at.y + size.y + 8.0f), IM_COL32(12, 16, 22, alpha * 3 / 4), 6.0f);
+		list->AddText(at, IM_COL32(255, 255, 255, alpha), text);
+	}
+
 	void OnImGuiRender() override
 	{
 		if (!g_EditorShell)
@@ -212,10 +259,10 @@ public:
 		// isn't the currently selected tab, which is exactly the signal we
 		// need. Under --hide-ui neither Begin() call below ever runs (this
 		// whole function returns before reaching them, via the !g_EditorShell
-		// check, on any run that never draws UI at all -- and on a normal
-		// run where the UI later gets hidden mid-session, OnImGuiRender
-		// itself is simply never invoked by Application.cpp), so g_Viewport
-		// reverts to the full-window rect exactly as before this change.
+		// check, on any run that never draws UI at all). Hidden mid-session
+		// (SetFullscreenScene) OnImGuiRender is never invoked at all, so
+		// nothing here could reset the rect -- it stayed the pane's until
+		// SetFullscreenScene took to resetting it itself.
 		g_Viewport = ViewportRect();
 
 		// NoMouseInputs so FindHoveredWindowEx (imgui.cpp) skips "Scene"
@@ -400,6 +447,7 @@ private:
 		ImGui::DockBuilderFinish(dock);
 	}
 
+	float m_FullscreenHint = 0.0f;   // s left of the way-back hint
 	bool m_Built = false;
 	bool m_ForceDefault = false;
 	TerminalPanel m_Terminal;

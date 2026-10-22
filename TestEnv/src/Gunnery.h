@@ -1070,12 +1070,11 @@ private:
 		}
 	}
 
-	// A staff's casts made real. A bolt flies straight at 32 m/s for 1.5 s --
-	// at a ball coming at him within 40 degrees of where he faced, else at the
-	// nearest standing cannon within 30 degrees (aimed by the body's facing
-	// alone it missed: forgiving, as the guard is), else straight on --
-	// hurting the first cannon it is inside, or shooting down the first ball
-	// it meets. A nova, about him:
+	// A staff's casts made real. A bolt flies straight at 32 m/s for 1.5 s,
+	// where the player aimed it (Humanoid's cast carries the way: the
+	// crosshair) -- the owner, 2026-10-22: aimed by hand, not at the nearest
+	// ball or cannon as it first was -- hurting the first cannon it is
+	// inside, or shooting down the first ball it passes within 30 cm of. A nova, about him:
 	// every ball within 3.5 m struck back at its cannon, every cannon within
 	// it hurt.
 	void StepCasts(float dt, GameSession& session, GS::Scene& scene, Humanoid* rig)
@@ -1122,46 +1121,7 @@ private:
 			bolt.Position = cast.At;
 			bolt.Damage = cast.Damage;
 			glm::vec3 way = glm::length(cast.Direction) > 1e-4f ? glm::normalize(cast.Direction) : glm::vec3(0.0f, 0.0f, 1.0f);
-			glm::vec3 aim = way;
-			float best = 45.0f;
-			// A ball coming at him ahead first: aimed where it will be when
-			// the bolt gets there (|B + V t - O| = S t, then its fall over t).
-			// Only at the cannon, the bolt crossed a ball's arc 40-60 cm
-			// above or below it and the ball came on.
-			bool atBall = false;
-			for (const Ball& b : m_Balls)
-			{
-				glm::vec3 rel = b.Position - cast.At;
-				glm::vec3 flat(rel.x, 0.0f, rel.z);
-				if (b.Landed || b.Returned || glm::dot(b.Velocity, rel) >= 0.0f || glm::length(flat) < 1e-3f
-					|| glm::dot(glm::normalize(flat), way) < std::cos(glm::radians(40.0f)) || glm::length(rel) > 30.0f)
-					continue;
-				const float S = 32.0f;
-				float qa = glm::dot(b.Velocity, b.Velocity) - S * S, qb = 2.0f * glm::dot(rel, b.Velocity), qc = glm::dot(rel, rel);
-				float disc = qb * qb - 4.0f * qa * qc;
-				if (disc < 0.0f || std::fabs(qa) < 1e-4f)
-					continue;
-				float t = (-qb - std::sqrt(disc)) / (2.0f * qa);
-				if (t < 0.0f)
-					t = (-qb + std::sqrt(disc)) / (2.0f * qa);
-				if (t < 0.0f)
-					continue;
-				glm::vec3 meet = b.Position + b.Velocity * t + glm::vec3(0.0f, -4.905f * t * t, 0.0f);
-				aim = glm::normalize(meet - cast.At);
-				atBall = true;
-				break;
-			}
-			for (const Cannon& c : m_Cannons)
-			{
-				glm::vec3 to = c.Pivot - glm::vec3(0.0f, 0.3f, 0.0f) - cast.At;
-				float distance = glm::length(to);
-				glm::vec3 flat(to.x, 0.0f, to.z);
-				if (atBall || c.Wrecked || distance > best || glm::length(flat) < 1e-3f || glm::dot(glm::normalize(flat), way) < std::cos(glm::radians(30.0f)))
-					continue;
-				best = distance;
-				aim = to / distance;
-			}
-			bolt.Velocity = aim * 32.0f;
+			bolt.Velocity = way * 32.0f;
 			m_Bolts.push_back(bolt);
 			PlayOnce(Clips().Whistle, cast.At, 0.5f, 1.8f);
 		}
@@ -1184,7 +1144,7 @@ private:
 						break;
 					}
 				for (Ball& b : m_Balls)
-					if (bolt.Age < 9.0f && !b.Landed && !b.Returned && glm::length(b.Position - p) < b.Radius + 0.25f)
+					if (bolt.Age < 9.0f && !b.Landed && !b.Returned && glm::length(b.Position - p) < b.Radius + 0.30f)
 					{
 						// Shot down: it bursts, and is gone.
 						Sparks(b.Position, 14);

@@ -85,6 +85,12 @@ namespace GS {
 		virtual void SetCursorCaptured(bool captured) = 0;
 		virtual bool IsCursorCaptured() const = 0;
 
+		// The window over the whole of the monitor it is on, and back to where
+		// and how big it was. Platforms that are always fullscreen (a phone)
+		// keep the default: nothing to do.
+		virtual void SetFullscreen(bool) {}
+		virtual bool IsFullscreen() const { return false; }
+
 		// Escape hatch for platform code (input polling, ImGui backends).
 		virtual void* GetNativeWindow() const = 0;
 

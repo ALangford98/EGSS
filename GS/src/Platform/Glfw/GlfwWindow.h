@@ -26,6 +26,8 @@ namespace GS {
 
 		void SetCursorCaptured(bool captured) override;
 		inline bool IsCursorCaptured() const override { return m_Data.CursorCaptured; }
+		void SetFullscreen(bool fullscreen) override;
+		inline bool IsFullscreen() const override { return m_Fullscreen; }
 
 		inline void* GetNativeWindow() const override { return m_Window; }
 	private:
@@ -39,6 +41,8 @@ namespace GS {
 		int m_WallpaperX = 0;
 		int m_WallpaperY = 0;
 	private:
+		bool m_Fullscreen = false;
+		int m_WindowedX = 0, m_WindowedY = 0, m_WindowedWidth = 0, m_WindowedHeight = 0;
 		GLFWwindow* m_Window;
 
 		struct WindowData

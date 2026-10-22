@@ -396,6 +396,41 @@ namespace GS {
 		return m_Data.VSync;
 	}
 
+	// Onto the monitor the window's middle is on -- the one it is being looked
+	// at on, with several -- at that monitor's own mode, and back to the
+	// position and size it had. The resize arrives as an ordinary resize event.
+	void GlfwWindow::SetFullscreen(bool fullscreen)
+	{
+		if (fullscreen == m_Fullscreen)
+			return;
+		if (fullscreen)
+		{
+			glfwGetWindowPos(m_Window, &m_WindowedX, &m_WindowedY);
+			glfwGetWindowSize(m_Window, &m_WindowedWidth, &m_WindowedHeight);
+			int count = 0;
+			GLFWmonitor** monitors = glfwGetMonitors(&count);
+			GLFWmonitor* chosen = glfwGetPrimaryMonitor();
+			int middleX = m_WindowedX + m_WindowedWidth / 2, middleY = m_WindowedY + m_WindowedHeight / 2;
+			for (int i = 0; i < count; i++)
+			{
+				int x, y;
+				glfwGetMonitorPos(monitors[i], &x, &y);
+				const GLFWvidmode* mode = glfwGetVideoMode(monitors[i]);
+				if (mode && middleX >= x && middleX < x + mode->width && middleY >= y && middleY < y + mode->height)
+					chosen = monitors[i];
+			}
+			const GLFWvidmode* mode = chosen ? glfwGetVideoMode(chosen) : nullptr;
+			if (!mode)
+				return;
+			glfwSetWindowMonitor(m_Window, chosen, 0, 0, mode->width, mode->height, mode->refreshRate);
+		}
+		else
+			glfwSetWindowMonitor(m_Window, nullptr, m_WindowedX, m_WindowedY, m_WindowedWidth, m_WindowedHeight, 0);
+		m_Fullscreen = fullscreen;
+		// Leaving a monitor drops the swap interval on some drivers.
+		SetVSync(m_Data.VSync);
+	}
+
 	void GlfwWindow::SetCursorCaptured(bool captured)
 	{
 		if (m_Data.CursorCaptured == captured)

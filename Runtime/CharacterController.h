@@ -623,11 +623,24 @@ private:
 			// Only the camera waits for Focus to turn.
 			control.Guard = m_GuardHeld;
 			control.AimYaw = control.Yaw;
-			if (m_HasFocusTarget)
+			if (m_HasFocusTarget && !rig.AimsByHand())
 			{
 				glm::vec3 to = m_FocusTarget - pelvis.Position;
 				if (to.x * to.x + to.z * to.z > 1e-4f)
 					control.AimYaw = glm::degrees(std::atan2(to.z, to.x));
+			}
+			// What is under the crosshair: the camera's own ray into the
+			// world, past him (his bodies are not in the way). Aimed by hand,
+			// he faces that way too -- the camera's view, which Focus may have
+			// turned.
+			if (auto* camera = scene.GetComponent<GS::TransformComponent>(m_Camera))
+			{
+				glm::vec3 from = camera->Position, along = ForwardFromRotation(camera->Rotation);
+				GS::PhysicsWorld3D::RayHit hit = world.Raycast(from, along, 120.0f, rig.Bodies());
+				control.AimPoint = hit.Hit ? from + along * hit.Distance : from + along * 120.0f;
+				control.HasAimPoint = true;
+				if (rig.AimsByHand() && along.x * along.x + along.z * along.z > 1e-4f)
+					control.AimYaw = glm::degrees(std::atan2(along.z, along.x));
 			}
 			if (m_AttackPressed)
 				rig.RequestAttack();

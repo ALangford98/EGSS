@@ -498,6 +498,12 @@ private:
 		if (!ImGui::BeginMenu("View"))
 			return;
 
+		// The game over the whole screen, no panels to stray onto (F11 again
+		// to come back).
+		if (ImGui::MenuItem("Fullscreen scene", "F11") && g_EditorShellInstance)
+			g_EditorShellInstance->SetFullscreenScene(true);
+		ImGui::Separator();
+
 		for (const LayoutPreset& preset : ReadLayoutPresets())
 			if (ImGui::MenuItem(preset.Name.c_str()))
 				LoadLayoutPreset(preset.Name);

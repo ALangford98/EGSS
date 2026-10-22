@@ -245,6 +245,24 @@ namespace GS {
 #else
 		ImGui_ImplGlfw_NewFrame();
 #endif
+		// While a game has the pointer captured, the mouse is the game's.
+		// The GLFW backend still feeds ImGui the position of a cursor that is
+		// hidden and unbounded -- on purpose, since 2023, leaving it to the
+		// application to say NoMouse -- so turning in the cannon run walked
+		// that invisible cursor over the panels, and the left button, the
+		// sword's, clicked whatever demo it was over.
+		{
+			ImGuiIO& io = ImGui::GetIO();
+			bool captured = Application::Get().GetWindow().IsCursorCaptured();
+			if (captured != m_MouseWithheld)
+			{
+				if (captured)
+					io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
+				else
+					io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+				m_MouseWithheld = captured;
+			}
+		}
 		ImGui::NewFrame();
 
 		// A full-window dock target, created before any layer renders so that

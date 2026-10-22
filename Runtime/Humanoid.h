@@ -80,6 +80,10 @@ public:
 		// and the way he guards and swings -- degrees, as Yaw is.
 		bool Guard = false;
 		float AimYaw = -90.0f;
+		// What the player is aiming at -- under the crosshair, the camera's
+		// ray into the world -- for what is aimed by hand (a staff's bolts).
+		glm::vec3 AimPoint{ 0.0f };
+		bool HasAimPoint = false;
 	};
 
 	explicit Humanoid(GS::PhysicsWorld3D& world) : m_World(world) {}
@@ -109,6 +113,9 @@ public:
 	bool Armed() const { return m_Armed; }
 	void SetLoadout(Loadout loadout);
 	Loadout GetLoadout() const { return m_Loadout; }
+	// Aimed by hand rather than by facing: a staff's bolts go at
+	// Control::AimPoint, and he faces the camera's way, not what is coming.
+	bool AimsByHand() const;
 	static const char* LoadoutName(Loadout loadout);
 	void RequestAttack() { if (m_Armed) m_WantsAttack = true; }
 	void RequestSheathe() { if (m_Armed) m_WantsSheathe = true; }

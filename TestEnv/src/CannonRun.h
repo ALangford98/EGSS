@@ -184,6 +184,7 @@ public:
 		float x = (float)view.X, y = displayHeight - (float)(view.Y + view.Height), w = (float)view.Width, h = (float)view.Height;
 		m_Session->DrawOverlay(x, y, w, h);
 		Markers(x, y, w, h);
+		Crosshair(x, y, w, h);
 	}
 
 private:
@@ -499,6 +500,21 @@ private:
 			list->AddTriangleFilled(tip, a, b, colour);
 		}
 		list->PopClipRect();
+	}
+
+	// Where a staff's bolt goes: the middle of the picture, where the
+	// camera's ray -- and so Control::AimPoint -- is.
+	void Crosshair(float x, float y, float w, float h)
+	{
+		Humanoid* rig = m_Session->Rig("Runner");
+		if (!rig || !rig->AimsByHand() || !rig->Drawn() || m_Paused || m_Phase == Phase::Finished)
+			return;
+		ImDrawList* list = ImGui::GetForegroundDrawList();
+		float scale = std::max(0.6f, h / 1080.0f);
+		ImVec2 at(x + 0.5f * w, y + 0.5f * h);
+		list->AddCircle(at, 11.0f * scale, IM_COL32(0, 0, 0, 120), 32, 4.0f * scale);
+		list->AddCircle(at, 11.0f * scale, IM_COL32(140, 200, 255, 230), 32, 2.0f * scale);
+		list->AddCircleFilled(at, 2.2f * scale, IM_COL32(200, 230, 255, 255));
 	}
 
 	ViewportRect DemoViewport() const

@@ -114,6 +114,7 @@ namespace GS {
 	private:
 		bool m_BlockEvents = true;
 		bool m_DockspaceEnabled = true;
+		bool m_MouseWithheld = false;   // ImGui told to ignore the mouse while the game has it captured
 		bool m_ViewportsEnabled = false;
 
 		static std::string s_FontPath;

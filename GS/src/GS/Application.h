@@ -57,6 +57,9 @@ namespace GS {
 		// quietly costs a demo the property the whole capture-as-regression-test
 		// habit depends on. A cursor is UI. It goes when the panels go.
 		inline bool IsUIHidden() const { return m_HideUI; }
+		// And during a session: the editor's fullscreen scene (F11) hides
+		// them to give the game the whole window.
+		void SetUIHidden(bool hidden) { m_HideUI = hidden; }
 
 		// --- Capture ---------------------------------------------------------
 

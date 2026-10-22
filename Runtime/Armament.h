@@ -80,6 +80,7 @@ struct ArmamentKit
 	bool Shield = false;                       // a shield on the left forearm
 	bool Dual = false;                         // a weapon in each hand
 	bool Barrier = false;                      // the guard is a staff's barrier
+	bool Aimed = false;                        // its casts go where the player aims (Control::AimPoint)
 	float Blade = 0.65f;                       // m from just past the grip to the tip (fists: the knuckles)
 	float GripSpacing = 0.0f;                  // m along the grip from the right hand to the left
 	std::vector<ArmamentStrike> Combo;
@@ -416,11 +417,12 @@ inline const ArmamentKit& ArmamentKitOf(Humanoid::Loadout loadout)
 			k.GuardSpeed = 0.70f;
 		}
 
-		// Staff: casts. Attack throws a bolt (the game aims it at the
-		// nearest cannon ahead; it shoots a ball down on the way); from the
-		// guard a nova throws every ball near him back; from a run, a sweep
-		// of the staff. Its guard is a barrier that swallows a ball, and its
-		// parry strikes the ball back.
+		// Staff: casts. Attack throws a bolt where the player aims -- the
+		// crosshair, aimed by hand (the owner, 2026-10-22: no aiming for him);
+		// it shoots a ball down if it meets one. From the guard a nova throws
+		// every ball near him back; from a run, a sweep of the staff. Its
+		// guard is a barrier that swallows a ball, and its parry strikes the
+		// ball back.
 		{
 			ArmamentKit& k = out[(size_t)Humanoid::Loadout::Staff];
 			k.Name = "staff";
@@ -469,6 +471,7 @@ inline const ArmamentKit& ArmamentKitOf(Humanoid::Loadout loadout)
 			k.CarryBlade = 0.35f;
 			k.CarryDir = { 0.0f, 1.0f, 0.12f };
 			k.Barrier = true;
+			k.Aimed = true;
 			k.ParryWindow = 0.25f;
 			k.ParryStrikes = true;
 			k.BlockShove = 0.0f;
@@ -891,6 +894,11 @@ inline void Humanoid::UpdateArmament(float dt)
 				glm::mat4 staff = PropFrame(0);
 				c.At = c.Nova ? m_World.GetBody(m_Pelvis).Position : glm::vec3(staff[3]) + glm::vec3(staff[1]) * (1.24f * s);
 				c.Direction = glm::vec3(std::sin(m_Facing), 0.0f, std::cos(m_Facing));
+				// From the staff's head to what is under the crosshair: the
+				// camera sees past his shoulder, so its ray and the bolt's
+				// cross at the point aimed at, not along the way.
+				if (Kit().Aimed && m_Control.HasAimPoint && glm::length(m_Control.AimPoint - c.At) > 0.5f)
+					c.Direction = glm::normalize(m_Control.AimPoint - c.At);
 				m_Casts.push_back(c);
 				if (m_Casts.size() > 8)
 					m_Casts.erase(m_Casts.begin());
@@ -984,6 +992,8 @@ inline float Humanoid::StrikeDip() const
 }
 
 inline float Humanoid::GuardSpeed() const { return Kit().GuardSpeed; }
+
+inline bool Humanoid::AimsByHand() const { return m_Armed && Kit().Aimed; }
 
 inline bool Humanoid::SwordCutting() const
 {
