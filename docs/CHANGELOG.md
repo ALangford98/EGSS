@@ -7,6 +7,91 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-22, evening (loadouts: seven weapons, each its own moveset)
+
+The owner: shield and short sword as the standard, plus a longsword, a
+katana, a greatsword, twin daggers, a magic staff and unarmed -- each
+complete with its own moveset.
+
+**Movesets are data.** `Runtime/Armament.h` was written for one sword and
+one shield; now a loadout is an `ArmamentKit` (a combo, a strike from the
+guard, one from a run, a guard of its own, what its parry does, how it is
+carried and put away) and a strike an `ArmamentStrike` (the hand's way from
+its shoulder at the start and the end of the cut in degrees, how far out,
+the shoulders' turn, the lean, the blade's angle, a surge of speed, the
+legs in the run's flight, a spin, how low, what it does to a cannon, how
+far out it meets a ball, a cast). One piece of code poses every one
+(`PoseArmament`: carry, guard, strike, the reach to put away or draw, then a
+two-handed weapon's left hand onto the grip wherever the right put it),
+and the locomotion asks the strike for its surge, leap, spin and dip.
+
+| loadout | combo | from the guard | from a run | guard |
+|---|---|---|---|---|
+| sword and shield | forehand, backhand, falling cut | shield lunge | running lunge | shield; parry glances |
+| longsword | falling, rising, cleave | thrust | leaping sweep | blade |
+| katana | four quick cuts and a thrust | dash cut | long dash cut | blade; parry strikes back |
+| greatsword | sweep, slam | heavy thrust | leaping spin, all the way round | blade, takes nearly all |
+| twin daggers | slash, slash, stab, stab, hand after hand | double stab | dash through | crossed; parry strikes back |
+| staff | bolt | nova | staff sweep | barrier; parry strikes back |
+| fists | jab, cross, hook, uppercut | lunging punch | flying punch | boxer's; lets most through |
+
+Keys 1-7 (`loadout1`..`loadout7`) and `loadout <name>` in the cannon run's
+terminal; what he holds is put away (half a second) and the new one drawn
+(another). Each is carried where it would be: a sword at the left hip, a
+katana flatter, a longsword or greatsword across the back with the hilt
+over the right shoulder, a dagger at each hip, the staff slung across the
+back, the shield between the shoulder blades. Fists need no sheathing, so
+parkour is always theirs; every other loadout must be put away for it (a
+speed vault with fists drawn, none with the staff drawn, measured).
+
+**The staff casts.** A bolt (32 m/s, 1.5 s) goes at a ball coming at him
+within 40 degrees of his facing -- where it will be, `|B + Vt - O| = St`
+and its fall over t -- else at the nearest cannon within 30 degrees, else
+straight; it hurts the first cannon it is inside and shoots down the first
+ball it meets. Aimed only at the cannon, a bolt crossed the ball's arc
+40-60 cm off and the ball came on. A nova throws every ball within 3.5 m
+back at its cannon and hurts a cannon beside him. Its guard is a barrier, a
+disc of light, that swallows a ball with no shove.
+
+**A wrist that turns.** A blade's way was the forearm's fold turned about
+the elbow's hinge -- fine for cuts, and the staff's guard came out
+standing upright instead of across his chest: the bend cannot point it
+there. A guard or carry can now give the blade's way outright in his
+trunk's frame (`GuardDir`, `CarryDir`) and the hand's angle is solved for
+it, as a forearm turns and a wrist bends; the staff lies across, the
+daggers cross in front of his face.
+
+**Measured,** in the real loop with injected input. Every loadout blocked
+3 of 3 balls, never down; every one parried at 0.12 s (katana, daggers and
+staff returning theirs and wrecking the cannon). Struck-back windows,
+predicted from each strike's cut and reach -- the ball must enter the
+strike's sphere while it cuts, so pressed between CutFrom + 0.024 and
+CutTo + (Meets + 0.47)/19 s before it arrives -- against what the sweep
+found: sword and shield 0.07-0.34 (0.14, 0.25 returned, 0.45 too early),
+longsword 0.12-0.42 (0.45 half), katana 0.06-0.29, greatsword 0.29-0.64
+(only 0.45 of 0.14/0.25/0.45), daggers 0.06-0.22 and fists 0.07-0.21 (only
+0.14): the greatsword commits early, the daggers and fists late, which is
+the point. The staff shot down 3 of 3 cast 0.25 or 0.45 s ahead. Guard
+lunges against surge x cut x 2/pi: 1.27/1.24 m (sword and shield),
+1.22/1.19, 1.40/1.37, 0.92/0.90, 1.12/1.09, 1.12/1.09; the greatsword's spin
+ends facing exactly where it began. Up close (1.9 m) five loadouts wreck a
+cannon; the daggers and fists have to close to 1.5 m.
+
+A wrong turn worth keeping: the first sweep said the greatsword and staff
+could not strike a ball back at any timing. The timings never reached the
+game -- `env ARMSLEAD=$3` through a shell function in zsh does not split
+`$3`, so every run used the default 0.14 s, too late for both. A ball
+traced step by step had been struck back all along.
+
+Also: a loadout asked for while the last was still being drawn is put away
+first (swapped as the draw ended, it vanished from his hands). The short
+sword is 0.65 m (it was 0.92).
+
+**Not yet:** running attacks skim the feet along the floor more than a run
+does (feet within a centimetre of it at 2.1-2.7 m/s p95, against 1.2): the
+run's moment of flight is held low; the sword cuts nothing but cannons;
+recorded attacks would beat these keyed arcs.
+
 ### 2026-10-22, later (dodge on Ctrl; a guard that looks right; lunges; sheathing, and no parkour drawn)
 
 The owner, after the sword and shield (the "styling" they meant is the

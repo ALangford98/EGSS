@@ -115,7 +115,10 @@ guard's walk (legs turned or backpedalling under a chest on the aim), lunges
 from the guard and from a run, sheathing (parkour only sheathed). Open:
 recorded strafe and backpedal strides would beat the turned forward ones;
 the sword cuts nothing but cannons; a 112 m/s^2 hip jolt as a backpedal
-starts from a bladed stance.
+starts from a bladed stance. That evening: seven loadouts with movesets of
+their own (keys 1-7), movesets as data (`ArmamentKit`, `ArmamentStrike`).
+Open: running attacks skim the feet; recorded attacks would beat keyed
+arcs.
 
 The old walk (`DriveWalk`, `PlaceFeet`, the set pieces, turn-stepping) was
 deleted on the owner's word, 2026-10-21.

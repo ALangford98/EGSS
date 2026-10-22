@@ -39,6 +39,10 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-22 — Loadouts**: sword and shield, longsword, katana,
+  greatsword, twin daggers, staff (bolts, nova, barrier), fists -- keys
+  1-7, each its own combo, guard lunge, running attack, guard and parry,
+  as data in `Runtime/Armament.h`.
 - **2026-10-22 — Guard, lunges, sheathing**: dodge on Left Ctrl; under
   the guard he walks with his legs turned or backpedalling, chest on the
   aim, never running; lunges from the guard (1.2 m) and a run (2.4 m);
