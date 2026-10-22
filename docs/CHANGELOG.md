@@ -7,6 +7,65 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-22, later (dodge on Ctrl; a guard that looks right; lunges; sheathing, and no parkour drawn)
+
+The owner, after the sword and shield (the "styling" they meant is the
+game's theme, later): dodge on Left Ctrl; make the guard look good -- no
+running under it, for one; lunge attacks; the sword and shield sheathed,
+and sheathed to do parkour.
+
+**Dodge on Left Ctrl** alone (it was the left button and Q). Fly down
+shares Ctrl and is only read flying. The swing has the left button to
+itself, so `CharacterController::DownApart` is gone.
+
+**The guard's walk.** It always capped him at 0.6 of his walk with no run
+(measured 0.8 m/s whatever is held, Shift included). What it lacked was
+legs: his chest on the aim and every stride recorded going forwards, so a
+step sideways was a forward stride sliding sideways. Now the legs have a
+yaw of their own (`m_LegYaw`): under the guard they turn towards the way he
+goes, up to 60 degrees off his chest, the rest a twist at the waist laid
+back over the stride (`PoseArmament`); going back he backpedals, the stride
+played backwards (a planted foot then moves forward under him, as a step
+back does); sideways he keeps whichever of the two is nearer where his
+legs are; stopped, they stay as they stand. Not guarding, the legs are his
+facing step for step -- unarmed, nothing changes. He stands a little lower
+(5 cm) and wider, the sword held up beside the shield. Chest on the aim
+throughout: within 8 degrees (0.99).
+
+Two things the measuring caught. Lowering him by moving the pose's root
+lowered the feet with it, and the swing foot scraped the floor: feet
+within 1 cm of it at 2.03 m/s p95 guarding, against 0.39 walking. Now only
+the hips go down (with the hip drop), the knees bend for it: 0.24. And the
+legs swung at the turning rate, at once: starting, stopping and reversing a
+strafe swung them 60-120 degrees about the planted foot with no easing, a
+229 m/s^2 jolt at the hips. On a spring (14 rad/s), keeping their stance
+and taking the nearer of forward or back: 112 at worst (the start of a
+backpedal from a bladed stance), p99 47 -> 32.
+
+**Lunges.** Attack from the guard: a short lunge behind the shield.
+Attack at a run: a long, leaping one. Both drive him along his facing at
+what he was going plus a sine surge over 0.24 s (8 m/s from the guard, 4
+on a run), the legs the run's own moment of flight with the right foot
+leading, the hips 10 cm down, the right hand drawn back and thrust straight
+out with the shoulder driven forward and the trunk leaning in; the stride
+comes back at that moment of itself. Predicted from the surge, 8 x 0.24 x
+2/pi = 1.22 m from the guard: measured 1.19. From a run 2.43 m. A lunge
+cuts like a swing -- strikes a ball back, hurts a cannon -- and a cannon
+takes 40 from one (`Gunnery::kLungeDamage`; a cut 25). Lunging off an edge
+is a leap, as running off one is.
+
+**Sheathing** (X, `sheathe` in the Controls). The sword goes in a scabbard
+at the left hip (always drawn there), the shield on his back: half a
+second, the right hand across to the hilt and the left up behind its
+shoulder, the props crossing over while the hands are there. A press of
+attack or the guard while sheathed draws them. Drawn, there is no parkour
+(`ParkourOn`): no vault, climb, wall run, drop or roll, and the jump is a
+jump. Measured in a scene with a box ahead: drawn, no move; sheathed, a
+speed vault. The cannon run's hints say so. The scabbard hangs 42 degrees
+below level -- at 29 it stuck out behind him like a tail, at 55 the run's
+pitched hips swung it to the floor; its tip stays 31 cm up walking,
+running, strafing and lunging.
+
 ### 2026-10-22 (a sword and shield: block, parry, strike back; cannons with health)
 
 The owner: give the player a sword and shield to block, parry and reflect

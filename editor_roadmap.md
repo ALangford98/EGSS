@@ -110,9 +110,12 @@ parkour's flow, the player's control first. Three projects, in order:
 **Sword and shield** -- landed 2026-10-22 (`Runtime/Armament.h`;
 changelog, same date): block, parry and strike a cannonball back; cannons
 with health, wrecked by returned balls or cuts. Simple mechanics first; the
-owner has ideas for how it should look. Open: a guard while moving needs
-strafe strides; the sword cuts nothing but cannons; posed swings only (none
-in a move or in the air from a move).
+owner's theme for the game comes later. Same day: dodge on Left Ctrl, the
+guard's walk (legs turned or backpedalling under a chest on the aim), lunges
+from the guard and from a run, sheathing (parkour only sheathed). Open:
+recorded strafe and backpedal strides would beat the turned forward ones;
+the sword cuts nothing but cannons; a 112 m/s^2 hip jolt as a backpedal
+starts from a bladed stance.
 
 The old walk (`DriveWalk`, `PlaceFeet`, the set pieces, turn-stepping) was
 deleted on the owner's word, 2026-10-21.
