@@ -72,6 +72,10 @@ public:
 		bool Enabled = true;
 		bool Forward = false, Back = false, Left = false, Right = false;
 		bool Run = false;
+		// Sword and shield (Runtime/Armament.h): the shield up while held,
+		// and the way he guards and swings -- degrees, as Yaw is.
+		bool Guard = false;
+		float AimYaw = -90.0f;
 	};
 
 	explicit Humanoid(GS::PhysicsWorld3D& world) : m_World(world) {}
@@ -81,6 +85,37 @@ public:
 
 	Control& GetControl() { return m_Control; }
 	void RequestJump() { m_WantsJump = true; }
+
+	// --- Sword and shield (Runtime/Armament.h) ----------------------------
+	//
+	// A sword in his right hand, a round shield on his left forearm. Hold
+	// the guard (Control::Guard) and the shield comes up and he faces his
+	// aim; press attack and he swings, forehand then backhand if pressed
+	// again. What reaches him is asked of WardOff by whoever threw it: a
+	// ball meeting the shield is blocked (he is shoved back a little), one
+	// meeting it within ParryWindow of raising it is parried (glanced off
+	// at speed, no shove), and one met by the sword's cut is struck back.
+	void SetArmed(bool armed);
+	bool Armed() const { return m_Armed; }
+	void RequestAttack() { if (m_Armed) m_WantsAttack = true; }
+	enum class Ward { None, Blocked, Parried, Struck };
+	struct WardResult
+	{
+		Ward Kind = Ward::None;
+		glm::vec3 Velocity{ 0.0f };   // what the thing should go on at; for Struck, the thrower aims it
+		glm::vec3 Point{ 0.0f };      // where it was met
+	};
+	WardResult WardOff(const glm::vec3& at, const glm::vec3& velocity, float radius, float mass, float dt);
+	// The cutting part of a swing, and which swing it is (to hit a thing once per swing).
+	bool SwordCutting() const { return m_Armed && m_Swing >= kSwingCutFrom && m_Swing <= kSwingCutTo; }
+	uint32_t SwingId() const { return m_Swings; }
+	void SwordEdge(glm::vec3& hilt, glm::vec3& tip) const;
+	float GuardAmount() const { return m_Guard; }
+	// Where to draw them: the grip (+y up the blade) and the shield's middle
+	// (+y out of its face), from his forearms -- held, swinging or limp.
+	glm::mat4 SwordFrame() const;
+	glm::mat4 ShieldFrame() const;
+	static constexpr float kSwordLength = 0.92f, kShieldRadius = 0.31f;
 
 	// The body to build: set before Spawn (it is what Spawn builds).
 	void SetPhysique(const GS::PhysiqueSettings& physique) { m_Physique = physique; }
@@ -340,6 +375,7 @@ public:
 		RefreshStandable();
 		EaseJointsClosed(dt);
 		m_Balance = ComputeBalance();
+		UpdateArmament(dt);
 
 		if (m_Mode == Mode::Controlled)
 		{
@@ -7582,6 +7618,27 @@ protected:
 	std::function<void(Humanoid&)> m_LocoBaker;
 	bool m_LocoPosed = false;    // his limbs kinematic, placed by the locomotion
 	bool m_LocoEntering = true;  // taken back from whatever had him: start from his bodies
+
+	// --- sword and shield (Runtime/Armament.h) ---
+	static constexpr float kSwingCutFrom = 0.05f, kSwingCutTo = 0.24f, kSwingTime = 0.40f;
+	static constexpr float kParryWindow = 0.20f;
+	void UpdateArmament(float dt);
+	void PoseArmament(glm::vec3* P, glm::quat* Q, float dt);
+	void ArmTurns(int side, const glm::vec3& shoulder, const glm::vec3& wrist, const glm::vec3& pole,
+		glm::quat& upper, glm::quat& fore) const;
+	glm::vec3 RestWrist(int side) const;
+	bool m_Armed = false;
+	bool m_WantsAttack = false;
+	float m_Guard = 0.0f;           // 0 the shield down, 1 up
+	float m_GuardHeld = -1.0f;      // s since the guard was raised, or -1 while it is not
+	float m_Swing = -1.0f;          // s into a swing, or -1
+	float m_SwingWay = 1.0f;        // 1 forehand (right to left), -1 backhand
+	bool m_SwingQueued = false;
+	uint32_t m_Swings = 0;
+	float m_Wrist = 0.75f;          // the blade's angle off the forearm's fold, radians
+	float m_Recoil = 0.0f, m_RecoilRate = 0.0f;   // the shield knocked back by a block, m
+	glm::vec3 m_Strap{ 0.0f, 0.0f, -1.0f };       // the shield's face, in the forearm's frame
 };
 
 #include "Locomotion.h"
+#include "Armament.h"

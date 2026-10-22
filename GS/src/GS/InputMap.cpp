@@ -90,6 +90,14 @@ namespace GS {
 			// thought -- the thumb beside Space -- but on KDE Alt and a
 			// right drag resizes the window.
 			{ "dodge",    "Dodge (with a direction)", "Moving", {}, { Mouse(GS_MOUSE_BUTTON_LEFT), Key(GS_KEY_Q) } },
+			// The sword and shield (Runtime/Armament.h), where a character
+			// carries them: the index finger swings -- a ball is struck back
+			// on the timing of the press -- and the guard is held on the
+			// button that also looks at what is coming, which is what a
+			// guard is for. Armed, the dodge gives up its left button to the
+			// swing and keeps Q.
+			{ "attack",   "Swing the sword",          "Fighting", {}, { Mouse(GS_MOUSE_BUTTON_LEFT), Key(GS_KEY_F) } },
+			{ "block",    "Shield up (hold)",         "Fighting", {}, { Mouse(GS_MOUSE_BUTTON_RIGHT), Key(GS_KEY_V) } },
 			{ "look",     "Look (hold)",              "Camera", {}, { Mouse(GS_MOUSE_BUTTON_RIGHT) } },
 			{ "focus",    "Look at what is coming (hold)", "Camera", {}, { Mouse(GS_MOUSE_BUTTON_RIGHT), Key(GS_KEY_TAB) } },
 			{ "turnleft", "Turn left",                "Camera", {}, { Key(GS_KEY_LEFT) } },

@@ -24,6 +24,15 @@
 // What it knows of the game is the runner (a Humanoid) and the session it
 // makes its balls in; what the game asks of it is what to look at (Focus)
 // and which way is away (Evade), for the camera and an unaimed dodge.
+//
+// And it can be fought (2026-10-22). A runner carrying a sword and shield
+// (Runtime/Armament.h) is asked about every ball about to reach him
+// (Humanoid::WardOff): blocked, it drops in front of him; parried, it glances
+// away; struck, it is sent back at the cannon that fired it, on a ballistic
+// arc solved as the cannon solves its own. Each cannon has Settings::Health:
+// a ball returned into it takes kReturnDamage, a cut of the sword
+// kSwordDamage. At none it is wrecked -- a blast, the barrel dropped onto its
+// carriage, smoke -- and fires no more. A bar over each says how it is.
 
 #include <GS.h>
 
@@ -52,7 +61,11 @@ public:
 		float MinRange = 9.0f, MaxRange = 36.0f;
 		float Arc = 80.0f;          // degrees it turns either side of its yaw
 		float Phase = 0.0f;         // s on its first reload, so a battery does not fire as one
+		float Health = 100.0f;      // two returned balls, or four cuts
 	};
+
+	// What hurts a cannon, out of its Health.
+	static constexpr float kReturnDamage = 50.0f, kSwordDamage = 25.0f;
 
 	struct Zone { glm::vec3 Min{ 0.0f }, Max{ 0.0f }; };
 
@@ -67,7 +80,7 @@ public:
 	// The sounds, made once: nothing is loaded from a file.
 	struct Sounds
 	{
-		std::shared_ptr<GS::AudioClip> Charge, Thump, Whistle, Thud, Hit;
+		std::shared_ptr<GS::AudioClip> Charge, Thump, Whistle, Thud, Hit, Clang, Boom;
 	};
 
 	~Gunnery() { Silence(); }
@@ -82,6 +95,7 @@ public:
 		m_Hits = 0;
 		m_Shots = 0;
 		m_Held = 0;
+		m_Blocks = m_Parries = m_Returns = m_Wrecked = 0;
 		m_Clock = 0.0f;
 	}
 
@@ -96,6 +110,7 @@ public:
 		c.AimYaw = yaw;
 		c.AimPitch = 4.0f;
 		c.S = settings;
+		c.Health = settings.Health;
 		c.Clock = settings.Reload * 0.5f + settings.Phase;
 		const glm::vec3 turned(0.0f, yaw, 0.0f);
 		c.Base = Mesh(scene, (name + " Base").c_str(), "model:cannon.base", pivot, turned);
@@ -116,6 +131,12 @@ public:
 	int Shots() const { return m_Shots; }
 	// Shots held back as unfair -- charging when he went into a move, say.
 	int Held() const { return m_Held; }
+	// What the sword and shield did: balls blocked, parried, struck back;
+	// cannons wrecked.
+	int Blocks() const { return m_Blocks; }
+	int Parries() const { return m_Parries; }
+	int Returns() const { return m_Returns; }
+	int Wrecked() const { return m_Wrecked; }
 
 	// Every ball gone and every cannon reloading from the start, as for a
 	// new run.
@@ -128,10 +149,13 @@ public:
 		{
 			c.Clock = c.S.Reload * 0.5f + c.S.Phase;
 			c.Charging = -1.0f;
+			c.Health = c.S.Health;
+			c.Wrecked = false;
 		}
 		m_Hits = 0;
 		m_Shots = 0;
 		m_Held = 0;
+		m_Blocks = m_Parries = m_Returns = m_Wrecked = 0;
 		m_SinceDown = 0.0f;
 	}
 
@@ -153,6 +177,7 @@ public:
 		}
 		StepBalls(dt, session, scene, rig);
 		StepPuffs(dt);
+		StepSword(scene, rig);
 		for (Cannon& c : m_Cannons)
 			StepCannon(dt, c, session, scene, rig, armed);
 	}
@@ -184,6 +209,22 @@ public:
 				point = Muzzle(c);
 				found = true;
 			}
+		if (found)
+			return true;
+		// Nothing coming: a cannon within a sword's reach, so a swing (and
+		// Focus) turns to it -- too close to fire, it never charges, and a
+		// swing at the camera's way beside it cut the air.
+		float nearest = 3.0f;
+		for (const Cannon& c : m_Cannons)
+		{
+			float distance = glm::length(glm::vec2(c.Pivot.x - m_Runner.x, c.Pivot.z - m_Runner.z));
+			if (!c.Wrecked && distance < nearest)
+			{
+				nearest = distance;
+				point = c.Pivot - glm::vec3(0.0f, 0.3f, 0.0f);
+				found = true;
+			}
+		}
 		return found;
 	}
 
@@ -238,8 +279,8 @@ public:
 			// The lamp on the barrel: dim amber at rest; charging, blinking
 			// faster and faster and red at the end.
 			glm::vec3 lamp = c.Pivot + BarrelTurn(c) * glm::vec3(0.0f, 0.24f, -0.05f);
-			float glow = 0.4f;
-			glm::vec4 colour(1.0f, 0.55f, 0.1f, 1.0f);
+			float glow = c.Wrecked ? 0.0f : 0.4f;
+			glm::vec4 colour = c.Wrecked ? glm::vec4(0.15f, 0.12f, 0.1f, 1.0f) : glm::vec4(1.0f, 0.55f, 0.1f, 1.0f);
 			if (c.Charging >= 0.0f)
 			{
 				float done = 1.0f - c.Charging / std::max(c.S.Charge, 0.01f);
@@ -255,6 +296,33 @@ public:
 			d.Emission = glow;
 			d.CastShadow = false;
 			out.push_back(d);
+
+			// Its health, over it: a dark bar, filled green to red by what is
+			// left -- and flashing white for a moment when it is hurt. Across
+			// its own facing, so the course it covers sees it broadside.
+			if (!c.Wrecked)
+			{
+				std::shared_ptr<GS::Mesh> cube = GS::MeshCache::Get("primitive:cube");
+				float left = glm::clamp(c.Health / std::max(c.S.Health, 1.0f), 0.0f, 1.0f);
+				glm::quat facing = glm::angleAxis(glm::radians(c.Yaw), glm::vec3(0.0f, 1.0f, 0.0f));
+				glm::vec3 across = facing * glm::vec3(1.0f, 0.0f, 0.0f);
+				glm::vec3 over = c.Pivot + glm::vec3(0.0f, 0.95f, 0.0f);
+				const float length = 1.0f;
+				ExtraDraw back;
+				back.Mesh = cube;
+				back.Model = glm::translate(glm::mat4(1.0f), over) * glm::mat4_cast(facing) * glm::scale(glm::mat4(1.0f), glm::vec3(length + 0.04f, 0.12f, 0.06f));
+				back.Color = glm::vec4(0.05f, 0.05f, 0.06f, 1.0f);
+				back.CastShadow = false;
+				out.push_back(back);
+				ExtraDraw fill;
+				fill.Mesh = cube;
+				glm::vec3 middle = over + across * (-0.5f * length * (1.0f - left));
+				fill.Model = glm::translate(glm::mat4(1.0f), middle) * glm::mat4_cast(facing) * glm::scale(glm::mat4(1.0f), glm::vec3(length * left, 0.08f, 0.08f));
+				fill.Color = c.Flash > 0.0f ? glm::vec4(1.0f) : glm::mix(glm::vec4(0.95f, 0.18f, 0.1f, 1.0f), glm::vec4(0.3f, 0.9f, 0.35f, 1.0f), left);
+				fill.Emission = c.Flash > 0.0f ? 4.0f : 1.2f;
+				fill.CastShadow = false;
+				out.push_back(fill);
+			}
 		}
 		for (const Puff& p : m_Puffs)
 		{
@@ -356,6 +424,34 @@ public:
 			};
 			s.Thud = thud(70.0f, 0.45f, 1.4f);
 			s.Hit = thud(95.0f, 0.5f, 2.2f);
+			// The clang of iron on steel: a bell's inharmonic partials, the
+			// high ones dying first, over a click. Played higher for a parry
+			// and a cut, lower for a block.
+			s.Clang = make(0.9f, [&](float t, uint32_t i)
+			{
+				const float ratio[4] = { 1.0f, 2.32f, 4.25f, 6.63f }, decay[4] = { 5.0f, 8.0f, 13.0f, 19.0f }, level[4] = { 0.5f, 0.35f, 0.25f, 0.15f };
+				float ring = 0.0f;
+				for (int k = 0; k < 4; k++)
+					ring += level[k] * std::sin(glm::two_pi<float>() * 610.0f * ratio[k] * t) * std::exp(-t * decay[k]);
+				float click = t < 0.006f ? noise(i + 7u) * (1.0f - t / 0.006f) : 0.0f;
+				return std::tanh(1.4f * (ring + 0.8f * click)) * 0.75f;
+			});
+			// A cannon wrecked: a blast -- a falling thump under a long roar of
+			// low noise.
+			{
+				float lp = 0.0f, lp2 = 0.0f, phase = 0.0f;
+				s.Boom = make(1.8f, [&](float t, uint32_t i)
+				{
+					float f = 30.0f + 70.0f * std::exp(-t * 6.0f);
+					phase += glm::two_pi<float>() * f / rate;
+					lp += (noise(i + 31337u) - lp) * 0.05f;
+					lp2 += (lp - lp2) * 0.2f;
+					float body = std::sin(phase) * std::exp(-t * 3.0f);
+					float roar = lp2 * 6.0f * std::exp(-t * 2.2f);
+					float crack = t < 0.01f ? noise(i) * (1.0f - t / 0.01f) : 0.0f;
+					return std::tanh(2.2f * (body + roar + 0.7f * crack)) * 0.95f;
+				});
+			}
 			return s;
 		}();
 		return sounds;
@@ -373,6 +469,11 @@ private:
 		float Charging = -1.0f;                 // s left of a charge, or -1
 		float Lit = 0.0f;                       // s since the charge began, for the lamp
 		float PlannedArrival = 0.0f;            // when this charge's shot would reach him
+		float Health = 100.0f;
+		bool Wrecked = false;
+		float Flash = 0.0f;                     // s left of the bar's flash, after a hurt
+		float Smoke = 0.0f;                     // s until the next puff from a hurt cannon
+		uint32_t LastSwing = 0;                 // the sword's swing that last cut it: once a swing
 		GS::VoiceHandle ChargeVoice = GS::InvalidVoice;
 		GS::EntityId Base = GS::InvalidEntity, Yoke = GS::InvalidEntity, Barrel = GS::InvalidEntity;
 	};
@@ -383,8 +484,11 @@ private:
 		glm::vec3 Position{ 0.0f }, Velocity{ 0.0f };
 		float Age = 0.0f, SinceLanded = -1.0f;
 		float Arrival = 0.0f;                   // when it was aimed to reach him (m_Clock)
-		float Radius = 0.17f;
+		float Radius = 0.17f, Mass = 12.0f;
+		int From = -1;                          // the cannon that fired it
 		bool Landed = false, Struck = false;
+		bool Warded = false;                    // met by the sword or the shield
+		bool Returned = false;                  // struck back, and not yet into anything
 		GS::VoiceHandle Whistle = GS::InvalidVoice;
 	};
 	struct Puff
@@ -556,6 +660,29 @@ private:
 
 	void StepCannon(float dt, Cannon& c, GameSession& session, GS::Scene& scene, Humanoid* rig, bool armed)
 	{
+		c.Flash = std::max(c.Flash - dt, 0.0f);
+		// Hurt, it smokes -- the more the worse it is; wrecked, it pours.
+		if (c.Wrecked || c.Health < c.S.Health)
+		{
+			c.Smoke -= dt;
+			if (c.Smoke <= 0.0f)
+			{
+				float left = c.Wrecked ? 0.0f : c.Health / std::max(c.S.Health, 1.0f);
+				c.Smoke = c.Wrecked ? 0.18f : 0.3f + 1.2f * left;
+				uint32_t h = (m_PuffCount++ + 1u) * 2654435761u;
+				auto r = [&](int n) { return (float)((h >> (n * 5)) & 31u) / 31.0f - 0.5f; };
+				Puff smoke;
+				smoke.Position = c.Pivot + glm::vec3(r(0) * 0.4f, 0.1f, r(1) * 0.4f);
+				smoke.Velocity = glm::vec3(r(2) * 0.4f, 1.2f + 0.4f * r(3), r(4) * 0.4f);
+				smoke.Life = 1.6f + 0.4f * r(5);
+				smoke.Size = c.Wrecked ? 0.32f : 0.2f;
+				float grey = c.Wrecked ? 0.16f : 0.4f;
+				smoke.Color = glm::vec4(grey, grey, grey * 1.05f, 1.0f);
+				m_Puffs.push_back(smoke);
+			}
+		}
+		if (c.Wrecked)
+			return;
 		GS::PhysicsWorld3D& world = session.World();
 		Aim a;
 		if (rig)
@@ -661,6 +788,8 @@ private:
 		b.Velocity = body.Velocity;
 		b.Arrival = m_Clock + a.Flight;
 		b.Radius = 0.5f * c.S.Size;
+		b.Mass = c.S.Mass;
+		b.From = (int)(&c - m_Cannons.data());
 		m_Shots++;
 
 		if (GS::AudioEngine::IsAvailable())
@@ -728,7 +857,7 @@ private:
 		GS::PhysicsWorld3D& world = session.World();
 		for (Ball& b : m_Balls)
 		{
-			const GS::RigidBody3D& body = world.GetBody(b.Body);
+			GS::RigidBody3D& body = world.GetBody(b.Body);
 			glm::vec3 before = b.Velocity;
 			b.Position = body.Position;
 			b.Velocity = body.Velocity;
@@ -737,6 +866,42 @@ private:
 				b.SinceLanded += dt;
 			if (b.Whistle != GS::InvalidVoice)
 				GS::AudioEngine::SetVoicePosition(b.Whistle, b.Position, b.Velocity);
+
+			// About to reach a runner with a sword and shield: his to answer,
+			// before the next step can carry it into him.
+			if (rig && rig->Armed() && !b.Warded && !b.Landed)
+			{
+				Humanoid::WardResult ward = rig->WardOff(b.Position, b.Velocity, b.Radius, b.Mass, dt);
+				if (ward.Kind != Humanoid::Ward::None)
+				{
+					glm::vec3 v = ward.Kind == Humanoid::Ward::Struck ? ReturnVelocity(b, ward.Velocity) : ward.Velocity;
+					body.Velocity = v;
+					body.AngularVelocity = glm::vec3(0.0f);
+					body.Awake = true;
+					body.SleepTimer = 0.0f;
+					b.Velocity = v;
+					b.Warded = true;
+					b.Struck = true;   // not a hit: nothing after this counts against him
+					b.Returned = ward.Kind == Humanoid::Ward::Struck;
+					if (ward.Kind == Humanoid::Ward::Blocked) m_Blocks++;
+					else if (ward.Kind == Humanoid::Ward::Parried) m_Parries++;
+					else m_Returns++;
+					if (!b.Returned)
+						StopVoice(b.Whistle);
+					PlayOnce(Clips().Clang, ward.Point, 1.0f, ward.Kind == Humanoid::Ward::Blocked ? 0.75f : 1.15f);
+					Sparks(ward.Point, 8);
+					continue;
+				}
+			}
+			// Struck back: into a cannon, it hurts it.
+			if (b.Returned)
+				for (Cannon& c : m_Cannons)
+					if (!c.Wrecked && InCannon(c, b.Position, b.Radius))
+					{
+						b.Returned = false;
+						Hurt(c, kReturnDamage, scene, b.Position);
+						break;
+					}
 			// A blow can come and go between two of GameSession's substeps,
 			// and only the last one's contacts are kept: near enough to his
 			// trunk counts as one too.
@@ -802,6 +967,144 @@ private:
 		}
 	}
 
+	// Which way to send a ball struck back: at the cannon that fired it (or,
+	// that one wrecked, the nearest still standing within 60 degrees of where
+	// the strike sent it), on the low arc that reaches it at kReturnSpeed --
+	// the projectile equation from where the ball is, as SolvePitch solves it
+	// from a muzzle. Out of reach, the strike's own way.
+	glm::vec3 ReturnVelocity(const Ball& b, const glm::vec3& struck) const
+	{
+		const Cannon* target = nullptr;
+		if (b.From >= 0 && b.From < (int)m_Cannons.size() && !m_Cannons[(size_t)b.From].Wrecked)
+			target = &m_Cannons[(size_t)b.From];
+		if (!target && glm::length(struck) > 1e-3f)
+		{
+			float best = 60.0f;
+			glm::vec3 way = glm::normalize(struck);
+			for (const Cannon& c : m_Cannons)
+			{
+				glm::vec3 to = c.Pivot - b.Position;
+				float distance = glm::length(to);
+				if (c.Wrecked || distance < 1e-3f || distance > best || glm::dot(to / distance, way) < 0.5f)
+					continue;
+				best = distance;
+				target = &c;
+			}
+		}
+		if (!target)
+			return struck;
+		const float g = 9.81f, v = kReturnSpeed;
+		glm::vec3 to = (target->Pivot - glm::vec3(0.0f, 0.35f, 0.0f)) - b.Position;
+		float x = glm::length(glm::vec2(to.x, to.z)), y = to.y;
+		float root = v * v * v * v - g * (g * x * x + 2.0f * y * v * v);
+		if (root < 0.0f || x < 1e-3f)
+			return struck;
+		float pitch = std::atan((v * v - std::sqrt(root)) / (g * x));
+		glm::vec3 flat(to.x / x, 0.0f, to.z / x);
+		return flat * (v * std::cos(pitch)) + glm::vec3(0.0f, v * std::sin(pitch), 0.0f);
+	}
+
+	// Inside what a cannon is, with `pad` to spare: the carriage and yoke up
+	// to the top of the barrel, a little over a metre across -- and the
+	// barrel itself out to the muzzle, which is what sticks out at him: with
+	// the carriage alone, a swing from where he could stand stopped 10 cm short.
+	static bool InCannon(const Cannon& c, const glm::vec3& p, float pad)
+	{
+		glm::vec3 d = p - c.Pivot;
+		if (std::fabs(d.x) <= 0.55f + pad && std::fabs(d.z) <= 0.55f + pad && d.y >= -1.25f - pad && d.y <= 0.45f + pad)
+			return true;
+		glm::vec3 muzzle = Muzzle(c) - c.Pivot;
+		float along = glm::clamp(glm::dot(d, muzzle) / std::max(glm::dot(muzzle, muzzle), 1e-6f), 0.0f, 1.0f);
+		return glm::length(d - muzzle * along) <= 0.2f + pad;
+	}
+
+	// The sword's cut against the cannons: anywhere along the blade inside
+	// one hurts it, once a swing.
+	void StepSword(GS::Scene& scene, Humanoid* rig)
+	{
+		if (!rig || !rig->Armed() || !rig->SwordCutting())
+			return;
+		glm::vec3 hilt, tip;
+		rig->SwordEdge(hilt, tip);
+		for (Cannon& c : m_Cannons)
+		{
+			if (c.Wrecked || c.LastSwing == rig->SwingId())
+				continue;
+			for (int k = 0; k <= 6; k++)
+			{
+				glm::vec3 p = glm::mix(hilt, tip, (float)k / 6.0f);
+				if (InCannon(c, p, 0.05f))
+				{
+					c.LastSwing = rig->SwingId();
+					PlayOnce(Clips().Clang, p, 0.9f, 0.9f);
+					Hurt(c, kSwordDamage, scene, p);
+					break;
+				}
+			}
+		}
+	}
+
+	void Hurt(Cannon& c, float damage, GS::Scene& scene, const glm::vec3& at)
+	{
+		c.Health = std::max(c.Health - damage, 0.0f);
+		c.Flash = 0.2f;
+		c.Smoke = std::min(c.Smoke, 0.1f);
+		Sparks(at, 10);
+		PlayOnce(Clips().Hit, at, 1.0f);
+		if (c.Health > 0.0f)
+			return;
+		// Wrecked: it stops, its barrel drops onto the carriage, and it goes
+		// up -- a flash, and a column of dark smoke.
+		c.Wrecked = true;
+		c.Charging = -1.0f;
+		StopVoice(c.ChargeVoice);
+		c.AimPitch = -28.0f;
+		AimMesh(scene, c);
+		m_Wrecked++;
+		PlayOnce(Clips().Boom, c.Pivot, 1.0f);
+		Puff flash;
+		flash.Position = c.Pivot;
+		// Small and short: puffs swell to twice their size, and at 1.1 m the
+		// flash filled the picture as an opaque ball 2 m across.
+		flash.Life = 0.15f;
+		flash.Size = 0.45f;
+		flash.Color = glm::vec4(1.0f, 0.7f, 0.35f, 1.0f);
+		flash.Emission = 10.0f;
+		m_Puffs.push_back(flash);
+		for (int k = 0; k < 14; k++)
+		{
+			uint32_t h = (m_PuffCount++ + 1u) * 2246822519u;
+			auto r = [&](int n) { return (float)((h >> (n * 5)) & 31u) / 31.0f - 0.5f; };
+			Puff smoke;
+			smoke.Position = c.Pivot + glm::vec3(r(0), r(1) * 0.5f, r(2)) * 0.5f;
+			smoke.Velocity = glm::vec3(r(3) * 4.0f, 2.0f + 2.0f * r(4), r(5) * 4.0f);
+			smoke.Life = 1.4f + 0.5f * r(1);
+			smoke.Size = 0.35f;
+			smoke.Color = glm::vec4(0.2f, 0.19f, 0.18f, 1.0f);
+			smoke.Emission = 0.2f;
+			m_Puffs.push_back(smoke);
+		}
+		Sparks(c.Pivot, 16);
+	}
+
+	// Sparks: hot specks flung out from a strike, gone in a fifth of a second.
+	void Sparks(const glm::vec3& at, int count)
+	{
+		for (int k = 0; k < count; k++)
+		{
+			uint32_t h = (m_PuffCount++ + 1u) * 3266489917u;
+			auto r = [&](int n) { return (float)((h >> (n * 5)) & 31u) / 31.0f - 0.5f; };
+			Puff spark;
+			spark.Position = at;
+			spark.Velocity = glm::vec3(r(0), r(1) + 0.4f, r(2)) * 9.0f;
+			spark.Life = 0.15f + 0.15f * (r(3) + 0.5f);
+			spark.Size = 0.035f;
+			spark.Color = glm::vec4(1.0f, 0.75f, 0.35f, 1.0f);
+			spark.Emission = 9.0f;
+			m_Puffs.push_back(spark);
+		}
+	}
+
 	void StepPuffs(float dt)
 	{
 		for (Puff& p : m_Puffs)
@@ -859,13 +1162,14 @@ private:
 			StopVoice(b.Whistle);
 	}
 
-	static void PlayOnce(const std::shared_ptr<GS::AudioClip>& clip, const glm::vec3& at, float volume)
+	static void PlayOnce(const std::shared_ptr<GS::AudioClip>& clip, const glm::vec3& at, float volume, float pitch = 1.0f)
 	{
 		if (!GS::AudioEngine::IsAvailable())
 			return;
 		GS::Audio3DParams p;
 		p.Position = at;
 		p.Volume = volume;
+		p.Pitch = pitch;
 		p.MinDistance = 3.0f;
 		p.MaxDistance = 60.0f;
 		p.DopplerFactor = 0.0f;
@@ -882,6 +1186,9 @@ private:
 	float m_Clock = 0.0f;
 	float m_SinceDown = 0.0f;
 	int m_Hits = 0, m_Shots = 0, m_Held = 0;
+	int m_Blocks = 0, m_Parries = 0, m_Returns = 0, m_Wrecked = 0;
+	uint32_t m_PuffCount = 0;          // the puffs' hash stream: the same smoke every replay
+	static constexpr float kReturnSpeed = 24.0f;   // m/s, a ball struck back
 	// The rules of fair, in seconds.
 	float m_Spacing = 1.2f;          // between two shots' arrivals
 	float m_MinFlight = 0.55f;       // no shot quicker than this from the muzzle -- the charge is the warning

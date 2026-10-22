@@ -12,6 +12,12 @@
 // what is coming (hold Focus), to time your dodge. Markers at the edge of
 // the picture say where a charge or a ball is when it is out of sight.
 //
+// He carries a sword and shield (Runtime/Armament.h): hold the shield up
+// (the right button, which also looks at what is coming) to block a ball,
+// raise it just as one arrives to parry it, swing (the left button) into
+// one to send it back at its cannon -- two of those wreck one, or four
+// cuts up close. `sword off` puts them away.
+//
 //   R    start again          N    a new course (from a new seed)
 //   Esc  pause                `    the terminal: `course 4711` runs that
 //                                  course, `course` the hand-made one
@@ -48,11 +54,14 @@ namespace CannonRunScreens
 				{ "type": "panel", "anchor": "top-right", "pos": [28, 28], "layout": "vertical", "padding": 14, "gap": 2, "children": [
 					{ "type": "label", "text": "HITS  {run.hits}", "style": "title" },
 					{ "type": "label", "text": "dodges  {run.dodges}", "style": "dim" },
+					{ "type": "label", "text": "blocked {run.blocks}   parried {run.parries}   returned {run.returns}", "style": "dim", "visible": "run.armed" },
+					{ "type": "label", "text": "cannons wrecked  {run.wrecked}", "style": "accent", "visible": "run.armed" },
 					{ "type": "label", "text": "{run.course}", "style": "dim" } ] },
 				{ "type": "panel", "anchor": "top-left", "pos": [28, 28], "layout": "vertical", "padding": 14, "gap": 2, "visible": "run.move", "children": [
 					{ "type": "label", "text": "{run.move}", "style": "title" } ] },
 				{ "type": "panel", "anchor": "bottom", "pos": [0, 22], "padding": 12, "children": [
-					{ "type": "label", "text": "{keys.dodge} dodge, with a direction     hold {keys.focus} look at what is coming     {keys.sprint} run     {keys.jump} jump / vault / climb     {keys.restart} restart     {keys.cancel} pause", "style": "dim" } ] },
+					{ "type": "label", "text": "{keys.dodge} dodge, with a direction     hold {keys.focus} look at what is coming     {keys.sprint} run     {keys.jump} jump / vault / climb     {keys.restart} restart     {keys.cancel} pause", "style": "dim", "visible": "run.unarmed" },
+					{ "type": "label", "text": "{keys.attack} swing     hold {keys.block} shield up (raise it as one lands: parry)     Q dodge     {keys.sprint} run     {keys.jump} jump / vault / climb     {keys.restart} restart     {keys.cancel} pause", "style": "dim", "visible": "run.armed" } ] },
 				{ "type": "panel", "anchor": "bottom", "pos": [0, 96], "layout": "vertical", "padding": 22, "gap": 6, "visible": "run.ready", "children": [
 					{ "type": "label", "text": "CANNON RUN", "style": "big", "align": "center" },
 					{ "type": "label", "text": "the clock starts at the line: get round, fast", "align": "center" },
@@ -63,6 +72,7 @@ namespace CannonRunScreens
 					{ "type": "label", "text": "{run.time}", "fontSize": 76, "align": "center" },
 					{ "type": "label", "text": "{run.verdict}", "style": "good", "align": "center" },
 					{ "type": "label", "text": "hit {run.hits} times, down {run.downs}, {run.dodges} dodges", "align": "center" },
+					{ "type": "label", "text": "{run.wrecked} cannons wrecked, {run.returns} balls returned", "align": "center", "visible": "run.armed" },
 					{ "type": "label", "text": "{keys.restart}  run it again          {keys.next}  a new course", "style": "dim", "align": "center" } ] },
 				{ "type": "panel", "anchor": "center", "layout": "vertical", "padding": 26, "gap": 6, "visible": "run.paused", "children": [
 					{ "type": "label", "text": "PAUSED", "style": "title", "align": "center" },
@@ -221,6 +231,17 @@ private:
 		ui.RegisterBuiltin("run-gate-finish", RunCourse::GateScreen("FINISH", "#ffffff"));
 		ui.Show("run");
 		ui.Show("hud", false);
+		// The sword and shield, unless put away.
+		if (Humanoid* rig = m_Session->Rig("Runner"))
+			rig->SetArmed(m_Armed);
+		m_Session->Console().Register("sword", "[on|off]", "carry the sword and shield, or put them away",
+			[this](const GameConsole::Args& a)
+			{
+				m_Armed = a.empty() ? !m_Armed : a[0] != "off";
+				if (Humanoid* rig = m_Session->Rig("Runner"))
+					rig->SetArmed(m_Armed);
+				m_Session->Console().Print(m_Armed ? "sword and shield: carried" : "sword and shield: put away");
+			});
 		m_Session->Console().Register("course", "[seed]", "run a course: a number makes one from that seed; none, the one made by hand",
 			[this](const GameConsole::Args& a)
 			{
@@ -347,6 +368,13 @@ private:
 		ui.Set("run.downs", std::to_string(m_Downs));
 		ui.Set("run.dodges", std::to_string(rig ? rig->DodgeCount() - (m_Phase == Phase::Ready ? rig->DodgeCount() : m_DodgesAtStart) : 0));
 		ui.Set("run.course", m_Seed == 0 ? "the gauntlet" : "course " + std::to_string(m_Seed));
+		bool armed = rig && rig->Armed();
+		ui.Set("run.armed", armed ? "1" : "0");
+		ui.Set("run.unarmed", armed ? "0" : "1");
+		ui.Set("run.blocks", std::to_string(m_Guns.Blocks()));
+		ui.Set("run.parries", std::to_string(m_Guns.Parries()));
+		ui.Set("run.returns", std::to_string(m_Guns.Returns()));
+		ui.Set("run.wrecked", std::to_string(m_Guns.Wrecked()) + " / " + std::to_string(m_Guns.CannonCount()));
 		ui.Set("run.ready", m_Phase == Phase::Ready && !m_Paused ? "1" : "0");
 		ui.Set("run.finished", m_Phase == Phase::Finished ? "1" : "0");
 		ui.Set("run.paused", m_Paused ? "1" : "0");
@@ -468,6 +496,7 @@ private:
 	bool m_HaveLast = false;
 	bool m_RestartWas = false, m_NextWas = false, m_PauseWas = false;
 	bool m_Captured = false;
+	bool m_Armed = true;
 	glm::vec3 m_LastListener{ 0.0f };
 	bool m_HaveListener = false;
 };

@@ -21,6 +21,7 @@
 #include "MotionClip.h"
 #include "Mannequin.h"
 
+#include <algorithm>
 #include <memory>
 
 #include <cmath>
@@ -615,6 +616,21 @@ private:
 			control.Run = m_Sprint;
 			if (m_JumpPressed)
 				rig.RequestJump();
+			// The sword and shield: the guard and the swing face what is
+			// coming whenever the game says something is (SetFocusTarget),
+			// held Focus or not -- a swing at the camera's way while a ball
+			// came from the side was a swing at nothing -- else the camera's way.
+			// Only the camera waits for Focus to turn.
+			control.Guard = m_GuardHeld;
+			control.AimYaw = control.Yaw;
+			if (m_HasFocusTarget)
+			{
+				glm::vec3 to = m_FocusTarget - pelvis.Position;
+				if (to.x * to.x + to.z * to.z > 1e-4f)
+					control.AimYaw = glm::degrees(std::atan2(to.z, to.x));
+			}
+			if (m_AttackPressed)
+				rig.RequestAttack();
 			// A dodge the way the keys say, camera-relative as the walk is
 			// (forward (cos, sin) at the rig's yaw, right (-sin, cos)); with
 			// none held, the way the game suggests (SetDodgeAssist), or back.
@@ -694,7 +710,9 @@ private:
 		m_Sprint = false;
 		bool jumpDown = false;
 		bool dodgeDown = false;
+		bool attackDown = false;
 		m_FocusHeld = false;
+		m_GuardHeld = false;
 
 		if (!GS::ImGuiLayer::WantsKeyboard() && m_InputEnabled)
 		{
@@ -706,7 +724,13 @@ private:
 			if (map.Down("left")) m_MoveInput.x -= 1.0f;
 			m_Sprint = map.Down("sprint");
 			jumpDown = map.Down("jump");
-			dodgeDown = map.Down("dodge") && !GS::ImGuiLayer::WantsMouse();
+			// Carrying a sword, the dodge's left button is the swing's
+			// (they share it by default): only its other keys dodge.
+			bool armed = m_Player >= 0 && m_Characters[(size_t)m_Player].Rig && m_Characters[(size_t)m_Player].Rig->Armed();
+			bool mouseFree = !GS::ImGuiLayer::WantsMouse();
+			dodgeDown = (armed ? DownApart(map, "dodge", "attack") : map.Down("dodge")) && mouseFree;
+			attackDown = armed && map.Down("attack") && mouseFree;
+			m_GuardHeld = armed && map.Down("block") && mouseFree;
 			m_FocusHeld = map.Down("focus");
 
 			// The turn keys turn the camera, 90 degrees a second.
@@ -721,6 +745,8 @@ private:
 		m_JumpWasDown = jumpDown;
 		m_DodgePressed = dodgeDown && !m_DodgeWasDown;
 		m_DodgeWasDown = dodgeDown;
+		m_AttackPressed = attackDown && !m_AttackWasDown;
+		m_AttackWasDown = attackDown;
 
 		// Looking at what is coming, while it is held and there is
 		// something to look at: eased in over about a tenth of a second and
@@ -746,6 +772,23 @@ private:
 		m_LastMouse = mouse;
 		m_MouseKnown = true;
 		m_Pitch = glm::clamp(m_Pitch, -75.0f, 40.0f);
+	}
+
+	// Down on a binding of `id` that `other` does not also have.
+	static bool DownApart(const GS::InputMap& map, const char* id, const char* other)
+	{
+		const GS::InputMap::Action* action = map.Find(id);
+		const GS::InputMap::Action* shared = map.Find(other);
+		if (!action)
+			return false;
+		for (const GS::Binding& binding : action->Bindings)
+		{
+			if (shared && std::find(shared->Bindings.begin(), shared->Bindings.end(), binding) != shared->Bindings.end())
+				continue;
+			if (binding.Mouse ? GS::Input::IsMouseButtonPressed(binding.Code) : GS::Input::IsKeyPressed(binding.Code))
+				return true;
+		}
+		return false;
 	}
 
 	// A number in [0, 1) from this character's own stream: its index and how
@@ -819,6 +862,8 @@ private:
 	bool m_Sprint = false;
 	bool m_JumpPressed = false, m_JumpWasDown = false;
 	bool m_DodgePressed = false, m_DodgeWasDown = false;
+	bool m_AttackPressed = false, m_AttackWasDown = false;
+	bool m_GuardHeld = false;
 	glm::vec3 m_DodgeAssist{ 0.0f };
 	bool m_FocusHeld = false;
 	bool m_HasFocusTarget = false;

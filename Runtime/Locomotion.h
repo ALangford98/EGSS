@@ -273,7 +273,14 @@ inline void Humanoid::DriveLocomotion(float dt)
 	wish.y = 0.0f;
 	bool wants = glm::length(wish) > 1e-4f;
 	float wishYaw = wants ? std::atan2(wish.x, wish.z) : m_Facing;
-	bool running = m_Control.Enabled && m_Control.Run;
+	// Guarding or swinging (Armament.h), he faces his aim -- the camera's
+	// way, or what is coming -- whichever way the keys take him, and goes
+	// no faster than a guarded walk.
+	bool guarding = m_Armed && m_Control.Enabled && m_Control.Guard;
+	bool aiming = guarding || (m_Armed && m_Swing >= 0.0f);
+	float aimYaw = glm::radians(m_Control.AimYaw);
+	float faceYaw = aiming ? std::atan2(std::cos(aimYaw), std::sin(aimYaw)) : wishYaw;
+	bool running = m_Control.Enabled && m_Control.Run && !guarding;
 	bool airborne = m_Air == Air::Flying;
 
 	// --- facing: at once, near enough -------------------------------------
@@ -281,11 +288,11 @@ inline void Humanoid::DriveLocomotion(float dt)
 	// 0.29 s standing, 0.45 at a run. In the air he can still turn, slower.
 	float turnScale = ratio(m_TurnRate, m_Design.TurnRate);
 	float turnRate = (airborne ? 5.0f : glm::mix(11.0f, 7.0f, glm::clamp(L.Speed / std::max(m_RunSpeed, 0.1f), 0.0f, 1.0f))) * turnScale;
-	float facingError = wrap(wishYaw - m_Facing);
-	float turnStep = wants ? glm::clamp(facingError, -turnRate * dt, turnRate * dt) : 0.0f;
+	float facingError = wrap(faceYaw - m_Facing);
+	float turnStep = wants || aiming ? glm::clamp(facingError, -turnRate * dt, turnRate * dt) : 0.0f;
 	m_Facing = wrap(m_Facing + turnStep);
 	float turnNow = turnStep / dt;
-	m_TurnToGo = wants ? facingError : 0.0f;
+	m_TurnToGo = wants || aiming ? facingError : 0.0f;
 
 	// --- speed and the way he is going ------------------------------------
 	// Up to a run in a third of a second, down from one in about the same.
@@ -293,7 +300,7 @@ inline void Humanoid::DriveLocomotion(float dt)
 	// speed goes hard (a fifth of a second from a run) while he swings round,
 	// and then it builds again the new way. From a standstill he simply goes
 	// where he is asked.
-	float top = running ? m_RunSpeed : m_WalkSpeed;
+	float top = running ? m_RunSpeed : guarding ? 0.6f * m_WalkSpeed : m_WalkSpeed;
 	float travelError = wrap(wishYaw - L.Travel);
 	// Braked nearly to nothing before the way he goes flips: flipped at
 	// 0.6 m/s, the hips' velocity reversed in one step (72 m/s^2).
@@ -1258,6 +1265,9 @@ inline void Humanoid::DriveLocomotion(float dt)
 		Q[7 + side] = glm::normalize(footTurn[side] * m_BuildPose[(size_t)(7 + side)].second);
 		m_Planted[side] = ankleReached;
 	}
+
+	// The shield up and the sword swinging, over the stride's arms.
+	PoseArmament(P, Q, dt);
 
 	// --- on to the bodies -------------------------------------------------------
 	LocoPlace(P, Q, dt, true, 0.25f, false);
