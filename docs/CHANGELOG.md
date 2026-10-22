@@ -7,6 +7,87 @@ record behind it. ~195k tokens over hundreds of entries; **meant to be
 grepped, not read whole** — see `CLAUDE.md`'s reading tiers, and
 `docs/STATE.md` for what's current rather than historical.
 
+### 2026-10-22 (a sword and shield: block, parry, strike back; cannons with health)
+
+The owner: give the player a sword and shield to block, parry and reflect
+the cannonballs, give the cannons health and let him destroy them -- simple
+mechanics first, the styling is theirs to bring later.
+
+**Three answers to a ball** (`Runtime/Armament.h`, Humanoid members like
+`Locomotion.h`'s). Hold the guard (right button) and the shield comes up
+across his chest in 0.08 s and he faces what is coming: a ball that reaches
+it is *blocked* -- dropped in front of him, and he is shoved back
+kinematically by a third of its momentum, capped at 0.6 of what his feet can
+catch. Raise it no more than 0.20 s before the ball arrives and it is
+*parried*: glanced up and off to his shield side at 0.8 of its speed, no
+shove. Swing (left button; a press late in a swing queues the backhand) and
+catch it in the cut and it is *struck* back. The thrower (`Gunnery`) is
+asked through `Humanoid::WardOff` about every ball about to reach him, and a
+struck ball is sent at the cannon that fired it on the low ballistic arc at
+24 m/s -- the projectile equation from where the ball is, as `SolvePitch`
+solves it from a muzzle.
+
+Met in spheres, not at the rim: the shield's covers his trunk and the
+shield (0.70 m about a point 0.25 m ahead of the chest), the sword's the
+half circle the blade sweeps (1.55 m). A defence that fails on a
+two-centimetre miss reads as broken; the timing is the skill. A ball counts
+as arriving if it will enter within the next step and a half, so it is
+answered before a substep can carry it into him.
+
+**Measured** in the real loop -- a scene with one cannon at 14 m, input
+injected through the playback snapshot -- with the windows worked out
+first from the sphere sizes and the 19 m/s ball. Shield held: 5 of 5 balls
+blocked, never down (no defence: 2 of 3 put him down). Parry, by when the
+shield went up before the ball's arrival: parried from 0.06 to 0.26 s,
+blocked at 0.32 and after; predicted 0.06-0.28. Strike: returned from 0.10
+to 0.32 s, too early at 0.38 (the cut over before the ball comes);
+predicted 0.09-0.37. Pressed at 0.06 the ball reached him in the wind-up --
+too late, and a hit, though Gunnery did not count it: its contacts are the
+last substep's only (known). The shield faces within 8 degrees of ahead
+when up (normal . forward 0.99). The cut's tip peaks at 46 m/s -- by hand,
+the arm's 138-degree sweep and the shoulders' 0.75 rad turn over 0.19 s on
+a smoothstep, about 25 rad/s at 1.7 m from the spine, 42 m/s, before the
+wrist's own turn.
+
+**Posed.** The guard and swing are put over the stride's arms before the
+bodies are placed (`PoseArmament`): a two-bone solve per arm giving each
+bone a whole frame (+y up the bone, +z the fold, +x the hinge, shared), as
+`SolveArm` builds motor targets, so an elbow only ever bends like one; the
+shoulders turn into the swing about the spine; both blend in and out by how
+far into them he is. The props are drawn from the forearms (`SwordFrame`,
+`ShieldFrame`, Mannequin's `AppendArmament`) and are not simulated, so they
+go wherever the arms go, limp included. The shield's strap is worked out
+from the guard's own solution so its face is straight ahead when up.
+Carried at 20 degrees off the fist the sword stuck out like a lance; at 43
+the tip stays 28 cm off the floor walking and running (measured).
+
+**Aiming.** Guarding or swinging, he faces whatever the game says is
+coming (`SetFocusTarget`), Focus held or not: a first capture had him swing
+at the camera's way while the ball came from the side. With nothing coming,
+a cannon within 3 m is the target, so a swing beside one is at it.
+
+**Cannons with health** (`Gunnery::Settings::Health`, 100): a returned ball
+takes 50, a cut 25 -- once a swing, anywhere along the blade inside the
+carriage or along the barrel. The barrel had to be added: from where he can
+stand, the carriage alone left the swing 10 cm short. Hurt, a cannon smokes,
+more as it weakens, and a bar over it goes green to red and flashes white;
+at none it is wrecked -- a flash, a blast (synthesised, as its other sounds
+are), the barrel dropped onto its carriage, dark smoke -- and fires no more.
+Measured: 3 cuts leave it standing, 4 wreck it; two returned balls wreck it.
+The first wreck's flash, at 1.1 m, swelled into an opaque ball 2 m across.
+
+**Controls.** `attack` (left button, F) and `block` (right button, V) in
+the Controls, under Fighting. The guard shares the right button with Focus
+on purpose. Carrying a sword, the dodge gives its shared left button to the
+swing and keeps Q (`CharacterController::DownApart`). The cannon run starts
+him armed; `sword off` puts them away. The HUD counts blocks, parries,
+returns and cannons wrecked.
+
+**Not yet:** a guard while moving plays the stride forward whatever way he
+is going (no strafe clips); the sword cuts nothing but cannons; a ball is
+met once -- one that falls back on him after a parry is not warded again
+(nor counted as a hit, though its contact can still stagger him).
+
 ### 2026-10-21, evening (the old walk gone; knees, arms, a real jump, falling off edges; parkour posed, the climb a mantle)
 
 The owner, after trying the locomotion: delete the old walk, start the

@@ -107,6 +107,13 @@ parkour's flow, the player's control first. Three projects, in order:
    standing ones stay physical. Make walking hits physical again from the
    posed body.
 
+**Sword and shield** -- landed 2026-10-22 (`Runtime/Armament.h`;
+changelog, same date): block, parry and strike a cannonball back; cannons
+with health, wrecked by returned balls or cuts. Simple mechanics first; the
+owner has ideas for how it should look. Open: a guard while moving needs
+strafe strides; the sword cuts nothing but cannons; posed swings only (none
+in a move or in the air from a move).
+
 The old walk (`DriveWalk`, `PlaceFeet`, the set pieces, turn-stepping) was
 deleted on the owner's word, 2026-10-21.
 

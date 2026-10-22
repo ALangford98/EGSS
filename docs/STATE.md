@@ -30,7 +30,8 @@ The live area is **the humanoid** — `Runtime/Humanoid.h`, `Locomotion.h`,
 `MotionClip.h`, tried in the Parkour, CannonRun and Ragdoll demos. Since
 2026-10-21 the direction is snappy and player-first (GTA / Red Dead for
 moving and being hit, Assassin's Creed for parkour) in three projects:
-locomotion (landed), parkour on it (next), hits. `editor_roadmap.md`'s
+locomotion (landed), parkour on it (next), hits -- and, asked for
+2026-10-22, a sword and shield against the cannons. `editor_roadmap.md`'s
 "Humanoid" section holds the detail; its wishlist is still the editor's
 todo list, ordered easiest to hardest.
 
@@ -38,6 +39,11 @@ Last landed, newest first. **One line each; the write-up lives in
 `docs/CHANGELOG.md`** under the same date — this list used to hold the full
 write-ups and reached 1,100 lines before they were moved out on 2026-09-30.
 
+- **2026-10-22 — Sword and shield**: `Runtime/Armament.h`. Hold the
+  shield up to block a cannonball, raise it as one lands to parry, swing
+  into one to send it back at its cannon; cannons have health (100: a
+  returned ball 50, a cut 25), smoke, a bar, and are wrecked at none. The
+  cannon run starts armed (`sword off`). Styling is the owner's next say.
 - **2026-10-21 — Old walk deleted; parkour posed**: `DriveWalk`, the set
   pieces and turn-stepping gone (Humanoid.h 9,586 -> 7,570 lines). Knees
   over the toes, arms with follow-through, a jump that crouches, tucks and
